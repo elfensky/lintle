@@ -4,6 +4,8 @@ Every fix is applied and then confirmed by ``tle`` validation; a fix is
 committed only if the result passes. Pure functions — no I/O.
 """
 
+import dataclasses
+
 from tlekit import tle
 
 RECONSTRUCTED_CHECKSUM = "reconstructed-checksum"
@@ -75,3 +77,58 @@ def repair_line(raw, lineno):
         return None, fixes, "; ".join(errors), category
 
     return candidate, fixes, None, None
+
+
+@dataclasses.dataclass
+class Accepted:
+    """A record that is valid after repair. ``fixes`` lists the fix-class
+    names applied across both lines (e.g. ``"trailing-backslash"``).
+    """
+
+    line1: str
+    line2: str
+    fixes: list
+
+
+@dataclasses.dataclass
+class Rejected:
+    """A record that could not be safely repaired. ``raw_lines`` holds the
+    original bytes for byte-faithful quarantine; ``category`` is a short
+    tag for summary aggregation; ``reason`` is the human-readable detail.
+    """
+
+    raw_lines: list
+    source_lines: list
+    category: str
+    reason: str
+
+
+def process_record(raw_line1, src1, raw_line2, src2):
+    """Repair and validate a paired record.
+
+    ``raw_line1``/``raw_line2`` are line bytes (no ``\\n``); ``src1``/``src2``
+    are their 1-indexed source line numbers. Returns ``Accepted`` or
+    ``Rejected``.
+    """
+    line1, fixes1, err1, cat1 = repair_line(raw_line1, 1)
+    line2, fixes2, err2, cat2 = repair_line(raw_line2, 2)
+
+    if err1 or err2:
+        parts = []
+        if err1:
+            parts.append(f"line 1: {err1}")
+        if err2:
+            parts.append(f"line 2: {err2}")
+        return Rejected(
+            [raw_line1, raw_line2], [src1, src2],
+            cat1 or cat2, "; ".join(parts),
+        )
+
+    record_errors = tle.validate_record(line1, line2)
+    if record_errors:
+        return Rejected(
+            [raw_line1, raw_line2], [src1, src2],
+            "catalog-mismatch", "; ".join(record_errors),
+        )
+
+    return Accepted(line1, line2, fixes1 + fixes2)

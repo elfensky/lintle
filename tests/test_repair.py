@@ -70,3 +70,38 @@ def test_invalid_columns_rejected(line1):
     bad = "3" + line1[1:]
     clean, fixes, err, cat = repair.repair_line(bad.encode("ascii"), 1)
     assert clean is None and cat == "invalid-columns"
+
+
+def test_process_accepts_clean_record(line1, line2):
+    result = repair.process_record(line1.encode("ascii"), 10,
+                                   line2.encode("ascii"), 11)
+    assert isinstance(result, repair.Accepted)
+    assert result.line1 == line1 and result.line2 == line2
+    assert result.fixes == []
+
+
+def test_process_repairs_backslash_and_checksum(line1, line2):
+    raw1 = (line1[:68] + "\\").encode("ascii")  # checksumless + backslash
+    raw2 = line2[:68].encode("ascii")           # checksumless
+    result = repair.process_record(raw1, 4, raw2, 5)
+    assert isinstance(result, repair.Accepted)
+    assert result.line1 == line1 and result.line2 == line2
+    assert "reconstructed-checksum" in result.fixes
+
+
+def test_process_rejects_bad_line(line1, line2):
+    raw1 = (line1[:68] + "9").encode("ascii")  # bad checksum
+    result = repair.process_record(raw1, 4, line2.encode("ascii"), 5)
+    assert isinstance(result, repair.Rejected)
+    assert result.category == "checksum-mismatch"
+    assert result.source_lines == [4, 5]
+    assert result.raw_lines == [raw1, line2.encode("ascii")]
+
+
+def test_process_rejects_catalog_mismatch(line1, line2):
+    other_body = "2 09999" + line2[7:68]
+    other = other_body + str(tle.compute_checksum(other_body))
+    result = repair.process_record(line1.encode("ascii"), 1,
+                                   other.encode("ascii"), 2)
+    assert isinstance(result, repair.Rejected)
+    assert result.category == "catalog-mismatch"
