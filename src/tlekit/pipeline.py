@@ -1,6 +1,10 @@
 """Streaming I/O: read a file, pair lines into records, route them."""
 
 import dataclasses
+import os
+import tempfile
+
+from tlekit import repair, report, stem
 
 
 @dataclasses.dataclass
@@ -72,3 +76,80 @@ def iter_records(path):
         yield Orphan(
             held[0], held[1], "orphan-line", "orphan line 1 at end of file"
         )
+
+
+def process_file(src_path, out_dir, mode):
+    """Process one source file and return its ``report.FileStats``.
+
+    ``mode`` is ``"validate"`` (audit only — writes nothing) or ``"clean"``
+    (also writes ``<name>.cleaned.txt`` and ``<name>.broken.txt`` to
+    ``out_dir``). The cleaned file is written to a temp file and atomically
+    renamed, so an interrupted run never leaves a half-written output.
+    """
+    src_name = os.path.basename(src_path)
+    stats = report.FileStats(src_name=src_name)
+
+    cleaned_handle = None
+    cleaned_tmp = None
+    cleaned_path = None
+    if mode == "clean":
+        os.makedirs(out_dir, exist_ok=True)
+        cleaned_path = os.path.join(out_dir, stem(src_name) + ".cleaned.txt")
+        fd, cleaned_tmp = tempfile.mkstemp(dir=out_dir, suffix=".tmp")
+        cleaned_handle = os.fdopen(fd, "w", encoding="ascii", newline="\n")
+
+    try:
+        for candidate in iter_records(src_path):
+            stats.total_records += 1
+
+            if isinstance(candidate, Orphan):
+                _record_reject(
+                    stats, candidate.category, candidate.reason,
+                    [candidate.raw_line], [candidate.src],
+                )
+                continue
+
+            try:
+                result = repair.process_record(
+                    candidate.raw_line1, candidate.src1,
+                    candidate.raw_line2, candidate.src2,
+                )
+            except Exception as exc:  # one bad record must not kill the run
+                _record_reject(
+                    stats, "internal-error", f"internal-error: {exc!r}",
+                    [candidate.raw_line1, candidate.raw_line2],
+                    [candidate.src1, candidate.src2],
+                )
+                continue
+
+            if isinstance(result, repair.Accepted):
+                stats.clean_count += 1
+                for fix in result.fixes:
+                    stats.fix_counts[fix] = stats.fix_counts.get(fix, 0) + 1
+                if cleaned_handle is not None:
+                    cleaned_handle.write(result.line1 + "\n")
+                    cleaned_handle.write(result.line2 + "\n")
+            else:
+                _record_reject(
+                    stats, result.category, result.reason,
+                    result.raw_lines, result.source_lines,
+                )
+    finally:
+        if cleaned_handle is not None:
+            cleaned_handle.close()
+
+    if mode == "clean":
+        os.replace(cleaned_tmp, cleaned_path)
+        broken_path = os.path.join(out_dir, stem(src_name) + ".broken.txt")
+        report.write_broken_file(broken_path, src_name, stats)
+
+    return stats
+
+
+def _record_reject(stats, category, reason, raw_lines, source_lines):
+    """Tally one quarantined record into ``stats``."""
+    stats.quarantined_count += 1
+    stats.reject_categories[category] = (
+        stats.reject_categories.get(category, 0) + 1
+    )
+    stats.rejects.append(report.RejectEntry(raw_lines, source_lines, reason))

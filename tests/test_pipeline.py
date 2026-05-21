@@ -52,3 +52,60 @@ def test_bad_prefix_line(tmp_path, line1, line2):
     assert any(o.category == "bad-prefix" for o in orphans)
     # The valid record after the garbage line still pairs.
     assert any(isinstance(r, pipeline.RecordCandidate) for r in records)
+
+
+def test_process_file_clean_mode(tmp_path, line1, line2):
+    src = tmp_path / "tle2099.txt"
+    # One clean record, then one checksumless record (both repairable).
+    src.write_bytes((
+        line1 + "\n" + line2 + "\n" + line1[:68] + "\n" + line2[:68] + "\n"
+    ).encode("ascii"))
+    out = tmp_path / "out"
+
+    stats = pipeline.process_file(str(src), str(out), "clean")
+
+    assert stats.total_records == 2
+    assert stats.clean_count == 2
+    assert stats.quarantined_count == 0
+    cleaned = (out / "tle2099.cleaned.txt").read_text()
+    assert cleaned == line1 + "\n" + line2 + "\n" + line1 + "\n" + line2 + "\n"
+    assert (out / "tle2099.broken.txt").exists()
+
+
+def test_process_file_quarantines_bad_record(tmp_path, line1, line2):
+    src = tmp_path / "tle2099.txt"
+    bad_line1 = line1[:68] + "9"  # 69 chars, wrong checksum
+    src.write_bytes((bad_line1 + "\n" + line2 + "\n").encode("ascii"))
+    out = tmp_path / "out"
+
+    stats = pipeline.process_file(str(src), str(out), "clean")
+
+    assert stats.quarantined_count == 1
+    assert stats.reject_categories.get("checksum-mismatch") == 1
+    assert b"checksum" in (out / "tle2099.broken.txt").read_bytes()
+
+
+def test_validate_mode_writes_nothing(tmp_path, line1, line2):
+    src = tmp_path / "tle2099.txt"
+    src.write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
+    out = tmp_path / "out"
+
+    stats = pipeline.process_file(str(src), str(out), "validate")
+
+    assert stats.clean_count == 1
+    assert not out.exists()  # validate mode never creates the output dir
+
+
+def test_internal_error_is_quarantined_not_raised(tmp_path, line1, line2,
+                                                  monkeypatch):
+    src = tmp_path / "tle2099.txt"
+    src.write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("simulated failure")
+
+    monkeypatch.setattr(pipeline.repair, "process_record", boom)
+    stats = pipeline.process_file(str(src), str(tmp_path / "out"), "clean")
+
+    assert stats.quarantined_count == 1
+    assert stats.reject_categories.get("internal-error") == 1
