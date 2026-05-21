@@ -1,21 +1,65 @@
 # TLE Corpus Validator & Cleaner — Design
 
 - **Date:** 2026-05-21
-- **Status:** Approved (design); pending implementation plan
+- **Status:** Revised 2026-05-21 after a four-model spec review; pending implementation plan
+- **Revision:** §1/§6 defect model corrected against a full-corpus scan (§1.1 measured
+  distribution added); §6.2 reconstructed-checksum repair added; §5.4 gains semantic/range
+  validation; §4.1 correctness claim downgraded to validation-conformance; §8 pairing made
+  prefix-driven with the same-satellite mispair disclosed.
 - **Topic:** A tool to validate and clean a multi-gigabyte corpus of Two-Line Element (TLE) files exported from space-track.org
 
 ## 1. Problem statement
 
-The working directory holds 22 `.txt` files of TLE data (years 2004–2025), totalling roughly 40 GB,
-plus a 12 GB `TLEs.zip`. The files contain systematic, era-specific defects:
+The working directory holds 29 `.txt` files of TLE data spanning years 2004–2025 — the 2004 data
+is split into 8 parts (`tle2004_1of8.txt` … `tle2004_8of8.txt`), each split on a record boundary —
+totalling roughly 30 GB, plus a separate 12 GB `TLEs.zip`. A full-corpus scan reveals two
+systematic export-pipeline defects, which appear both independently and in combination:
 
-- **2004-era files** — *every* Line 1 carries an extra trailing `\` byte (70 bytes before the
-  newline instead of 69). A systematic export artifact, not sporadic corruption.
-- **2025 file** — mostly clean 69-character lines, but a small fraction (~0.1% in the sampled
-  region) are 68 characters: a character is *missing*.
+- **Trailing `\` on Line 1** — Line 1 records carry an extra trailing `\` byte. The scan shows
+  this on **every Line 1 of every file except `tle2019`, `tle2023`, and `tle2025`** — years
+  2004–2024 with three exceptions, not the 2004-only quirk originally assumed. A systematic
+  export artifact, not sporadic corruption.
+- **Missing checksum digit** — many records were exported *without* their column-69 checksum
+  digit. Both Line 1 and Line 2 then carry 68 data columns rather than 69, with columns 1–68
+  intact and well-formed — only the derived checksum is absent. Prevalence varies enormously by
+  file (~95% of `tle2004_1of8.txt`, ~75% of `tle2017.txt`, under 1% of the cleanest files);
+  corpus-wide it is ~15% of records — not an edge case.
 
-These are only the directly observed defects. The full defect catalog is unknown until the corpus
-is scanned.
+The two defects combine into the observed line shapes:
+
+| Line 1 bytes | Meaning |
+|--------------|---------|
+| 70, ends `\` | 69 valid columns (checksum present) + trailing `\` artifact |
+| 69, ends `\` | 68 columns (checksum *missing*) + the `\` artifact occupying column 69 |
+| 69, clean    | a correct record |
+| 68           | one character missing — the checksum if columns 1–68 still validate, otherwise an interior character (quarantined). The 2025 file shows this in ~0.1–0.2% of lines. |
+
+Line 2 never carries the `\` artifact; it is 69 bytes (checksum present) or 68 bytes (checksum
+missing).
+
+### 1.1 Measured defect distribution
+
+A full-corpus length-and-backslash scan (≈232 M records / ≈465 M lines) gives the real
+distribution — the design is sized against these measured numbers, not against the two defects
+originally observed by eye:
+
+| Record category | Fix | Share | Count |
+|------------------|-----|-------|-------|
+| Variant A — Line 1 carries its checksum and a trailing `\` | strip `\` (§6.1) | ~67% | ~156.6 M |
+| Checksum-less — Line 1 and Line 2 both lack column 69 | reconstruct checksum (§6.2) | ~15% | ~35.6 M |
+| Already clean — 69/69, no `\` | none | ~17% | ~40.1 M |
+| Genuinely corrupt — odd length, bad prefix, orphan | quarantine (§6.5) | <0.01% | ~10⁴ |
+
+The trailing `\` is the corpus-wide dominant defect; the missing checksum is dominant only
+*within specific files*. The scan also surfaced the small genuinely-corrupt fraction the catalog
+must quarantine: ~1,250 lines of length 71, a handful of length-1 lines, ~2,300 mis-prefixed
+lines in `tle2020.txt`, ~3,200 blank/CR lines in `tle2019.txt`, and a `1 `/`2 ` count mismatch of
+2 in `tle2017.txt` (orphans). No file uses `\r\n` line endings at scale; `1 `/`2 ` prefix counts
+match exactly in 26 of 29 files, so mispairing risk is low in practice.
+
+The `validate` discovery pass (Section 12) still runs the *full* validator — column layout,
+semantic ranges, and checksum — so it remains the authoritative defect catalog; this scan sized
+only the length/backslash defects.
 
 We need:
 
@@ -42,9 +86,12 @@ de-defected — so any downstream SGP4/orbital library can ingest it directly.
 
 - **No orbit propagation or analysis.** Output is clean TLE text; downstream apps do the science.
 - **No structured/columnar output** (JSON, CSV, Parquet). Output stays in native TLE text format.
-- **No aggressive reconstruction** of corrupt records (e.g. brute-forcing a missing character).
-  A mod-10 checksum has a 1-in-10 false-accept rate; reconstruction risks silently producing
-  plausible-but-wrong data. Corrupt records are quarantined for space-track to fix.
+- **No aggressive reconstruction** of corrupt records — no brute-forcing a missing *data*
+  character. A mod-10 checksum has a 1-in-10 false-accept rate, so guessing an orbital-data
+  character risks silently producing plausible-but-wrong data. Such records are quarantined for
+  space-track to fix. (Recomputing a *missing checksum digit* from intact columns 1–68 is **not**
+  reconstruction in this sense — the checksum is a deterministic function of known-good data — and
+  is an explicit, separately-tracked repair; see Section 6.2.)
 - **No handling of the 12 GB `TLEs.zip`** — assumed to be an archive of the same `.txt` files.
 - **No name/`0` lines.** The corpus is 2LE format (alternating `1 `/`2 ` lines only); the cleaned
   format preserves this.
@@ -80,9 +127,14 @@ The cleaner never applies a fix and hopes. It treats the validator as an oracle:
 2. Re-run *full* validation on the result — column layout **and** the mod-10 checksum.
 3. Commit the fix **only if the result now passes.** Otherwise the record is quarantined.
 
-Consequences: the cleaner provably cannot turn a bad record into a wrong-but-valid-looking one,
-and every line in the cleaned file is valid *by construction* because it was validated on the way
-out.
+Consequences: every line in the cleaned file is valid *by construction* — it passed full
+validation on the way out. This is a strong guarantee, but not an absolute one: it proves
+conformance to the validator, not the truth of the original record. Two residual risks remain and
+are accepted explicitly: (1) the mod-10 checksum has a 1-in-10 false-accept rate (Section 2), so a
+content-shifting fix (Section 6.3) could pass by coincidence; (2) a record paired from two
+same-satellite epochs is undetectable (Section 8). Content-*preserving* fixes (Section 6.1) carry
+neither risk. The cleaner therefore cannot *casually* turn a bad record into a wrong-but-valid
+one — but "provably cannot" would overstate it.
 
 ### 4.2 Project layout
 
@@ -177,46 +229,115 @@ column 69.
 
 ### 5.4 Validation levels
 
-- **Line level:** length is exactly 69; correct line-number prefix; required separator columns
-  contain spaces; literal decimal points are in position (epoch fraction, first derivative, mean
-  motion); variable fields contain only their permitted character set; checksum matches.
-  The checksum is the primary integrity check; column-layout checks are the backstop against a
-  checksum collision.
+- **Line level (column layout):** length is exactly 69; correct line-number prefix; required
+  separator columns contain spaces; literal decimal points are in position (epoch fraction, first
+  derivative, mean motion); variable fields contain only their permitted character set, including
+  the exact exponential-field grammar for columns 45–52 and 54–61 (a signed mantissa and a signed
+  single-digit exponent, `±NNNNN±N`); checksum matches.
+- **Semantic level (range checks):** numeric fields fall in their physically valid ranges —
+  eccentricity in `[0, 1)`, inclination in `[0, 180]`, RAAN / argument of perigee / mean anomaly
+  in `[0, 360)`, mean motion strictly positive, epoch day-of-year in `(0, 367)`. This level is
+  **load-bearing** for records repaired under Section 6.2: once a missing checksum is
+  self-computed, the checksum re-validation is circular, so the column-layout and semantic checks
+  are the *only* non-circular evidence that the record is not garbled.
 - **Record level:** a Line 1 immediately followed by a Line 2, with **matching satellite catalog
   numbers** (columns 3–7).
 
+The checksum is one integrity check among several — primary only for records whose checksum digit
+is genuinely present; for reconstructed-checksum records (Section 6.2) the column-layout and
+semantic levels carry the verification.
+
 Edge cases the validator must tolerate as valid: a blank international designator on older objects;
-optional leading sign or space in numeric fields; Alpha-5 alphanumeric catalog numbers.
+optional leading sign or space in numeric fields; Alpha-5 alphanumeric catalog numbers (letters
+are permitted in columns 3–7 only — the digit-only rule still applies to every other numeric
+field).
 
 ## 6. Defect catalog and fix policy
 
-Three fix classes:
+Five fix classes, in decreasing order of safety. Every fix is **speculative**: applied, then
+re-validated (Section 4.1); committed only if the result passes full validation.
 
-| Class | Defect | Action |
-|-------|--------|--------|
-| **Cosmetic — auto-fix** (strip, re-validate, commit only if the result passes) | Trailing `\` on Line 1 (the 2004 artifact) | strip the byte |
-| | `\r\n` or lone `\r` line endings | normalize to `\n` |
-| | Trailing spaces / tabs after column 69 | trim |
-| | Leading whitespace / UTF-8 BOM | trim |
-| **Structural — safe drop** | Blank / empty line between records | drop |
-| **Corrupt — quarantine** (→ `.broken.txt`) | 68-char or other wrong-length line (missing/extra char, not a known artifact) | quarantine record |
-| | Checksum mismatch on a full 69-char line | quarantine record |
-| | Line does not start with `1 ` / `2 ` | quarantine |
-| | Orphan Line 1 or Line 2 (no valid pair) | quarantine |
-| | Catalog-number mismatch between paired lines | quarantine both |
-| | Non-ASCII / control character inside a record body | quarantine |
-| | Column-layout violation (e.g. non-digit in a digit-only column) | quarantine |
+### 6.1 Content-preserving auto-fix
 
-Every cosmetic fix is **speculative**: applied, then re-validated. A 70-byte line ending in `\`
-whose bytes 1–69 still fail the checksum (meaning the `\` was not the only problem) is **not**
-committed — that record is quarantined. The fix counts are reported even for cosmetic fixes, so a
-run reports e.g. "stripped 8,412,064 trailing backslashes."
+These transformations never touch columns 1–69 of the record, so they are *provably*
+content-preserving — the checksum survives the fix as an independent integrity check.
+
+| Defect | Action |
+|--------|--------|
+| Trailing `\` on a 70-byte Line 1 (artifact on a checksum-bearing line) | strip the byte → 69 columns |
+| `\r\n` or lone `\r` line endings | normalize to `\n` |
+| Trailing spaces / tabs after column 69 | trim |
+
+A 70-byte line ending in `\` whose columns 1–69 still fail the checksum (the `\` was not the only
+problem) is **not** committed — that record is quarantined.
+
+### 6.2 Reconstructed-checksum repair
+
+A major defect (Section 1) — ~15% of the corpus, and the majority of several files: a record
+exported without its column-69 checksum digit. Line 1 appears as a 69-byte line ending in `\`
+(the `\` artifact in column 69) or as a plain 68-byte line; Line 2 appears as a plain 68-byte
+line.
+
+Repair: strip the `\` if present, leaving 68 characters; confirm those 68 characters pass the
+column-layout **and** semantic checks (Section 5.4) as columns 1–68; append the computed checksum
+`sum(cols 1–68) % 10`; re-validate the full 69-character line.
+
+This is a **distinct, weaker repair tier**, tracked separately in all reporting. After the
+checksum is self-computed, the checksum re-validation is *circular* — it cannot fail — so
+verification rests entirely on the column-layout and semantic checks of columns 1–68. This is
+*not* the "aggressive reconstruction" ruled out in Section 2: the checksum is a deterministic
+function of known-good columns, not a guessed data character. But it is honest to state that a
+reconstructed checksum is **format conformance, not verified integrity** (see "perfect file"
+below). A 68-byte line whose columns 1–68 fail the layout/semantic checks is *not* repaired —
+the missing character is interior, not the checksum, and the record is quarantined.
+
+### 6.3 Content-shifting fix — apply only if re-validation passes
+
+| Defect | Action |
+|--------|--------|
+| Leading whitespace / UTF-8 BOM before column 1 | trim, then full re-validation |
+
+Trimming a leading byte **shifts every fixed-width column**, so unlike Section 6.1 the result is
+a structurally different record — safe only to the ~90% confidence of the mod-10 checksum plus
+the column-layout/semantic backstop. It is therefore *not* a cosmetic fix: if the trimmed line
+does not pass full validation it is quarantined, never force-fixed.
+
+### 6.4 Structural — safe drop
+
+| Defect | Action |
+|--------|--------|
+| Blank / empty line between records | drop, then resynchronise pairing on the next `1 ` line (Section 8) |
+
+### 6.5 Corrupt — quarantine (→ `.broken.txt`)
+
+| Defect | Action |
+|--------|--------|
+| Wrong-length line not matching a known repair (6.1–6.3) | quarantine record |
+| Checksum mismatch on a full 69-char line whose checksum digit is present | quarantine record |
+| 68-char line whose columns 1–68 fail layout/semantic checks (interior character missing) | quarantine record |
+| Line does not start with `1 ` / `2 ` | quarantine |
+| Orphan Line 1 or Line 2 (no valid pair) | quarantine |
+| Catalog-number mismatch between paired lines | quarantine both |
+| Non-ASCII / control character inside a record body | quarantine |
+| Column-layout or semantic violation | quarantine |
+
+### 6.6 Fix ordering
+
+When several fixes apply to one record they are applied in a fixed order — line-ending
+normalization, then leading-trim (6.3), then trailing-trim / backslash-strip (6.1), then
+checksum reconstruction (6.2) — and full re-validation runs once, on the final candidate. Fix
+counts are reported per class, so a run reports e.g. "stripped 8,412,064 trailing backslashes"
+**and** "reconstructed 195,293 missing checksums."
 
 ### Definition of a "perfect" cleaned file
 
 Pairs of records — Line 1 then Line 2 — each exactly 69 ASCII characters, `\n`-terminated, no
-blank lines, matching catalog numbers, both checksums valid. This uniform shape *is* the
-easily-parsable architecture downstream applications ingest.
+blank lines, matching catalog numbers, both lines passing the column-layout and semantic checks,
+and both checksums valid. A record repaired under 6.2 satisfies "checksum valid" only *by
+construction*; the run summary and per-record provenance distinguish **verified** checksums from
+**reconstructed** ones. The cleaned file is uniformly shaped and directly parsable — it is
+*format-conformant* — but a downstream consumer must not read a reconstructed checksum as an
+independent integrity guarantee.
 
 ## 7. CLI
 
@@ -229,7 +350,9 @@ tle-clean clean    [paths…]    # ask #2 — produces cleaned + broken files
 
 Options:
 
-- `paths` — files or a directory. A directory is globbed for `tle*.txt`. Defaults to `.`.
+- `paths` — files or a directory. A directory is globbed for `tle*.txt`, **excluding any
+  `*.cleaned.txt` and `*.broken.txt`** so that re-running the tool on a directory that already
+  contains output does not re-process its own results. Defaults to `.`.
 - `--out-dir DIR` — destination for cleaned/broken files. Default `./cleaned/`, keeping the
   original inputs pristine.
 - `--jobs N` — number of files processed in parallel. Default = CPU count.
@@ -265,9 +388,25 @@ read bytes ─▶ line state-machine ─▶ pair into record candidates ─▶ r
    `<name>.broken.txt` (via `report`), accumulating statistics.
 4. After each file, a summary is emitted.
 
-The pairing state machine holds at most two lines, so a 40 GB file streams in constant memory.
-Each of the 22 files is independent, so `cli.py` runs them through a
-`concurrent.futures.ProcessPoolExecutor`.
+The pairing state machine is **prefix-driven**: it expects a `1 ` line, then a `2 ` line. A `1 `
+seen while a `1 ` is already held orphans the held line and starts over; a `2 ` with no held `1 `
+is an orphan; a blank line is dropped without breaking the expectation. Pairing therefore
+**resynchronises on every `1 ` prefix** — a single missing or dropped line cannot cascade into a
+run of mispaired records.
+
+One residual risk is accepted explicitly and cannot be eliminated: if a record's Line 2 *and* the
+next record's Line 1 are both missing, the state machine can pair a Line 1 and a Line 2 drawn
+from two *different epochs of the same satellite*. Both lines are individually valid and their
+catalog numbers match, so the validator accepts the pair. The TLE format carries no cross-line
+redundancy beyond the catalog number, so this same-satellite mispair is **undetectable** — it is
+the reason Section 4.1 claims validation conformance, not absolute correctness. It is rare in
+catalog-then-epoch-sorted exports; it is disclosed here rather than silently assumed away.
+
+The state machine holds at most two lines, so the largest single file (~3.2 GB) streams in
+constant memory. Each of the 29 files is independent, so `cli.py` runs them through a
+`concurrent.futures.ProcessPoolExecutor`. `--jobs` defaults to the CPU count; on a single slow
+disk, processing 29 multi-gigabyte files concurrently can cause I/O contention — operators may
+lower `--jobs` if throughput suffers.
 
 **Idempotence:** running `clean` on an already-clean file yields byte-identical output with zero
 fixes and zero rejects; running `validate` on a `.cleaned.txt` reports it perfect.
@@ -276,7 +415,10 @@ fixes and zero rejects; running `validate` on a `.cleaned.txt` reports it perfec
 
 ### 9.1 Cleaned file — `<name>.cleaned.txt`
 
-Standard 2-line TLE text, every record guaranteed valid (Section 6).
+Standard 2-line TLE text, every record guaranteed valid (Section 6). Modern objects may carry
+Alpha-5 alphanumeric catalog numbers; these are preserved verbatim. Most SGP4 implementations
+accept them, but a few older consumers do not — the cleaned output is standard TLE, not a
+lowest-common-denominator dialect.
 
 ### 9.2 Reject file — `<name>.broken.txt`
 
@@ -294,7 +436,8 @@ Per source file, formatted to be detailed enough to file a report with space-tra
 [2] source line 99102 — reason: orphan Line 1 (no following Line 2)
 1 51234U 21001A   22045.12345678  .00001234  00000-0  12345-4 0  9991
 
-[3] source line 250011 — reason: line length 68, expected 69 (missing character)
+[3] source line 250011 — reason: line length 68; columns 1–68 fail layout checks — missing
+    character is interior, not the checksum, so not reconstructible (Section 6.2)
 1 27497U 01055E   0415 .01279831  .00005767  00000-0  41216-3 0 7230
 ```
 
@@ -307,9 +450,13 @@ Printed to stdout (and as JSON with `--report json`):
 
 ```
 tle2022.txt   8,412,067 records   8,412,064 clean   3 quarantined
-  fixes:   trailing-backslash 8,412,064 | crlf 0 | trailing-ws 0
+  fixes:   trailing-backslash 8,412,064 | reconstructed-checksum 195,293 | crlf 0 | trailing-ws 0
   rejects: checksum-mismatch 1 | orphan-line 1 | wrong-length 1
 ```
+
+`reconstructed-checksum` is reported as its own line item, separate from content-preserving
+fixes: those records are format-conformant but their checksums are computed, not verified
+(Section 6.2).
 
 ## 10. Error handling
 
@@ -320,10 +467,20 @@ Built so that a 20-minute run does not die on one bad byte:
 - Any unexpected per-record exception is caught; that record is quarantined with reason
   `internal-error: …` and processing continues.
 - File-level errors (unreadable, permissions) are reported per file; other files continue.
+- The `.broken.txt` reject file is written **byte-faithfully**: quarantined lines are copied as
+  raw bytes, so a record quarantined for a non-ASCII/undecodable byte appears verbatim and the
+  file may not be valid UTF-8. The header and per-record reason lines are ASCII; consumers of
+  `.broken.txt` must treat the quarantined-line payloads as opaque bytes.
 - Output is written to temp files and atomically renamed on success, so an interrupted run never
   leaves a half-written `.cleaned.txt` that looks complete.
-- Exit codes: `0` = clean / all-perfect; `1` = defects found (`validate`) or records quarantined
-  (`clean`); `2` = operational error (unreadable file, bad arguments).
+- `clean` checks free space on `--out-dir` before starting (cleaned + broken output ≈ input size,
+  plus transient headroom for the temp file), so a 20-minute run does not fail late on a full disk.
+- Exit codes: `0` = clean (no defects, or — for `clean` — every defect was repaired and every
+  emitted record is valid); `1` = **unrepairable** records exist (`validate`: at least one record
+  *would* be quarantined; `clean`: records were routed to `.broken.txt`); `2` = operational error
+  (unreadable file, bad arguments). Repairable defects alone — including the near-universal
+  trailing `\` — do **not** raise the exit code above 0; otherwise the code would carry no signal,
+  since almost every raw file contains them.
 
 ## 11. Testing
 
@@ -332,9 +489,15 @@ Test-driven, dev dependencies `pytest` and `sgp4` (optionally `tletools`).
 - **`tle.py` unit tests:** checksum computation; every validation rule; Alpha-5 acceptance; edge
   cases (blank international designator, negative derivatives, exponential fields).
 - **Oracle cross-check:** a set of known-good real TLEs validated by our code *and* by
-  `sgp4`/`tletools`; the results must agree.
-- **`repair.py` unit tests:** each cosmetic fix; and the speculative-reject path — a `\`-terminated
-  line whose bytes 1–69 still fail the checksum must be quarantined, not "fixed."
+  `sgp4`/`tletools`. The check is *asymmetric* — it confirms that genuinely valid TLEs are
+  accepted by both. It is **not** used to confirm rejections: `sgp4` is permissive and parses
+  many malformed TLEs, so a disagreement on a bad input is expected, not a bug. The oracle is a
+  dev-time test fixture only; it is never part of the runtime validator.
+- **`repair.py` unit tests:** each fix class (6.1–6.3); the reconstructed-checksum repair — a
+  69-byte `\`-terminated line and a plain 68-byte line are repaired only when columns 1–68 pass
+  the layout and semantic checks, and quarantined otherwise (interior character missing); and the
+  speculative-reject path — a `\`-terminated line whose columns 1–69 still fail the checksum must
+  be quarantined, not "fixed."
 - **Golden / integration tests:** a fixture file in `tests/fixtures/` (one per defect class) fed
   through `pipeline`; assert the exact bytes of `.cleaned.txt` and `.broken.txt`.
 - **Idempotence test:** `clean(clean(x)) == clean(x)`; `validate` of a cleaned file reports perfect.
@@ -343,17 +506,21 @@ Test-driven, dev dependencies `pytest` and `sgp4` (optionally `tletools`).
 
 1. `pyproject.toml` (uv project, console script, dev deps) + package skeleton.
 2. `tle.py` — the correctness oracle — built first, test-driven, including the `sgp4` cross-check.
-3. `repair.py` — conservative fixes, test-driven against `tle.py`.
+3. `repair.py` — conservative fixes (Sections 6.1–6.3, including the reconstructed-checksum
+   repair), test-driven against `tle.py`.
 4. `pipeline.py` — streaming reader, pairing state machine, routing.
 5. `report.py` and `cli.py` — sidecar/summary rendering, argument parsing, parallelism.
-6. **First real milestone:** run `validate` across all 22 files to surface the *actual* full
-   defect catalog (only 2 defect types have been directly observed; the validator is the
-   discovery tool). Confirm the repair rules cover every safe-to-fix defect found.
+6. **First real milestone:** run `validate` across all 29 files to surface the *actual* full
+   defect catalog (the trailing `\` and the missing-checksum defects are known; the validator is
+   the discovery tool for the rest). Confirm the repair rules cover every safe-to-fix defect found.
 7. Run `clean` across the corpus; review `.broken.txt` sidecars; report findings to space-track.
 
 ## 13. Open considerations
 
 - If the `validate` discovery pass surfaces a defect type that is genuinely safe and unambiguous
-  to repair (not yet anticipated), it is added to the cosmetic-fix class in `repair.py` — still
-  governed by the validated-transformation principle. Anything ambiguous stays quarantined.
-- Aggressive reconstruction of missing characters remains explicitly out of scope (Section 2).
+  to repair (not yet anticipated), it is added to the appropriate fix class (Sections 6.1–6.3) in
+  `repair.py` — still governed by the validated-transformation principle. Anything ambiguous stays
+  quarantined.
+- Aggressive reconstruction of missing *data* characters remains explicitly out of scope
+  (Section 2); reconstructing a missing *checksum* digit from intact columns 1–68 is in scope and
+  specified in Section 6.2.
