@@ -5,14 +5,15 @@
 - **Revision:** §1/§6 defect model corrected against a full-corpus scan (§1.1 measured
   distribution added); §6.2 reconstructed-checksum repair added; §5.4 gains semantic/range
   validation; §4.1 correctness claim downgraded to validation-conformance; §8 pairing made
-  prefix-driven with the same-satellite mispair disclosed.
+  prefix-driven with the same-satellite mispair disclosed; §4.2/§7 updated for the
+  `data/source/` + `data/output/` corpus layout.
 - **Topic:** A tool to validate and clean a multi-gigabyte corpus of Two-Line Element (TLE) files exported from space-track.org
 
 ## 1. Problem statement
 
-The working directory holds 29 `.txt` files of TLE data spanning years 2004–2025 — the 2004 data
+The corpus is 29 `.txt` files of TLE data spanning years 2004–2025 — the 2004 data
 is split into 8 parts (`tle2004_1of8.txt` … `tle2004_8of8.txt`), each split on a record boundary —
-totalling roughly 30 GB, plus a separate 12 GB `TLEs.zip`. A full-corpus scan reveals two
+totalling roughly 30 GB, plus a separate 12 GB `TLEs.zip`. All of it lives in `data/source/`. A full-corpus scan reveals two
 systematic export-pipeline defects, which appear both independently and in combination:
 
 - **Trailing `\` on Line 1** — Line 1 records carry an extra trailing `\` byte. The scan shows
@@ -140,6 +141,9 @@ one — but "provably cannot" would overstate it.
 
 ```
 TLEs/
+├── data/                   # git-ignored — multi-gigabyte corpus, not version-controlled
+│   ├── source/             # the 29 raw tle*.txt files + TLEs.zip (inputs)
+│   └── output/             # <name>.cleaned.txt / <name>.broken.txt (the cleaner writes here)
 ├── pyproject.toml          # uv project; console script "tle-clean"; dev deps: pytest, sgp4
 ├── src/tlekit/
 │   ├── __init__.py
@@ -352,9 +356,9 @@ Options:
 
 - `paths` — files or a directory. A directory is globbed for `tle*.txt`, **excluding any
   `*.cleaned.txt` and `*.broken.txt`** so that re-running the tool on a directory that already
-  contains output does not re-process its own results. Defaults to `.`.
-- `--out-dir DIR` — destination for cleaned/broken files. Default `./cleaned/`, keeping the
-  original inputs pristine.
+  contains output does not re-process its own results. Defaults to `data/source/`.
+- `--out-dir DIR` — destination for cleaned/broken files. Default `data/output/`, keeping the
+  `data/source/` inputs pristine. The output directory is created if it does not exist.
 - `--jobs N` — number of files processed in parallel. Default = CPU count.
 - `--report text|json` — summary format. Default `text`.
 
