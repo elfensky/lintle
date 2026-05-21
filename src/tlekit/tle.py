@@ -20,3 +20,105 @@ def compute_checksum(line):
         elif ch == "-":
             total += 1
     return total % 10
+
+
+# --- Column-layout rules -------------------------------------------------
+# Slices below are 0-indexed half-open ranges into the 68-character body.
+
+_DIGIT = "0123456789"
+_DIGIT_SPACE = "0123456789 "
+_SIGN = " +-"
+_EXP_SIGN = "+-"
+_ALNUM_SPACE = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 "
+
+# Single-character positions: (index, allowed_chars, description).
+_LINE1_CHARS = [
+    (0, "1", "line number"),
+    (1, " ", "column 2 separator"),
+    (7, "UCS", "classification"),
+    (8, " ", "column 9 separator"),
+    (17, " ", "column 18 separator"),
+    (23, ".", "epoch decimal point"),
+    (32, " ", "column 33 separator"),
+    (33, _SIGN, "first-derivative sign"),
+    (34, ".", "first-derivative decimal point"),
+    (43, " ", "column 44 separator"),
+    (44, _SIGN, "second-derivative mantissa sign"),
+    (50, _EXP_SIGN, "second-derivative exponent sign"),
+    (52, " ", "column 53 separator"),
+    (53, _SIGN, "B* mantissa sign"),
+    (59, _EXP_SIGN, "B* exponent sign"),
+    (61, " ", "column 62 separator"),
+    (63, " ", "column 64 separator"),
+]
+# Multi-character fields: (start, end, allowed_chars, description).
+_LINE1_FIELDS = [
+    (2, 7, _ALNUM_SPACE, "satellite catalog number"),
+    (9, 17, _ALNUM_SPACE, "international designator"),
+    (18, 20, _DIGIT, "epoch year"),
+    (20, 23, _DIGIT_SPACE, "epoch day-of-year"),
+    (24, 32, _DIGIT, "epoch fraction"),
+    (35, 43, _DIGIT, "first-derivative digits"),
+    (45, 50, _DIGIT, "second-derivative mantissa"),
+    (51, 52, _DIGIT, "second-derivative exponent"),
+    (54, 59, _DIGIT, "B* mantissa"),
+    (60, 61, _DIGIT, "B* exponent"),
+    (62, 63, _DIGIT, "ephemeris type"),
+    (64, 68, _DIGIT_SPACE, "element set number"),
+]
+_LINE2_CHARS = [
+    (0, "2", "line number"),
+    (1, " ", "column 2 separator"),
+    (7, " ", "column 8 separator"),
+    (11, ".", "inclination decimal point"),
+    (16, " ", "column 17 separator"),
+    (20, ".", "RAAN decimal point"),
+    (25, " ", "column 26 separator"),
+    (33, " ", "column 34 separator"),
+    (37, ".", "argument-of-perigee decimal point"),
+    (42, " ", "column 43 separator"),
+    (46, ".", "mean-anomaly decimal point"),
+    (51, " ", "column 52 separator"),
+    (54, ".", "mean-motion decimal point"),
+]
+_LINE2_FIELDS = [
+    (2, 7, _ALNUM_SPACE, "satellite catalog number"),
+    (8, 11, _DIGIT_SPACE, "inclination integer part"),
+    (12, 16, _DIGIT, "inclination fraction"),
+    (17, 20, _DIGIT_SPACE, "RAAN integer part"),
+    (21, 25, _DIGIT, "RAAN fraction"),
+    (26, 33, _DIGIT, "eccentricity"),
+    (34, 37, _DIGIT_SPACE, "argument-of-perigee integer part"),
+    (38, 42, _DIGIT, "argument-of-perigee fraction"),
+    (43, 46, _DIGIT_SPACE, "mean-anomaly integer part"),
+    (47, 51, _DIGIT, "mean-anomaly fraction"),
+    (52, 54, _DIGIT_SPACE, "mean-motion integer part"),
+    (55, 63, _DIGIT, "mean-motion fraction"),
+    (63, 68, _DIGIT_SPACE, "revolution number"),
+]
+_LINE_SPEC = {1: (_LINE1_CHARS, _LINE1_FIELDS), 2: (_LINE2_CHARS, _LINE2_FIELDS)}
+
+
+def _check_columns(body, lineno):
+    """Validate the fixed-position column layout of a 68-character ``body``.
+
+    ``lineno`` is 1 or 2. Returns a list of human-readable error strings;
+    an empty list means the column layout is valid.
+    """
+    if len(body) != 68:
+        return [f"body length {len(body)}, expected 68 columns"]
+    chars, fields = _LINE_SPEC[lineno]
+    errors = []
+    for idx, allowed, desc in chars:
+        if body[idx] not in allowed:
+            errors.append(
+                f"column {idx + 1} ({desc}): got {body[idx]!r}, "
+                f"expected one of {allowed!r}"
+            )
+    for start, end, allowed, desc in fields:
+        if any(c not in allowed for c in body[start:end]):
+            errors.append(
+                f"columns {start + 1}-{end} ({desc}): "
+                f"contains a character outside {allowed!r}"
+            )
+    return errors
