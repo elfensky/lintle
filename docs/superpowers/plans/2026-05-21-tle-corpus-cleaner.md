@@ -1067,7 +1067,7 @@ def write_broken_file(path, src_name, stats):
         "%Y-%m-%dT%H:%M:%SZ"
     )
     header = (
-        f"# {stem(src_name)}.broken.txt — quarantined records\n"
+        f"# {stem(src_name)}.broken.txt - quarantined records\n"
         f"# source: {src_name} | generated: {timestamp} | tlekit {__version__}\n"
         f"# {stats.quarantined_count} records quarantined "
         f"of {stats.total_records} total\n\n"
@@ -1083,7 +1083,7 @@ def write_broken_file(path, src_name, stats):
             else:
                 location = f"source line {entry.source_lines[0]}"
             handle.write(
-                f"[{index}] {location} — reason: {entry.reason}\n".encode(
+                f"[{index}] {location} - reason: {entry.reason}\n".encode(
                     "ascii", errors="replace"
                 )
             )
