@@ -40,7 +40,7 @@ def test_bad_line_number_prefix(line1):
 
 
 def test_missing_separator_space(line2):
-    # Column 9 must be a space on line 2.
+    # Index 8 (column 9) starts the inclination field; 'X' is not in DIGIT_SPACE.
     body = line2[:8] + "X" + line2[9:68]
     assert tle._check_columns(body, 2)
 
