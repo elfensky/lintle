@@ -99,3 +99,10 @@ def test_validate_record_detects_catalog_mismatch(line1, line2):
     other_body = "2 09999" + line2[7:68]
     other = other_body + str(tle.compute_checksum(other_body))
     assert any("catalog" in e for e in tle.validate_record(line1, other))
+
+
+def test_checksum_error_non_digit(line1):
+    # The non-digit checksum branch is distinct from a numeric mismatch.
+    bad = line1[:68] + "X"
+    err = tle.checksum_error(bad)
+    assert err is not None and "not a digit" in err
