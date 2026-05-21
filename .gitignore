@@ -1,0 +1,19 @@
+# TLE source data — multi-gigabyte, not version-controlled
+/tle*.txt
+/*.zip
+
+# Cleaner output
+/cleaned/
+
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+build/
+dist/
