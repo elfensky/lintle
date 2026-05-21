@@ -35,21 +35,20 @@ class FileStats:
 def write_broken_file(path, src_name, stats):
     """Write the byte-faithful ``.broken.txt`` quarantine sidecar.
 
-    The header and per-record reason lines are UTF-8 (ASCII-compatible for
-    pure-ASCII content); the quarantined-line payloads are copied as raw
-    bytes, so the file may not be valid UTF-8.
+    The header and per-record reason lines are ASCII; the quarantined-line
+    payloads are copied as raw bytes, so the file may not be valid UTF-8.
     """
     timestamp = datetime.datetime.now(datetime.timezone.utc).strftime(
         "%Y-%m-%dT%H:%M:%SZ"
     )
     header = (
-        f"# {stem(src_name)}.broken.txt — quarantined records\n"
+        f"# {stem(src_name)}.broken.txt - quarantined records\n"
         f"# source: {src_name} | generated: {timestamp} | tlekit {__version__}\n"
         f"# {stats.quarantined_count} records quarantined "
         f"of {stats.total_records} total\n\n"
     )
     with open(path, "wb") as handle:
-        handle.write(header.encode("utf-8"))
+        handle.write(header.encode("ascii"))
         for index, entry in enumerate(stats.rejects, start=1):
             if len(entry.source_lines) == 2:
                 location = (
@@ -59,8 +58,8 @@ def write_broken_file(path, src_name, stats):
             else:
                 location = f"source line {entry.source_lines[0]}"
             handle.write(
-                f"[{index}] {location} — reason: {entry.reason}\n".encode(
-                    "utf-8", errors="replace"
+                f"[{index}] {location} - reason: {entry.reason}\n".encode(
+                    "ascii", errors="replace"
                 )
             )
             for raw in entry.raw_lines:
