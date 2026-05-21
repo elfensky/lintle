@@ -86,7 +86,8 @@ def test_process_repairs_backslash_and_checksum(line1, line2):
     result = repair.process_record(raw1, 4, raw2, 5)
     assert isinstance(result, repair.Accepted)
     assert result.line1 == line1 and result.line2 == line2
-    assert "reconstructed-checksum" in result.fixes
+    assert "trailing-backslash" in result.fixes
+    assert result.fixes.count("reconstructed-checksum") == 2  # one per line
 
 
 def test_process_rejects_bad_line(line1, line2):
@@ -105,3 +106,14 @@ def test_process_rejects_catalog_mismatch(line1, line2):
                                    other.encode("ascii"), 2)
     assert isinstance(result, repair.Rejected)
     assert result.category == "catalog-mismatch"
+
+
+def test_process_rejects_both_bad_lines(line1, line2):
+    raw1 = (line1[:68] + "9").encode("ascii")  # line 1: bad checksum
+    raw2 = line2.encode("ascii") + b"\xff"     # line 2: non-ASCII byte
+    result = repair.process_record(raw1, 1, raw2, 2)
+    assert isinstance(result, repair.Rejected)
+    # Both failures are preserved in the human-readable reason...
+    assert "line 1:" in result.reason and "line 2:" in result.reason
+    # ...and the record's category is line 1's (deterministic precedence).
+    assert result.category == "checksum-mismatch"
