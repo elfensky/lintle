@@ -1,3 +1,5 @@
+import pytest
+
 from tlekit import pipeline
 
 
@@ -109,3 +111,22 @@ def test_internal_error_is_quarantined_not_raised(tmp_path, line1, line2,
 
     assert stats.quarantined_count == 1
     assert stats.reject_categories.get("internal-error") == 1
+
+
+def test_clean_run_leaves_no_temp_file(tmp_path, line1, line2):
+    src = tmp_path / "tle2099.txt"
+    src.write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
+    out = tmp_path / "out"
+    pipeline.process_file(str(src), str(out), "clean")
+    assert not list(out.glob("*.tmp"))  # temp file was renamed away
+
+
+def test_failed_run_does_not_leak_temp_file(tmp_path):
+    # A non-existent source makes iter_records raise when it opens the file.
+    out = tmp_path / "out"
+    with pytest.raises(OSError):
+        pipeline.process_file(
+            str(tmp_path / "does_not_exist.txt"), str(out), "clean"
+        )
+    assert out.exists()  # the output dir was created
+    assert not list(out.glob("*.tmp"))  # but no partial temp file leaked
