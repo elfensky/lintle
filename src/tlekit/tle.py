@@ -172,3 +172,47 @@ def validate_body(body, lineno):
     if errors:
         return errors
     return _check_semantics(body, lineno)
+
+
+def checksum_error(line):
+    """Return an error string if the column-69 checksum of a 69-char
+    ``line`` is wrong or non-numeric, else ``None``.
+    """
+    actual = line[68]
+    if not actual.isdigit():
+        return f"checksum column 69 is {actual!r}, not a digit"
+    expected = compute_checksum(line)
+    if int(actual) != expected:
+        return f"checksum mismatch: column 69 is {actual!r}, computed {expected}"
+    return None
+
+
+def validate_line(line, lineno):
+    """Fully validate a single 69-character TLE line.
+
+    ``lineno`` is 1 or 2. Returns a list of error strings (empty = valid):
+    length, column layout, semantic ranges, and the column-69 checksum.
+    """
+    if len(line) != LINE_LENGTH:
+        return [f"line length {len(line)}, expected {LINE_LENGTH}"]
+    errors = validate_body(line[:68], lineno)
+    if errors:
+        return errors
+    err = checksum_error(line)
+    return [err] if err else []
+
+
+def validate_record(line1, line2):
+    """Validate a paired TLE record: each line valid, and the satellite
+    catalog numbers (columns 3-7) match. Returns a list of error strings.
+    """
+    errors = []
+    for label, line, lineno in (("line 1", line1, 1), ("line 2", line2, 2)):
+        for err in validate_line(line, lineno):
+            errors.append(f"{label}: {err}")
+    if not errors and line1[2:7] != line2[2:7]:
+        errors.append(
+            f"catalog number mismatch: line 1 {line1[2:7]!r} "
+            f"vs line 2 {line2[2:7]!r}"
+        )
+    return errors

@@ -71,3 +71,31 @@ def test_column_failure_short_circuits_semantics(line1):
     # A bad prefix is a column error; semantics are not even attempted.
     errs = tle.validate_body("9" + line1[1:68], 1)
     assert errs and all("column" in e or "length" in e for e in errs)
+
+
+def test_validate_line_accepts_canonical(line1, line2):
+    assert tle.validate_line(line1, 1) == []
+    assert tle.validate_line(line2, 2) == []
+
+
+def test_validate_line_rejects_wrong_length(line1):
+    assert tle.validate_line(line1[:68], 1)  # 68 chars -> error
+
+
+def test_checksum_mismatch_detected(line1):
+    bad = line1[:68] + "9"  # canonical checksum is 3
+    assert any("checksum" in e for e in tle.validate_line(bad, 1))
+
+
+def test_checksum_error_returns_none_when_valid(line1):
+    assert tle.checksum_error(line1) is None
+
+
+def test_validate_record_accepts_canonical(line1, line2):
+    assert tle.validate_record(line1, line2) == []
+
+
+def test_validate_record_detects_catalog_mismatch(line1, line2):
+    other_body = "2 09999" + line2[7:68]
+    other = other_body + str(tle.compute_checksum(other_body))
+    assert any("catalog" in e for e in tle.validate_record(line1, other))
