@@ -66,3 +66,52 @@ def write_broken_file(path, src_name, stats):
                 handle.write(raw)
                 handle.write(b"\n")
             handle.write(b"\n")
+
+
+def _join_counts(counts):
+    """Render a count dict as ``"key value | key value"``, sorted by key."""
+    return " | ".join(f"{key} {value:,}" for key, value in sorted(counts.items()))
+
+
+def format_summary(stats):
+    """Return the human-readable multi-line summary block for one file."""
+    lines = [
+        f"{stats.src_name}   {stats.total_records:,} records   "
+        f"{stats.clean_count:,} clean   {stats.quarantined_count:,} quarantined"
+    ]
+    if stats.fix_counts:
+        lines.append(f"  fixes:   {_join_counts(stats.fix_counts)}")
+    if stats.reject_categories:
+        lines.append(f"  rejects: {_join_counts(stats.reject_categories)}")
+    return "\n".join(lines)
+
+
+def summary_dict(stats):
+    """Return a JSON-serialisable summary of one file's stats."""
+    return {
+        "src_name": stats.src_name,
+        "total_records": stats.total_records,
+        "clean_count": stats.clean_count,
+        "quarantined_count": stats.quarantined_count,
+        "fix_counts": dict(stats.fix_counts),
+        "reject_categories": dict(stats.reject_categories),
+    }
+
+
+def format_reject_lines(stats, limit=100):
+    """Return a listing of quarantined records' source locations.
+
+    Used by ``validate`` mode. At most ``limit`` entries are shown; the
+    remainder are summarised as a trailing count.
+    """
+    lines = []
+    for entry in stats.rejects[:limit]:
+        if len(entry.source_lines) == 2:
+            location = f"{entry.source_lines[0]}-{entry.source_lines[1]}"
+        else:
+            location = str(entry.source_lines[0])
+        lines.append(f"  line {location}: {entry.reason}")
+    remaining = len(stats.rejects) - limit
+    if remaining > 0:
+        lines.append(f"  ...and {remaining} more")
+    return "\n".join(lines)

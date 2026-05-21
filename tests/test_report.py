@@ -44,3 +44,48 @@ def test_two_line_record_location(tmp_path):
     report.write_broken_file(str(out), "x.txt", stats)
 
     assert b"source lines 14820-14821" in out.read_bytes()
+
+
+def _stats_with_counts():
+    stats = report.FileStats(src_name="tle2022.txt")
+    stats.total_records = 100
+    stats.clean_count = 98
+    stats.quarantined_count = 2
+    stats.fix_counts = {"trailing-backslash": 50, "reconstructed-checksum": 7}
+    stats.reject_categories = {"checksum-mismatch": 2}
+    return stats
+
+
+def test_format_summary_shows_counts():
+    out = report.format_summary(_stats_with_counts())
+    assert "tle2022.txt" in out
+    assert "98" in out
+    assert "trailing-backslash 50" in out
+    assert "reconstructed-checksum 7" in out
+    assert "checksum-mismatch 2" in out
+
+
+def test_summary_dict_is_json_friendly():
+    data = report.summary_dict(_stats_with_counts())
+    assert data["src_name"] == "tle2022.txt"
+    assert data["total_records"] == 100
+    assert data["fix_counts"]["trailing-backslash"] == 50
+    assert data["reject_categories"]["checksum-mismatch"] == 2
+
+
+def test_format_reject_lines_lists_locations():
+    stats = report.FileStats(src_name="x.txt")
+    stats.rejects.append(report.RejectEntry(
+        raw_lines=[b"1 a", b"2 b"], source_lines=[10, 11],
+        reason="line 2: checksum mismatch"))
+    out = report.format_reject_lines(stats)
+    assert "10-11" in out and "checksum mismatch" in out
+
+
+def test_format_reject_lines_caps_long_lists():
+    stats = report.FileStats(src_name="x.txt")
+    for i in range(250):
+        stats.rejects.append(report.RejectEntry(
+            raw_lines=[b"1 a"], source_lines=[i], reason="bad-prefix"))
+    out = report.format_reject_lines(stats, limit=100)
+    assert "150 more" in out
