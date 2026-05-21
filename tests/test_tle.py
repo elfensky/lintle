@@ -49,3 +49,25 @@ def test_letter_in_digit_only_field_rejected(line1):
     # Epoch year (columns 19-20) must be digits.
     body = line1[:18] + "X" + line1[19:68]
     assert tle._check_columns(body, 1)
+
+
+def test_validate_body_accepts_canonical(line1, line2):
+    assert tle.validate_body(line1[:68], 1) == []
+    assert tle.validate_body(line2[:68], 2) == []
+
+
+def test_inclination_out_of_range_rejected(line2):
+    # Replace columns 9-16 with an inclination of 999.2682 degrees.
+    body = line2[:8] + "999.2682" + line2[16:68]
+    assert any("inclination" in e for e in tle.validate_body(body, 2))
+
+
+def test_mean_motion_must_be_positive(line2):
+    body = line2[:52] + "00.00000000" + line2[63:68]
+    assert any("mean motion" in e for e in tle.validate_body(body, 2))
+
+
+def test_column_failure_short_circuits_semantics(line1):
+    # A bad prefix is a column error; semantics are not even attempted.
+    errs = tle.validate_body("9" + line1[1:68], 1)
+    assert errs and all("column" in e or "length" in e for e in errs)

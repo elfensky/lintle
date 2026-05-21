@@ -122,3 +122,53 @@ def _check_columns(body, lineno):
                 f"contains a character outside {allowed!r}"
             )
     return errors
+
+
+def _check_semantics(body, lineno):
+    """Validate that numeric fields fall in their physically valid ranges.
+
+    Assumes ``body`` already passed ``_check_columns`` for ``lineno``.
+    Returns a list of error strings; empty means valid.
+    """
+    errors = []
+    try:
+        if lineno == 1:
+            day = float(body[20:23] + "." + body[24:32])
+            if not 0.0 < day < 367.0:
+                errors.append(f"epoch day-of-year {day} outside (0, 367)")
+        else:
+            inc = float(body[8:16])
+            if not 0.0 <= inc <= 180.0:
+                errors.append(f"inclination {inc} outside [0, 180]")
+            raan = float(body[17:25])
+            if not 0.0 <= raan < 360.0:
+                errors.append(f"RAAN {raan} outside [0, 360)")
+            ecc = int(body[26:33]) / 1e7
+            if not 0.0 <= ecc < 1.0:
+                errors.append(f"eccentricity {ecc} outside [0, 1)")
+            argp = float(body[34:42])
+            if not 0.0 <= argp < 360.0:
+                errors.append(f"argument of perigee {argp} outside [0, 360)")
+            mean_anom = float(body[43:51])
+            if not 0.0 <= mean_anom < 360.0:
+                errors.append(f"mean anomaly {mean_anom} outside [0, 360)")
+            mean_motion = float(body[52:63])
+            if mean_motion <= 0.0:
+                errors.append(f"mean motion {mean_motion} is not strictly positive")
+    except ValueError:
+        errors.append("a numeric field could not be parsed for semantic checks")
+    return errors
+
+
+def validate_body(body, lineno):
+    """Validate columns 1-68 of a TLE line: column layout then semantics.
+
+    ``lineno`` is 1 or 2. Returns a list of error strings (empty = valid).
+    The checksum (column 69) is intentionally NOT checked here — see
+    ``validate_line``. Semantics are only checked if the column layout is
+    sound, so callers get the more fundamental error first.
+    """
+    errors = _check_columns(body, lineno)
+    if errors:
+        return errors
+    return _check_semantics(body, lineno)
