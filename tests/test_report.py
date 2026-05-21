@@ -1,3 +1,5 @@
+import json
+
 from tlekit import report
 
 
@@ -59,6 +61,7 @@ def _stats_with_counts():
 def test_format_summary_shows_counts():
     out = report.format_summary(_stats_with_counts())
     assert "tle2022.txt" in out
+    assert "100" in out  # total_records — the anchor field of the header
     assert "98" in out
     assert "trailing-backslash 50" in out
     assert "reconstructed-checksum 7" in out
@@ -71,6 +74,7 @@ def test_summary_dict_is_json_friendly():
     assert data["total_records"] == 100
     assert data["fix_counts"]["trailing-backslash"] == 50
     assert data["reject_categories"]["checksum-mismatch"] == 2
+    json.dumps(data)  # must not raise — cli.py serialises this in json mode
 
 
 def test_format_reject_lines_lists_locations():
