@@ -1,0 +1,391 @@
+[
+  {
+    "src_name": "tle2004_1of8.txt",
+    "total_records": 1816163,
+    "clean_count": 1816053,
+    "quarantined_count": 110,
+    "fix_counts": {
+      "trailing-backslash": 1816053,
+      "reconstructed-checksum": 3446580
+    },
+    "reject_categories": {
+      "invalid-columns": 69,
+      "wrong-length": 41
+    }
+  },
+  {
+    "src_name": "tle2004_2of8.txt",
+    "total_records": 2567373,
+    "clean_count": 2567340,
+    "quarantined_count": 33,
+    "fix_counts": {
+      "trailing-backslash": 2567340,
+      "reconstructed-checksum": 5125258
+    },
+    "reject_categories": {
+      "wrong-length": 7,
+      "interior-char-missing": 2,
+      "invalid-columns": 24
+    }
+  },
+  {
+    "src_name": "tle2004_3of8.txt",
+    "total_records": 2528003,
+    "clean_count": 2527820,
+    "quarantined_count": 183,
+    "fix_counts": {
+      "trailing-backslash": 2527820,
+      "reconstructed-checksum": 5047266
+    },
+    "reject_categories": {
+      "wrong-length": 9,
+      "invalid-columns": 172,
+      "interior-char-missing": 2
+    }
+  },
+  {
+    "src_name": "tle2004_4of8.txt",
+    "total_records": 1001196,
+    "clean_count": 1001116,
+    "quarantined_count": 80,
+    "fix_counts": {
+      "trailing-backslash": 1001116,
+      "reconstructed-checksum": 1993580
+    },
+    "reject_categories": {
+      "wrong-length": 11,
+      "invalid-columns": 69
+    }
+  },
+  {
+    "src_name": "tle2004_5of8.txt",
+    "total_records": 755355,
+    "clean_count": 755281,
+    "quarantined_count": 74,
+    "fix_counts": {
+      "trailing-backslash": 755281,
+      "reconstructed-checksum": 873390
+    },
+    "reject_categories": {
+      "wrong-length": 42,
+      "invalid-columns": 32
+    }
+  },
+  {
+    "src_name": "tle2004_6of8.txt",
+    "total_records": 7213312,
+    "clean_count": 7193358,
+    "quarantined_count": 19954,
+    "fix_counts": {
+      "trailing-backslash": 7193358
+    },
+    "reject_categories": {
+      "invalid-columns": 1525,
+      "checksum-mismatch": 18429
+    }
+  },
+  {
+    "src_name": "tle2004_7of8.txt",
+    "total_records": 23013045,
+    "clean_count": 22977396,
+    "quarantined_count": 35649,
+    "fix_counts": {
+      "trailing-backslash": 22977396
+    },
+    "reject_categories": {
+      "invalid-columns": 18873,
+      "checksum-mismatch": 16776
+    }
+  },
+  {
+    "src_name": "tle2004_8of8.txt",
+    "total_records": 1381370,
+    "clean_count": 1381219,
+    "quarantined_count": 151,
+    "fix_counts": {
+      "trailing-backslash": 1381219
+    },
+    "reject_categories": {
+      "wrong-length": 144,
+      "invalid-columns": 7
+    }
+  },
+  {
+    "src_name": "tle2005.txt",
+    "total_records": 15627022,
+    "clean_count": 15589046,
+    "quarantined_count": 37976,
+    "fix_counts": {
+      "trailing-backslash": 15589046
+    },
+    "reject_categories": {
+      "wrong-length": 168,
+      "invalid-columns": 27529,
+      "checksum-mismatch": 10279
+    }
+  },
+  {
+    "src_name": "tle2006.txt",
+    "total_records": 4011286,
+    "clean_count": 4011282,
+    "quarantined_count": 4,
+    "fix_counts": {
+      "trailing-backslash": 4011282
+    },
+    "reject_categories": {
+      "invalid-columns": 4
+    }
+  },
+  {
+    "src_name": "tle2007.txt",
+    "total_records": 4529497,
+    "clean_count": 4529487,
+    "quarantined_count": 10,
+    "fix_counts": {
+      "trailing-backslash": 4529487
+    },
+    "reject_categories": {
+      "invalid-columns": 7,
+      "checksum-mismatch": 3
+    }
+  },
+  {
+    "src_name": "tle2008.txt",
+    "total_records": 4526795,
+    "clean_count": 4526790,
+    "quarantined_count": 5,
+    "fix_counts": {
+      "trailing-backslash": 4526790
+    },
+    "reject_categories": {
+      "wrong-length": 1,
+      "invalid-columns": 4
+    }
+  },
+  {
+    "src_name": "tle2009.txt",
+    "total_records": 5598810,
+    "clean_count": 5598793,
+    "quarantined_count": 17,
+    "fix_counts": {
+      "trailing-backslash": 5598793
+    },
+    "reject_categories": {
+      "invalid-columns": 17
+    }
+  },
+  {
+    "src_name": "tle2010.txt",
+    "total_records": 5271610,
+    "clean_count": 5271601,
+    "quarantined_count": 9,
+    "fix_counts": {
+      "trailing-backslash": 5271601
+    },
+    "reject_categories": {
+      "invalid-columns": 9
+    }
+  },
+  {
+    "src_name": "tle2011.txt",
+    "total_records": 5517712,
+    "clean_count": 5517698,
+    "quarantined_count": 14,
+    "fix_counts": {
+      "trailing-backslash": 5517698
+    },
+    "reject_categories": {
+      "invalid-columns": 14
+    }
+  },
+  {
+    "src_name": "tle2012.txt",
+    "total_records": 5193623,
+    "clean_count": 5193604,
+    "quarantined_count": 19,
+    "fix_counts": {
+      "trailing-backslash": 5193604
+    },
+    "reject_categories": {
+      "invalid-columns": 19
+    }
+  },
+  {
+    "src_name": "tle2013.txt",
+    "total_records": 2962309,
+    "clean_count": 2962279,
+    "quarantined_count": 30,
+    "fix_counts": {
+      "trailing-backslash": 2962279
+    },
+    "reject_categories": {
+      "invalid-columns": 30
+    }
+  },
+  {
+    "src_name": "tle2014.txt",
+    "total_records": 3180242,
+    "clean_count": 3180234,
+    "quarantined_count": 8,
+    "fix_counts": {
+      "trailing-backslash": 3180234,
+      "reconstructed-checksum": 62
+    },
+    "reject_categories": {
+      "invalid-columns": 8
+    }
+  },
+  {
+    "src_name": "tle2015.txt",
+    "total_records": 4521946,
+    "clean_count": 4521933,
+    "quarantined_count": 13,
+    "fix_counts": {
+      "trailing-backslash": 4521933,
+      "reconstructed-checksum": 2594738
+    },
+    "reject_categories": {
+      "invalid-columns": 13
+    }
+  },
+  {
+    "src_name": "tle2016.txt",
+    "total_records": 6607130,
+    "clean_count": 6607112,
+    "quarantined_count": 18,
+    "fix_counts": {
+      "trailing-backslash": 6607112,
+      "reconstructed-checksum": 6543432
+    },
+    "reject_categories": {
+      "invalid-columns": 18
+    }
+  },
+  {
+    "src_name": "tle2017.txt",
+    "total_records": 7672882,
+    "clean_count": 7672879,
+    "quarantined_count": 3,
+    "fix_counts": {
+      "trailing-backslash": 7672879,
+      "reconstructed-checksum": 11445916
+    },
+    "reject_categories": {
+      "invalid-columns": 1,
+      "orphan-line": 2
+    }
+  },
+  {
+    "src_name": "tle2018.txt",
+    "total_records": 8821295,
+    "clean_count": 8821286,
+    "quarantined_count": 9,
+    "fix_counts": {
+      "trailing-backslash": 8821286,
+      "reconstructed-checksum": 11306068
+    },
+    "reject_categories": {
+      "invalid-columns": 3,
+      "orphan-line": 4,
+      "bad-prefix": 2
+    }
+  },
+  {
+    "src_name": "tle2019.txt",
+    "total_records": 7885065,
+    "clean_count": 7883649,
+    "quarantined_count": 1416,
+    "fix_counts": {
+      "reconstructed-checksum": 8378342,
+      "crlf": 1805
+    },
+    "reject_categories": {
+      "checksum-mismatch": 1414,
+      "invalid-columns": 2
+    }
+  },
+  {
+    "src_name": "tle2020.txt",
+    "total_records": 11644280,
+    "clean_count": 11637423,
+    "quarantined_count": 6857,
+    "fix_counts": {
+      "trailing-backslash": 11637423,
+      "reconstructed-checksum": 13862942
+    },
+    "reject_categories": {
+      "orphan-line": 4562,
+      "bad-prefix": 2281,
+      "invalid-columns": 2,
+      "checksum-mismatch": 11,
+      "wrong-length": 1
+    }
+  },
+  {
+    "src_name": "tle2021.txt",
+    "total_records": 15170011,
+    "clean_count": 15170009,
+    "quarantined_count": 2,
+    "fix_counts": {
+      "trailing-backslash": 15170009,
+      "reconstructed-checksum": 200070
+    },
+    "reject_categories": {
+      "invalid-columns": 2
+    }
+  },
+  {
+    "src_name": "tle2022.txt",
+    "total_records": 17173210,
+    "clean_count": 17172917,
+    "quarantined_count": 293,
+    "fix_counts": {
+      "trailing-backslash": 17172917,
+      "reconstructed-checksum": 158042
+    },
+    "reject_categories": {
+      "checksum-mismatch": 291,
+      "invalid-columns": 1,
+      "catalog-mismatch": 1
+    }
+  },
+  {
+    "src_name": "tle2023.txt",
+    "total_records": 15737159,
+    "clean_count": 15736899,
+    "quarantined_count": 260,
+    "fix_counts": {
+      "reconstructed-checksum": 118092
+    },
+    "reject_categories": {
+      "checksum-mismatch": 258,
+      "invalid-columns": 2
+    }
+  },
+  {
+    "src_name": "tle2024.txt",
+    "total_records": 19677820,
+    "clean_count": 19677815,
+    "quarantined_count": 5,
+    "fix_counts": {
+      "trailing-backslash": 19677815,
+      "reconstructed-checksum": 87528
+    },
+    "reject_categories": {
+      "invalid-columns": 5
+    }
+  },
+  {
+    "src_name": "tle2025.txt",
+    "total_records": 20779601,
+    "clean_count": 20779575,
+    "quarantined_count": 26,
+    "fix_counts": {
+      "reconstructed-checksum": 71552
+    },
+    "reject_categories": {
+      "invalid-columns": 22,
+      "checksum-mismatch": 4
+    }
+  }
+]
