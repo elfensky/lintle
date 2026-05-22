@@ -1508,6 +1508,7 @@ def process_file(src_path, out_dir, mode):
         fd, cleaned_tmp = tempfile.mkstemp(dir=out_dir, suffix=".tmp")
         cleaned_handle = os.fdopen(fd, "w", encoding="ascii", newline="\n")
 
+    completed = False
     try:
         for candidate in iter_records(src_path):
             stats.total_records += 1
@@ -1544,9 +1545,17 @@ def process_file(src_path, out_dir, mode):
                     stats, result.category, result.reason,
                     result.raw_lines, result.source_lines,
                 )
+        completed = True
     finally:
         if cleaned_handle is not None:
             cleaned_handle.close()
+        # On any failure, discard the partial temp file — never publish a
+        # half-written .cleaned.txt and never leak the .tmp behind.
+        if cleaned_tmp is not None and not completed:
+            try:
+                os.unlink(cleaned_tmp)
+            except OSError:
+                pass
 
     if mode == "clean":
         os.replace(cleaned_tmp, cleaned_path)
