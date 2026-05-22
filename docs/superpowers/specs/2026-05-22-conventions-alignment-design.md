@@ -8,10 +8,10 @@
 
 ## 1. Problem statement
 
-`tlekit` is fully implemented: 789 LOC of source across six modules, 687 LOC of tests across
-eight files, 72 passing tests. The corpus cleaner works. What it lacks is the *project
-scaffolding* a mature repository carries — and the reference project `descent-engine` is the
-agreed model for that scaffolding.
+`tlekit` is fully implemented: 789 LOC of source across seven modules, 687 LOC of tests
+across seven test files, 77 passing tests. The corpus cleaner works. What it lacks is the
+*project scaffolding* a mature repository carries — and the reference project
+`descent-engine` is the agreed model for that scaffolding.
 
 Concretely, `tlekit` today is missing:
 
@@ -83,23 +83,24 @@ After §3.1, run `uv run ruff check .` and `uv run ruff format --check .`. Then:
   readability — any finding whose "fix" would obscure intent is surfaced for a human call
   rather than applied blindly.
 
-The 72 tests must still pass after this pass; this is the guardrail proving the pass was
+The 77 tests must still pass after this pass; this is the guardrail proving the pass was
 behaviour-neutral.
 
 ### 3.3 Test reorganisation into `Test*` classes
 
-All eight test files are reorganised so flat module-level test functions become methods of
+All seven test files are reorganised so flat module-level test functions become methods of
 `Test*` classes, one class per unit or behaviour under test — matching `descent-engine`'s
 style (e.g. `class TestParseTLE:`).
 
 - Test functions become methods; each gains `self` as its first parameter.
 - `pytest` fixtures (`line1`, `line2`, …) continue to inject as method parameters unchanged.
 - Module-level helper constants and factory functions in test files stay at module level.
-- **The 72 tests, their names, and their assertions do not change** — only their grouping.
+- **The 77 tests, their names, and their assertions do not change** — only their grouping.
 
 Indicative grouping for `test_tle.py`: `TestComputeChecksum`, `TestCheckColumns`,
-`TestValidateBody`, `TestValidateLine`, `TestValidateRecord`. The other seven files are
-grouped on the same principle (one class per function or behaviour cluster).
+`TestValidateBody`, `TestChecksumError`, `TestValidateLine`, `TestValidateRecord`. The
+other six test files are grouped on the same principle (one class per function or
+behaviour cluster). The implementation plan pins the exact class breakdown per file.
 
 ### 3.4 Documentation
 
@@ -116,7 +117,7 @@ grouped on the same principle (one class per function or behaviour cluster).
 Run all four, in order, and report actual output — never claim success without it:
 
 ```bash
-uv run pytest                                                        # 72 pass
+uv run pytest                                                        # 77 pass
 uv run pytest --cov=tlekit --cov-report=term-missing --cov-branch    # coverage report
 uv run ruff check .                                                  # no findings
 uv run ruff format --check .                                         # no diff
@@ -129,8 +130,8 @@ does not enforce a threshold).
 
 1. `pyproject.toml` + `.python-version` + `tests/__init__.py`; `uv sync` to install `ruff`
    and `pytest-cov` and refresh `uv.lock`.
-2. Test reorganisation into `Test*` classes; confirm 72 still pass.
-3. `ruff` code-quality pass (format + lint fixes); confirm 72 still pass.
+2. Test reorganisation into `Test*` classes; confirm 77 still pass.
+3. `ruff` code-quality pass (format + lint fixes); confirm 77 still pass.
 4. Documentation: `README.md`, `CONTRIBUTING.md`, `CHANGELOG.md`, `CLAUDE.md` rewrite,
    docstring gap-fill.
 5. Full verification (§4).
