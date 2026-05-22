@@ -119,4 +119,13 @@ def test_main_prints_progress_to_stderr(tmp_path, line1, line2, capsys):
 
     err = capsys.readouterr().err
     assert "processing 1 file(s)" in err  # start line
-    assert "[1/1]" in err  # per-file completion line
+    # capsys makes stderr a non-TTY, so the live spinner is suppressed and
+    # the progress display logs one plain line per completed file instead.
+    assert "[1/1]" in err
+
+
+def test_format_elapsed_renders_minutes_and_hours():
+    assert cli._format_elapsed(0) == "0:00"
+    assert cli._format_elapsed(9) == "0:09"
+    assert cli._format_elapsed(75) == "1:15"
+    assert cli._format_elapsed(3661) == "1:01:01"

@@ -1,3 +1,5 @@
+import queue
+
 import pytest
 
 from tlekit import pipeline
@@ -144,16 +146,36 @@ def test_failed_run_does_not_leak_temp_file(tmp_path):
     assert not list(out.rglob("*.partial"))  # but no partial temp file leaked
 
 
-def test_process_file_emits_progress(tmp_path, line1, line2, capsys):
+def test_process_file_pushes_progress_to_queue(tmp_path, line1, line2):
+    # With a queue, process_file streams record-count deltas to it; the
+    # deltas sum to the exact record total — a partial trailing batch
+    # included — so the caller can render an accurate live count.
     src = tmp_path / "tle2099.txt"
     src.write_bytes(((line1 + "\n" + line2 + "\n") * 3).encode("ascii"))  # 3 records
-    pipeline.process_file(str(src), str(tmp_path / "out"), "clean", progress_every=2)
-    err = capsys.readouterr().err
-    assert "tle2099.txt" in err and "records" in err
+    progress = queue.Queue()
+    pipeline.process_file(
+        str(src),
+        str(tmp_path / "out"),
+        "clean",
+        progress_queue=progress,
+        progress_every=2,
+    )
+    deltas = []
+    while not progress.empty():
+        deltas.append(progress.get_nowait())
+    assert sum(deltas) == 3
 
 
-def test_progress_disabled_when_every_is_zero(tmp_path, line1, line2, capsys):
+def test_progress_disabled_when_every_is_zero(tmp_path, line1, line2):
+    # progress_every=0 disables reporting: nothing reaches the queue.
     src = tmp_path / "tle2099.txt"
     src.write_bytes(((line1 + "\n" + line2 + "\n") * 3).encode("ascii"))
-    pipeline.process_file(str(src), str(tmp_path / "out"), "clean", progress_every=0)
-    assert "records..." not in capsys.readouterr().err
+    progress = queue.Queue()
+    pipeline.process_file(
+        str(src),
+        str(tmp_path / "out"),
+        "clean",
+        progress_queue=progress,
+        progress_every=0,
+    )
+    assert progress.empty()
