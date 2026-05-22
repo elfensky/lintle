@@ -8,8 +8,9 @@ from sgp4.api import Satrec
 from tlekit import tle
 
 
-def test_canonical_tle_accepted_by_both(line1, line2):
-    assert tle.validate_record(line1, line2) == []
+class TestOracle:
+    def test_canonical_tle_accepted_by_both(self, line1, line2):
+        assert tle.validate_record(line1, line2) == []
 
-    sat = Satrec.twoline2rv(line1, line2)
-    assert sat.error == 0  # sgp4 reports no parse/initialisation error
+        sat = Satrec.twoline2rv(line1, line2)
+        assert sat.error == 0  # sgp4 reports no parse/initialisation error
