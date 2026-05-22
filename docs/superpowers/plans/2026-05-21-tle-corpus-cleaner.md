@@ -1335,17 +1335,17 @@ def iter_records(path):
     """Yield ``RecordCandidate`` / ``Orphan`` items streamed from ``path``.
 
     The file is read in binary so ``\\r`` and stray bytes are observed
-    exactly. Blank and CR-only lines are dropped. Pairing is prefix-driven
-    and resynchronises on every ``1 `` line, so one missing line cannot
-    cascade into a run of mispaired records.
+    exactly. Blank, whitespace-only, and CR-only lines are dropped.
+    Pairing is prefix-driven and resynchronises on every ``1 `` line, so
+    one missing line cannot cascade into a run of mispaired records.
     """
     held = None  # (raw_bytes, line_number) of a line-1 awaiting its line-2
 
     with open(path, "rb") as handle:
         for lineno, raw in enumerate(handle, start=1):
             line = raw.rstrip(b"\n")
-            if line.rstrip(b"\r") == b"":
-                continue  # blank or CR-only line — dropped
+            if line.strip(b" \t\r") == b"":
+                continue  # blank, whitespace-only, or CR-only line — dropped
 
             prefix = line[:2]
             if prefix == b"1 ":
@@ -1480,7 +1480,6 @@ Add the imports and append the function. Change the top of `src/tlekit/pipeline.
 
 import dataclasses
 import os
-import tempfile
 
 from tlekit import repair, report, stem
 ```
@@ -1505,8 +1504,12 @@ def process_file(src_path, out_dir, mode):
     if mode == "clean":
         os.makedirs(out_dir, exist_ok=True)
         cleaned_path = os.path.join(out_dir, stem(src_name) + ".cleaned.txt")
-        fd, cleaned_tmp = tempfile.mkstemp(dir=out_dir, suffix=".tmp")
-        cleaned_handle = os.fdopen(fd, "w", encoding="ascii", newline="\n")
+        # Deterministic temp name (not tempfile.mkstemp): a killed run leaves
+        # at most one .partial per file, which the next run truncates — no
+        # random-name debris accumulates. open() also honours the umask
+        # (typically 0644), whereas mkstemp would force owner-only 0600.
+        cleaned_tmp = cleaned_path + ".partial"
+        cleaned_handle = open(cleaned_tmp, "w", encoding="ascii", newline="\n")
 
     completed = False
     try:
