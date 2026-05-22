@@ -38,3 +38,47 @@ def test_parser_accepts_jobs_and_paths():
     assert args.paths == ["a.txt", "b.txt"]
     assert args.jobs == 4
     assert args.report == "json"
+
+
+def test_main_clean_returns_zero_on_clean_corpus(tmp_path, line1, line2):
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "tle2099.txt").write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
+    out = tmp_path / "out"
+
+    rc = cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
+
+    assert rc == 0
+    assert (out / "tle2099.cleaned.txt").exists()
+
+
+def test_main_returns_one_when_records_quarantined(tmp_path, line1, line2):
+    src = tmp_path / "src"
+    src.mkdir()
+    bad_line1 = line1[:68] + "9"
+    (src / "tle2099.txt").write_bytes(
+        (bad_line1 + "\n" + line2 + "\n").encode("ascii")
+    )
+    out = tmp_path / "out"
+
+    rc = cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
+
+    assert rc == 1
+
+
+def test_main_returns_two_when_no_input_files(tmp_path):
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    rc = cli.main(["validate", str(empty)])
+    assert rc == 2
+
+
+def test_main_validate_prints_summary(tmp_path, line1, line2, capsys):
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "tle2099.txt").write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
+
+    rc = cli.main(["validate", str(src), "--jobs", "1"])
+
+    assert rc == 0
+    assert "tle2099.txt" in capsys.readouterr().out

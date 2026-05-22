@@ -63,3 +63,65 @@ def build_parser():
             help="summary output format",
         )
     return parser
+
+
+def _check_disk_space(out_dir, files):
+    """Return an error string if ``out_dir`` lacks room for cleaned +
+    broken output (roughly twice the total input size), else ``None``.
+    """
+    needed = sum(os.path.getsize(f) for f in files) * 2
+    free = shutil.disk_usage(out_dir).free
+    if free < needed:
+        return (
+            f"insufficient disk space in {out_dir}: "
+            f"need ~{needed:,} bytes, have {free:,}"
+        )
+    return None
+
+
+def main(argv=None):
+    """Entry point for the ``tle-clean`` console script.
+
+    Returns the process exit code: ``0`` = no records quarantined;
+    ``1`` = at least one record quarantined; ``2`` = operational error.
+    """
+    args = build_parser().parse_args(argv)
+    files = discover_paths(args.paths)
+    if not files:
+        print("no input files found", file=sys.stderr)
+        return 2
+
+    if args.command == "clean":
+        os.makedirs(args.out_dir, exist_ok=True)
+        disk_error = _check_disk_space(args.out_dir, files)
+        if disk_error:
+            print(disk_error, file=sys.stderr)
+            return 2
+
+    all_stats = []
+    with concurrent.futures.ProcessPoolExecutor(max_workers=args.jobs) as executor:
+        futures = {
+            executor.submit(
+                pipeline.process_file, path, args.out_dir, args.command
+            ): path
+            for path in files
+        }
+        for future in concurrent.futures.as_completed(futures):
+            path = futures[future]
+            try:
+                all_stats.append(future.result())
+            except Exception as exc:
+                print(f"error processing {path}: {exc!r}", file=sys.stderr)
+
+    all_stats.sort(key=lambda stats: stats.src_name)
+
+    if args.report == "json":
+        print(json.dumps([report.summary_dict(s) for s in all_stats], indent=2))
+    else:
+        for stats in all_stats:
+            print(report.format_summary(stats))
+            if args.command == "validate" and stats.rejects:
+                print(report.format_reject_lines(stats))
+
+    total_quarantined = sum(s.quarantined_count for s in all_stats)
+    return 1 if total_quarantined else 0
