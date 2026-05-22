@@ -1820,7 +1820,8 @@ def main(argv=None):
     """Entry point for the ``tle-clean`` console script.
 
     Returns the process exit code: ``0`` = no records quarantined;
-    ``1`` = at least one record quarantined; ``2`` = operational error.
+    ``1`` = at least one record quarantined; ``2`` = operational error
+    (no input files, disk shortfall, or a file that failed to process).
     """
     args = build_parser().parse_args(argv)
     files = discover_paths(args.paths)
@@ -1836,6 +1837,7 @@ def main(argv=None):
             return 2
 
     all_stats = []
+    failed_files = []
     with concurrent.futures.ProcessPoolExecutor(max_workers=args.jobs) as executor:
         futures = {
             executor.submit(
@@ -1849,6 +1851,7 @@ def main(argv=None):
                 all_stats.append(future.result())
             except Exception as exc:
                 print(f"error processing {path}: {exc!r}", file=sys.stderr)
+                failed_files.append(path)
 
     all_stats.sort(key=lambda stats: stats.src_name)
 
@@ -1860,6 +1863,10 @@ def main(argv=None):
             if args.command == "validate" and stats.rejects:
                 print(report.format_reject_lines(stats))
 
+    # A file that could not be processed is an operational error (spec §10),
+    # and that outranks the quarantined-record signal.
+    if failed_files:
+        return 2
     total_quarantined = sum(s.quarantined_count for s in all_stats)
     return 1 if total_quarantined else 0
 ```
