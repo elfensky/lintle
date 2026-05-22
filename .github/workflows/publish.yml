@@ -1,19 +1,26 @@
-name: Publish to PyPI
+name: Publish
 
-# Publishes lintle to PyPI when a GitHub Release is published.
-# Authentication uses PyPI Trusted Publishing (OIDC) — no API token is stored
-# anywhere; GitHub mints a short-lived identity token that PyPI verifies.
+# Manually triggered. Pick the target from the input dropdown (defaults to
+# the TestPyPI sandbox), and click Run workflow. Trusted Publishing (OIDC)
+# handles authentication for both PyPI and TestPyPI — no API tokens stored.
 
 on:
-  release:
-    types: [published]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Where to publish"
+        type: choice
+        options:
+          - testpypi
+          - pypi
+        default: testpypi
 
 jobs:
   publish:
     runs-on: ubuntu-latest
     environment:
       name: pypi
-      url: https://pypi.org/project/lintle/
+      url: ${{ inputs.target == 'pypi' && 'https://pypi.org/project/lintle/' || 'https://test.pypi.org/project/lintle/' }}
     permissions:
       id-token: write # required for Trusted Publishing (OIDC)
     steps:
@@ -34,5 +41,10 @@ jobs:
       - name: Build sdist and wheel
         run: uv build
 
+      - name: Publish to TestPyPI
+        if: inputs.target == 'testpypi'
+        run: uv publish --index testpypi --trusted-publishing always
+
       - name: Publish to PyPI
+        if: inputs.target == 'pypi'
         run: uv publish --trusted-publishing always
