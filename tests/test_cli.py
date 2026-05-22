@@ -32,7 +32,9 @@ class TestBuildParser:
     def test_parser_defaults(self):
         args = cli.build_parser().parse_args(["validate"])
         assert args.command == "validate"
-        assert args.paths == ["data/source"]
+        # paths defaults to None so main() can tell "user passed nothing"
+        # apart from "user explicitly passed the default" for error wording.
+        assert args.paths == []
         assert args.out_dir == "data/output"
         assert args.report == "text"
 
@@ -44,6 +46,58 @@ class TestBuildParser:
         assert args.paths == ["a.txt", "b.txt"]
         assert args.jobs == 4
         assert args.report == "json"
+
+    def test_parser_version_flag_exits_zero(self, capsys):
+        import pytest
+
+        with pytest.raises(SystemExit) as exc:
+            cli.build_parser().parse_args(["--version"])
+        assert exc.value.code == 0
+        assert "lintle" in capsys.readouterr().out
+
+    def test_parser_help_includes_examples_and_exit_codes(self, capsys):
+        import pytest
+
+        with pytest.raises(SystemExit) as exc:
+            cli.build_parser().parse_args(["--help"])
+        assert exc.value.code == 0
+        out = capsys.readouterr().out
+        assert "Examples:" in out
+        assert "Exit codes:" in out
+
+
+class TestCheckPaths:
+    def test_missing_default_yields_friendly_hint(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)  # no data/source here
+        err = cli.check_paths(["data/source"], using_default=True)
+        assert err is not None
+        assert "data/source" in err
+        assert "lintle --help" in err
+
+    def test_missing_explicit_path_yields_plain_message(self, tmp_path):
+        err = cli.check_paths([str(tmp_path / "nope.txt")], using_default=False)
+        assert err is not None
+        assert "no such file or directory" in err
+        assert "data/source" not in err  # not the default-hint variant
+
+    def test_multiple_missing_paths_are_listed(self, tmp_path):
+        a = tmp_path / "a.txt"
+        b = tmp_path / "b.txt"
+        err = cli.check_paths([str(a), str(b)], using_default=False)
+        assert err is not None
+        assert str(a) in err and str(b) in err
+
+    def test_existing_paths_return_none(self, tmp_path):
+        f = tmp_path / "x.txt"
+        f.write_text("x")
+        assert cli.check_paths([str(f), str(tmp_path)], using_default=False) is None
+
+
+class TestDiscoverPathsEdgeCases:
+    def test_nonexistent_path_is_dropped(self, tmp_path):
+        # main() validates first, but discover_paths must be robust on its own:
+        # a missing entry no longer silently masquerades as a file.
+        assert cli.discover_paths([str(tmp_path / "missing")]) == []
 
 
 class TestMain:
@@ -93,12 +147,48 @@ class TestMain:
         assert rc == 0
         assert "tle2099.txt" in capsys.readouterr().out
 
-    def test_main_returns_two_when_a_file_fails_to_process(self, tmp_path):
-        # An explicit path to a missing file is passed through to a worker,
-        # which raises when it cannot open it — an operational error.
+    def test_main_returns_two_when_a_file_fails_to_process(self, tmp_path, capsys):
+        # An explicit path to a missing file is now caught upfront by the
+        # input-validation step, before any worker is spawned — friendlier
+        # than the old "worker raises on open" path, same exit code.
         missing = tmp_path / "tle_missing.txt"  # never created
         rc = cli.main(["validate", str(missing), "--jobs", "1"])
         assert rc == 2
+        err = capsys.readouterr().err
+        assert "no such file or directory" in err
+        assert "Traceback" not in err  # no stack trace leaks to the user
+
+    def test_main_friendly_error_when_default_source_missing(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        # Run with no paths from a directory that has no data/source — the
+        # original bug: cli.py crashed with FileNotFoundError from
+        # os.path.getsize. Now it should exit cleanly with a hint.
+        monkeypatch.chdir(tmp_path)
+        rc = cli.main(["clean", "--jobs", "1"])
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "data/source" in err
+        assert "lintle --help" in err
+        assert "Traceback" not in err
+
+    def test_main_friendly_error_when_directory_has_no_tle_files(
+        self, tmp_path, capsys
+    ):
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        (empty / "notes.md").write_text("not a tle file")
+        rc = cli.main(["validate", str(empty), "--jobs", "1"])
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "no tle*.txt files found" in err
+
+    def test_main_rejects_zero_jobs(self, tmp_path, capsys):
+        src = tmp_path / "src"
+        src.mkdir()
+        rc = cli.main(["validate", str(src), "--jobs", "0"])
+        assert rc == 2
+        assert "--jobs must be >= 1" in capsys.readouterr().err
 
     def test_main_returns_two_on_disk_shortfall(
         self, tmp_path, line1, line2, monkeypatch

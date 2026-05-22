@@ -13,16 +13,35 @@ import sys
 import threading
 import time
 
-from lintle import pipeline, report
+from lintle import __version__, pipeline, report
 
 _DEFAULT_SOURCE = "data/source"
 _DEFAULT_OUTPUT = "data/output"
+
+_EPILOG = """\
+Examples:
+  lintle validate                         audit data/source/ (read-only)
+  lintle clean                            clean data/source/ -> data/output/
+  lintle validate file.txt                audit a single file
+  lintle clean dir1 dir2 --jobs 4         clean multiple directories
+  lintle clean data/raw --out-dir build   write to a custom location
+  lintle validate --report json           emit a machine-readable summary
+
+Exit codes:
+  0    no records quarantined — every defect repaired
+  1    at least one record was quarantined
+  2    operational error (missing input, disk shortfall, file failure)
+  130  interrupted (Ctrl-C)
+
+See `lintle <command> --help` for command-specific options.
+"""
 
 
 def discover_paths(paths):
     """Expand each entry in ``paths``: a directory becomes its sorted
     ``tle*.txt`` files (excluding ``*.cleaned.txt`` / ``*.broken.txt`` tool
-    output); a file is passed through unchanged.
+    output); a file is passed through unchanged. Nonexistent entries are
+    dropped — callers should validate inputs with :func:`check_paths` first.
     """
     result = []
     for path in paths:
@@ -35,45 +54,111 @@ def discover_paths(paths):
                     and not name.endswith(".broken.txt")
                 ):
                     result.append(os.path.join(path, name))
-        else:
+        elif os.path.isfile(path):
             result.append(path)
     return result
+
+
+def check_paths(paths, using_default):
+    """Return a user-facing error string if any ``paths`` entry is missing
+    or unreadable, else ``None``. ``using_default`` tailors the message for
+    the case where the user passed no paths at all and the default
+    (``data/source``) is what's missing.
+    """
+    missing = [p for p in paths if not os.path.exists(p)]
+    if missing:
+        if using_default:
+            return (
+                f"default input directory {_DEFAULT_SOURCE!r} does not exist.\n"
+                f"  pass one or more files or directories on the command line,\n"
+                f"  or create {_DEFAULT_SOURCE}/ and put your tle*.txt files there.\n"
+                f"  run 'lintle --help' for usage and examples."
+            )
+        if len(missing) == 1:
+            return f"no such file or directory: {missing[0]!r}"
+        joined = ", ".join(repr(p) for p in missing)
+        return f"no such files or directories: {joined}"
+    unreadable = [p for p in paths if not os.access(p, os.R_OK)]
+    if unreadable:
+        joined = ", ".join(repr(p) for p in unreadable)
+        return f"permission denied: {joined}"
+    return None
 
 
 def build_parser():
     """Build the ``lintle`` argument parser."""
     parser = argparse.ArgumentParser(
         prog="lintle",
-        description="Validate and clean Two-Line Element (TLE) corpus files.",
+        description=(
+            "Validate and clean Two-Line Element (TLE) corpus files exported "
+            "from space-track.org."
+        ),
+        epilog=_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    subparsers = parser.add_subparsers(dest="command", required=True)
-    for name, help_text in (
-        ("validate", "audit files and report defects (writes nothing)"),
-        ("clean", "write cleaned files and quarantine sidecars"),
+    parser.add_argument(
+        "-V",
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
+    )
+    subparsers = parser.add_subparsers(
+        dest="command",
+        required=True,
+        metavar="{validate,clean}",
+        title="commands",
+    )
+    for name, help_text, description in (
+        (
+            "validate",
+            "audit files and report defects (writes nothing)",
+            "Audit TLE files against the spec and report every defect "
+            "(checksum mismatches, wrong length, orphan lines, etc.) "
+            "without modifying anything.",
+        ),
+        (
+            "clean",
+            "write cleaned files and quarantine sidecars",
+            "Apply validated repairs and write cleaned files plus a per-file "
+            "quarantine sidecar to --out-dir; emit a corpus-wide report.md.",
+        ),
     ):
-        sub = subparsers.add_parser(name, help=help_text)
+        sub = subparsers.add_parser(
+            name,
+            help=help_text,
+            description=description,
+            epilog=_EPILOG,
+            formatter_class=argparse.RawDescriptionHelpFormatter,
+        )
         sub.add_argument(
             "paths",
             nargs="*",
-            default=[_DEFAULT_SOURCE],
-            help=f"files or directories to process (default: {_DEFAULT_SOURCE})",
+            default=None,
+            metavar="PATH",
+            help=(
+                f"files or directories to process "
+                f"(default: {_DEFAULT_SOURCE}). "
+                "Directories are globbed for tle*.txt."
+            ),
         )
         sub.add_argument(
             "--out-dir",
             default=_DEFAULT_OUTPUT,
+            metavar="DIR",
             help=f"destination for cleaned/broken files (default: {_DEFAULT_OUTPUT})",
         )
         sub.add_argument(
             "--jobs",
             type=int,
             default=os.cpu_count() or 1,
-            help="number of files to process in parallel",
+            metavar="N",
+            help="number of files to process in parallel (default: CPU count)",
         )
         sub.add_argument(
             "--report",
             choices=["text", "json"],
             default="text",
-            help="summary output format",
+            help="summary output format (default: text)",
         )
     return parser
 
@@ -237,16 +322,42 @@ def main(argv=None):
     ``130`` = interrupted with Ctrl-C.
     """
     args = build_parser().parse_args(argv)
-    files = discover_paths(args.paths)
+
+    # `args.paths` is None when the user passed nothing — fall back to the
+    # default source dir, and remember it so we can give a tailored error if
+    # that default doesn't exist on this machine.
+    using_default = not args.paths
+    paths = args.paths or [_DEFAULT_SOURCE]
+
+    if args.jobs < 1:
+        print(f"error: --jobs must be >= 1 (got {args.jobs})", file=sys.stderr)
+        return 2
+
+    path_error = check_paths(paths, using_default=using_default)
+    if path_error:
+        print(f"error: {path_error}", file=sys.stderr)
+        return 2
+
+    files = discover_paths(paths)
     if not files:
-        print("no input files found", file=sys.stderr)
+        dirs = [p for p in paths if os.path.isdir(p)]
+        if dirs:
+            joined = ", ".join(repr(d) for d in dirs)
+            print(
+                f"error: no tle*.txt files found in {joined}.\n"
+                "  expected one or more files named tle*.txt "
+                "(excluding *.cleaned.txt / *.broken.txt).",
+                file=sys.stderr,
+            )
+        else:
+            print("error: no input files found", file=sys.stderr)
         return 2
 
     if args.command == "clean":
         os.makedirs(args.out_dir, exist_ok=True)
         disk_error = _check_disk_space(args.out_dir, files)
         if disk_error:
-            print(disk_error, file=sys.stderr)
+            print(f"error: {disk_error}", file=sys.stderr)
             return 2
 
     print(
