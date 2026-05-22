@@ -23,10 +23,10 @@ def test_golden_mixed_file(tmp_path, line1, line2):
     assert stats.fix_counts.get("reconstructed-checksum") == 2
     assert stats.fix_counts.get("trailing-backslash") == 1
 
-    cleaned = (out / "tle2099.cleaned.txt").read_text()
+    cleaned = (out / "tle2099.cleaned.txt").read_bytes()
     assert cleaned == (
         line1 + "\n" + line2 + "\n" + line1 + "\n" + line2 + "\n"
-    )
+    ).encode("ascii")
     broken = (out / "tle2099.broken.txt").read_bytes()
     assert b"checksum" in broken
     assert bad_line1.encode("ascii") in broken
@@ -42,10 +42,13 @@ def test_clean_is_idempotent(tmp_path, line1, line2):
 
     # Re-clean the cleaned output. stem("tle2099.cleaned.txt") == "tle2099.cleaned".
     out2 = tmp_path / "out2"
-    pipeline.process_file(str(cleaned1), str(out2), "clean")
+    stats2 = pipeline.process_file(str(cleaned1), str(out2), "clean")
     cleaned2 = out2 / "tle2099.cleaned.cleaned.txt"
 
     assert cleaned1.read_bytes() == cleaned2.read_bytes()
+    # Idempotence (spec §8): re-cleaning applies zero fixes and zero rejects.
+    assert stats2.fix_counts == {}
+    assert stats2.quarantined_count == 0
 
 
 def test_cleaned_output_revalidates_as_perfect(tmp_path, line1, line2):
