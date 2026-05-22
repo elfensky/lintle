@@ -19,7 +19,7 @@ All notable changes to this project are documented in this file. The format is b
   and the Markdown run report.
 - `cli.py` — argument parsing, path globbing, per-file `ProcessPoolExecutor` parallelism,
   a live single-line progress display, and graceful Ctrl-C shutdown (exit code `130`).
-- Test suite: 78 tests across 7 files, including an `sgp4` oracle cross-check and
-  golden-output / idempotence integration tests.
+- Test suite: 92 tests across 7 files, including an `sgp4` oracle cross-check and
+  golden-output / idempotence integration tests; `cli.py` is fully covered.
 - Project tooling: `ruff` for linting and formatting, `pytest-cov` for coverage.
 - Documentation: `README.md`, `CONTRIBUTING.md`, and this changelog.
