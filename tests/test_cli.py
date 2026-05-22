@@ -82,3 +82,25 @@ def test_main_validate_prints_summary(tmp_path, line1, line2, capsys):
 
     assert rc == 0
     assert "tle2099.txt" in capsys.readouterr().out
+
+
+def test_main_returns_two_when_a_file_fails_to_process(tmp_path):
+    # An explicit path to a missing file is passed through to a worker,
+    # which raises when it cannot open it — an operational error.
+    missing = tmp_path / "tle_missing.txt"  # never created
+    rc = cli.main(["validate", str(missing), "--jobs", "1"])
+    assert rc == 2
+
+
+def test_main_returns_two_on_disk_shortfall(tmp_path, line1, line2, monkeypatch):
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "tle2099.txt").write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
+    out = tmp_path / "out"
+
+    class _Usage:
+        free = 1  # far below the doubled input size
+
+    monkeypatch.setattr(cli.shutil, "disk_usage", lambda _path: _Usage())
+    rc = cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
+    assert rc == 2
