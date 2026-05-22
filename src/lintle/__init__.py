@@ -1,6 +1,12 @@
 """lintle — validator and cleaner for Two-Line Element (TLE) corpus files."""
 
-__version__ = "0.1.1"
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _dist_version
+
+try:
+    __version__ = _dist_version("lintle")
+except PackageNotFoundError:  # source checkout that was never installed
+    __version__ = "0.0.0+local"
 
 
 def stem(filename):

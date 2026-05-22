@@ -113,6 +113,32 @@ Never claim success without the output. If a check fails, report the failure.
 
 ## Versioning
 
-Semantic versioning (`MAJOR.MINOR.PATCH`). The version is tracked in two places that must
-stay in sync: `pyproject.toml` (`version`) and `src/lintle/__init__.py` (`__version__`).
-Record every release in `CHANGELOG.md`.
+Semantic versioning (`MAJOR.MINOR.PATCH`). The version lives in **one place** —
+`pyproject.toml`'s `[project] version` field — and is resolved at runtime from the
+installed distribution metadata by `src/lintle/__init__.py`:
+
+```python
+from importlib.metadata import PackageNotFoundError, version as _dist_version
+
+try:
+    __version__ = _dist_version("lintle")
+except PackageNotFoundError:  # source checkout that was never installed
+    __version__ = "0.0.0+local"
+```
+
+Because the lookup needs the project to be installed (even editable), keep `uv sync`
+current — every dev workflow in this repo already does.
+
+Release flow:
+
+1. Bump `version` in `pyproject.toml`.
+2. Add a new `## [X.Y.Z] - YYYY-MM-DD` section at the top of `CHANGELOG.md` with
+   `### Added` / `### Changed` / `### Fixed` subsections (see Keep a Changelog).
+3. Run the verification commands (`uv run pytest`, `uv run ruff check .`,
+   `uv run ruff format --check .`) and report the actual output.
+4. Commit on a `chore/release-X.Y.Z` branch and open a PR to `main`. Tag and publish
+   after merge.
+
+Nothing else needs to change — `lintle --version`, the `report.py` headers, and any
+downstream `from lintle import __version__` import all pick the new value up from
+`pyproject.toml` automatically.

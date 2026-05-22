@@ -36,6 +36,11 @@ All notable changes to this project are documented in this file. The format is b
 - The `paths` positional argument's argparse default is now `None` (resolved to
   `data/source` inside `main()`) so the CLI can tell "user passed nothing" apart
   from "user explicitly passed `data/source`" and tailor the error wording.
+- The version string is now tracked in **one place**: `pyproject.toml`. The
+  `__version__` attribute in `src/lintle/__init__.py` is resolved at runtime via
+  `importlib.metadata.version("lintle")` (falling back to `0.0.0+local` for
+  uninstalled source checkouts). Future releases need only a single bump in
+  `pyproject.toml` — see `CONTRIBUTING.md` for the release flow.
 
 ## [0.1.0] - 2026-05-22
 

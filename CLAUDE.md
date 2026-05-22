@@ -123,3 +123,7 @@ If any fail, report the actual output — do not suppress or simplify failures.
 - Tests are grouped into `Test*` classes, one per unit or behaviour under test.
 - Git: never commit to `main` directly; branch (`feature/`, `bugfix/`, `chore/`); use
   conventional commits (`feat:`, `fix:`, `docs:`, `test:`, `style:`, `chore:`).
+- Versioning: `pyproject.toml`'s `[project] version` is the single source of truth;
+  `src/lintle/__init__.py` resolves `__version__` from it at runtime via
+  `importlib.metadata`. Bump it once, add a `CHANGELOG.md` entry — see CONTRIBUTING.md
+  for the release flow.
