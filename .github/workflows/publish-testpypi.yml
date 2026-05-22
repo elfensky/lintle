@@ -1,0 +1,38 @@
+name: Publish to TestPyPI
+
+# Manual rehearsal: publishes lintle to TestPyPI (test.pypi.org) via Trusted
+# Publishing (OIDC). Triggered by hand from the Actions tab — TestPyPI is a
+# sandbox, safe to re-run. It has its own account and its own pending-publisher
+# registration, separate from production PyPI.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  publish-testpypi:
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/project/lintle/
+    permissions:
+      id-token: write # required for Trusted Publishing (OIDC)
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.11"
+
+      - name: Verify before publishing
+        run: |
+          uv sync
+          uv run pytest
+          uv run ruff check .
+          uv run ruff format --check .
+
+      - name: Build sdist and wheel
+        run: uv build
+
+      - name: Publish to TestPyPI
+        run: uv publish --index testpypi --trusted-publishing always

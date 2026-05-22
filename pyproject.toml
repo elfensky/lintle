@@ -2,8 +2,39 @@
 name = "lintle"
 version = "0.1.0"
 description = "Validate and clean Two-Line Element (TLE) satellite-tracking files"
+readme = "README.md"
 requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Andrei Lavrenov", email = "andrei@lav.ren" }]
+keywords = [
+    "tle",
+    "two-line-element",
+    "satellite",
+    "space-track",
+    "sgp4",
+    "orbital-mechanics",
+    "validator",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Astronomy",
+    "Topic :: Utilities",
+]
 dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/elfensky/lintle"
+Repository = "https://github.com/elfensky/lintle"
+Issues = "https://github.com/elfensky/lintle/issues"
+Changelog = "https://github.com/elfensky/lintle/blob/main/CHANGELOG.md"
 
 [project.scripts]
 lintle = "lintle.cli:main"
@@ -17,6 +48,14 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/lintle"]
+
+# TestPyPI as a named publish target. `explicit = true` keeps it out of normal
+# dependency resolution — it is only ever used via `uv publish --index testpypi`.
+[[tool.uv.index]]
+name = "testpypi"
+url = "https://test.pypi.org/simple/"
+publish-url = "https://test.pypi.org/legacy/"
+explicit = true
 
 [tool.ruff]
 target-version = "py311"
