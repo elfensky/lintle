@@ -22,6 +22,18 @@ def test_blank_and_cr_only_lines_dropped(tmp_path, line1, line2):
     assert records[0].src1 == 1 and records[0].src2 == 4
 
 
+def test_whitespace_only_line_dropped(tmp_path, line1, line2):
+    # A line of spaces/tabs between records is blank — dropped, not
+    # quarantined, and it must not orphan the surrounding record.
+    src = tmp_path / "in.txt"
+    src.write_bytes(
+        (line1 + "\n" + "   \t \n" + line2 + "\n").encode("ascii")
+    )
+    records = list(pipeline.iter_records(str(src)))
+    assert len(records) == 1
+    assert isinstance(records[0], pipeline.RecordCandidate)
+
+
 def test_lone_line1_at_eof_is_orphaned(tmp_path, line1):
     src = tmp_path / "in.txt"
     src.write_bytes((line1 + "\n").encode("ascii"))
@@ -118,7 +130,10 @@ def test_clean_run_leaves_no_temp_file(tmp_path, line1, line2):
     src.write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
     out = tmp_path / "out"
     pipeline.process_file(str(src), str(out), "clean")
-    assert not list(out.glob("*.tmp"))  # temp file was renamed away
+    assert not list(out.glob("*.partial"))  # temp file was renamed away
+    # The published cleaned file is world-readable, not owner-only (0600).
+    cleaned = out / "tle2099.cleaned.txt"
+    assert cleaned.stat().st_mode & 0o044  # group/other read bits set
 
 
 def test_failed_run_does_not_leak_temp_file(tmp_path):
@@ -129,4 +144,4 @@ def test_failed_run_does_not_leak_temp_file(tmp_path):
             str(tmp_path / "does_not_exist.txt"), str(out), "clean"
         )
     assert out.exists()  # the output dir was created
-    assert not list(out.glob("*.tmp"))  # but no partial temp file leaked
+    assert not list(out.glob("*.partial"))  # but no partial temp file leaked
