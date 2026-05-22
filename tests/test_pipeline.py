@@ -142,3 +142,18 @@ def test_failed_run_does_not_leak_temp_file(tmp_path):
         pipeline.process_file(str(tmp_path / "does_not_exist.txt"), str(out), "clean")
     assert out.exists()  # the output dir was created
     assert not list(out.rglob("*.partial"))  # but no partial temp file leaked
+
+
+def test_process_file_emits_progress(tmp_path, line1, line2, capsys):
+    src = tmp_path / "tle2099.txt"
+    src.write_bytes(((line1 + "\n" + line2 + "\n") * 3).encode("ascii"))  # 3 records
+    pipeline.process_file(str(src), str(tmp_path / "out"), "clean", progress_every=2)
+    err = capsys.readouterr().err
+    assert "tle2099.txt" in err and "records" in err
+
+
+def test_progress_disabled_when_every_is_zero(tmp_path, line1, line2, capsys):
+    src = tmp_path / "tle2099.txt"
+    src.write_bytes(((line1 + "\n" + line2 + "\n") * 3).encode("ascii"))
+    pipeline.process_file(str(src), str(tmp_path / "out"), "clean", progress_every=0)
+    assert "records..." not in capsys.readouterr().err

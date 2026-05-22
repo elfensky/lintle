@@ -162,6 +162,20 @@ independently verified.
 `validate` writes nothing — it only prints the per-file summary and the
 locations of defective records to stdout.
 
+### Progress
+
+A 30 GB run is not silent. Live progress is written to **stderr** as it goes —
+so it never pollutes the stdout summary or a `--report json` pipe:
+
+```
+processing 29 file(s) with 10 worker(s)...
+  tle2004_7of8.txt: 5,000,000 records...
+[3/29] tle2004_3of8.txt — 2,527,820 clean, 183 quarantined
+```
+
+A worker emits a record-count line every 1,000,000 records; the main process
+prints an `[k/N]` line as each file finishes.
+
 ## Results on the bundled corpus
 
 A full run over the 29-file corpus (`tle2004`–`tle2025`, ~232 million records):

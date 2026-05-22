@@ -106,6 +106,11 @@ def main(argv=None):
             print(disk_error, file=sys.stderr)
             return 2
 
+    print(
+        f"processing {len(files)} file(s) with {args.jobs} worker(s)...",
+        file=sys.stderr,
+        flush=True,
+    )
     all_stats = []
     failed_files = []
     with concurrent.futures.ProcessPoolExecutor(max_workers=args.jobs) as executor:
@@ -115,12 +120,25 @@ def main(argv=None):
             ): path
             for path in files
         }
-        for future in concurrent.futures.as_completed(futures):
+        for done, future in enumerate(
+            concurrent.futures.as_completed(futures), start=1
+        ):
             path = futures[future]
             try:
-                all_stats.append(future.result())
+                stats = future.result()
+                all_stats.append(stats)
+                print(
+                    f"[{done}/{len(files)}] {stats.src_name} — "
+                    f"{stats.clean_count:,} clean, "
+                    f"{stats.quarantined_count:,} quarantined",
+                    file=sys.stderr,
+                    flush=True,
+                )
             except Exception as exc:
-                print(f"error processing {path}: {exc!r}", file=sys.stderr)
+                print(
+                    f"[{done}/{len(files)}] error processing {path}: {exc!r}",
+                    file=sys.stderr,
+                )
                 failed_files.append(path)
 
     all_stats.sort(key=lambda stats: stats.src_name)

@@ -108,3 +108,15 @@ def test_main_returns_two_on_disk_shortfall(tmp_path, line1, line2, monkeypatch)
     monkeypatch.setattr(cli.shutil, "disk_usage", lambda _path: _Usage())
     rc = cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
     assert rc == 2
+
+
+def test_main_prints_progress_to_stderr(tmp_path, line1, line2, capsys):
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "tle2099.txt").write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
+
+    cli.main(["clean", str(src), "--out-dir", str(tmp_path / "out"), "--jobs", "1"])
+
+    err = capsys.readouterr().err
+    assert "processing 1 file(s)" in err  # start line
+    assert "[1/1]" in err  # per-file completion line

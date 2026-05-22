@@ -3,6 +3,7 @@
 import contextlib
 import dataclasses
 import os
+import sys
 
 from tlekit import repair, report, stem
 
@@ -84,7 +85,7 @@ def iter_records(path):
         yield Orphan(held[0], held[1], "orphan-line", "orphan line 1 at end of file")
 
 
-def process_file(src_path, out_dir, mode):
+def process_file(src_path, out_dir, mode, progress_every=1_000_000):
     """Process one source file and return its ``report.FileStats``.
 
     ``mode`` is ``"validate"`` (audit only — writes nothing) or ``"clean"``
@@ -92,6 +93,9 @@ def process_file(src_path, out_dir, mode):
     ``broken/<name>.broken.txt`` under ``out_dir``). The cleaned file is
     written to a temp file and atomically renamed, so an interrupted run
     never leaves a half-written output.
+
+    A progress line is emitted to stderr every ``progress_every`` records
+    so a long run visibly reports activity; set it to 0 to disable.
     """
     src_name = os.path.basename(src_path)
     stats = report.FileStats(src_name=src_name)
@@ -118,6 +122,13 @@ def process_file(src_path, out_dir, mode):
     try:
         for candidate in iter_records(src_path):
             stats.total_records += 1
+
+            if progress_every and stats.total_records % progress_every == 0:
+                print(
+                    f"  {src_name}: {stats.total_records:,} records...",
+                    file=sys.stderr,
+                    flush=True,
+                )
 
             if isinstance(candidate, Orphan):
                 _record_reject(
