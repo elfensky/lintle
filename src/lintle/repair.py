@@ -6,7 +6,7 @@ committed only if the result passes. Pure functions — no I/O.
 
 import dataclasses
 
-from tlekit import tle
+from lintle import tle
 
 RECONSTRUCTED_CHECKSUM = "reconstructed-checksum"
 

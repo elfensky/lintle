@@ -4,7 +4,7 @@ import contextlib
 import dataclasses
 import os
 
-from tlekit import repair, report, stem
+from lintle import repair, report, stem
 
 
 @dataclasses.dataclass

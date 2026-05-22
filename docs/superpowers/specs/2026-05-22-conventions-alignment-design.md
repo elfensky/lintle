@@ -1,19 +1,19 @@
-# tlekit Conventions Alignment — Design
+# lintle Conventions Alignment — Design
 
 - **Date:** 2026-05-22
 - **Status:** Approved; ready for implementation planning
-- **Topic:** Align the implemented `tlekit` project with the tooling, code-quality, test, and
+- **Topic:** Align the implemented `lintle` project with the tooling, code-quality, test, and
   documentation conventions of the reference project `descent-engine`
   (`/Users/andrei/Developer/github/descent-engine`)
 
 ## 1. Problem statement
 
-`tlekit` is fully implemented: 789 LOC of source across seven modules, 687 LOC of tests
+`lintle` is fully implemented: 789 LOC of source across seven modules, 687 LOC of tests
 across seven test files, 77 passing tests. The corpus cleaner works. What it lacks is the
 *project scaffolding* a mature repository carries — and the reference project
 `descent-engine` is the agreed model for that scaffolding.
 
-Concretely, `tlekit` today is missing:
+Concretely, `lintle` today is missing:
 
 - **Linting/formatting** — `ruff` is not even installed; there is no `[tool.ruff]` config.
 - **Coverage tooling** — no `pytest-cov`, no coverage command.
@@ -28,20 +28,20 @@ formatting/lint pass and a test-file reorganisation).
 
 ## 2. Goal & non-goals
 
-**Goal:** a third party opening `tlekit` should find the same setup, code-quality bar, test
+**Goal:** a third party opening `lintle` should find the same setup, code-quality bar, test
 framework, and documentation depth they would find in `descent-engine`.
 
 **Non-goals — explicitly excluded, with rationale:**
 
 | Excluded | Rationale |
 |----------|-----------|
-| Docker (`Dockerfile`, `docker-compose.yml`) | `tlekit` is a local batch CLI run against a local corpus, not a long-running service. |
-| `pytest-asyncio`, `pytest-httpx` | `tlekit` has no async code and makes no HTTP calls. These plugins exist in `descent-engine` only because it is a network worker. |
-| Git Flow / GitHub-Issues workflow machinery | Decided: `tlekit` is a focused single-purpose tool; a light process (conventional commits, feature branches) is documented instead. |
-| Google-style docstrings (Args/Returns/Raises blocks) | Decided: `tlekit`'s concise one-paragraph docstrings are already clear; full blocks on small pure functions add noise, not value. |
+| Docker (`Dockerfile`, `docker-compose.yml`) | `lintle` is a local batch CLI run against a local corpus, not a long-running service. |
+| `pytest-asyncio`, `pytest-httpx` | `lintle` has no async code and makes no HTTP calls. These plugins exist in `descent-engine` only because it is a network worker. |
+| Git Flow / GitHub-Issues workflow machinery | Decided: `lintle` is a focused single-purpose tool; a light process (conventional commits, feature branches) is documented instead. |
+| Google-style docstrings (Args/Returns/Raises blocks) | Decided: `lintle`'s concise one-paragraph docstrings are already clear; full blocks on small pure functions add noise, not value. |
 | Type hints on all signatures | `descent-engine` mandates them, but retrofitting hints onto 789 LOC is high-churn rewriting of working code. Ruff's selected rule set does not enforce them. Deferred. |
 
-Nothing here alters how `tle-clean validate` or `tle-clean clean` behaves.
+Nothing here alters how `lintle validate` or `lintle clean` behaves.
 
 ## 3. Work areas
 
@@ -62,7 +62,7 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 
 Reorder the file's tables to match `descent-engine`'s layout (`build-system`, `project`,
 `project.scripts`, `dependency-groups`, `tool.ruff`, `tool.ruff.lint`, `tool.pytest`). Keep
-`[tool.hatch.build.targets.wheel]` — `tlekit` needs it because the package directory name
+`[tool.hatch.build.targets.wheel]` — `lintle` needs it because the package directory name
 does not match the distribution name; `descent-engine` can omit it because its names align.
 
 Also add:
@@ -118,7 +118,7 @@ Run all four, in order, and report actual output — never claim success without
 
 ```bash
 uv run pytest                                                        # 77 pass
-uv run pytest --cov=tlekit --cov-report=term-missing --cov-branch    # coverage report
+uv run pytest --cov=lintle --cov-report=term-missing --cov-branch    # coverage report
 uv run ruff check .                                                  # no findings
 uv run ruff format --check .                                         # no diff
 ```

@@ -1,6 +1,6 @@
-"""Tests for tlekit.tle — the TLE validator."""
+"""Tests for lintle.tle — the TLE validator."""
 
-from tlekit import tle
+from lintle import tle
 
 
 class TestComputeChecksum:

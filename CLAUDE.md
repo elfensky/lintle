@@ -3,8 +3,8 @@
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this
 repository.
 
-`tlekit` — console script `tle-clean` — validates and cleans a ~30 GB corpus of Two-Line
-Element (TLE) satellite-tracking files exported from space-track.org.
+`lintle` validates and cleans a ~30 GB corpus of Two-Line Element (TLE)
+satellite-tracking files exported from space-track.org.
 
 ## Authoritative spec
 
@@ -55,14 +55,14 @@ output shows failures.
   class — match that established style; do not expand to Args/Returns/Raises blocks.
 - `ruff` for linting and formatting, configured in `pyproject.toml` (rule sets `E`, `F`,
   `I`, `UP`, `B`, `SIM`; 88-column lines).
-- `src/` layout — all package code lives under `src/tlekit/`.
+- `src/` layout — all package code lives under `src/lintle/`.
 - Run `uv run ruff check .` and `uv run ruff format --check .` before committing.
 
 ## Project Layout
 
 ```
-src/tlekit/
-├── __main__.py    # python -m tlekit entry point
+src/lintle/
+├── __main__.py    # python -m lintle entry point
 ├── __init__.py    # __version__, stem() filename helper
 ├── cli.py         # argparse, globbing, parallel workers, live progress, Ctrl-C handling
 ├── pipeline.py    # streams a file in binary, pairs 1/2 lines into records, routes them
@@ -82,11 +82,11 @@ Module dependencies point one way only: `cli.py → pipeline.py → repair.py �
 uv sync                            # Install, including dev deps (sgp4, pytest, ruff)
 uv run pytest                      # Full test suite
 uv run pytest tests/test_tle.py::TestComputeChecksum   # A single test class
-uv run pytest --cov=tlekit --cov-report=term-missing --cov-branch  # Tests + coverage
+uv run pytest --cov=lintle --cov-report=term-missing --cov-branch  # Tests + coverage
 uv run ruff check .                # Lint
 uv run ruff format --check .       # Format check
-uv run tle-clean validate          # Audit data/source/ (read-only)
-uv run tle-clean clean             # Clean data/source/ -> data/output/
+uv run lintle validate          # Audit data/source/ (read-only)
+uv run lintle clean             # Clean data/source/ -> data/output/
 ```
 
 ## Working Style

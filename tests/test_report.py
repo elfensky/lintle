@@ -1,8 +1,8 @@
-"""Tests for tlekit.report — statistics, the quarantine sidecar, and summaries."""
+"""Tests for lintle.report — statistics, the quarantine sidecar, and summaries."""
 
 import json
 
-from tlekit import report
+from lintle import report
 
 
 def _stats_with_counts():
@@ -133,7 +133,7 @@ class TestFormatRejectLines:
 class TestRunReport:
     def test_format_run_report_aggregates_corpus(self):
         out = report.format_run_report(_two_file_stats())
-        assert "# tlekit clean run report" in out
+        assert "# lintle clean run report" in out
         assert "Files processed: 2" in out
         assert "Records: 4,000" in out  # 1000 + 3000
         assert "Cleaned: 3,990" in out  # 990 + 3000
@@ -149,5 +149,5 @@ class TestRunReport:
         out = tmp_path / "report.md"
         report.write_run_report(str(out), _two_file_stats())
         text = out.read_text(encoding="utf-8")
-        assert text.startswith("# tlekit clean run report")
+        assert text.startswith("# lintle clean run report")
         assert "Per-file breakdown" in text

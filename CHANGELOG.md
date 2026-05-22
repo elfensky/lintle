@@ -8,7 +8,7 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Added
 
-- `tle-clean` console script with two modes: `validate` (read-only audit) and `clean`
+- `lintle` console script with two modes: `validate` (read-only audit) and `clean`
   (writes corrected files plus quarantine sidecars).
 - `tle.py` — the single TLE validator: column layout, mod-10 checksum, semantic range
   checks, and paired-record validation.

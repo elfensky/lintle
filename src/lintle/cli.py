@@ -1,4 +1,4 @@
-"""Command-line interface: ``tle-clean validate`` and ``tle-clean clean``."""
+"""Command-line interface: ``lintle validate`` and ``lintle clean``."""
 
 import argparse
 import concurrent.futures
@@ -13,7 +13,7 @@ import sys
 import threading
 import time
 
-from tlekit import pipeline, report
+from lintle import pipeline, report
 
 _DEFAULT_SOURCE = "data/source"
 _DEFAULT_OUTPUT = "data/output"
@@ -41,9 +41,9 @@ def discover_paths(paths):
 
 
 def build_parser():
-    """Build the ``tle-clean`` argument parser."""
+    """Build the ``lintle`` argument parser."""
     parser = argparse.ArgumentParser(
-        prog="tle-clean",
+        prog="lintle",
         description="Validate and clean Two-Line Element (TLE) corpus files.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -229,7 +229,7 @@ class _ProgressDisplay:
 
 
 def main(argv=None):
-    """Entry point for the ``tle-clean`` console script.
+    """Entry point for the ``lintle`` console script.
 
     Returns the process exit code: ``0`` = no records quarantined;
     ``1`` = at least one record quarantined; ``2`` = operational error

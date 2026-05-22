@@ -1,4 +1,4 @@
-# Contributing to tlekit
+# Contributing to lintle
 
 ## Prerequisites
 
@@ -25,14 +25,14 @@ uv add --group dev <pkg>   # Add a dev-only dependency
 uv sync                    # Reinstall from the lock file (after a pull)
 ```
 
-The **runtime has no third-party dependencies** — `tlekit` is pure standard library.
+The **runtime has no third-party dependencies** — `lintle` is pure standard library.
 `sgp4` is a dev-only test oracle and must never be imported at runtime.
 
 ## Running
 
 ```bash
-uv run tle-clean validate          # Read-only audit of data/source/
-uv run tle-clean clean             # Write cleaned output to data/output/
+uv run lintle validate          # Read-only audit of data/source/
+uv run lintle clean             # Write cleaned output to data/output/
 ```
 
 `uv run` executes a command inside the project virtual environment — no manual
@@ -51,7 +51,7 @@ uv run pytest tests/test_tle.py::TestComputeChecksum   # Run one class
 ### Coverage
 
 ```bash
-uv run pytest --cov=tlekit --cov-report=term-missing --cov-branch
+uv run pytest --cov=lintle --cov-report=term-missing --cov-branch
 ```
 
 This reports line and branch coverage, listing uncovered lines in the `Missing` column.
@@ -114,5 +114,5 @@ Never claim success without the output. If a check fails, report the failure.
 ## Versioning
 
 Semantic versioning (`MAJOR.MINOR.PATCH`). The version is tracked in two places that must
-stay in sync: `pyproject.toml` (`version`) and `src/tlekit/__init__.py` (`__version__`).
+stay in sync: `pyproject.toml` (`version`) and `src/lintle/__init__.py` (`__version__`).
 Record every release in `CHANGELOG.md`.

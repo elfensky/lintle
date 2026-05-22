@@ -1,10 +1,10 @@
-"""Tests for tlekit.pipeline — streaming I/O, line pairing, file processing."""
+"""Tests for lintle.pipeline — streaming I/O, line pairing, file processing."""
 
 import queue
 
 import pytest
 
-from tlekit import pipeline
+from lintle import pipeline
 
 
 class TestIterRecords:

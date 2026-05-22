@@ -1,4 +1,4 @@
-# tlekit
+# lintle
 
 A validator and cleaner for **Two-Line Element (TLE)** corpus files exported
 from [space-track.org](https://www.space-track.org/).
@@ -24,7 +24,7 @@ two systematic, era-specific defects:
 
 These appear independently and in combination, and a small fraction of records
 are genuinely corrupt (garbled columns, orphaned lines, wrong lengths).
-`tlekit` distinguishes the safely-repairable from the genuinely-corrupt and
+`lintle` distinguishes the safely-repairable from the genuinely-corrupt and
 treats each correctly.
 
 ## How it works
@@ -62,7 +62,7 @@ worker process.
 - Python 3.11+
 - [`uv`](https://docs.astral.sh/uv/) for environment and dependency management
 
-`tlekit` itself has **no runtime dependencies** — it is pure standard library.
+`lintle` itself has **no runtime dependencies** — it is pure standard library.
 `sgp4` is a dev-only dependency, used as a test oracle.
 
 ## Installation
@@ -76,17 +76,17 @@ build step is needed to run the tool.
 
 ## Usage
 
-The console script is `tle-clean`, with two subcommands:
+The console script is `lintle`, with two subcommands:
 
 ```bash
 # Audit only — report defects, write nothing
-uv run tle-clean validate [paths...]
+uv run lintle validate [paths...]
 
 # Produce cleaned output + quarantine sidecars
-uv run tle-clean clean [paths...]
+uv run lintle clean [paths...]
 ```
 
-`python -m tlekit ...` is equivalent to `uv run tle-clean ...`.
+`python -m lintle ...` is equivalent to `uv run lintle ...`.
 
 **Arguments and options:**
 
@@ -101,13 +101,13 @@ uv run tle-clean clean [paths...]
 
 ```bash
 # Validate the whole corpus
-uv run tle-clean validate data/source
+uv run lintle validate data/source
 
 # Clean one file
-uv run tle-clean clean data/source/tle2022.txt --out-dir data/output
+uv run lintle clean data/source/tle2022.txt --out-dir data/output
 
 # Clean the corpus, capture a machine-readable summary
-uv run tle-clean clean data/source --report json > run-summary.json
+uv run lintle clean data/source --report json > run-summary.json
 ```
 
 **Exit codes:**
@@ -190,7 +190,7 @@ A full run over the 29-file corpus (`tle2004`–`tle2025`, ~232 million records)
 ```bash
 uv sync                          # install dev dependencies
 uv run pytest                    # run the test suite
-uv run pytest --cov=tlekit       # with a coverage report
+uv run pytest --cov=lintle       # with a coverage report
 uv run ruff check                # lint
 uv run ruff format               # auto-format
 ```
@@ -206,7 +206,7 @@ with `pytest-cov`.
 ## Project layout
 
 ```
-src/tlekit/
+src/lintle/
   tle.py        # core: defines a "perfect" TLE record (pure, no I/O)
   repair.py     # speculative, validated repairs
   pipeline.py   # streaming reader, prefix-driven pairing, per-file routing

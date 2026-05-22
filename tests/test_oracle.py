@@ -5,7 +5,7 @@ expected (sgp4 is permissive), so only acceptance is cross-checked.
 
 from sgp4.api import Satrec
 
-from tlekit import tle
+from lintle import tle
 
 
 class TestOracle:

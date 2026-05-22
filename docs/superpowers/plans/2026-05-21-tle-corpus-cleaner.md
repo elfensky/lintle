@@ -18,14 +18,14 @@
 
 | File | Responsibility |
 |------|----------------|
-| `pyproject.toml` | `uv` project metadata, console script `tle-clean`, dev deps. |
-| `src/tlekit/__init__.py` | `__version__` and the `stem()` filename helper. |
-| `src/tlekit/tle.py` | Core validation: checksum, column layout, semantic ranges, record pairing. Pure, no I/O. |
-| `src/tlekit/repair.py` | Speculative fixes; `repair_line` and `process_record`. Pure, no I/O. |
-| `src/tlekit/report.py` | `FileStats`/`RejectEntry` data, `.broken.txt` writer, summary formatting. |
-| `src/tlekit/pipeline.py` | Binary streaming reader, prefix-driven pairing state machine, per-file routing. |
-| `src/tlekit/cli.py` | Argument parsing, file discovery, `ProcessPoolExecutor` fan-out, exit codes. |
-| `src/tlekit/__main__.py` | `python -m tlekit` entry point. |
+| `pyproject.toml` | `uv` project metadata, console script `lintle`, dev deps. |
+| `src/lintle/__init__.py` | `__version__` and the `stem()` filename helper. |
+| `src/lintle/tle.py` | Core validation: checksum, column layout, semantic ranges, record pairing. Pure, no I/O. |
+| `src/lintle/repair.py` | Speculative fixes; `repair_line` and `process_record`. Pure, no I/O. |
+| `src/lintle/report.py` | `FileStats`/`RejectEntry` data, `.broken.txt` writer, summary formatting. |
+| `src/lintle/pipeline.py` | Binary streaming reader, prefix-driven pairing state machine, per-file routing. |
+| `src/lintle/cli.py` | Argument parsing, file discovery, `ProcessPoolExecutor` fan-out, exit codes. |
+| `src/lintle/__main__.py` | `python -m lintle` entry point. |
 | `tests/conftest.py` | Shared `line1`/`line2` fixtures (a canonical known-good TLE). |
 | `tests/test_*.py` | One test module per source module, plus `test_integration.py`. |
 
@@ -35,7 +35,7 @@
 
 **Files:**
 - Create: `pyproject.toml`
-- Create: `src/tlekit/__init__.py`
+- Create: `src/lintle/__init__.py`
 - Create: `tests/conftest.py`
 - Move: existing `tle*.txt` + `TLEs.zip` from repo root into `data/source/`
 
@@ -43,14 +43,14 @@
 
 ```toml
 [project]
-name = "tlekit"
+name = "lintle"
 version = "0.1.0"
 description = "Validator and cleaner for Two-Line Element (TLE) corpus files"
 requires-python = ">=3.11"
 dependencies = []
 
 [project.scripts]
-tle-clean = "tlekit.cli:main"
+lintle = "lintle.cli:main"
 
 [dependency-groups]
 dev = ["pytest>=8.0", "sgp4>=2.23"]
@@ -60,16 +60,16 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/tlekit"]
+packages = ["src/lintle"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 ```
 
-- [ ] **Step 2: Create `src/tlekit/__init__.py`**
+- [ ] **Step 2: Create `src/lintle/__init__.py`**
 
 ```python
-"""tlekit — validator and cleaner for Two-Line Element (TLE) corpus files."""
+"""lintle — validator and cleaner for Two-Line Element (TLE) corpus files."""
 
 __version__ = "0.1.0"
 
@@ -124,14 +124,14 @@ Expected: the `tle*.txt` files (and `TLEs.zip`) are listed under `data/source/`.
 
 - [ ] **Step 5: Verify the project builds and imports**
 
-Run: `uv run python -c "import tlekit; print(tlekit.__version__, tlekit.stem('tle2022.txt'))"`
+Run: `uv run python -c "import lintle; print(lintle.__version__, lintle.stem('tle2022.txt'))"`
 Expected: `0.1.0 tle2022`
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add pyproject.toml src/tlekit/__init__.py tests/conftest.py
-git commit -m "chore: scaffold tlekit uv project"
+git add pyproject.toml src/lintle/__init__.py tests/conftest.py
+git commit -m "chore: scaffold lintle uv project"
 ```
 
 ---
@@ -139,7 +139,7 @@ git commit -m "chore: scaffold tlekit uv project"
 ## Task 2: `tle.py` — checksum
 
 **Files:**
-- Create: `src/tlekit/tle.py`
+- Create: `src/lintle/tle.py`
 - Test: `tests/test_tle.py`
 
 - [ ] **Step 1: Write the failing test**
@@ -147,7 +147,7 @@ git commit -m "chore: scaffold tlekit uv project"
 Create `tests/test_tle.py`:
 
 ```python
-from tlekit import tle
+from lintle import tle
 
 
 def test_checksum_of_canonical_line1(line1):
@@ -173,11 +173,11 @@ def test_non_digit_non_minus_counts_as_zero():
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `uv run pytest tests/test_tle.py -v`
-Expected: FAIL — `AttributeError: module 'tlekit.tle' has no attribute 'compute_checksum'` (or `ModuleNotFoundError` if the file does not exist yet).
+Expected: FAIL — `AttributeError: module 'lintle.tle' has no attribute 'compute_checksum'` (or `ModuleNotFoundError` if the file does not exist yet).
 
 - [ ] **Step 3: Write minimal implementation**
 
-Create `src/tlekit/tle.py`:
+Create `src/lintle/tle.py`:
 
 ```python
 """Core TLE validation: the single definition of a "perfect" record.
@@ -212,7 +212,7 @@ Expected: PASS (4 tests).
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/tlekit/tle.py tests/test_tle.py
+git add src/lintle/tle.py tests/test_tle.py
 git commit -m "feat: add TLE mod-10 checksum"
 ```
 
@@ -221,7 +221,7 @@ git commit -m "feat: add TLE mod-10 checksum"
 ## Task 3: `tle.py` — column-layout validation
 
 **Files:**
-- Modify: `src/tlekit/tle.py`
+- Modify: `src/lintle/tle.py`
 - Test: `tests/test_tle.py`
 
 This task adds `_check_columns(body, lineno)`, which validates the 68 data columns (columns 1–68) of a TLE line against fixed-position rules.
@@ -264,11 +264,11 @@ def test_letter_in_digit_only_field_rejected(line1):
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `uv run pytest tests/test_tle.py -k column -v`
-Expected: FAIL — `AttributeError: module 'tlekit.tle' has no attribute '_check_columns'`.
+Expected: FAIL — `AttributeError: module 'lintle.tle' has no attribute '_check_columns'`.
 
 - [ ] **Step 3: Write minimal implementation**
 
-Append to `src/tlekit/tle.py`:
+Append to `src/lintle/tle.py`:
 
 ```python
 # --- Column-layout rules -------------------------------------------------
@@ -381,7 +381,7 @@ Expected: PASS (all tests, including Task 2's).
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/tlekit/tle.py tests/test_tle.py
+git add src/lintle/tle.py tests/test_tle.py
 git commit -m "feat: add TLE column-layout validation"
 ```
 
@@ -390,7 +390,7 @@ git commit -m "feat: add TLE column-layout validation"
 ## Task 4: `tle.py` — semantic ranges and `validate_body`
 
 **Files:**
-- Modify: `src/tlekit/tle.py`
+- Modify: `src/lintle/tle.py`
 - Test: `tests/test_tle.py`
 
 This task adds `_check_semantics` (physical range checks) and the public `validate_body`, which composes the column and semantic levels (§5.4).
@@ -425,11 +425,11 @@ def test_column_failure_short_circuits_semantics(line1):
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `uv run pytest tests/test_tle.py -k "validate_body or semantics or mean_motion or inclination" -v`
-Expected: FAIL — `AttributeError: module 'tlekit.tle' has no attribute 'validate_body'`.
+Expected: FAIL — `AttributeError: module 'lintle.tle' has no attribute 'validate_body'`.
 
 - [ ] **Step 3: Write minimal implementation**
 
-Append to `src/tlekit/tle.py`:
+Append to `src/lintle/tle.py`:
 
 ```python
 def _check_semantics(body, lineno):
@@ -490,7 +490,7 @@ Expected: PASS (all tests).
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/tlekit/tle.py tests/test_tle.py
+git add src/lintle/tle.py tests/test_tle.py
 git commit -m "feat: add TLE semantic range validation"
 ```
 
@@ -499,7 +499,7 @@ git commit -m "feat: add TLE semantic range validation"
 ## Task 5: `tle.py` — line and record validation
 
 **Files:**
-- Modify: `src/tlekit/tle.py`
+- Modify: `src/lintle/tle.py`
 - Test: `tests/test_tle.py`
 
 Adds `checksum_error`, `validate_line` (full 69-char line), and `validate_record` (paired lines + catalog match).
@@ -540,11 +540,11 @@ def test_validate_record_detects_catalog_mismatch(line1, line2):
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `uv run pytest tests/test_tle.py -k "validate_line or validate_record or checksum_error" -v`
-Expected: FAIL — `AttributeError: module 'tlekit.tle' has no attribute 'checksum_error'`.
+Expected: FAIL — `AttributeError: module 'lintle.tle' has no attribute 'checksum_error'`.
 
 - [ ] **Step 3: Write minimal implementation**
 
-Append to `src/tlekit/tle.py`:
+Append to `src/lintle/tle.py`:
 
 ```python
 def checksum_error(line):
@@ -599,7 +599,7 @@ Expected: PASS (all tests).
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/tlekit/tle.py tests/test_tle.py
+git add src/lintle/tle.py tests/test_tle.py
 git commit -m "feat: add TLE line and record validation"
 ```
 
@@ -624,7 +624,7 @@ expected (sgp4 is permissive), so only acceptance is cross-checked.
 
 from sgp4.api import Satrec
 
-from tlekit import tle
+from lintle import tle
 
 
 def test_canonical_tle_accepted_by_both(line1, line2):
@@ -651,7 +651,7 @@ git commit -m "test: cross-check validator against sgp4 oracle"
 ## Task 7: `repair.py` — `repair_line`
 
 **Files:**
-- Create: `src/tlekit/repair.py`
+- Create: `src/lintle/repair.py`
 - Test: `tests/test_repair.py`
 
 `repair_line` decodes one raw line, applies the speculative fixes in the fixed order from §6.6 (line-ending → leading-trim → trailing-trim → backslash-strip → checksum reconstruction), then runs full validation once. It returns `(clean_line, fixes, error, category)`.
@@ -661,7 +661,7 @@ git commit -m "test: cross-check validator against sgp4 oracle"
 Create `tests/test_repair.py`:
 
 ```python
-from tlekit import repair, tle
+from lintle import repair, tle
 
 
 def test_strip_trailing_backslash(line1):
@@ -717,11 +717,11 @@ def test_wrong_length_rejected(line1):
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `uv run pytest tests/test_repair.py -v`
-Expected: FAIL — `ModuleNotFoundError: No module named 'tlekit.repair'`.
+Expected: FAIL — `ModuleNotFoundError: No module named 'lintle.repair'`.
 
 - [ ] **Step 3: Write minimal implementation**
 
-Create `src/tlekit/repair.py`:
+Create `src/lintle/repair.py`:
 
 ```python
 """Speculative, validated repair of raw TLE lines and records.
@@ -730,7 +730,7 @@ Every fix is applied and then confirmed by ``tle`` validation; a fix is
 committed only if the result passes. Pure functions — no I/O.
 """
 
-from tlekit import tle
+from lintle import tle
 
 RECONSTRUCTED_CHECKSUM = "reconstructed-checksum"
 
@@ -811,7 +811,7 @@ Expected: PASS (8 tests).
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/tlekit/repair.py tests/test_repair.py
+git add src/lintle/repair.py tests/test_repair.py
 git commit -m "feat: add speculative single-line repair"
 ```
 
@@ -820,7 +820,7 @@ git commit -m "feat: add speculative single-line repair"
 ## Task 8: `repair.py` — `process_record`
 
 **Files:**
-- Modify: `src/tlekit/repair.py`
+- Modify: `src/lintle/repair.py`
 - Test: `tests/test_repair.py`
 
 Adds the `Accepted`/`Rejected` result types and `process_record`, which repairs both lines of a candidate and validates them as a pair.
@@ -868,16 +868,16 @@ def test_process_rejects_catalog_mismatch(line1, line2):
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `uv run pytest tests/test_repair.py -k process -v`
-Expected: FAIL — `AttributeError: module 'tlekit.repair' has no attribute 'process_record'`.
+Expected: FAIL — `AttributeError: module 'lintle.repair' has no attribute 'process_record'`.
 
 - [ ] **Step 3: Write minimal implementation**
 
-Add the import and append the rest to `src/tlekit/repair.py`. Change the existing import line at the top of the file to:
+Add the import and append the rest to `src/lintle/repair.py`. Change the existing import line at the top of the file to:
 
 ```python
 import dataclasses
 
-from tlekit import tle
+from lintle import tle
 ```
 
 Then append:
@@ -946,7 +946,7 @@ Expected: PASS (12 tests).
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/tlekit/repair.py tests/test_repair.py
+git add src/lintle/repair.py tests/test_repair.py
 git commit -m "feat: add record-level repair and result types"
 ```
 
@@ -955,7 +955,7 @@ git commit -m "feat: add record-level repair and result types"
 ## Task 9: `report.py` — stats types and `.broken.txt` writer
 
 **Files:**
-- Create: `src/tlekit/report.py`
+- Create: `src/lintle/report.py`
 - Test: `tests/test_report.py`
 
 Defines `FileStats` (per-file accumulator), `RejectEntry` (one quarantined record for the sidecar), and `write_broken_file`, which writes the byte-faithful `.broken.txt` (§9.2, §10).
@@ -965,7 +965,7 @@ Defines `FileStats` (per-file accumulator), `RejectEntry` (one quarantined recor
 Create `tests/test_report.py`:
 
 ```python
-from tlekit import report
+from lintle import report
 
 
 def test_write_broken_file(tmp_path):
@@ -1016,11 +1016,11 @@ def test_two_line_record_location(tmp_path):
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `uv run pytest tests/test_report.py -v`
-Expected: FAIL — `ModuleNotFoundError: No module named 'tlekit.report'`.
+Expected: FAIL — `ModuleNotFoundError: No module named 'lintle.report'`.
 
 - [ ] **Step 3: Write minimal implementation**
 
-Create `src/tlekit/report.py`:
+Create `src/lintle/report.py`:
 
 ```python
 """Per-file statistics, the quarantine sidecar writer, and summaries."""
@@ -1028,7 +1028,7 @@ Create `src/tlekit/report.py`:
 import dataclasses
 import datetime
 
-from tlekit import __version__, stem
+from lintle import __version__, stem
 
 
 @dataclasses.dataclass
@@ -1068,7 +1068,7 @@ def write_broken_file(path, src_name, stats):
     )
     header = (
         f"# {stem(src_name)}.broken.txt - quarantined records\n"
-        f"# source: {src_name} | generated: {timestamp} | tlekit {__version__}\n"
+        f"# source: {src_name} | generated: {timestamp} | lintle {__version__}\n"
         f"# {stats.quarantined_count} records quarantined "
         f"of {stats.total_records} total\n\n"
     )
@@ -1101,7 +1101,7 @@ Expected: PASS (3 tests).
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/tlekit/report.py tests/test_report.py
+git add src/lintle/report.py tests/test_report.py
 git commit -m "feat: add file stats and quarantine sidecar writer"
 ```
 
@@ -1110,7 +1110,7 @@ git commit -m "feat: add file stats and quarantine sidecar writer"
 ## Task 10: `report.py` — summary formatting
 
 **Files:**
-- Modify: `src/tlekit/report.py`
+- Modify: `src/lintle/report.py`
 - Test: `tests/test_report.py`
 
 Adds `format_summary` (the human one-liner block, §9.3), `summary_dict` (the `--report json` shape), and `format_reject_lines` (the per-defect line listing for `validate` mode, §7).
@@ -1168,11 +1168,11 @@ def test_format_reject_lines_caps_long_lists():
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `uv run pytest tests/test_report.py -k "summary or reject_lines" -v`
-Expected: FAIL — `AttributeError: module 'tlekit.report' has no attribute 'format_summary'`.
+Expected: FAIL — `AttributeError: module 'lintle.report' has no attribute 'format_summary'`.
 
 - [ ] **Step 3: Write minimal implementation**
 
-Append to `src/tlekit/report.py`:
+Append to `src/lintle/report.py`:
 
 ```python
 def _join_counts(counts):
@@ -1232,7 +1232,7 @@ Expected: PASS (7 tests).
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/tlekit/report.py tests/test_report.py
+git add src/lintle/report.py tests/test_report.py
 git commit -m "feat: add run summary formatting"
 ```
 
@@ -1241,7 +1241,7 @@ git commit -m "feat: add run summary formatting"
 ## Task 11: `pipeline.py` — streaming reader and pairing
 
 **Files:**
-- Create: `src/tlekit/pipeline.py`
+- Create: `src/lintle/pipeline.py`
 - Test: `tests/test_pipeline.py`
 
 `iter_records` streams a file in binary, drops blank/CR-only lines, and runs the prefix-driven pairing state machine (§8), yielding `RecordCandidate` or `Orphan`.
@@ -1251,7 +1251,7 @@ git commit -m "feat: add run summary formatting"
 Create `tests/test_pipeline.py`:
 
 ```python
-from tlekit import pipeline
+from lintle import pipeline
 
 
 def test_pairs_simple_records(tmp_path, line1, line2):
@@ -1299,11 +1299,11 @@ def test_bad_prefix_line(tmp_path, line1, line2):
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `uv run pytest tests/test_pipeline.py -v`
-Expected: FAIL — `ModuleNotFoundError: No module named 'tlekit.pipeline'`.
+Expected: FAIL — `ModuleNotFoundError: No module named 'lintle.pipeline'`.
 
 - [ ] **Step 3: Write minimal implementation**
 
-Create `src/tlekit/pipeline.py`:
+Create `src/lintle/pipeline.py`:
 
 ```python
 """Streaming I/O: read a file, pair lines into records, route them."""
@@ -1390,7 +1390,7 @@ Expected: PASS (5 tests).
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/tlekit/pipeline.py tests/test_pipeline.py
+git add src/lintle/pipeline.py tests/test_pipeline.py
 git commit -m "feat: add streaming reader and prefix-driven pairing"
 ```
 
@@ -1399,7 +1399,7 @@ git commit -m "feat: add streaming reader and prefix-driven pairing"
 ## Task 12: `pipeline.py` — `process_file`
 
 **Files:**
-- Modify: `src/tlekit/pipeline.py`
+- Modify: `src/lintle/pipeline.py`
 - Test: `tests/test_pipeline.py`
 
 `process_file` streams one source file, routes every candidate through `repair`, tallies a `FileStats`, and — in `clean` mode — writes `<name>.cleaned.txt` (atomically) and `<name>.broken.txt`.
@@ -1469,11 +1469,11 @@ def test_internal_error_is_quarantined_not_raised(tmp_path, line1, line2,
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `uv run pytest tests/test_pipeline.py -k process_file -v`
-Expected: FAIL — `AttributeError: module 'tlekit.pipeline' has no attribute 'process_file'`.
+Expected: FAIL — `AttributeError: module 'lintle.pipeline' has no attribute 'process_file'`.
 
 - [ ] **Step 3: Write minimal implementation**
 
-Add the imports and append the function. Change the top of `src/tlekit/pipeline.py` so the imports read:
+Add the imports and append the function. Change the top of `src/lintle/pipeline.py` so the imports read:
 
 ```python
 """Streaming I/O: read a file, pair lines into records, route them."""
@@ -1481,7 +1481,7 @@ Add the imports and append the function. Change the top of `src/tlekit/pipeline.
 import dataclasses
 import os
 
-from tlekit import repair, report, stem
+from lintle import repair, report, stem
 ```
 
 Then append:
@@ -1585,7 +1585,7 @@ Expected: PASS (9 tests).
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/tlekit/pipeline.py tests/test_pipeline.py
+git add src/lintle/pipeline.py tests/test_pipeline.py
 git commit -m "feat: add per-file processing and output routing"
 ```
 
@@ -1594,7 +1594,7 @@ git commit -m "feat: add per-file processing and output routing"
 ## Task 13: `cli.py` — file discovery and argument parsing
 
 **Files:**
-- Create: `src/tlekit/cli.py`
+- Create: `src/lintle/cli.py`
 - Test: `tests/test_cli.py`
 
 Adds `discover_paths` (expand directories to `tle*.txt`, excluding tool output) and `build_parser` (the `validate`/`clean` argument parser).
@@ -1606,7 +1606,7 @@ Create `tests/test_cli.py`:
 ```python
 import os
 
-from tlekit import cli
+from lintle import cli
 
 
 def test_discover_expands_directory(tmp_path):
@@ -1649,14 +1649,14 @@ def test_parser_accepts_jobs_and_paths():
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `uv run pytest tests/test_cli.py -v`
-Expected: FAIL — `ModuleNotFoundError: No module named 'tlekit.cli'`.
+Expected: FAIL — `ModuleNotFoundError: No module named 'lintle.cli'`.
 
 - [ ] **Step 3: Write minimal implementation**
 
-Create `src/tlekit/cli.py`:
+Create `src/lintle/cli.py`:
 
 ```python
-"""Command-line interface: ``tle-clean validate`` and ``tle-clean clean``."""
+"""Command-line interface: ``lintle validate`` and ``lintle clean``."""
 
 import argparse
 import concurrent.futures
@@ -1665,7 +1665,7 @@ import os
 import shutil
 import sys
 
-from tlekit import pipeline, report
+from lintle import pipeline, report
 
 _DEFAULT_SOURCE = "data/source"
 _DEFAULT_OUTPUT = "data/output"
@@ -1693,9 +1693,9 @@ def discover_paths(paths):
 
 
 def build_parser():
-    """Build the ``tle-clean`` argument parser."""
+    """Build the ``lintle`` argument parser."""
     parser = argparse.ArgumentParser(
-        prog="tle-clean",
+        prog="lintle",
         description="Validate and clean Two-Line Element (TLE) corpus files.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -1731,7 +1731,7 @@ Expected: PASS (4 tests).
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/tlekit/cli.py tests/test_cli.py
+git add src/lintle/cli.py tests/test_cli.py
 git commit -m "feat: add CLI file discovery and argument parser"
 ```
 
@@ -1740,8 +1740,8 @@ git commit -m "feat: add CLI file discovery and argument parser"
 ## Task 14: `cli.py` — `main` and the module entry point
 
 **Files:**
-- Modify: `src/tlekit/cli.py`
-- Create: `src/tlekit/__main__.py`
+- Modify: `src/lintle/cli.py`
+- Create: `src/lintle/__main__.py`
 - Test: `tests/test_cli.py`
 
 `main` discovers files, checks disk space before a `clean` run (§10), fans the files out across a `ProcessPoolExecutor`, prints the summary, and returns the exit code (`0` clean / `1` records quarantined / `2` operational error).
@@ -1798,11 +1798,11 @@ def test_main_validate_prints_summary(tmp_path, line1, line2, capsys):
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `uv run pytest tests/test_cli.py -k main -v`
-Expected: FAIL — `AttributeError: module 'tlekit.cli' has no attribute 'main'`.
+Expected: FAIL — `AttributeError: module 'lintle.cli' has no attribute 'main'`.
 
 - [ ] **Step 3: Write minimal implementation**
 
-Append to `src/tlekit/cli.py`:
+Append to `src/lintle/cli.py`:
 
 ```python
 def _check_disk_space(out_dir, files):
@@ -1820,7 +1820,7 @@ def _check_disk_space(out_dir, files):
 
 
 def main(argv=None):
-    """Entry point for the ``tle-clean`` console script.
+    """Entry point for the ``lintle`` console script.
 
     Returns the process exit code: ``0`` = no records quarantined;
     ``1`` = at least one record quarantined; ``2`` = operational error
@@ -1874,14 +1874,14 @@ def main(argv=None):
     return 1 if total_quarantined else 0
 ```
 
-- [ ] **Step 4: Create `src/tlekit/__main__.py`**
+- [ ] **Step 4: Create `src/lintle/__main__.py`**
 
 ```python
-"""Allow ``python -m tlekit`` to run the CLI."""
+"""Allow ``python -m lintle`` to run the CLI."""
 
 import sys
 
-from tlekit.cli import main
+from lintle.cli import main
 
 if __name__ == "__main__":
     sys.exit(main())
@@ -1895,15 +1895,15 @@ Expected: PASS (8 tests).
 - [ ] **Step 6: Verify the console script works end to end**
 
 ```bash
-uv run tle-clean --help
-uv run python -m tlekit validate --help
+uv run lintle --help
+uv run python -m lintle validate --help
 ```
 Expected: both print usage text showing the `validate` and `clean` subcommands.
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add src/tlekit/cli.py src/tlekit/__main__.py tests/test_cli.py
+git add src/lintle/cli.py src/lintle/__main__.py tests/test_cli.py
 git commit -m "feat: add CLI run loop, parallelism, and exit codes"
 ```
 
@@ -1923,7 +1923,7 @@ Create `tests/test_integration.py`:
 ```python
 """End-to-end pipeline tests: golden output, idempotence, re-validation."""
 
-from tlekit import pipeline, tle
+from lintle import pipeline, tle
 
 
 def test_golden_mixed_file(tmp_path, line1, line2):
@@ -2022,7 +2022,7 @@ No code changes. This is the discovery milestone: the `validate` pass is the aut
 
 - [ ] **Step 1: Validate the whole corpus**
 
-Run: `uv run tle-clean validate data/source --report text`
+Run: `uv run lintle validate data/source --report text`
 Expected: a per-file summary block for each of the 29 files. Review the `rejects:` categories.
 
 - [ ] **Step 2: Assess the defect catalogue**
@@ -2031,13 +2031,13 @@ If `validate` surfaces a reject category that is genuinely safe and unambiguous 
 
 - [ ] **Step 3: Clean the corpus**
 
-Run: `uv run tle-clean clean data/source --out-dir data/output --report json > data/output/run-summary.json`
+Run: `uv run lintle clean data/source --out-dir data/output --report json > data/output/run-summary.json`
 Expected: `data/output/` contains a `<name>.cleaned.txt` and `<name>.broken.txt` per source file. If a single slow disk causes I/O contention, re-run with `--jobs 1`.
 
 - [ ] **Step 4: Spot-check the results**
 
 ```bash
-uv run tle-clean validate data/output/tle2025.cleaned.txt
+uv run lintle validate data/output/tle2025.cleaned.txt
 head -5 data/output/tle2017.broken.txt
 ```
 Expected: the cleaned file re-validates with zero quarantined records; the `.broken.txt` header and entries are well-formed and suitable for a space-track report.

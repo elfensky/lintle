@@ -8,6 +8,8 @@
   prefix-driven with the same-satellite mispair disclosed; §4.2/§7 updated for the
   `data/source/` + `data/output/` corpus layout. **2026-05-22:** §9 — `clean` now splits
   output into `cleaned/` and `broken/` subdirectories and writes a `report.md` run report.
+  **2026-05-22:** project renamed `tlekit` → `lintle` — the package, PyPI distribution, and
+  console script are all now `lintle` (no behavioural change).
 - **Topic:** A tool to validate and clean a multi-gigabyte corpus of Two-Line Element (TLE) files exported from space-track.org
 
 ## 1. Problem statement
@@ -145,15 +147,15 @@ TLEs/
 ├── data/                   # git-ignored — multi-gigabyte corpus, not version-controlled
 │   ├── source/             # the 29 raw tle*.txt files + TLEs.zip (inputs)
 │   └── output/             # cleaned/, broken/, report.md (the cleaner writes here — §9)
-├── pyproject.toml          # uv project; console script "tle-clean"; dev deps: pytest, sgp4
-├── src/tlekit/
+├── pyproject.toml          # uv project; console script "lintle"; dev deps: pytest, sgp4
+├── src/lintle/
 │   ├── __init__.py
 │   ├── tle.py              # CORE: defines a "perfect" TLE record (pure, no I/O)
 │   ├── repair.py           # candidate fixes — speculative, validated by tle.py (pure, no I/O)
 │   ├── pipeline.py         # streaming I/O: read → pair into records → route
 │   ├── report.py           # writes .broken.txt sidecar + per-file summary
 │   ├── cli.py              # argparse: `validate` and `clean` subcommands
-│   └── __main__.py         # `python -m tlekit`
+│   └── __main__.py         # `python -m lintle`
 ├── tests/
 │   ├── fixtures/           # tiny hand-built files, one per defect class
 │   └── test_*.py
@@ -346,11 +348,11 @@ independent integrity guarantee.
 
 ## 7. CLI
 
-A console script `tle-clean` with two subcommands matching the two asks:
+A console script `lintle` with two subcommands matching the two asks:
 
 ```
-tle-clean validate [paths…]    # ask #1 — read-only audit, mutates nothing
-tle-clean clean    [paths…]    # ask #2 — produces cleaned + broken files
+lintle validate [paths…]    # ask #1 — read-only audit, mutates nothing
+lintle clean    [paths…]    # ask #2 — produces cleaned + broken files
 ```
 
 Options:
@@ -440,7 +442,7 @@ Per source file, formatted to be detailed enough to file a report with space-tra
 
 ```
 # tle2022.broken.txt — quarantined records
-# source: tle2022.txt | generated: 2026-05-21T14:03:00Z | tlekit 0.1.0
+# source: tle2022.txt | generated: 2026-05-21T14:03:00Z | lintle 0.1.0
 # 3 records quarantined of 8,412,067 total
 
 [1] source lines 14820-14821 — reason: Line 2 checksum mismatch (col 69 is '3', computed '7')

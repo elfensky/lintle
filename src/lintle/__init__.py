@@ -1,4 +1,4 @@
-"""tlekit — validator and cleaner for Two-Line Element (TLE) corpus files."""
+"""lintle — validator and cleaner for Two-Line Element (TLE) corpus files."""
 
 __version__ = "0.1.0"
 

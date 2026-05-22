@@ -1,7 +1,7 @@
-# tlekit clean run report
+# lintle clean run report
 
 - Generated: 2026-05-22T16:16:02Z
-- Tool: tlekit 0.1.0
+- Tool: lintle 0.1.0
 - Files processed: 29
 
 ## Corpus totals

@@ -1,4 +1,4 @@
-"""Tests for tlekit.cli — argument parsing, path discovery, exit codes."""
+"""Tests for lintle.cli — argument parsing, path discovery, exit codes."""
 
 import json
 import os
@@ -6,7 +6,7 @@ import queue
 import signal
 import time
 
-from tlekit import cli, report
+from lintle import cli, report
 
 
 class TestDiscoverPaths:
@@ -60,7 +60,7 @@ class TestMain:
         assert (out / "broken" / "tle2099.broken.txt").exists()
         # A clean run writes a Markdown run report to the out-dir root.
         report_md = (out / "report.md").read_text()
-        assert "# tlekit clean run report" in report_md
+        assert "# lintle clean run report" in report_md
         assert "tle2099.txt" in report_md
         assert "Records:" in report_md
 

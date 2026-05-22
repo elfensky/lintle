@@ -1,6 +1,6 @@
-"""Tests for tlekit.repair — speculative, validated line and record repair."""
+"""Tests for lintle.repair — speculative, validated line and record repair."""
 
-from tlekit import repair, tle
+from lintle import repair, tle
 
 
 class TestRepairLine:

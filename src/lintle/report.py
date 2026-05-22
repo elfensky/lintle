@@ -3,7 +3,7 @@
 import dataclasses
 import datetime
 
-from tlekit import __version__, stem
+from lintle import __version__, stem
 
 
 @dataclasses.dataclass
@@ -41,7 +41,7 @@ def write_broken_file(path, src_name, stats):
     timestamp = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     header = (
         f"# {stem(src_name)}.broken.txt - quarantined records\n"
-        f"# source: {src_name} | generated: {timestamp} | tlekit {__version__}\n"
+        f"# source: {src_name} | generated: {timestamp} | lintle {__version__}\n"
         f"# {stats.quarantined_count} records quarantined "
         f"of {stats.total_records} total\n\n"
     )
@@ -143,10 +143,10 @@ def format_run_report(all_stats):
         return f"{100 * count / total:.4f}%" if total else "n/a"
 
     lines = [
-        "# tlekit clean run report",
+        "# lintle clean run report",
         "",
         f"- Generated: {timestamp}",
-        f"- Tool: tlekit {__version__}",
+        f"- Tool: lintle {__version__}",
         f"- Files processed: {len(all_stats)}",
         "",
         "## Corpus totals",

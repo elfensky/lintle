@@ -1,6 +1,6 @@
 """End-to-end pipeline tests: golden output, idempotence, re-validation."""
 
-from tlekit import pipeline, tle
+from lintle import pipeline, tle
 
 
 class TestEndToEnd:

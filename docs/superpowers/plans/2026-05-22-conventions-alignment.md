@@ -1,8 +1,8 @@
-# tlekit Conventions Alignment Implementation Plan
+# lintle Conventions Alignment Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Bring the implemented `tlekit` project up to the tooling, code-quality, test-structure, and documentation conventions of the reference project `descent-engine`, without changing any runtime behaviour.
+**Goal:** Bring the implemented `lintle` project up to the tooling, code-quality, test-structure, and documentation conventions of the reference project `descent-engine`, without changing any runtime behaviour.
 
 **Architecture:** Eight ordered tasks. Task 1 adds tooling (`ruff`, `pytest-cov`) and project-setup files. Task 2 reorganises the seven test files into `Test*` classes. Task 3 runs the `ruff` format + lint pass. Tasks 4–7 add the four project documents. Task 8 audits docstrings and runs final verification. The guardrail throughout: **77 tests must keep passing** — that is the proof each non-additive change was behaviour-neutral.
 
@@ -49,7 +49,7 @@ Add `ruff` and `pytest-cov`, the `[tool.ruff]` config, and two project-setup fil
 
 - [ ] **Step 1: Replace the entire contents of `pyproject.toml` with the following**
 
-The tables are reordered to match `descent-engine`'s layout (`build-system`, `project`, `project.scripts`, `dependency-groups`, then `tool.*`). `[tool.hatch.build.targets.wheel]` is kept — `tlekit` needs it because the package directory name does not equal the distribution name.
+The tables are reordered to match `descent-engine`'s layout (`build-system`, `project`, `project.scripts`, `dependency-groups`, then `tool.*`). `[tool.hatch.build.targets.wheel]` is kept — `lintle` needs it because the package directory name does not equal the distribution name.
 
 ```toml
 [build-system]
@@ -57,14 +57,14 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "tlekit"
+name = "lintle"
 version = "0.1.0"
 description = "Validator and cleaner for Two-Line Element (TLE) corpus files"
 requires-python = ">=3.11"
 dependencies = []
 
 [project.scripts]
-tle-clean = "tlekit.cli:main"
+lintle = "lintle.cli:main"
 
 [dependency-groups]
 dev = [
@@ -75,7 +75,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/tlekit"]
+packages = ["src/lintle"]
 
 [tool.ruff]
 target-version = "py311"
@@ -156,7 +156,7 @@ For each file:
 
 ### Class assignments per file
 
-**`tests/test_tle.py`** — add module docstring: `"""Tests for tlekit.tle — the TLE validator."""`
+**`tests/test_tle.py`** — add module docstring: `"""Tests for lintle.tle — the TLE validator."""`
 
 | Class | Methods (in this order) |
 |-------|-------------------------|
@@ -167,21 +167,21 @@ For each file:
 | `TestValidateLine` | `test_validate_line_accepts_canonical`, `test_validate_line_rejects_wrong_length`, `test_checksum_mismatch_detected` |
 | `TestValidateRecord` | `test_validate_record_accepts_canonical`, `test_validate_record_detects_catalog_mismatch` |
 
-**`tests/test_repair.py`** — add module docstring: `"""Tests for tlekit.repair — speculative, validated line and record repair."""`
+**`tests/test_repair.py`** — add module docstring: `"""Tests for lintle.repair — speculative, validated line and record repair."""`
 
 | Class | Methods (in this order) |
 |-------|-------------------------|
 | `TestRepairLine` | `test_strip_trailing_backslash`, `test_reconstruct_missing_checksum`, `test_reconstruct_with_backslash_artifact`, `test_crlf_normalised`, `test_checksum_mismatch_rejected`, `test_non_ascii_byte_rejected`, `test_interior_character_missing_rejected`, `test_wrong_length_rejected`, `test_leading_whitespace_trimmed`, `test_trailing_whitespace_trimmed`, `test_invalid_columns_rejected` |
 | `TestProcessRecord` | `test_process_accepts_clean_record`, `test_process_repairs_backslash_and_checksum`, `test_process_rejects_bad_line`, `test_process_rejects_catalog_mismatch`, `test_process_rejects_both_bad_lines` |
 
-**`tests/test_pipeline.py`** — add module docstring: `"""Tests for tlekit.pipeline — streaming I/O, line pairing, file processing."""`
+**`tests/test_pipeline.py`** — add module docstring: `"""Tests for lintle.pipeline — streaming I/O, line pairing, file processing."""`
 
 | Class | Methods (in this order) |
 |-------|-------------------------|
 | `TestIterRecords` | `test_pairs_simple_records`, `test_blank_and_cr_only_lines_dropped`, `test_whitespace_only_line_dropped`, `test_lone_line1_at_eof_is_orphaned`, `test_two_line1s_orphan_the_first`, `test_orphan_line2`, `test_bad_prefix_line` |
 | `TestProcessFile` | `test_process_file_clean_mode`, `test_process_file_quarantines_bad_record`, `test_validate_mode_writes_nothing`, `test_internal_error_is_quarantined_not_raised`, `test_clean_run_leaves_no_temp_file`, `test_failed_run_does_not_leak_temp_file`, `test_process_file_emits_progress`, `test_progress_disabled_when_every_is_zero` |
 
-**`tests/test_cli.py`** — add module docstring: `"""Tests for tlekit.cli — argument parsing, path discovery, exit codes."""`
+**`tests/test_cli.py`** — add module docstring: `"""Tests for lintle.cli — argument parsing, path discovery, exit codes."""`
 
 | Class | Methods (in this order) |
 |-------|-------------------------|
@@ -206,11 +206,11 @@ For each file:
 `test_report.py` is the only file with module-level helper functions, so it is shown in full. The helpers `_stats_with_counts` and `_two_file_stats` stay at module level; the nine tests are grouped into four classes. After this transformation `tests/test_report.py` reads exactly:
 
 ````python
-"""Tests for tlekit.report — statistics, the quarantine sidecar, and summaries."""
+"""Tests for lintle.report — statistics, the quarantine sidecar, and summaries."""
 
 import json
 
-from tlekit import report
+from lintle import report
 
 
 def _stats_with_counts():
@@ -339,7 +339,7 @@ class TestFormatRejectLines:
 class TestRunReport:
     def test_format_run_report_aggregates_corpus(self):
         out = report.format_run_report(_two_file_stats())
-        assert "# tlekit clean run report" in out
+        assert "# lintle clean run report" in out
         assert "Files processed: 2" in out
         assert "Records: 4,000" in out  # 1000 + 3000
         assert "Cleaned: 3,990" in out  # 990 + 3000
@@ -355,7 +355,7 @@ class TestRunReport:
         out = tmp_path / "report.md"
         report.write_run_report(str(out), _two_file_stats())
         text = out.read_text(encoding="utf-8")
-        assert text.startswith("# tlekit clean run report")
+        assert text.startswith("# lintle clean run report")
         assert "Per-file breakdown" in text
 ````
 
@@ -393,7 +393,7 @@ git commit -m "test: group tests into Test* classes"
 
 Apply `ruff format` and fix every `ruff check` finding across source and tests.
 
-**Files:** potentially every file under `src/tlekit/` and `tests/` (formatter-driven).
+**Files:** potentially every file under `src/lintle/` and `tests/` (formatter-driven).
 
 - [ ] **Step 1: Apply the formatter**
 
@@ -408,7 +408,7 @@ Expected: any import-ordering (`I`) and other auto-fixable findings are resolved
 - [ ] **Step 3: Inspect the remaining findings**
 
 Run: `uv run ruff check .`
-Expected: ideally `All checks passed!`. `src/tlekit/pipeline.py` already carries a deliberate `# noqa: SIM115` for its long-lived file handle — leave it.
+Expected: ideally `All checks passed!`. `src/lintle/pipeline.py` already carries a deliberate `# noqa: SIM115` for its long-lived file handle — leave it.
 
 If any finding remains:
 - If the fix is a clear improvement that does not change behaviour, apply it.
@@ -442,11 +442,11 @@ git commit -m "style: apply ruff format and lint fixes"
 - [ ] **Step 1: Create `README.md` with exactly this content**
 
 ````markdown
-# tlekit
+# lintle
 
 Validator and cleaner for a multi-gigabyte corpus of Two-Line Element (TLE)
 satellite-tracking files exported from [space-track.org](https://www.space-track.org/).
-The console script `tle-clean` audits the corpus for systematic export-pipeline defects
+The console script `lintle` audits the corpus for systematic export-pipeline defects
 and emits a corrected copy of each file, quarantining any record it cannot *safely* fix.
 
 ## Quick Start
@@ -455,24 +455,24 @@ and emits a corrected copy of each file, quarantining any record it cannot *safe
 git clone <repo-url>
 cd TLEs
 uv sync
-uv run tle-clean validate          # read-only audit of data/source/
-uv run tle-clean clean             # write cleaned files to data/output/
+uv run lintle validate          # read-only audit of data/source/
+uv run lintle clean             # write cleaned files to data/output/
 ```
 
 ## Commands
 
 ```bash
-uv run tle-clean validate          # Audit files, report defects (writes nothing)
-uv run tle-clean clean             # Write cleaned files + quarantine sidecars
+uv run lintle validate          # Audit files, report defects (writes nothing)
+uv run lintle clean             # Write cleaned files + quarantine sidecars
 uv run pytest                      # Run tests
-uv run pytest --cov=tlekit --cov-report=term-missing --cov-branch  # Tests + coverage
+uv run pytest --cov=lintle --cov-report=term-missing --cov-branch  # Tests + coverage
 uv run ruff check .                # Lint
 uv run ruff format --check .       # Format check
 ```
 
 ## What it does
 
-`tle-clean` has two modes:
+`lintle` has two modes:
 
 - **`validate`** — a read-only audit. Reports defects by type and source location;
   writes nothing.
@@ -518,8 +518,8 @@ flowchart LR
 ### Components
 
 ```
-src/tlekit/
-├── __main__.py    # python -m tlekit entry point
+src/lintle/
+├── __main__.py    # python -m lintle entry point
 ├── __init__.py    # __version__, stem() filename helper
 ├── cli.py         # argparse; path globbing; per-file ProcessPoolExecutor parallelism
 ├── pipeline.py    # streams a file in binary, pairs 1/2 lines into records, routes them
@@ -573,7 +573,7 @@ git commit -m "docs: add README"
 - [ ] **Step 1: Create `CONTRIBUTING.md` with exactly this content**
 
 ````markdown
-# Contributing to tlekit
+# Contributing to lintle
 
 ## Prerequisites
 
@@ -600,14 +600,14 @@ uv add --group dev <pkg>   # Add a dev-only dependency
 uv sync                    # Reinstall from the lock file (after a pull)
 ```
 
-The **runtime has no third-party dependencies** — `tlekit` is pure standard library.
+The **runtime has no third-party dependencies** — `lintle` is pure standard library.
 `sgp4` is a dev-only test oracle and must never be imported at runtime.
 
 ## Running
 
 ```bash
-uv run tle-clean validate          # Read-only audit of data/source/
-uv run tle-clean clean             # Write cleaned output to data/output/
+uv run lintle validate          # Read-only audit of data/source/
+uv run lintle clean             # Write cleaned output to data/output/
 ```
 
 `uv run` executes a command inside the project virtual environment — no manual
@@ -625,7 +625,7 @@ uv run pytest tests/test_tle.py    # Run one file
 ### Coverage
 
 ```bash
-uv run pytest --cov=tlekit --cov-report=term-missing --cov-branch
+uv run pytest --cov=lintle --cov-report=term-missing --cov-branch
 ```
 
 This reports line and branch coverage, listing uncovered lines in the `Missing` column.
@@ -687,7 +687,7 @@ Never claim success without the output. If a check fails, report the failure.
 ## Versioning
 
 Semantic versioning (`MAJOR.MINOR.PATCH`). The version is tracked in two places that must
-stay in sync: `pyproject.toml` (`version`) and `src/tlekit/__init__.py` (`__version__`).
+stay in sync: `pyproject.toml` (`version`) and `src/lintle/__init__.py` (`__version__`).
 Record every release in `CHANGELOG.md`.
 ````
 
@@ -718,7 +718,7 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Added
 
-- `tle-clean` console script with two modes: `validate` (read-only audit) and `clean`
+- `lintle` console script with two modes: `validate` (read-only audit) and `clean`
   (writes corrected files plus quarantine sidecars).
 - `tle.py` — the single TLE validator: column layout, mod-10 checksum, semantic range
   checks, and paired-record validation.
@@ -748,7 +748,7 @@ git commit -m "docs: add CHANGELOG"
 
 The current `CLAUDE.md` is stale — it claims "no source code exists yet." Replace it with
 a current version following `descent-engine`'s `CLAUDE.md` structure, while preserving
-`tlekit`'s domain content (the four principles and the corpus-handling warnings).
+`lintle`'s domain content (the four principles and the corpus-handling warnings).
 
 **Files:**
 - Modify (full overwrite): `CLAUDE.md`
@@ -763,7 +763,7 @@ a current version following `descent-engine`'s `CLAUDE.md` structure, while pres
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this
 repository.
 
-`tlekit` — console script `tle-clean` — validates and cleans a ~30 GB corpus of Two-Line
+`lintle` — console script `lintle` — validates and cleans a ~30 GB corpus of Two-Line
 Element (TLE) satellite-tracking files exported from space-track.org.
 
 ## Authoritative spec
@@ -814,14 +814,14 @@ output shows failures.
 - Python 3.11. Concise one-paragraph docstrings on every public module, function, and
   class — match that established style; do not expand to Args/Returns/Raises blocks.
 - `ruff` for linting and formatting, configured in `pyproject.toml`.
-- `src/` layout — all package code lives under `src/tlekit/`.
+- `src/` layout — all package code lives under `src/lintle/`.
 - Run `uv run ruff check .` and `uv run ruff format --check .` before committing.
 
 ## Project Layout
 
 ```
-src/tlekit/
-├── __main__.py    # python -m tlekit entry point
+src/lintle/
+├── __main__.py    # python -m lintle entry point
 ├── __init__.py    # __version__, stem() filename helper
 ├── cli.py         # argparse; path globbing; per-file ProcessPoolExecutor parallelism
 ├── pipeline.py    # streams a file in binary, pairs 1/2 lines into records, routes them
@@ -841,11 +841,11 @@ Module dependencies point one way only: `cli.py → pipeline.py → repair.py �
 uv sync                            # Install, including dev deps (sgp4, pytest, ruff)
 uv run pytest                      # Full test suite
 uv run pytest tests/test_tle.py::TestComputeChecksum   # A single test class
-uv run pytest --cov=tlekit --cov-report=term-missing --cov-branch  # Tests + coverage
+uv run pytest --cov=lintle --cov-report=term-missing --cov-branch  # Tests + coverage
 uv run ruff check .                # Lint
 uv run ruff format --check .       # Format check
-uv run tle-clean validate          # Audit data/source/ (read-only)
-uv run tle-clean clean             # Clean data/source/ -> data/output/
+uv run lintle validate          # Audit data/source/ (read-only)
+uv run lintle clean             # Clean data/source/ -> data/output/
 ```
 
 ## Working Style
@@ -908,7 +908,7 @@ Run this check, which prints any public (non-underscore) function or class lacki
 uv run python -c "
 import ast, pathlib
 missing = []
-for path in sorted(pathlib.Path('src/tlekit').glob('*.py')):
+for path in sorted(pathlib.Path('src/lintle').glob('*.py')):
     tree = ast.parse(path.read_text())
     if ast.get_docstring(tree) is None:
         missing.append(f'{path}: module')
@@ -931,7 +931,7 @@ Expected: `77 passed`.
 
 - [ ] **Step 3: Run coverage**
 
-Run: `uv run pytest --cov=tlekit --cov-report=term-missing --cov-branch`
+Run: `uv run pytest --cov=lintle --cov-report=term-missing --cov-branch`
 Expected: `77 passed` with a coverage table. Record the total coverage percentage in the
 final report to the user. No `--cov-fail-under` gate is enforced.
 
@@ -950,7 +950,7 @@ Expected: every file reported already formatted; no files would be reformatted.
 If Step 1 reported nothing, skip this step — there is nothing to commit.
 
 ```bash
-git add src/tlekit/
+git add src/lintle/
 git commit -m "docs: fill missing docstrings"
 ```
 
