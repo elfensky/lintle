@@ -7,9 +7,13 @@ def test_write_broken_file(tmp_path):
     stats = report.FileStats(src_name="tle2099.txt")
     stats.total_records = 5
     stats.quarantined_count = 1
-    stats.rejects.append(report.RejectEntry(
-        raw_lines=[b"1 garbage"], source_lines=[42],
-        reason="bad-prefix: line does not start with '1 ' or '2 '"))
+    stats.rejects.append(
+        report.RejectEntry(
+            raw_lines=[b"1 garbage"],
+            source_lines=[42],
+            reason="bad-prefix: line does not start with '1 ' or '2 '",
+        )
+    )
     out = tmp_path / "tle2099.broken.txt"
 
     report.write_broken_file(str(out), "tle2099.txt", stats)
@@ -25,9 +29,11 @@ def test_broken_file_is_byte_faithful(tmp_path):
     # A line quarantined for a non-ASCII byte must appear verbatim.
     stats = report.FileStats(src_name="x.txt")
     stats.quarantined_count = 1
-    stats.rejects.append(report.RejectEntry(
-        raw_lines=[b"1 \xff\xfe non-ascii"], source_lines=[7],
-        reason="non-ascii"))
+    stats.rejects.append(
+        report.RejectEntry(
+            raw_lines=[b"1 \xff\xfe non-ascii"], source_lines=[7], reason="non-ascii"
+        )
+    )
     out = tmp_path / "x.broken.txt"
 
     report.write_broken_file(str(out), "x.txt", stats)
@@ -38,9 +44,13 @@ def test_broken_file_is_byte_faithful(tmp_path):
 def test_two_line_record_location(tmp_path):
     stats = report.FileStats(src_name="x.txt")
     stats.quarantined_count = 1
-    stats.rejects.append(report.RejectEntry(
-        raw_lines=[b"1 aaa", b"2 bbb"], source_lines=[14820, 14821],
-        reason="line 2: checksum mismatch"))
+    stats.rejects.append(
+        report.RejectEntry(
+            raw_lines=[b"1 aaa", b"2 bbb"],
+            source_lines=[14820, 14821],
+            reason="line 2: checksum mismatch",
+        )
+    )
     out = tmp_path / "x.broken.txt"
 
     report.write_broken_file(str(out), "x.txt", stats)
@@ -79,9 +89,13 @@ def test_summary_dict_is_json_friendly():
 
 def test_format_reject_lines_lists_locations():
     stats = report.FileStats(src_name="x.txt")
-    stats.rejects.append(report.RejectEntry(
-        raw_lines=[b"1 a", b"2 b"], source_lines=[10, 11],
-        reason="line 2: checksum mismatch"))
+    stats.rejects.append(
+        report.RejectEntry(
+            raw_lines=[b"1 a", b"2 b"],
+            source_lines=[10, 11],
+            reason="line 2: checksum mismatch",
+        )
+    )
     out = report.format_reject_lines(stats)
     assert "10-11" in out and "checksum mismatch" in out
 
@@ -89,8 +103,11 @@ def test_format_reject_lines_lists_locations():
 def test_format_reject_lines_caps_long_lists():
     stats = report.FileStats(src_name="x.txt")
     for i in range(250):
-        stats.rejects.append(report.RejectEntry(
-            raw_lines=[b"1 a"], source_lines=[i], reason="bad-prefix"))
+        stats.rejects.append(
+            report.RejectEntry(
+                raw_lines=[b"1 a"], source_lines=[i], reason="bad-prefix"
+            )
+        )
     out = report.format_reject_lines(stats, limit=100)
     assert "150 more" in out
 
@@ -114,11 +131,11 @@ def test_format_run_report_aggregates_corpus():
     out = report.format_run_report(_two_file_stats())
     assert "# tlekit clean run report" in out
     assert "Files processed: 2" in out
-    assert "Records: 4,000" in out               # 1000 + 3000
-    assert "Cleaned: 3,990" in out               # 990 + 3000
+    assert "Records: 4,000" in out  # 1000 + 3000
+    assert "Cleaned: 3,990" in out  # 990 + 3000
     assert "Quarantined: 10" in out
-    assert "99.7500%" in out                     # 3990 / 4000
-    assert "trailing-backslash | 1,990" in out   # 990 + 1000, summed
+    assert "99.7500%" in out  # 3990 / 4000
+    assert "trailing-backslash | 1,990" in out  # 990 + 1000, summed
     assert "reconstructed-checksum | 500" in out
     assert "checksum-mismatch | 10" in out
     # Per-file rows present.

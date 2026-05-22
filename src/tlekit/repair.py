@@ -71,9 +71,11 @@ def repair_line(raw, lineno):
     # Single full re-validation of the final candidate (spec §4.1, §6.6).
     errors = tle.validate_line(candidate, lineno)
     if errors:
-        category = "checksum-mismatch" if any(
-            "checksum" in e for e in errors
-        ) else "invalid-columns"
+        category = (
+            "checksum-mismatch"
+            if any("checksum" in e for e in errors)
+            else "invalid-columns"
+        )
         return None, fixes, "; ".join(errors), category
 
     return candidate, fixes, None, None
@@ -120,15 +122,19 @@ def process_record(raw_line1, src1, raw_line2, src2):
         if err2:
             parts.append(f"line 2: {err2}")
         return Rejected(
-            [raw_line1, raw_line2], [src1, src2],
-            cat1 or cat2, "; ".join(parts),
+            [raw_line1, raw_line2],
+            [src1, src2],
+            cat1 or cat2,
+            "; ".join(parts),
         )
 
     record_errors = tle.validate_record(line1, line2)
     if record_errors:
         return Rejected(
-            [raw_line1, raw_line2], [src1, src2],
-            "catalog-mismatch", "; ".join(record_errors),
+            [raw_line1, raw_line2],
+            [src1, src2],
+            "catalog-mismatch",
+            "; ".join(record_errors),
         )
 
     return Accepted(line1, line2, fixes1 + fixes2)

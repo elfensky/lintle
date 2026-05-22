@@ -7,8 +7,8 @@ def test_discover_expands_directory(tmp_path):
     (tmp_path / "tle2001.txt").write_text("x")
     (tmp_path / "tle2002.txt").write_text("x")
     (tmp_path / "tle2001.cleaned.txt").write_text("x")  # tool output — excluded
-    (tmp_path / "tle2001.broken.txt").write_text("x")   # tool output — excluded
-    (tmp_path / "notes.md").write_text("x")             # not a TLE file
+    (tmp_path / "tle2001.broken.txt").write_text("x")  # tool output — excluded
+    (tmp_path / "notes.md").write_text("x")  # not a TLE file
 
     found = cli.discover_paths([str(tmp_path)])
 
@@ -62,9 +62,7 @@ def test_main_returns_one_when_records_quarantined(tmp_path, line1, line2):
     src = tmp_path / "src"
     src.mkdir()
     bad_line1 = line1[:68] + "9"
-    (src / "tle2099.txt").write_bytes(
-        (bad_line1 + "\n" + line2 + "\n").encode("ascii")
-    )
+    (src / "tle2099.txt").write_bytes((bad_line1 + "\n" + line2 + "\n").encode("ascii"))
     out = tmp_path / "out"
 
     rc = cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])

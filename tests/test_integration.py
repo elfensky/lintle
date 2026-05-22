@@ -8,11 +8,22 @@ def test_golden_mixed_file(tmp_path, line1, line2):
     # line 2 (both repairable). Record C: line 1 with a wrong checksum (bad).
     bad_line1 = line1[:68] + "9"
     src = tmp_path / "tle2099.txt"
-    src.write_bytes((
-        line1 + "\n" + line2 + "\n"
-        + line1[:68] + "\\\n" + line2[:68] + "\n"
-        + bad_line1 + "\n" + line2 + "\n"
-    ).encode("ascii"))
+    src.write_bytes(
+        (
+            line1
+            + "\n"
+            + line2
+            + "\n"
+            + line1[:68]
+            + "\\\n"
+            + line2[:68]
+            + "\n"
+            + bad_line1
+            + "\n"
+            + line2
+            + "\n"
+        ).encode("ascii")
+    )
     out = tmp_path / "out"
 
     stats = pipeline.process_file(str(src), str(out), "clean")
@@ -59,7 +70,8 @@ def test_cleaned_output_revalidates_as_perfect(tmp_path, line1, line2):
 
     stats = pipeline.process_file(
         str(out / "cleaned" / "tle2099.cleaned.txt"),
-        str(tmp_path / "verify"), "validate",
+        str(tmp_path / "verify"),
+        "validate",
     )
     assert stats.clean_count == 1
     assert stats.quarantined_count == 0

@@ -13,7 +13,7 @@ def test_checksum_of_canonical_line2(line2):
 
 def test_minus_sign_counts_as_one():
     # compute_checksum sums only the first 68 characters.
-    assert tle.compute_checksum("-" * 10 + " " * 58) == 0   # 10 % 10
+    assert tle.compute_checksum("-" * 10 + " " * 58) == 0  # 10 % 10
     assert tle.compute_checksum("-" * 7 + " " * 61) == 7
 
 

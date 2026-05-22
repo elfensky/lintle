@@ -1,5 +1,6 @@
 """Streaming I/O: read a file, pair lines into records, route them."""
 
+import contextlib
 import dataclasses
 import os
 
@@ -46,7 +47,9 @@ def iter_records(path):
             if prefix == b"1 ":
                 if held is not None:
                     yield Orphan(
-                        held[0], held[1], "orphan-line",
+                        held[0],
+                        held[1],
+                        "orphan-line",
                         "orphan line 1: followed by another line 1",
                     )
                 held = (line, lineno)
@@ -56,25 +59,29 @@ def iter_records(path):
                     held = None
                 else:
                     yield Orphan(
-                        line, lineno, "orphan-line",
+                        line,
+                        lineno,
+                        "orphan-line",
                         "orphan line 2: no preceding line 1",
                     )
             else:
                 if held is not None:
                     yield Orphan(
-                        held[0], held[1], "orphan-line",
+                        held[0],
+                        held[1],
+                        "orphan-line",
                         "orphan line 1: followed by a non-TLE line",
                     )
                     held = None
                 yield Orphan(
-                    line, lineno, "bad-prefix",
+                    line,
+                    lineno,
+                    "bad-prefix",
                     "line does not start with '1 ' or '2 '",
                 )
 
     if held is not None:
-        yield Orphan(
-            held[0], held[1], "orphan-line", "orphan line 1 at end of file"
-        )
+        yield Orphan(held[0], held[1], "orphan-line", "orphan line 1 at end of file")
 
 
 def process_file(src_path, out_dir, mode):
@@ -101,7 +108,11 @@ def process_file(src_path, out_dir, mode):
         # random-name debris accumulates. open() also honours the umask
         # (typically 0644), whereas mkstemp would force owner-only 0600.
         cleaned_tmp = cleaned_path + ".partial"
-        cleaned_handle = open(cleaned_tmp, "w", encoding="ascii", newline="\n")
+        # SIM115: the handle is long-lived across the record loop and is
+        # closed in the `finally` below — a `with` block does not fit.
+        cleaned_handle = open(  # noqa: SIM115
+            cleaned_tmp, "w", encoding="ascii", newline="\n"
+        )
 
     completed = False
     try:
@@ -110,19 +121,26 @@ def process_file(src_path, out_dir, mode):
 
             if isinstance(candidate, Orphan):
                 _record_reject(
-                    stats, candidate.category, candidate.reason,
-                    [candidate.raw_line], [candidate.src],
+                    stats,
+                    candidate.category,
+                    candidate.reason,
+                    [candidate.raw_line],
+                    [candidate.src],
                 )
                 continue
 
             try:
                 result = repair.process_record(
-                    candidate.raw_line1, candidate.src1,
-                    candidate.raw_line2, candidate.src2,
+                    candidate.raw_line1,
+                    candidate.src1,
+                    candidate.raw_line2,
+                    candidate.src2,
                 )
             except Exception as exc:  # one bad record must not kill the run
                 _record_reject(
-                    stats, "internal-error", f"internal-error: {exc!r}",
+                    stats,
+                    "internal-error",
+                    f"internal-error: {exc!r}",
                     [candidate.raw_line1, candidate.raw_line2],
                     [candidate.src1, candidate.src2],
                 )
@@ -137,8 +155,11 @@ def process_file(src_path, out_dir, mode):
                     cleaned_handle.write(result.line2 + "\n")
             else:
                 _record_reject(
-                    stats, result.category, result.reason,
-                    result.raw_lines, result.source_lines,
+                    stats,
+                    result.category,
+                    result.reason,
+                    result.raw_lines,
+                    result.source_lines,
                 )
         completed = True
     finally:
@@ -147,10 +168,8 @@ def process_file(src_path, out_dir, mode):
         # On any failure, discard the partial temp file — never publish a
         # half-written .cleaned.txt and never leak the .tmp behind.
         if cleaned_tmp is not None and not completed:
-            try:
+            with contextlib.suppress(OSError):
                 os.unlink(cleaned_tmp)
-            except OSError:
-                pass
 
     if mode == "clean":
         os.replace(cleaned_tmp, cleaned_path)
@@ -165,7 +184,5 @@ def process_file(src_path, out_dir, mode):
 def _record_reject(stats, category, reason, raw_lines, source_lines):
     """Tally one quarantined record into ``stats``."""
     stats.quarantined_count += 1
-    stats.reject_categories[category] = (
-        stats.reject_categories.get(category, 0) + 1
-    )
+    stats.reject_categories[category] = stats.reject_categories.get(category, 0) + 1
     stats.rejects.append(report.RejectEntry(raw_lines, source_lines, reason))

@@ -9,7 +9,7 @@ dependencies = []
 tle-clean = "tlekit.cli:main"
 
 [dependency-groups]
-dev = ["pytest>=8.0", "sgp4>=2.23"]
+dev = ["pytest>=8.0", "pytest-cov", "ruff", "sgp4>=2.23"]
 
 [build-system]
 requires = ["hatchling"]
@@ -17,6 +17,14 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/tlekit"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 88
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

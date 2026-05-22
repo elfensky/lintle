@@ -212,7 +212,6 @@ def validate_record(line1, line2):
             errors.append(f"{label}: {err}")
     if not errors and line1[2:7] != line2[2:7]:
         errors.append(
-            f"catalog number mismatch: line 1 {line1[2:7]!r} "
-            f"vs line 2 {line2[2:7]!r}"
+            f"catalog number mismatch: line 1 {line1[2:7]!r} vs line 2 {line2[2:7]!r}"
         )
     return errors

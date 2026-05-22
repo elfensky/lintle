@@ -73,8 +73,7 @@ def test_invalid_columns_rejected(line1):
 
 
 def test_process_accepts_clean_record(line1, line2):
-    result = repair.process_record(line1.encode("ascii"), 10,
-                                   line2.encode("ascii"), 11)
+    result = repair.process_record(line1.encode("ascii"), 10, line2.encode("ascii"), 11)
     assert isinstance(result, repair.Accepted)
     assert result.line1 == line1 and result.line2 == line2
     assert result.fixes == []
@@ -82,7 +81,7 @@ def test_process_accepts_clean_record(line1, line2):
 
 def test_process_repairs_backslash_and_checksum(line1, line2):
     raw1 = (line1[:68] + "\\").encode("ascii")  # checksumless + backslash
-    raw2 = line2[:68].encode("ascii")           # checksumless
+    raw2 = line2[:68].encode("ascii")  # checksumless
     result = repair.process_record(raw1, 4, raw2, 5)
     assert isinstance(result, repair.Accepted)
     assert result.line1 == line1 and result.line2 == line2
@@ -102,15 +101,14 @@ def test_process_rejects_bad_line(line1, line2):
 def test_process_rejects_catalog_mismatch(line1, line2):
     other_body = "2 09999" + line2[7:68]
     other = other_body + str(tle.compute_checksum(other_body))
-    result = repair.process_record(line1.encode("ascii"), 1,
-                                   other.encode("ascii"), 2)
+    result = repair.process_record(line1.encode("ascii"), 1, other.encode("ascii"), 2)
     assert isinstance(result, repair.Rejected)
     assert result.category == "catalog-mismatch"
 
 
 def test_process_rejects_both_bad_lines(line1, line2):
     raw1 = (line1[:68] + "9").encode("ascii")  # line 1: bad checksum
-    raw2 = line2.encode("ascii") + b"\xff"     # line 2: non-ASCII byte
+    raw2 = line2.encode("ascii") + b"\xff"  # line 2: non-ASCII byte
     result = repair.process_record(raw1, 1, raw2, 2)
     assert isinstance(result, repair.Rejected)
     # Both failures are preserved in the human-readable reason...

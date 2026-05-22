@@ -26,9 +26,7 @@ def test_whitespace_only_line_dropped(tmp_path, line1, line2):
     # A line of spaces/tabs between records is blank — dropped, not
     # quarantined, and it must not orphan the surrounding record.
     src = tmp_path / "in.txt"
-    src.write_bytes(
-        (line1 + "\n" + "   \t \n" + line2 + "\n").encode("ascii")
-    )
+    src.write_bytes((line1 + "\n" + "   \t \n" + line2 + "\n").encode("ascii"))
     records = list(pipeline.iter_records(str(src)))
     assert len(records) == 1
     assert isinstance(records[0], pipeline.RecordCandidate)
@@ -71,9 +69,11 @@ def test_bad_prefix_line(tmp_path, line1, line2):
 def test_process_file_clean_mode(tmp_path, line1, line2):
     src = tmp_path / "tle2099.txt"
     # One clean record, then one checksumless record (both repairable).
-    src.write_bytes((
-        line1 + "\n" + line2 + "\n" + line1[:68] + "\n" + line2[:68] + "\n"
-    ).encode("ascii"))
+    src.write_bytes(
+        (line1 + "\n" + line2 + "\n" + line1[:68] + "\n" + line2[:68] + "\n").encode(
+            "ascii"
+        )
+    )
     out = tmp_path / "out"
 
     stats = pipeline.process_file(str(src), str(out), "clean")
@@ -110,8 +110,7 @@ def test_validate_mode_writes_nothing(tmp_path, line1, line2):
     assert not out.exists()  # validate mode never creates the output dir
 
 
-def test_internal_error_is_quarantined_not_raised(tmp_path, line1, line2,
-                                                  monkeypatch):
+def test_internal_error_is_quarantined_not_raised(tmp_path, line1, line2, monkeypatch):
     src = tmp_path / "tle2099.txt"
     src.write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
 
@@ -140,8 +139,6 @@ def test_failed_run_does_not_leak_temp_file(tmp_path):
     # A non-existent source makes iter_records raise when it opens the file.
     out = tmp_path / "out"
     with pytest.raises(OSError):
-        pipeline.process_file(
-            str(tmp_path / "does_not_exist.txt"), str(out), "clean"
-        )
+        pipeline.process_file(str(tmp_path / "does_not_exist.txt"), str(out), "clean")
     assert out.exists()  # the output dir was created
     assert not list(out.rglob("*.partial"))  # but no partial temp file leaked

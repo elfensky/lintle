@@ -174,13 +174,20 @@ A full run over the 29-file corpus (`tle2004`–`tle2025`, ~232 million records)
 ## Development
 
 ```bash
-uv run pytest          # run the test suite
-uv run pytest -v       # verbose
+uv sync                          # install dev dependencies
+uv run pytest                    # run the test suite
+uv run pytest --cov=tlekit       # with a coverage report
+uv run ruff check                # lint
+uv run ruff format               # auto-format
 ```
 
 The suite includes unit tests per module, an asymmetric cross-check against the
 trusted `sgp4` parser (a known-good TLE must be accepted by both), and
 end-to-end integration tests (golden output, idempotence, re-validation).
+
+Code quality is enforced with [`ruff`](https://docs.astral.sh/ruff/) (lint rule
+sets `E`, `F`, `I`, `UP`, `B`, `SIM`; 88-column lines) and coverage is measured
+with `pytest-cov`.
 
 ## Project layout
 

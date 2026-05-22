@@ -47,19 +47,26 @@ def build_parser():
     ):
         sub = subparsers.add_parser(name, help=help_text)
         sub.add_argument(
-            "paths", nargs="*", default=[_DEFAULT_SOURCE],
+            "paths",
+            nargs="*",
+            default=[_DEFAULT_SOURCE],
             help=f"files or directories to process (default: {_DEFAULT_SOURCE})",
         )
         sub.add_argument(
-            "--out-dir", default=_DEFAULT_OUTPUT,
+            "--out-dir",
+            default=_DEFAULT_OUTPUT,
             help=f"destination for cleaned/broken files (default: {_DEFAULT_OUTPUT})",
         )
         sub.add_argument(
-            "--jobs", type=int, default=os.cpu_count() or 1,
+            "--jobs",
+            type=int,
+            default=os.cpu_count() or 1,
             help="number of files to process in parallel",
         )
         sub.add_argument(
-            "--report", choices=["text", "json"], default="text",
+            "--report",
+            choices=["text", "json"],
+            default="text",
             help="summary output format",
         )
     return parser

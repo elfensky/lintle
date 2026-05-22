@@ -38,9 +38,7 @@ def write_broken_file(path, src_name, stats):
     The header and per-record reason lines are ASCII; the quarantined-line
     payloads are copied as raw bytes, so the file may not be valid UTF-8.
     """
-    timestamp = datetime.datetime.now(datetime.timezone.utc).strftime(
-        "%Y-%m-%dT%H:%M:%SZ"
-    )
+    timestamp = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     header = (
         f"# {stem(src_name)}.broken.txt - quarantined records\n"
         f"# source: {src_name} | generated: {timestamp} | tlekit {__version__}\n"
@@ -52,8 +50,7 @@ def write_broken_file(path, src_name, stats):
         for index, entry in enumerate(stats.rejects, start=1):
             if len(entry.source_lines) == 2:
                 location = (
-                    f"source lines {entry.source_lines[0]}-"
-                    f"{entry.source_lines[1]}"
+                    f"source lines {entry.source_lines[0]}-{entry.source_lines[1]}"
                 )
             else:
                 location = f"source line {entry.source_lines[0]}"
@@ -139,9 +136,7 @@ def format_run_report(all_stats):
     totals, the percentage cleaned/quarantined, the corpus-wide fix and
     defect-category counts, and a per-file breakdown table.
     """
-    timestamp = datetime.datetime.now(datetime.timezone.utc).strftime(
-        "%Y-%m-%dT%H:%M:%SZ"
-    )
+    timestamp = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     total, clean, quarantined, fixes, rejects = _aggregate(all_stats)
 
     def pct(count):
