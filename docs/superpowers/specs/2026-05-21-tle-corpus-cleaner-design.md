@@ -1,12 +1,13 @@
 # TLE Corpus Validator & Cleaner — Design
 
 - **Date:** 2026-05-21
-- **Status:** Revised 2026-05-21 after a four-model spec review; pending implementation plan
+- **Status:** Implemented; §9 output layout revised post-build (2026-05-22)
 - **Revision:** §1/§6 defect model corrected against a full-corpus scan (§1.1 measured
   distribution added); §6.2 reconstructed-checksum repair added; §5.4 gains semantic/range
   validation; §4.1 correctness claim downgraded to validation-conformance; §8 pairing made
   prefix-driven with the same-satellite mispair disclosed; §4.2/§7 updated for the
-  `data/source/` + `data/output/` corpus layout.
+  `data/source/` + `data/output/` corpus layout. **2026-05-22:** §9 — `clean` now splits
+  output into `cleaned/` and `broken/` subdirectories and writes a `report.md` run report.
 - **Topic:** A tool to validate and clean a multi-gigabyte corpus of Two-Line Element (TLE) files exported from space-track.org
 
 ## 1. Problem statement
@@ -143,7 +144,7 @@ one — but "provably cannot" would overstate it.
 TLEs/
 ├── data/                   # git-ignored — multi-gigabyte corpus, not version-controlled
 │   ├── source/             # the 29 raw tle*.txt files + TLEs.zip (inputs)
-│   └── output/             # <name>.cleaned.txt / <name>.broken.txt (the cleaner writes here)
+│   └── output/             # cleaned/, broken/, report.md (the cleaner writes here — §9)
 ├── pyproject.toml          # uv project; console script "tle-clean"; dev deps: pytest, sgp4
 ├── src/tlekit/
 │   ├── __init__.py
@@ -417,14 +418,23 @@ fixes and zero rejects; running `validate` on a `.cleaned.txt` reports it perfec
 
 ## 9. Output formats
 
-### 9.1 Cleaned file — `<name>.cleaned.txt`
+A `clean` run organises `--out-dir` into two subdirectories plus a run report:
+
+```
+<out-dir>/
+├── cleaned/    <name>.cleaned.txt   — one per input file (§9.1)
+├── broken/     <name>.broken.txt    — one per input file (§9.2)
+└── report.md   — corpus-wide run report (§9.4)
+```
+
+### 9.1 Cleaned file — `cleaned/<name>.cleaned.txt`
 
 Standard 2-line TLE text, every record guaranteed valid (Section 6). Modern objects may carry
 Alpha-5 alphanumeric catalog numbers; these are preserved verbatim. Most SGP4 implementations
 accept them, but a few older consumers do not — the cleaned output is standard TLE, not a
 lowest-common-denominator dialect.
 
-### 9.2 Reject file — `<name>.broken.txt`
+### 9.2 Reject file — `broken/<name>.broken.txt`
 
 Per source file, formatted to be detailed enough to file a report with space-track.org:
 
@@ -461,6 +471,13 @@ tle2022.txt   8,412,067 records   8,412,064 clean   3 quarantined
 `reconstructed-checksum` is reported as its own line item, separate from content-preserving
 fixes: those records are format-conformant but their checksums are computed, not verified
 (Section 6.2).
+
+### 9.4 Run report — `report.md`
+
+A `clean` run writes a Markdown report to the `--out-dir` root, aggregating every processed
+file: corpus totals (records, percentage cleaned, percentage quarantined), the corpus-wide fix
+counts, the defect-category breakdown, and a per-file table. It is the human-readable companion
+to the per-file `.broken.txt` sidecars — a single at-a-glance picture of what the run did.
 
 ## 10. Error handling
 

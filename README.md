@@ -123,18 +123,31 @@ the exit code above 0 — almost every raw file contains them.
 
 ## Output
 
-For each input `tleYYYY.txt`, `clean` produces a pair in `--out-dir`:
+A `clean` run lays `--out-dir` out like this:
 
-- **`tleYYYY.cleaned.txt`** — standard 2-line TLE text, every record verified
-  valid: 69 ASCII columns per line, `\n`-terminated, matching satellite catalog
-  numbers, valid checksums. World-readable, ready for downstream ingestion.
+```
+<out-dir>/
+├── cleaned/   tleYYYY.cleaned.txt   — one per input file
+├── broken/    tleYYYY.broken.txt    — one per input file
+└── report.md  — corpus-wide run report
+```
 
-- **`tleYYYY.broken.txt`** — the quarantine sidecar. Each entry records the
-  source line number(s), a human-readable reason, and the offending line(s)
+- **`cleaned/tleYYYY.cleaned.txt`** — standard 2-line TLE text, every record
+  verified valid: 69 ASCII columns per line, `\n`-terminated, matching
+  satellite catalog numbers, valid checksums. World-readable, ready for
+  downstream ingestion.
+
+- **`broken/tleYYYY.broken.txt`** — the quarantine sidecar. Each entry records
+  the source line number(s), a human-readable reason, and the offending line(s)
   copied **byte-faithfully**. The header carries totals, a timestamp, and the
   tool version — formatted to paste into a space-track defect report.
 
-A run summary is printed per file (and as JSON with `--report json`):
+- **`report.md`** — a Markdown run report aggregating the whole run: corpus
+  totals, the percentage cleaned and quarantined, corpus-wide fix counts, the
+  defect-category breakdown, and a per-file table.
+
+A run summary is also printed per file to stdout (and as JSON with
+`--report json`):
 
 ```
 tle2022.txt   8,412,067 records   8,412,064 clean   3 quarantined
@@ -145,6 +158,9 @@ tle2022.txt   8,412,067 records   8,412,064 clean   3 quarantined
 `reconstructed-checksum` is reported separately from content-preserving fixes:
 those records are format-conformant, but their checksums are *computed*, not
 independently verified.
+
+`validate` writes nothing — it only prints the per-file summary and the
+locations of defective records to stdout.
 
 ## Results on the bundled corpus
 

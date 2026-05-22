@@ -115,3 +115,88 @@ def format_reject_lines(stats, limit=100):
     if remaining > 0:
         lines.append(f"  ...and {remaining} more")
     return "\n".join(lines)
+
+
+def _aggregate(all_stats):
+    """Sum every file's stats into corpus-wide totals and count dicts."""
+    total = sum(s.total_records for s in all_stats)
+    clean = sum(s.clean_count for s in all_stats)
+    quarantined = sum(s.quarantined_count for s in all_stats)
+    fixes = {}
+    rejects = {}
+    for stats in all_stats:
+        for key, value in stats.fix_counts.items():
+            fixes[key] = fixes.get(key, 0) + value
+        for key, value in stats.reject_categories.items():
+            rejects[key] = rejects.get(key, 0) + value
+    return total, clean, quarantined, fixes, rejects
+
+
+def format_run_report(all_stats):
+    """Render a Markdown report aggregating every processed file.
+
+    Written to ``<out-dir>/report.md`` after a ``clean`` run: corpus
+    totals, the percentage cleaned/quarantined, the corpus-wide fix and
+    defect-category counts, and a per-file breakdown table.
+    """
+    timestamp = datetime.datetime.now(datetime.timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+    total, clean, quarantined, fixes, rejects = _aggregate(all_stats)
+
+    def pct(count):
+        return f"{100 * count / total:.4f}%" if total else "n/a"
+
+    lines = [
+        "# tlekit clean run report",
+        "",
+        f"- Generated: {timestamp}",
+        f"- Tool: tlekit {__version__}",
+        f"- Files processed: {len(all_stats)}",
+        "",
+        "## Corpus totals",
+        "",
+        f"- Records: {total:,}",
+        f"- Cleaned: {clean:,} ({pct(clean)})",
+        f"- Quarantined: {quarantined:,} ({pct(quarantined)})",
+        "",
+        "## Fixes applied",
+        "",
+    ]
+    if fixes:
+        lines.append("| Fix | Count |")
+        lines.append("|-----|------:|")
+        for key, value in sorted(fixes.items(), key=lambda kv: -kv[1]):
+            lines.append(f"| {key} | {value:,} |")
+    else:
+        lines.append("_None._")
+
+    lines += ["", "## Records quarantined (by defect category)", ""]
+    if rejects:
+        lines.append("| Defect category | Count |")
+        lines.append("|-----------------|------:|")
+        for key, value in sorted(rejects.items(), key=lambda kv: -kv[1]):
+            lines.append(f"| {key} | {value:,} |")
+    else:
+        lines.append("_None — every record was clean._")
+
+    lines += [
+        "",
+        "## Per-file breakdown",
+        "",
+        "| File | Records | Cleaned | Quarantined |",
+        "|------|--------:|--------:|------------:|",
+    ]
+    for stats in all_stats:
+        lines.append(
+            f"| {stats.src_name} | {stats.total_records:,} | "
+            f"{stats.clean_count:,} | {stats.quarantined_count:,} |"
+        )
+    lines.append("")
+    return "\n".join(lines)
+
+
+def write_run_report(path, all_stats):
+    """Write the Markdown run report (``format_run_report``) to ``path``."""
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(format_run_report(all_stats))

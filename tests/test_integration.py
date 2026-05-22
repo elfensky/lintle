@@ -23,11 +23,11 @@ def test_golden_mixed_file(tmp_path, line1, line2):
     assert stats.fix_counts.get("reconstructed-checksum") == 2
     assert stats.fix_counts.get("trailing-backslash") == 1
 
-    cleaned = (out / "tle2099.cleaned.txt").read_bytes()
+    cleaned = (out / "cleaned" / "tle2099.cleaned.txt").read_bytes()
     assert cleaned == (
         line1 + "\n" + line2 + "\n" + line1 + "\n" + line2 + "\n"
     ).encode("ascii")
-    broken = (out / "tle2099.broken.txt").read_bytes()
+    broken = (out / "broken" / "tle2099.broken.txt").read_bytes()
     assert b"checksum" in broken
     assert bad_line1.encode("ascii") in broken
 
@@ -38,12 +38,12 @@ def test_clean_is_idempotent(tmp_path, line1, line2):
 
     out1 = tmp_path / "out1"
     pipeline.process_file(str(src), str(out1), "clean")
-    cleaned1 = out1 / "tle2099.cleaned.txt"
+    cleaned1 = out1 / "cleaned" / "tle2099.cleaned.txt"
 
     # Re-clean the cleaned output. stem("tle2099.cleaned.txt") == "tle2099.cleaned".
     out2 = tmp_path / "out2"
     stats2 = pipeline.process_file(str(cleaned1), str(out2), "clean")
-    cleaned2 = out2 / "tle2099.cleaned.cleaned.txt"
+    cleaned2 = out2 / "cleaned" / "tle2099.cleaned.cleaned.txt"
 
     assert cleaned1.read_bytes() == cleaned2.read_bytes()
     # Idempotence (spec §8): re-cleaning applies zero fixes and zero rejects.
@@ -58,7 +58,8 @@ def test_cleaned_output_revalidates_as_perfect(tmp_path, line1, line2):
     pipeline.process_file(str(src), str(out), "clean")
 
     stats = pipeline.process_file(
-        str(out / "tle2099.cleaned.txt"), str(tmp_path / "verify"), "validate"
+        str(out / "cleaned" / "tle2099.cleaned.txt"),
+        str(tmp_path / "verify"), "validate",
     )
     assert stats.clean_count == 1
     assert stats.quarantined_count == 0
@@ -70,6 +71,6 @@ def test_every_cleaned_line_passes_validate_line(tmp_path, line1, line2):
     out = tmp_path / "out"
     pipeline.process_file(str(src), str(out), "clean")
 
-    lines = (out / "tle2099.cleaned.txt").read_text().splitlines()
+    lines = (out / "cleaned" / "tle2099.cleaned.txt").read_text().splitlines()
     assert tle.validate_line(lines[0], 1) == []
     assert tle.validate_line(lines[1], 2) == []

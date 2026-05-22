@@ -81,9 +81,10 @@ def process_file(src_path, out_dir, mode):
     """Process one source file and return its ``report.FileStats``.
 
     ``mode`` is ``"validate"`` (audit only — writes nothing) or ``"clean"``
-    (also writes ``<name>.cleaned.txt`` and ``<name>.broken.txt`` to
-    ``out_dir``). The cleaned file is written to a temp file and atomically
-    renamed, so an interrupted run never leaves a half-written output.
+    (also writes ``cleaned/<name>.cleaned.txt`` and
+    ``broken/<name>.broken.txt`` under ``out_dir``). The cleaned file is
+    written to a temp file and atomically renamed, so an interrupted run
+    never leaves a half-written output.
     """
     src_name = os.path.basename(src_path)
     stats = report.FileStats(src_name=src_name)
@@ -92,8 +93,9 @@ def process_file(src_path, out_dir, mode):
     cleaned_tmp = None
     cleaned_path = None
     if mode == "clean":
-        os.makedirs(out_dir, exist_ok=True)
-        cleaned_path = os.path.join(out_dir, stem(src_name) + ".cleaned.txt")
+        cleaned_dir = os.path.join(out_dir, "cleaned")
+        os.makedirs(cleaned_dir, exist_ok=True)
+        cleaned_path = os.path.join(cleaned_dir, stem(src_name) + ".cleaned.txt")
         # Deterministic temp name (not tempfile.mkstemp): a killed run leaves
         # at most one .partial per file, which the next run truncates — no
         # random-name debris accumulates. open() also honours the umask
@@ -152,7 +154,9 @@ def process_file(src_path, out_dir, mode):
 
     if mode == "clean":
         os.replace(cleaned_tmp, cleaned_path)
-        broken_path = os.path.join(out_dir, stem(src_name) + ".broken.txt")
+        broken_dir = os.path.join(out_dir, "broken")
+        os.makedirs(broken_dir, exist_ok=True)
+        broken_path = os.path.join(broken_dir, stem(src_name) + ".broken.txt")
         report.write_broken_file(broken_path, src_name, stats)
 
     return stats

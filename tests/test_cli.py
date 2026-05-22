@@ -49,7 +49,13 @@ def test_main_clean_returns_zero_on_clean_corpus(tmp_path, line1, line2):
     rc = cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
 
     assert rc == 0
-    assert (out / "tle2099.cleaned.txt").exists()
+    assert (out / "cleaned" / "tle2099.cleaned.txt").exists()
+    assert (out / "broken" / "tle2099.broken.txt").exists()
+    # A clean run writes a Markdown run report to the out-dir root.
+    report_md = (out / "report.md").read_text()
+    assert "# tlekit clean run report" in report_md
+    assert "tle2099.txt" in report_md
+    assert "Records:" in report_md
 
 
 def test_main_returns_one_when_records_quarantined(tmp_path, line1, line2):

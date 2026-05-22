@@ -93,3 +93,41 @@ def test_format_reject_lines_caps_long_lists():
             raw_lines=[b"1 a"], source_lines=[i], reason="bad-prefix"))
     out = report.format_reject_lines(stats, limit=100)
     assert "150 more" in out
+
+
+def _two_file_stats():
+    a = report.FileStats(src_name="tle2004.txt")
+    a.total_records = 1000
+    a.clean_count = 990
+    a.quarantined_count = 10
+    a.fix_counts = {"trailing-backslash": 990}
+    a.reject_categories = {"checksum-mismatch": 10}
+    b = report.FileStats(src_name="tle2005.txt")
+    b.total_records = 3000
+    b.clean_count = 3000
+    b.quarantined_count = 0
+    b.fix_counts = {"trailing-backslash": 1000, "reconstructed-checksum": 500}
+    return [a, b]
+
+
+def test_format_run_report_aggregates_corpus():
+    out = report.format_run_report(_two_file_stats())
+    assert "# tlekit clean run report" in out
+    assert "Files processed: 2" in out
+    assert "Records: 4,000" in out               # 1000 + 3000
+    assert "Cleaned: 3,990" in out               # 990 + 3000
+    assert "Quarantined: 10" in out
+    assert "99.7500%" in out                     # 3990 / 4000
+    assert "trailing-backslash | 1,990" in out   # 990 + 1000, summed
+    assert "reconstructed-checksum | 500" in out
+    assert "checksum-mismatch | 10" in out
+    # Per-file rows present.
+    assert "tle2004.txt" in out and "tle2005.txt" in out
+
+
+def test_write_run_report(tmp_path):
+    out = tmp_path / "report.md"
+    report.write_run_report(str(out), _two_file_stats())
+    text = out.read_text(encoding="utf-8")
+    assert text.startswith("# tlekit clean run report")
+    assert "Per-file breakdown" in text

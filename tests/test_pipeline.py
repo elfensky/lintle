@@ -81,9 +81,9 @@ def test_process_file_clean_mode(tmp_path, line1, line2):
     assert stats.total_records == 2
     assert stats.clean_count == 2
     assert stats.quarantined_count == 0
-    cleaned = (out / "tle2099.cleaned.txt").read_text()
+    cleaned = (out / "cleaned" / "tle2099.cleaned.txt").read_text()
     assert cleaned == line1 + "\n" + line2 + "\n" + line1 + "\n" + line2 + "\n"
-    assert (out / "tle2099.broken.txt").exists()
+    assert (out / "broken" / "tle2099.broken.txt").exists()
 
 
 def test_process_file_quarantines_bad_record(tmp_path, line1, line2):
@@ -96,7 +96,7 @@ def test_process_file_quarantines_bad_record(tmp_path, line1, line2):
 
     assert stats.quarantined_count == 1
     assert stats.reject_categories.get("checksum-mismatch") == 1
-    assert b"checksum" in (out / "tle2099.broken.txt").read_bytes()
+    assert b"checksum" in (out / "broken" / "tle2099.broken.txt").read_bytes()
 
 
 def test_validate_mode_writes_nothing(tmp_path, line1, line2):
@@ -130,9 +130,9 @@ def test_clean_run_leaves_no_temp_file(tmp_path, line1, line2):
     src.write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
     out = tmp_path / "out"
     pipeline.process_file(str(src), str(out), "clean")
-    assert not list(out.glob("*.partial"))  # temp file was renamed away
+    assert not list(out.rglob("*.partial"))  # temp file was renamed away
     # The published cleaned file is world-readable, not owner-only (0600).
-    cleaned = out / "tle2099.cleaned.txt"
+    cleaned = out / "cleaned" / "tle2099.cleaned.txt"
     assert cleaned.stat().st_mode & 0o044  # group/other read bits set
 
 
@@ -144,4 +144,4 @@ def test_failed_run_does_not_leak_temp_file(tmp_path):
             str(tmp_path / "does_not_exist.txt"), str(out), "clean"
         )
     assert out.exists()  # the output dir was created
-    assert not list(out.glob("*.partial"))  # but no partial temp file leaked
+    assert not list(out.rglob("*.partial"))  # but no partial temp file leaked
