@@ -108,8 +108,8 @@ Never claim success without the output. If a check fails, report the failure.
 Two branches, two roles:
 
 - **`develop`** is the long-running trunk. All non-release history lives here.
-  Branch off it for every change, work, PR back to `develop`, merge with
-  `--no-ff` so branch history is preserved.
+  Branch off it for every change, work, PR back to `develop`, land via
+  **rebase-and-merge** so `develop` stays linear (no merge bubbles).
 - **`main`** is the release branch. Each release is a single merge commit on
   `main` whose tree is develop's release-point tree and whose second parent is
   develop's release-point commit. The second parent gives graph visualizers a
@@ -123,9 +123,12 @@ Two branches, two roles:
   `fix:`, `docs:`, `test:`, `refactor:`, `style:`, `chore:`.
 - Never commit directly to `develop` or `main`. Open a PR; run the verification
   commands above before merging.
-- Never squash PRs to `develop` — use `--no-ff` (or "Create a merge commit" in
-  the GitHub UI) so branch history survives. `main` is different: releases
-  land as hand-assembled merge commits built with `git commit-tree` (see
+- Land PRs to `develop` via **"Rebase and merge"** in the GitHub UI (or
+  `gh pr merge --rebase --delete-branch` locally). Do not use "Create a merge
+  commit" — merge bubbles fragment the visualizer into apparent multiple
+  develop lanes. Do not use "Squash and merge" either — keep the individual
+  commits readable in `git log develop`. `main` is different: releases land
+  as hand-assembled merge commits built with `git commit-tree` (see
   § Versioning § Release flow), not via the GitHub merge UI.
 
 ### Parallel development with git worktrees
@@ -148,8 +151,10 @@ ln -s ../../data data
 # 4. Work, commit incrementally, then verify
 uv run pytest && uv run ruff check . && uv run ruff format --check .
 
-# 5. Merge back (from the main checkout)
-cd ../.. && git checkout develop && git merge --no-ff feature/<desc>
+# 5. Push and open a PR; land via "Rebase and merge"
+git push -u origin feature/<desc>
+gh pr create --base develop --title "<title>" --body "<body>"
+gh pr merge --rebase --delete-branch
 
 # 6. Clean up
 git worktree remove .worktrees/<branch-dir>
@@ -190,7 +195,7 @@ Release flow:
    `### Added` / `### Changed` / `### Fixed` subsections (see Keep a Changelog).
 3. Run the verification commands (`uv run pytest`, `uv run ruff check .`,
    `uv run ruff format --check .`) and report the actual output.
-4. Open a PR to `develop`, merge with `--no-ff` once it's green.
+4. Open a PR to `develop`, land via **"Rebase and merge"** once it's green.
 5. Build the release commit on `main` with `git commit-tree`. The tree comes
    from `develop`'s release-point; the parents are `main`'s current tip and
    `develop`'s release-point. This is what gives the graph a visible
