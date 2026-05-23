@@ -4,6 +4,21 @@ All notable changes to this project are documented in this file. The format is b
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- `tests/test_pipeline_throughput.py` — an opt-in end-to-end throughput
+  regression test for `pipeline.process_file()` that streams synthetic TLE
+  records and fails on a severe slowdown. Gated by the new `slow` pytest
+  marker (registered in `pyproject.toml`, excluded from the default suite via
+  `addopts`), so the existing CI matrix is unaffected. Combines a within-run
+  stability check (no timed run more than 30% slower than the median) with an
+  opt-in per-machine stored baseline at `tests/.throughput_baseline.json`
+  (git-ignored). Run with `uv run pytest -m slow -s`; refresh the baseline
+  after intentional perf changes with
+  `LINTLE_UPDATE_BASELINE=1 uv run pytest -m slow`. Closes #23.
+
 ## [0.1.2] - 2026-05-23
 
 ### Fixed
