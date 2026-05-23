@@ -35,7 +35,7 @@ class TestWriteBrokenFile:
         stats = report.FileStats(src_name="tle2099.txt")
         stats.total_records = 5
         stats.quarantined_count = 1
-        stats.rejects.append(
+        stats.reject_exemplars.append(
             report.RejectEntry(
                 raw_lines=[b"1 garbage"],
                 source_lines=[42],
@@ -56,7 +56,7 @@ class TestWriteBrokenFile:
         # A line quarantined for a non-ASCII byte must appear verbatim.
         stats = report.FileStats(src_name="x.txt")
         stats.quarantined_count = 1
-        stats.rejects.append(
+        stats.reject_exemplars.append(
             report.RejectEntry(
                 raw_lines=[b"1 \xff\xfe non-ascii"],
                 source_lines=[7],
@@ -72,7 +72,7 @@ class TestWriteBrokenFile:
     def test_two_line_record_location(self, tmp_path):
         stats = report.FileStats(src_name="x.txt")
         stats.quarantined_count = 1
-        stats.rejects.append(
+        stats.reject_exemplars.append(
             report.RejectEntry(
                 raw_lines=[b"1 aaa", b"2 bbb"],
                 source_lines=[14820, 14821],
@@ -108,7 +108,7 @@ class TestSummaries:
 class TestFormatRejectLines:
     def test_format_reject_lines_lists_locations(self):
         stats = report.FileStats(src_name="x.txt")
-        stats.rejects.append(
+        stats.reject_exemplars.append(
             report.RejectEntry(
                 raw_lines=[b"1 a", b"2 b"],
                 source_lines=[10, 11],
@@ -120,8 +120,9 @@ class TestFormatRejectLines:
 
     def test_format_reject_lines_caps_long_lists(self):
         stats = report.FileStats(src_name="x.txt")
+        stats.quarantined_count = 250
         for i in range(250):
-            stats.rejects.append(
+            stats.reject_exemplars.append(
                 report.RejectEntry(
                     raw_lines=[b"1 a"], source_lines=[i], reason="bad-prefix"
                 )
