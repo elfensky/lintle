@@ -12,6 +12,9 @@
 # Claude Code session state
 /.claude/
 
+# Parallel-development worktrees (see CLAUDE.md § Worktree Workflow)
+/.worktrees/
+
 # macOS
 .DS_Store
 

@@ -105,11 +105,54 @@ Never claim success without the output. If a check fails, report the failure.
 
 ## Git Workflow
 
-- **Never commit directly to `main`.** Branch for every change.
-- Branch names: `feature/<desc>`, `bugfix/<desc>`, `chore/<desc>` — lowercase, hyphens.
-- Use [Conventional Commits](https://www.conventionalcommits.org/): `feat:`, `fix:`,
-  `docs:`, `test:`, `refactor:`, `style:`, `chore:`.
-- Open a pull request to `main`; run the verification commands above before merging.
+Single trunk on `main`. Branch off it for every change, work, PR back to `main`,
+merge with `--no-ff` so branch history is preserved. Releases are annotated tags
+on `main` — there is no separate release branch.
+
+- Branch names: `feature/<desc>`, `bugfix/<desc>`, `chore/<desc>` — lowercase,
+  hyphens.
+- Use [Conventional Commits](https://www.conventionalcommits.org/): `feat:`,
+  `fix:`, `docs:`, `test:`, `refactor:`, `style:`, `chore:`.
+- Never commit directly to `main`. Open a PR; run the verification commands
+  above before merging.
+- Never squash PRs to `main` — use `--no-ff` (or "Create a merge commit" in the
+  GitHub UI) so branch history survives.
+
+### Parallel development with git worktrees
+
+Worktrees let one clone host several branches simultaneously, each in its own
+directory with its own `.venv/`. Use one for any non-trivial feature; iterate in
+one worktree while a slow test run finishes in another.
+
+```bash
+# 1. Create the worktree from main
+git worktree add .worktrees/<branch-dir> -b feature/<desc> main
+
+# 2. Enter and install
+cd .worktrees/<branch-dir>
+uv sync
+
+# 3. Symlink the corpus so the CLI sees data/ — keeps a single ~30 GB copy on disk
+ln -s ../../data data
+
+# 4. Work, commit incrementally, then verify
+uv run pytest && uv run ruff check . && uv run ruff format --check .
+
+# 5. Merge back (from the main checkout)
+cd ../.. && git checkout main && git merge --no-ff feature/<desc>
+
+# 6. Clean up
+git worktree remove .worktrees/<branch-dir>
+git branch -d feature/<desc>
+```
+
+Worktree directory names mirror the branch with slashes replaced by hyphens —
+`feature/repair-tier-2` → `.worktrees/feature-repair-tier-2`. The whole
+`.worktrees/` tree is git-ignored.
+
+When running `lintle clean` from multiple worktrees in parallel, pass
+`--out-dir <local-dir>` to each — the default `data/output/` is shared through
+the symlink and concurrent runs will collide.
 
 ## Versioning
 
@@ -131,14 +174,21 @@ current — every dev workflow in this repo already does.
 
 Release flow:
 
-1. Bump `version` in `pyproject.toml`.
+1. On a `chore/release-X.Y.Z` branch off `main`, bump `version` in
+   `pyproject.toml`.
 2. Add a new `## [X.Y.Z] - YYYY-MM-DD` section at the top of `CHANGELOG.md` with
    `### Added` / `### Changed` / `### Fixed` subsections (see Keep a Changelog).
 3. Run the verification commands (`uv run pytest`, `uv run ruff check .`,
    `uv run ruff format --check .`) and report the actual output.
-4. Commit on a `chore/release-X.Y.Z` branch and open a PR to `main`. Tag and publish
-   after merge.
+4. Open a PR to `main`, merge with `--no-ff` once it's green.
+5. Tag the merge commit on `main` and push the tag:
+   ```bash
+   git checkout main && git pull
+   git tag -a vX.Y.Z -m "Release X.Y.Z"
+   git push origin vX.Y.Z
+   ```
+6. Trigger the `Publish` workflow.
 
-Nothing else needs to change — `lintle --version`, the `report.py` headers, and any
-downstream `from lintle import __version__` import all pick the new value up from
-`pyproject.toml` automatically.
+Nothing else needs to change — `lintle --version`, the `report.py` headers, and
+any downstream `from lintle import __version__` import all pick the new value up
+from `pyproject.toml` automatically.
