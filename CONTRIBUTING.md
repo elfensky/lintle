@@ -108,28 +108,36 @@ Never claim success without the output. If a check fails, report the failure.
 Two branches, two roles:
 
 - **`develop`** is the long-running trunk. All non-release history lives here.
-  Branch off it for every change, work, PR back to `develop`, land via
-  **rebase-and-merge** so `develop` stays linear (no merge bubbles).
+  Two paths in, by scope:
+  - **Direct commits** for chores and bugfixes (`chore:`, `fix:`, `docs:`,
+    `test:`, `style:`) — commit on `develop`, push. No branch, no PR.
+  - **Branch + PR** for features and multi-file refactors
+    (`feature/<desc>` or `refactor/<desc>`) — land via **rebase-and-merge**
+    so `develop` stays linear (no merge bubbles).
 - **`main`** is the release branch. Each release is a single merge commit on
   `main` whose tree is develop's release-point tree and whose second parent is
   develop's release-point commit. The second parent gives graph visualizers a
   "branched-from" edge from each release on `main` back to its origin on
   `develop`. Use `git log --first-parent main` to see only the releases.
   Releases are annotated tags on `main`. There is no separate release branch.
+  **Never commit directly to `main`** — release commits only, hand-built with
+  `git commit-tree` (see § Versioning § Release flow).
 
-- Branch names: `feature/<desc>`, `bugfix/<desc>`, `chore/<desc>` — lowercase,
-  hyphens.
+- Branch names (when branching): `feature/<desc>`, `refactor/<desc>` —
+  lowercase, hyphens. The release-prep branch is the documented exception:
+  `chore/release-X.Y.Z` (see § Versioning § Release flow) carries the version
+  bump + dated `CHANGELOG.md` section through a review PR.
 - Use [Conventional Commits](https://www.conventionalcommits.org/): `feat:`,
-  `fix:`, `docs:`, `test:`, `refactor:`, `style:`, `chore:`.
-- Never commit directly to `develop` or `main`. Open a PR; run the verification
-  commands above before merging.
+  `fix:`, `docs:`, `test:`, `refactor:`, `style:`, `chore:`. Direct commits to
+  `develop` use these as the commit prefix; branched work uses them on
+  individual commits inside the branch.
+- Run the verification commands above before pushing any commit to `develop`
+  (direct or via PR merge).
 - Land PRs to `develop` via **"Rebase and merge"** in the GitHub UI (or
   `gh pr merge --rebase --delete-branch` locally). Do not use "Create a merge
   commit" — merge bubbles fragment the visualizer into apparent multiple
   develop lanes. Do not use "Squash and merge" either — keep the individual
-  commits readable in `git log develop`. `main` is different: releases land
-  as hand-assembled merge commits built with `git commit-tree` (see
-  § Versioning § Release flow), not via the GitHub merge UI.
+  commits readable in `git log develop`.
 
 ### Parallel development with git worktrees
 
