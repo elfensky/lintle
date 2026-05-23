@@ -105,18 +105,25 @@ Never claim success without the output. If a check fails, report the failure.
 
 ## Git Workflow
 
-Single trunk on `main`. Branch off it for every change, work, PR back to `main`,
-merge with `--no-ff` so branch history is preserved. Releases are annotated tags
-on `main` — there is no separate release branch.
+Two branches, two roles:
+
+- **`develop`** is the long-running trunk. All non-release history lives here.
+  Branch off it for every change, work, PR back to `develop`, merge with
+  `--no-ff` so branch history is preserved.
+- **`main`** is the release branch. Each release is one squash-merge commit
+  collapsing `develop` (or, for past releases, the relevant historical commit)
+  onto `main`. Releases are annotated tags on `main`. There is no separate
+  release branch.
 
 - Branch names: `feature/<desc>`, `bugfix/<desc>`, `chore/<desc>` — lowercase,
   hyphens.
 - Use [Conventional Commits](https://www.conventionalcommits.org/): `feat:`,
   `fix:`, `docs:`, `test:`, `refactor:`, `style:`, `chore:`.
-- Never commit directly to `main`. Open a PR; run the verification commands
-  above before merging.
-- Never squash PRs to `main` — use `--no-ff` (or "Create a merge commit" in the
-  GitHub UI) so branch history survives.
+- Never commit directly to `develop` or `main`. Open a PR; run the verification
+  commands above before merging.
+- Never squash PRs to `develop` — use `--no-ff` (or "Create a merge commit" in
+  the GitHub UI) so branch history survives. (`main` is the opposite: every
+  merge into `main` is a squash, by definition of the release flow.)
 
 ### Parallel development with git worktrees
 
@@ -125,8 +132,8 @@ directory with its own `.venv/`. Use one for any non-trivial feature; iterate in
 one worktree while a slow test run finishes in another.
 
 ```bash
-# 1. Create the worktree from main
-git worktree add .worktrees/<branch-dir> -b feature/<desc> main
+# 1. Create the worktree from develop
+git worktree add .worktrees/<branch-dir> -b feature/<desc> develop
 
 # 2. Enter and install
 cd .worktrees/<branch-dir>
@@ -139,7 +146,7 @@ ln -s ../../data data
 uv run pytest && uv run ruff check . && uv run ruff format --check .
 
 # 5. Merge back (from the main checkout)
-cd ../.. && git checkout main && git merge --no-ff feature/<desc>
+cd ../.. && git checkout develop && git merge --no-ff feature/<desc>
 
 # 6. Clean up
 git worktree remove .worktrees/<branch-dir>
@@ -174,20 +181,26 @@ current — every dev workflow in this repo already does.
 
 Release flow:
 
-1. On a `chore/release-X.Y.Z` branch off `main`, bump `version` in
+1. On a `chore/release-X.Y.Z` branch off `develop`, bump `version` in
    `pyproject.toml`.
 2. Add a new `## [X.Y.Z] - YYYY-MM-DD` section at the top of `CHANGELOG.md` with
    `### Added` / `### Changed` / `### Fixed` subsections (see Keep a Changelog).
 3. Run the verification commands (`uv run pytest`, `uv run ruff check .`,
    `uv run ruff format --check .`) and report the actual output.
-4. Open a PR to `main`, merge with `--no-ff` once it's green.
-5. Tag the merge commit on `main` and push the tag:
+4. Open a PR to `develop`, merge with `--no-ff` once it's green.
+5. Squash-merge `develop` into `main`, tag the merge commit, and push:
    ```bash
    git checkout main && git pull
-   git tag -a vX.Y.Z -m "Release X.Y.Z"
-   git push origin vX.Y.Z
+   git merge --squash develop
+   git commit -m "Release vX.Y.Z"
+   git tag -a vX.Y.Z -m "Release vX.Y.Z"
+   git push origin main vX.Y.Z
    ```
-6. Trigger the `Publish` workflow.
+6. Create the GitHub release:
+   ```bash
+   gh release create vX.Y.Z --title "vX.Y.Z" --notes-from-tag --latest
+   ```
+7. Trigger the `Publish` workflow.
 
 Nothing else needs to change — `lintle --version`, the `report.py` headers, and
 any downstream `from lintle import __version__` import all pick the new value up
