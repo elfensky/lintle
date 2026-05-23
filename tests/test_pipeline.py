@@ -176,3 +176,43 @@ class TestProcessFile:
             progress_every=0,
         )
         assert progress.empty()
+
+
+class TestStreamingRejects:
+    """The constant-memory invariant: reject_exemplars stays bounded even on
+    reject-heavy files, while the on-disk ``.broken.txt`` catalog is complete.
+    """
+
+    def test_exemplars_bounded_but_broken_catalog_is_complete(self, tmp_path):
+        # Far more bad-prefix orphans than the in-memory exemplar bound — the
+        # full catalog must reach disk; only the in-memory sample is capped.
+        n = pipeline._EXEMPLAR_BOUND + 1500
+        src = tmp_path / "tle2099.txt"
+        src.write_bytes(b"\n".join(f"junk {i:08d}".encode("ascii") for i in range(n)))
+        out = tmp_path / "out"
+
+        stats = pipeline.process_file(str(src), str(out), "clean")
+
+        # Full counters reflect every reject…
+        assert stats.quarantined_count == n
+        assert stats.reject_categories.get("bad-prefix") == n
+        # …but the in-memory exemplar buffer is capped at the bound.
+        assert len(stats.reject_exemplars) == pipeline._EXEMPLAR_BOUND
+        # The on-disk catalog header and trailing entry both reflect every
+        # quarantined record — none were dropped due to the in-memory cap.
+        broken = (out / "broken" / "tle2099.broken.txt").read_bytes()
+        assert f"# {n} records quarantined of {n} total".encode("ascii") in broken
+        last = f"junk {n - 1:08d}".encode("ascii")
+        assert last in broken
+
+    def test_validate_mode_bounds_memory_too(self, tmp_path):
+        # In validate mode no sidecar is written, but the in-memory exemplars
+        # still cap so peak memory does not grow with reject count.
+        n = pipeline._EXEMPLAR_BOUND + 500
+        src = tmp_path / "tle2099.txt"
+        src.write_bytes(b"\n".join(f"junk {i:08d}".encode("ascii") for i in range(n)))
+
+        stats = pipeline.process_file(str(src), str(tmp_path / "out"), "validate")
+
+        assert stats.quarantined_count == n
+        assert len(stats.reject_exemplars) == pipeline._EXEMPLAR_BOUND

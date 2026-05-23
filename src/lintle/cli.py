@@ -428,7 +428,7 @@ def main(argv=None):
     else:
         for stats in all_stats:
             print(report.format_summary(stats))
-            if args.command == "validate" and stats.rejects:
+            if args.command == "validate" and stats.reject_exemplars:
                 print(report.format_reject_lines(stats))
         if report_path:
             print(f"\nrun report: {report_path}")

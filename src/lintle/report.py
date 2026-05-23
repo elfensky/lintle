@@ -1,7 +1,10 @@
 """Per-file statistics, the quarantine sidecar writer, and summaries."""
 
+import contextlib
 import dataclasses
 import datetime
+import os
+import shutil
 
 from lintle import __version__, stem
 
@@ -21,7 +24,14 @@ class RejectEntry:
 
 @dataclasses.dataclass
 class FileStats:
-    """Accumulated results for one processed source file."""
+    """Accumulated results for one processed source file.
+
+    ``reject_exemplars`` is a *bounded* sample of quarantined records used
+    only by the human-facing ``validate`` summary; the byte-faithful full
+    catalog is streamed to ``.broken.txt`` during processing. The bound is
+    enforced by the pipeline, not by this dataclass, so tests can populate
+    it freely.
+    """
 
     src_name: str
     total_records: int = 0
@@ -29,40 +39,102 @@ class FileStats:
     quarantined_count: int = 0
     fix_counts: dict = dataclasses.field(default_factory=dict)
     reject_categories: dict = dataclasses.field(default_factory=dict)
-    rejects: list = dataclasses.field(default_factory=list)
+    reject_exemplars: list = dataclasses.field(default_factory=list)
+
+
+def _render_entry(index, entry):
+    """Render one ``RejectEntry`` as the bytes it occupies in ``.broken.txt``."""
+    if len(entry.source_lines) == 2:
+        location = f"source lines {entry.source_lines[0]}-{entry.source_lines[1]}"
+    else:
+        location = f"source line {entry.source_lines[0]}"
+    chunks = [
+        f"[{index}] {location} - reason: {entry.reason}\n".encode(
+            "ascii", errors="replace"
+        )
+    ]
+    for raw in entry.raw_lines:
+        chunks.append(raw)
+        chunks.append(b"\n")
+    chunks.append(b"\n")
+    return b"".join(chunks)
+
+
+def _render_header(src_name, quarantined, total):
+    """Render the three-line ASCII header of a ``.broken.txt`` sidecar."""
+    timestamp = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return (
+        f"# {stem(src_name)}.broken.txt - quarantined records\n"
+        f"# source: {src_name} | generated: {timestamp} | lintle {__version__}\n"
+        f"# {quarantined} records quarantined of {total} total\n\n"
+    ).encode("ascii")
+
+
+class BrokenFileWriter:
+    """Streaming writer for the ``.broken.txt`` quarantine sidecar.
+
+    Constant memory: each entry is rendered and flushed to a body temp file
+    as ``write_entry`` is called. On ``finalize`` the body is stitched onto
+    the now-known header (entry count + corpus total) and atomically renamed
+    to the final path. Use as a context manager so an interrupted run never
+    leaves a half-written sidecar behind.
+    """
+
+    def __init__(self, path, src_name):
+        self.path = path
+        self.src_name = src_name
+        self._body_path = path + ".body.partial"
+        self._final_partial = path + ".partial"
+        self._handle = None
+        self._entry_count = 0
+        self._completed = False
+
+    def __enter__(self):
+        self._handle = open(self._body_path, "wb")
+        return self
+
+    def write_entry(self, entry):
+        """Append one ``RejectEntry`` to the sidecar body, byte-faithfully."""
+        self._entry_count += 1
+        self._handle.write(_render_entry(self._entry_count, entry))
+
+    def finalize(self, total_records):
+        """Stitch header + body into the final path; atomic-rename in place."""
+        if self._handle is not None and not self._handle.closed:
+            self._handle.close()
+        header = _render_header(self.src_name, self._entry_count, total_records)
+        with open(self._final_partial, "wb") as out, open(self._body_path, "rb") as src:
+            out.write(header)
+            shutil.copyfileobj(src, out, length=65536)
+        with contextlib.suppress(OSError):
+            os.unlink(self._body_path)
+        os.replace(self._final_partial, self.path)
+        self._completed = True
+
+    def __exit__(self, exc_type, exc, tb):
+        # Always close the body handle; on any non-finalized exit, discard
+        # the partials so an interrupted run leaves no debris.
+        if self._handle is not None and not self._handle.closed:
+            self._handle.close()
+        if not self._completed:
+            for partial in (self._body_path, self._final_partial):
+                with contextlib.suppress(OSError):
+                    os.unlink(partial)
+        return False
 
 
 def write_broken_file(path, src_name, stats):
-    """Write the byte-faithful ``.broken.txt`` quarantine sidecar.
+    """Write the ``.broken.txt`` sidecar from a populated ``FileStats``.
 
-    The header and per-record reason lines are ASCII; the quarantined-line
-    payloads are copied as raw bytes, so the file may not be valid UTF-8.
+    Thin wrapper around ``BrokenFileWriter`` that emits whatever is in
+    ``stats.reject_exemplars``. Suitable for tests and small-corpus paths
+    where the full reject list fits in memory; production cleaning streams
+    entries through ``BrokenFileWriter`` directly so memory stays bounded.
     """
-    timestamp = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    header = (
-        f"# {stem(src_name)}.broken.txt - quarantined records\n"
-        f"# source: {src_name} | generated: {timestamp} | lintle {__version__}\n"
-        f"# {stats.quarantined_count} records quarantined "
-        f"of {stats.total_records} total\n\n"
-    )
-    with open(path, "wb") as handle:
-        handle.write(header.encode("ascii"))
-        for index, entry in enumerate(stats.rejects, start=1):
-            if len(entry.source_lines) == 2:
-                location = (
-                    f"source lines {entry.source_lines[0]}-{entry.source_lines[1]}"
-                )
-            else:
-                location = f"source line {entry.source_lines[0]}"
-            handle.write(
-                f"[{index}] {location} - reason: {entry.reason}\n".encode(
-                    "ascii", errors="replace"
-                )
-            )
-            for raw in entry.raw_lines:
-                handle.write(raw)
-                handle.write(b"\n")
-            handle.write(b"\n")
+    with BrokenFileWriter(path, src_name) as writer:
+        for entry in stats.reject_exemplars:
+            writer.write_entry(entry)
+        writer.finalize(stats.total_records)
 
 
 def _join_counts(counts):
@@ -99,16 +171,17 @@ def format_reject_lines(stats, limit=100):
     """Return a listing of quarantined records' source locations.
 
     Used by ``validate`` mode. At most ``limit`` entries are shown; the
-    remainder are summarised as a trailing count.
+    remainder are summarised as a trailing count. Reads from the bounded
+    ``reject_exemplars`` buffer — full counts live in ``quarantined_count``.
     """
     lines = []
-    for entry in stats.rejects[:limit]:
+    for entry in stats.reject_exemplars[:limit]:
         if len(entry.source_lines) == 2:
             location = f"{entry.source_lines[0]}-{entry.source_lines[1]}"
         else:
             location = str(entry.source_lines[0])
         lines.append(f"  line {location}: {entry.reason}")
-    remaining = len(stats.rejects) - limit
+    remaining = stats.quarantined_count - min(len(stats.reject_exemplars), limit)
     if remaining > 0:
         lines.append(f"  ...and {remaining} more")
     return "\n".join(lines)

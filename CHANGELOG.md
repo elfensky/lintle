@@ -4,6 +4,21 @@ All notable changes to this project are documented in this file. The format is b
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.1.2] - 2026-05-23
+
+### Fixed
+
+- `report.py` now streams the `.broken.txt` reject sidecar line-by-line instead
+  of holding the full reject set in memory, so the constant-memory invariant
+  survives files with a high reject ratio.
+
+### Added
+
+- `CLAUDE.md` § Worktree Workflow and `CONTRIBUTING.md` § Parallel development
+  with git worktrees — how to iterate on several branches at once while sharing
+  the ~30 GB corpus across worktrees via a symlink.
+- `.gitignore` excludes `/.worktrees/`.
+
 ## [0.1.1] - 2026-05-22
 
 ### Fixed
