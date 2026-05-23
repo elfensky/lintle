@@ -209,6 +209,20 @@ Release flow:
 7. Tag the squash commit on `main`: `git fetch origin main && git tag -a vX.Y.Z
    -m "Release X.Y.Z" origin/main && git push origin vX.Y.Z`. Trigger the
    `Publish` workflow.
+8. **Merge `main` back into `develop` with the `ours` strategy** so the squash
+   commit becomes an ancestor of `develop` without changing develop's tree.
+   Without this, the next release PR fails with GitHub's "no history in common"
+   error, because squash-merging severs the lineage between the two branches:
+
+   ```bash
+   git checkout develop
+   git merge --strategy=ours --no-ff origin/main \
+     -m "merge: record vX.Y.Z release into develop"
+   git push origin develop
+   ```
+
+   The `-s ours` strategy records the merge but keeps develop's tree intact —
+   main's release tree is already a strict subset of what develop has.
 
 Hotfixes follow the same shape: fix on a `bugfix/<x>` branch off `develop`, merge
 to `develop` with `--no-ff`, bump the patch version, then ship via the same
