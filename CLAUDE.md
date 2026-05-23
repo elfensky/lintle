@@ -99,11 +99,12 @@ uv run lintle clean             # Clean data/source/ -> data/output/
 
 ## Worktree Workflow
 
-Lintle uses Git Flow: `main` holds tagged releases only, `develop` is the integration
-branch, and every change goes through a short-lived branch + PR off `develop` (see
-`CONTRIBUTING.md` § Git Workflow). **Worktrees are the parallel-development mechanism** —
-they let multiple branches share one clone without contention, so you can keep a
-long-running test run in one worktree while editing in another.
+Lintle's branching model: `main` is a squash-merged release log (one commit per
+tagged release), `develop` is the integration branch and holds the full history,
+and every change goes through a short-lived branch + PR off `develop` (see
+`CONTRIBUTING.md` § Git Workflow). **Worktrees are the parallel-development
+mechanism** — they let multiple branches share one clone without contention, so
+you can keep a long-running test run in one worktree while editing in another.
 
 **When to use a worktree (features):** new modules, multi-file refactors, anything you'd
 raise a PR for, anything large enough to want isolation while iterating. Default for any
@@ -115,8 +116,7 @@ the main directory — no worktree needed. Use judgment; if unsure, default to a
 
 **Feature workflow (worktree):**
 
-1. From the main checkout, create the worktree off `develop` (or off `main` only for
-   a `hotfix/X.Y.Z`):
+1. From the main checkout, create the worktree off `develop`:
    `git worktree add .worktrees/<branch-dir> -b <branch-name> develop`
 2. `cd .worktrees/<branch-dir>`
 3. Install dev deps in the worktree: `uv sync`
@@ -127,9 +127,10 @@ the main directory — no worktree needed. Use judgment; if unsure, default to a
    first, then implementation), not one giant commit at the end
 6. Verify in the worktree: `uv run pytest && uv run ruff check . && uv run ruff format --check .`
 7. Merge back: from the main checkout, `git checkout develop && git merge --no-ff <branch-name>`
-   (or open a PR to `develop` — see § Conventions; never squash, preserve branch
-   history). `release/*` and `hotfix/*` branches target `main` instead and are then
-   merged back into `develop`.
+   (or open a PR to `develop` — see § Conventions). PRs into `develop` are **never
+   squashed** so branch history is preserved. Release PRs (`develop` → `main`) are
+   the exception — those are always squash-merged so `main` stays a one-commit-per-release
+   log.
 8. If the change is user-visible, bump `pyproject.toml`'s `[project] version` and add a
    `CHANGELOG.md` entry in the same merge — see `CONTRIBUTING.md` § Versioning
 9. Clean up: `git worktree remove .worktrees/<branch-dir>` then
@@ -173,11 +174,13 @@ If any fail, report the actual output — do not suppress or simplify failures.
 - Design docs live in `docs/superpowers/specs/`, named `YYYY-MM-DD-topic.md`. The design
   doc carries a revision log in its header — keep it current when the design changes.
 - Tests are grouped into `Test*` classes, one per unit or behaviour under test.
-- Git: Git Flow — `main` carries tagged releases only and is never committed to
-  directly; `develop` is the integration branch and the base for every short-lived
-  branch (`feature/`, `bugfix/`, `chore/`). `release/X.Y.Z` and `hotfix/X.Y.Z` target
-  `main` and then merge back to `develop`. Use conventional commits (`feat:`, `fix:`,
-  `docs:`, `test:`, `style:`, `chore:`).
+- Git: `main` is a release log (squash-merged from `develop` → `main` PRs, one
+  commit per tagged release; never commit directly). `develop` is the integration
+  branch and the base for every short-lived `feature/`, `bugfix/`, `chore/` branch.
+  Merge style is opposite at each line: `--no-ff` into `develop` (preserve branch
+  history), squash into `main` (keep main lean). Use conventional commits on
+  `develop` (`feat:`, `fix:`, `docs:`, `test:`, `style:`, `chore:`); release PR
+  titles to `main` are `Release vX.Y.Z`.
 - Versioning: `pyproject.toml`'s `[project] version` is the single source of truth;
   `src/lintle/__init__.py` resolves `__version__` from it at runtime via
   `importlib.metadata`. Bump it once, add a `CHANGELOG.md` entry — see CONTRIBUTING.md
