@@ -1,7 +1,7 @@
 # Git Workflow — `develop` Trunk, `main` Releases — Design
 
 - **Date:** 2026-05-23
-- **Status:** Implemented; §4 and §7.3 revised post-build (2026-05-23) — see Revision.
+- **Status:** Implemented; revised twice post-build (2026-05-23) — see Revision.
 - **Revision (2026-05-23):** the initial implementation used an *orphan* `main` with
   single-parent squash commits (§4, §7.3 as originally written). When rendered in graph
   visualizers, `main` floated disconnected from `develop` with no visible "branched-from"
@@ -11,6 +11,12 @@
   to PyPI, as before); parents = [previous `main` commit, develop's release-point
   commit]. §4 ("Why orphan main?") is replaced with §4 ("Why merge commits with a shared
   root?"); §7.3 is rewritten to use `commit-tree`.
+- **Revision (2026-05-23, second):** the merge style for feature PRs into `develop` was
+  switched from `--no-ff` merge commits to **rebase-and-merge** to keep `develop` linear
+  (no merge bubbles). The bootstrap PRs that landed under this spec (#31, #32) were
+  retroactively flattened. `CLAUDE.md` and `CONTRIBUTING.md` are the active references
+  for the current merge rules; the `--no-ff` mentions remaining in this spec body are
+  historical, describing the originally-approved contract.
 - **Topic:** Restructure the repository's git workflow so `develop` is the long-running
   trunk carrying full history, and `main` is a curated branch containing one merge commit
   per release. Existing release commits and tags are reissued so that the new `main` is

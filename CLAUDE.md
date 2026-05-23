@@ -99,12 +99,12 @@ uv run lintle clean             # Clean data/source/ -> data/output/
 
 ## Worktree Workflow
 
-Trunk is `develop`; `main` carries one squash-merge commit per release. Every
-non-release change goes through a branch + PR off `develop` and merges back with
-`--no-ff` (see `CONTRIBUTING.md` § Git Workflow). **Worktrees are the
-parallel-development mechanism** — they let multiple branches share one clone
-without contention, so you can keep a long-running test run in one worktree
-while editing in another.
+Trunk is `develop`; `main` carries one merge commit per release. Every
+non-release change goes through a branch + PR off `develop` and lands via
+**rebase-and-merge** so `develop` stays linear (see `CONTRIBUTING.md` § Git
+Workflow). **Worktrees are the parallel-development mechanism** — they let
+multiple branches share one clone without contention, so you can keep a
+long-running test run in one worktree while editing in another.
 
 **When to use a worktree (features):** new modules, multi-file refactors, anything
 you'd raise a PR for, anything large enough to want isolation while iterating.
@@ -126,8 +126,10 @@ check it out in the main directory — no worktree needed.
 5. Do the work in the worktree directory — small, logical commits as you go
    (tests first, then implementation), not one giant commit at the end
 6. Verify in the worktree: `uv run pytest && uv run ruff check . && uv run ruff format --check .`
-7. Merge back: from the main checkout, `git checkout develop && git merge --no-ff <branch-name>`
-   (or open a PR — never squash, preserve branch history)
+7. Land via PR. Push the branch (`git push -u origin <branch-name>`), open a
+   PR against `develop`, then use the GitHub UI's **"Rebase and merge"**
+   button (or `gh pr merge --rebase --delete-branch`). Do not use "Create a
+   merge commit" or "Squash and merge".
 8. If the change is user-visible, bump `pyproject.toml`'s `[project] version`
    and add a `CHANGELOG.md` entry in the same merge — see `CONTRIBUTING.md`
    § Versioning
@@ -175,10 +177,10 @@ If any fail, report the actual output — do not suppress or simplify failures.
 - Tests are grouped into `Test*` classes, one per unit or behaviour under test.
 - Git: `develop` is the trunk; `main` carries one merge commit per release.
   Never commit to `develop` directly; branch (`feature/`, `bugfix/`, `chore/`)
-  off `develop` and PR back with `--no-ff` (never squash, preserve branch
-  history). Releases are hand-assembled merge commits on `main` (tree =
-  develop's release-point tree; second parent = develop's release-point) —
-  see CONTRIBUTING.md § Versioning for the `git commit-tree` recipe. Tagged on
+  off `develop` and land via **rebase-and-merge** so `develop` stays linear.
+  Releases are hand-assembled merge commits on `main` (tree = develop's
+  release-point tree; second parent = develop's release-point) — see
+  CONTRIBUTING.md § Versioning for the `git commit-tree` recipe. Tagged on
   `main`. Use `git log --first-parent main` for the release-only view. Use
   conventional commits (`feat:`, `fix:`, `docs:`, `test:`, `style:`, `chore:`).
 - Versioning: `pyproject.toml`'s `[project] version` is the single source of truth;
