@@ -4,6 +4,23 @@ All notable changes to this project are documented in this file. The format is b
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.1.2] - 2026-05-23
+
+### Fixed
+
+- `report.py` now streams the `.broken.txt` reject sidecar line-by-line instead
+  of holding the full reject set in memory, so the constant-memory invariant
+  survives files with a high reject ratio.
+
+### Changed
+
+- Repository branching model: `main` is now a squash-merged release log (one
+  commit per tagged release); `develop` is the integration branch and holds the
+  full project history. PRs into `develop` use `--no-ff`; release PRs from
+  `develop` → `main` are squash-merged. See `CONTRIBUTING.md` § Git Workflow
+  for the policy and release flow.
+- `.worktrees/` is git-ignored so parallel worktrees don't pollute `git status`.
+
 ## [0.1.1] - 2026-05-22
 
 ### Fixed
