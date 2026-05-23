@@ -1,0 +1,59 @@
+name: CI
+
+# Runs on every push to a trunk branch (develop, main) and every PR targeting
+# one. A single lint leg gates a Python-version matrix that turns the
+# pyproject.toml classifiers into enforced facts rather than hopeful labels.
+
+on:
+  push:
+    branches: [develop, main]
+  pull_request:
+    branches: [develop, main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.1.0
+        with:
+          python-version: "3.11"
+
+      - name: Sync dependencies
+        run: uv sync --locked
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Format check
+        run: uv run ruff format --check .
+
+  test:
+    needs: lint
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.1.0
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Sync dependencies
+        run: uv sync --locked
+
+      - name: Tests
+        run: uv run pytest
