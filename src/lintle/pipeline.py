@@ -6,6 +6,13 @@ import os
 
 from lintle import repair, report, stem
 
+# How many quarantined records to retain in memory as exemplars for the
+# ``validate`` summary. The full byte-faithful catalog goes straight to the
+# ``.broken.txt`` sidecar via ``BrokenFileWriter`` — this bound only caps the
+# in-memory display sample, so peak memory stays constant even on files
+# where every record is corrupt.
+_EXEMPLAR_BOUND = 1000
+
 
 @dataclasses.dataclass
 class RecordCandidate:
@@ -104,6 +111,7 @@ def process_file(src_path, out_dir, mode, progress_queue=None, progress_every=25
     cleaned_handle = None
     cleaned_tmp = None
     cleaned_path = None
+    broken_writer = None
     if mode == "clean":
         cleaned_dir = os.path.join(out_dir, "cleaned")
         os.makedirs(cleaned_dir, exist_ok=True)
@@ -118,6 +126,14 @@ def process_file(src_path, out_dir, mode, progress_queue=None, progress_every=25
         cleaned_handle = open(  # noqa: SIM115
             cleaned_tmp, "w", encoding="ascii", newline="\n"
         )
+        broken_dir = os.path.join(out_dir, "broken")
+        os.makedirs(broken_dir, exist_ok=True)
+        broken_path = os.path.join(broken_dir, stem(src_name) + ".broken.txt")
+        # Stream rejects straight to disk so memory stays constant even on
+        # reject-heavy files. The writer's own context-manager exit discards
+        # its partials when finalize() isn't reached.
+        broken_writer = report.BrokenFileWriter(broken_path, src_name)
+        broken_writer.__enter__()
 
     completed = False
     try:
@@ -134,6 +150,7 @@ def process_file(src_path, out_dir, mode, progress_queue=None, progress_every=25
             if isinstance(candidate, Orphan):
                 _record_reject(
                     stats,
+                    broken_writer,
                     candidate.category,
                     candidate.reason,
                     [candidate.raw_line],
@@ -151,6 +168,7 @@ def process_file(src_path, out_dir, mode, progress_queue=None, progress_every=25
             except Exception as exc:  # one bad record must not kill the run
                 _record_reject(
                     stats,
+                    broken_writer,
                     "internal-error",
                     f"internal-error: {exc!r}",
                     [candidate.raw_line1, candidate.raw_line2],
@@ -168,6 +186,7 @@ def process_file(src_path, out_dir, mode, progress_queue=None, progress_every=25
             else:
                 _record_reject(
                     stats,
+                    broken_writer,
                     result.category,
                     result.reason,
                     result.raw_lines,
@@ -187,19 +206,31 @@ def process_file(src_path, out_dir, mode, progress_queue=None, progress_every=25
         if cleaned_tmp is not None and not completed:
             with contextlib.suppress(OSError):
                 os.unlink(cleaned_tmp)
+        if broken_writer is not None and not completed:
+            # Discard the broken-file partials — never publish a half-written
+            # sidecar. The context-manager __exit__ does the cleanup.
+            broken_writer.__exit__(None, None, None)
 
     if mode == "clean":
         os.replace(cleaned_tmp, cleaned_path)
-        broken_dir = os.path.join(out_dir, "broken")
-        os.makedirs(broken_dir, exist_ok=True)
-        broken_path = os.path.join(broken_dir, stem(src_name) + ".broken.txt")
-        report.write_broken_file(broken_path, src_name, stats)
+        broken_writer.finalize(stats.total_records)
+        broken_writer.__exit__(None, None, None)
 
     return stats
 
 
-def _record_reject(stats, category, reason, raw_lines, source_lines):
-    """Tally one quarantined record into ``stats``."""
+def _record_reject(stats, broken_writer, category, reason, raw_lines, source_lines):
+    """Tally one quarantined record; stream its bytes to the broken sidecar.
+
+    The in-memory ``reject_exemplars`` list is capped at ``_EXEMPLAR_BOUND``
+    — it only feeds the ``validate`` summary display, never the
+    byte-faithful catalog. The full record stream goes straight to the
+    ``BrokenFileWriter`` when one is open (``clean`` mode).
+    """
     stats.quarantined_count += 1
     stats.reject_categories[category] = stats.reject_categories.get(category, 0) + 1
-    stats.rejects.append(report.RejectEntry(raw_lines, source_lines, reason))
+    entry = report.RejectEntry(raw_lines, source_lines, reason)
+    if len(stats.reject_exemplars) < _EXEMPLAR_BOUND:
+        stats.reject_exemplars.append(entry)
+    if broken_writer is not None:
+        broken_writer.write_entry(entry)
