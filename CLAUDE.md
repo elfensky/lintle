@@ -99,10 +99,12 @@ uv run lintle clean             # Clean data/source/ -> data/output/
 
 ## Worktree Workflow
 
-Single trunk on `main`; every change goes through a branch + PR off `main` (see
-`CONTRIBUTING.md` § Git Workflow). **Worktrees are the parallel-development
-mechanism** — they let multiple branches share one clone without contention, so
-you can keep a long-running test run in one worktree while editing in another.
+Trunk is `develop`; `main` carries one squash-merge commit per release. Every
+non-release change goes through a branch + PR off `develop` and merges back with
+`--no-ff` (see `CONTRIBUTING.md` § Git Workflow). **Worktrees are the
+parallel-development mechanism** — they let multiple branches share one clone
+without contention, so you can keep a long-running test run in one worktree
+while editing in another.
 
 **When to use a worktree (features):** new modules, multi-file refactors, anything
 you'd raise a PR for, anything large enough to want isolation while iterating.
@@ -114,8 +116,8 @@ check it out in the main directory — no worktree needed.
 
 **Feature workflow (worktree):**
 
-1. From the main checkout, create the worktree off `main`:
-   `git worktree add .worktrees/<branch-dir> -b <branch-name> main`
+1. From the main checkout, create the worktree off `develop`:
+   `git worktree add .worktrees/<branch-dir> -b <branch-name> develop`
 2. `cd .worktrees/<branch-dir>`
 3. Install dev deps in the worktree: `uv sync`
 4. **Symlink the corpus into the worktree** (the ~30 GB `data/` tree lives only
@@ -124,7 +126,7 @@ check it out in the main directory — no worktree needed.
 5. Do the work in the worktree directory — small, logical commits as you go
    (tests first, then implementation), not one giant commit at the end
 6. Verify in the worktree: `uv run pytest && uv run ruff check . && uv run ruff format --check .`
-7. Merge back: from the main checkout, `git checkout main && git merge --no-ff <branch-name>`
+7. Merge back: from the main checkout, `git checkout develop && git merge --no-ff <branch-name>`
    (or open a PR — never squash, preserve branch history)
 8. If the change is user-visible, bump `pyproject.toml`'s `[project] version`
    and add a `CHANGELOG.md` entry in the same merge — see `CONTRIBUTING.md`
@@ -133,7 +135,7 @@ check it out in the main directory — no worktree needed.
    `git branch -d <branch-name>`
 
 **Small-chore workflow (branch in main checkout):** branch (`git checkout -b
-<branch-name>`), edit, run the same verification chain, commit, PR to `main`.
+<branch-name>`), edit, run the same verification chain, commit, PR to `develop`.
 Skip steps 1, 2, 4, 9 above.
 
 **Worktree directory:** `.worktrees/` in project root (git-ignored). Directory
@@ -171,10 +173,11 @@ If any fail, report the actual output — do not suppress or simplify failures.
 - Design docs live in `docs/superpowers/specs/`, named `YYYY-MM-DD-topic.md`. The design
   doc carries a revision log in its header — keep it current when the design changes.
 - Tests are grouped into `Test*` classes, one per unit or behaviour under test.
-- Git: single trunk on `main`. Never commit to `main` directly; branch
-  (`feature/`, `bugfix/`, `chore/`) off `main` and PR back with `--no-ff`
-  (never squash, preserve branch history). Releases are annotated tags on
-  `main`. Use conventional commits (`feat:`, `fix:`, `docs:`, `test:`,
+- Git: `develop` is the trunk; `main` carries one squash-merge commit per
+  release. Never commit to `develop` directly; branch (`feature/`, `bugfix/`,
+  `chore/`) off `develop` and PR back with `--no-ff` (never squash, preserve
+  branch history). Releases squash-merge `develop` into `main` and are tagged
+  on `main`. Use conventional commits (`feat:`, `fix:`, `docs:`, `test:`,
   `style:`, `chore:`).
 - Versioning: `pyproject.toml`'s `[project] version` is the single source of truth;
   `src/lintle/__init__.py` resolves `__version__` from it at runtime via
