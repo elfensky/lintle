@@ -156,9 +156,10 @@ git push -u origin feature/<desc>
 gh pr create --base develop --title "<title>" --body "<body>"
 gh pr merge --rebase --delete-branch
 
-# 6. Clean up
+# 6. Clean up (use -D, not -d: rebase rewrites SHAs so the local branch
+#    won't appear "merged" to git even after origin landed it)
 git worktree remove .worktrees/<branch-dir>
-git branch -d feature/<desc>
+git branch -D feature/<desc>
 ```
 
 Worktree directory names mirror the branch with slashes replaced by hyphens —
