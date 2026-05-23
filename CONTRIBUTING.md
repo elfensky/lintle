@@ -105,11 +105,69 @@ Never claim success without the output. If a check fails, report the failure.
 
 ## Git Workflow
 
-- **Never commit directly to `main`.** Branch for every change.
-- Branch names: `feature/<desc>`, `bugfix/<desc>`, `chore/<desc>` — lowercase, hyphens.
-- Use [Conventional Commits](https://www.conventionalcommits.org/): `feat:`, `fix:`,
-  `docs:`, `test:`, `refactor:`, `style:`, `chore:`.
-- Open a pull request to `main`; run the verification commands above before merging.
+This repo follows **Git Flow**. Two long-lived branches anchor the model:
+
+- **`main`** — production only. Every commit on `main` is a tagged release (`vX.Y.Z`).
+  Nothing lands here except release and hotfix merges; never commit to `main` directly.
+- **`develop`** — integration branch for ongoing work. The default branch for PRs and
+  the base for every short-lived branch except hotfixes.
+
+Short-lived branches:
+
+| Prefix          | Branch from | Merge into          | Purpose                                  |
+|-----------------|-------------|---------------------|------------------------------------------|
+| `feature/<x>`   | `develop`   | `develop`           | New functionality                        |
+| `bugfix/<x>`    | `develop`   | `develop`           | Fix a bug that hasn't shipped yet        |
+| `chore/<x>`     | `develop`   | `develop`           | Tooling, deps, refactors, doc-only edits |
+| `release/X.Y.Z` | `develop`   | `main` **and** `develop` | Stabilise and tag a release         |
+| `hotfix/X.Y.Z`  | `main`      | `main` **and** `develop` | Fix a bug already in production     |
+
+Names are lowercase with hyphens. Use [Conventional Commits](https://www.conventionalcommits.org/):
+`feat:`, `fix:`, `docs:`, `test:`, `refactor:`, `style:`, `chore:`.
+
+Open every pull request against `develop`, **except** `release/*` and `hotfix/*`, which
+target `main` and are then merged back into `develop` so the release/hotfix commits exist
+on both lines. Run the verification commands above before merging. **Never squash on
+merge** — use `--no-ff` (or the "Create a merge commit" PR option) so the branch history
+is preserved.
+
+### Parallel development with git worktrees
+
+Worktrees let one clone host several branches simultaneously, each in its own directory
+with its own `.venv/`. Use one for any non-trivial feature; iterate in one worktree
+while a slow test run finishes in another.
+
+```bash
+# 1. Create the worktree from develop
+git worktree add .worktrees/<branch-dir> -b feature/<desc> develop
+
+# 2. Enter and install
+cd .worktrees/<branch-dir>
+uv sync
+
+# 3. Symlink the corpus so the CLI sees data/ — keeps a single ~30 GB copy on disk
+ln -s ../../data data
+
+# 4. Work, commit incrementally, then verify
+uv run pytest && uv run ruff check . && uv run ruff format --check .
+
+# 5. Merge back (from the main checkout)
+cd ../.. && git checkout develop && git merge --no-ff feature/<desc>
+
+# 6. Clean up
+git worktree remove .worktrees/<branch-dir>
+git branch -d feature/<desc>
+```
+
+Worktree directory names mirror the branch with slashes replaced by hyphens —
+`feature/repair-tier-2` → `.worktrees/feature-repair-tier-2`. The whole `.worktrees/`
+tree is git-ignored.
+
+When running `lintle clean` from multiple worktrees in parallel, pass
+`--out-dir <local-dir>` to each — the default `data/output/` is shared through the
+symlink and concurrent runs will collide.
+
+See `CLAUDE.md` § Worktree Workflow for the Claude-facing version of these rules.
 
 ## Versioning
 
@@ -129,15 +187,22 @@ except PackageNotFoundError:  # source checkout that was never installed
 Because the lookup needs the project to be installed (even editable), keep `uv sync`
 current — every dev workflow in this repo already does.
 
-Release flow:
+Release flow (Git Flow):
 
-1. Bump `version` in `pyproject.toml`.
-2. Add a new `## [X.Y.Z] - YYYY-MM-DD` section at the top of `CHANGELOG.md` with
+1. Branch off `develop`: `git checkout -b release/X.Y.Z develop`.
+2. Bump `version` in `pyproject.toml`.
+3. Add a new `## [X.Y.Z] - YYYY-MM-DD` section at the top of `CHANGELOG.md` with
    `### Added` / `### Changed` / `### Fixed` subsections (see Keep a Changelog).
-3. Run the verification commands (`uv run pytest`, `uv run ruff check .`,
+4. Run the verification commands (`uv run pytest`, `uv run ruff check .`,
    `uv run ruff format --check .`) and report the actual output.
-4. Commit on a `chore/release-X.Y.Z` branch and open a PR to `main`. Tag and publish
-   after merge.
+5. Open a PR from `release/X.Y.Z` **to `main`**. Merge with `--no-ff` once it's green.
+6. Tag the merge commit on `main`: `git tag -a vX.Y.Z -m "Release X.Y.Z" && git push
+   origin vX.Y.Z`. Trigger the `Publish` workflow.
+7. Merge `main` back into `develop` so the release/changelog commits live on both
+   lines: `git checkout develop && git merge --no-ff main && git push origin develop`.
+
+Hotfixes follow the same shape but branch from `main` (`git checkout -b hotfix/X.Y.Z
+main`), bump the patch version, and merge into both `main` and `develop`.
 
 Nothing else needs to change — `lintle --version`, the `report.py` headers, and any
 downstream `from lintle import __version__` import all pick the new value up from

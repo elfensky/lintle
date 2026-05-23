@@ -97,6 +97,58 @@ uv run lintle clean             # Clean data/source/ -> data/output/
 - Build order, if rebuilding from the spec (§12): `pyproject.toml` → `tle.py` (test-first,
   it is the correctness oracle) → `repair.py` → `pipeline.py` → `report.py` / `cli.py`.
 
+## Worktree Workflow
+
+Lintle uses Git Flow: `main` holds tagged releases only, `develop` is the integration
+branch, and every change goes through a short-lived branch + PR off `develop` (see
+`CONTRIBUTING.md` § Git Workflow). **Worktrees are the parallel-development mechanism** —
+they let multiple branches share one clone without contention, so you can keep a
+long-running test run in one worktree while editing in another.
+
+**When to use a worktree (features):** new modules, multi-file refactors, anything you'd
+raise a PR for, anything large enough to want isolation while iterating. Default for any
+non-trivial change.
+
+**When a worktree is overkill (small chores):** single-file doc edits, a one-line bugfix,
+a `ruff format` pass. Still branch (`feature/`, `bugfix/`, `chore/`), but check it out in
+the main directory — no worktree needed. Use judgment; if unsure, default to a worktree.
+
+**Feature workflow (worktree):**
+
+1. From the main checkout, create the worktree off `develop` (or off `main` only for
+   a `hotfix/X.Y.Z`):
+   `git worktree add .worktrees/<branch-dir> -b <branch-name> develop`
+2. `cd .worktrees/<branch-dir>`
+3. Install dev deps in the worktree: `uv sync`
+4. **Symlink the corpus into the worktree** (the ~30 GB `data/` tree lives only in the
+   main checkout; the symlink keeps a single copy on disk and lets the CLI work
+   transparently): `ln -s ../../data data`
+5. Do the work in the worktree directory — small, logical commits as you go (tests
+   first, then implementation), not one giant commit at the end
+6. Verify in the worktree: `uv run pytest && uv run ruff check . && uv run ruff format --check .`
+7. Merge back: from the main checkout, `git checkout develop && git merge --no-ff <branch-name>`
+   (or open a PR to `develop` — see § Conventions; never squash, preserve branch
+   history). `release/*` and `hotfix/*` branches target `main` instead and are then
+   merged back into `develop`.
+8. If the change is user-visible, bump `pyproject.toml`'s `[project] version` and add a
+   `CHANGELOG.md` entry in the same merge — see `CONTRIBUTING.md` § Versioning
+9. Clean up: `git worktree remove .worktrees/<branch-dir>` then
+   `git branch -d <branch-name>`
+
+**Small-chore workflow (branch in main checkout):** from `develop`, branch
+(`git checkout develop && git checkout -b <branch-name>`), edit, run the same
+verification chain, commit, PR to `develop`. Skip steps 1, 2, 4, 9 above.
+
+**Worktree directory:** `.worktrees/` in project root (git-ignored). Directory names
+mirror the branch with slashes replaced by hyphens — `feature/repair-tier-2` →
+`.worktrees/feature-repair-tier-2`.
+
+**Parallel worktrees:** multiple `.worktrees/*` directories can coexist. Each has its own
+`.venv/` (created by `uv sync`); the symlinked `data/` is shared, so don't write through
+it — `clean` writes to `data/output/` and concurrent worktrees writing there will
+collide. Pass `--out-dir <worktree-local-dir>` to `lintle clean` when iterating in
+parallel so each worktree writes to its own output tree.
+
 ## Verification
 
 After completing edits, run these before reporting success:
@@ -121,8 +173,11 @@ If any fail, report the actual output — do not suppress or simplify failures.
 - Design docs live in `docs/superpowers/specs/`, named `YYYY-MM-DD-topic.md`. The design
   doc carries a revision log in its header — keep it current when the design changes.
 - Tests are grouped into `Test*` classes, one per unit or behaviour under test.
-- Git: never commit to `main` directly; branch (`feature/`, `bugfix/`, `chore/`); use
-  conventional commits (`feat:`, `fix:`, `docs:`, `test:`, `style:`, `chore:`).
+- Git: Git Flow — `main` carries tagged releases only and is never committed to
+  directly; `develop` is the integration branch and the base for every short-lived
+  branch (`feature/`, `bugfix/`, `chore/`). `release/X.Y.Z` and `hotfix/X.Y.Z` target
+  `main` and then merge back to `develop`. Use conventional commits (`feat:`, `fix:`,
+  `docs:`, `test:`, `style:`, `chore:`).
 - Versioning: `pyproject.toml`'s `[project] version` is the single source of truth;
   `src/lintle/__init__.py` resolves `__version__` from it at runtime via
   `importlib.metadata`. Bump it once, add a `CHANGELOG.md` entry — see CONTRIBUTING.md
