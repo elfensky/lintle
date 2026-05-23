@@ -195,8 +195,24 @@ def _terminate_workers(executor):
     ``with`` block runs ``shutdown(wait=True)``, which blocks until every
     running task finishes — and one TLE corpus file can take minutes.
     Terminating the worker processes directly makes Ctrl-C feel immediate.
+
+    The fast path reaches into the private ``_processes`` mapping (no
+    public equivalent exists on CPython 3.11–3.13). If a future runtime
+    removes or renames it, fall back to ``shutdown(cancel_futures=True)`` —
+    slower (waits for running tasks) but always available — and tell the
+    operator why Ctrl-C felt sluggish.
     """
-    processes = getattr(executor, "_processes", None) or {}
+    try:
+        processes = executor._processes
+    except AttributeError:
+        print(
+            "lintle: ProcessPoolExecutor._processes unavailable; "
+            "falling back to shutdown(cancel_futures=True) — "
+            "Ctrl-C may wait for in-flight tasks.",
+            file=sys.stderr,
+        )
+        executor.shutdown(cancel_futures=True)
+        return
     for proc in list(processes.values()):
         proc.terminate()
 
