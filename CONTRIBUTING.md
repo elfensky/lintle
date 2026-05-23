@@ -110,10 +110,12 @@ Two branches, two roles:
 - **`develop`** is the long-running trunk. All non-release history lives here.
   Branch off it for every change, work, PR back to `develop`, merge with
   `--no-ff` so branch history is preserved.
-- **`main`** is the release branch. Each release is one squash-merge commit
-  collapsing `develop` (or, for past releases, the relevant historical commit)
-  onto `main`. Releases are annotated tags on `main`. There is no separate
-  release branch.
+- **`main`** is the release branch. Each release is a single merge commit on
+  `main` whose tree is develop's release-point tree and whose second parent is
+  develop's release-point commit. The second parent gives graph visualizers a
+  "branched-from" edge from each release on `main` back to its origin on
+  `develop`. Use `git log --first-parent main` to see only the releases.
+  Releases are annotated tags on `main`. There is no separate release branch.
 
 - Branch names: `feature/<desc>`, `bugfix/<desc>`, `chore/<desc>` — lowercase,
   hyphens.
@@ -122,8 +124,9 @@ Two branches, two roles:
 - Never commit directly to `develop` or `main`. Open a PR; run the verification
   commands above before merging.
 - Never squash PRs to `develop` — use `--no-ff` (or "Create a merge commit" in
-  the GitHub UI) so branch history survives. (`main` is the opposite: every
-  merge into `main` is a squash, by definition of the release flow.)
+  the GitHub UI) so branch history survives. `main` is different: releases
+  land as hand-assembled merge commits built with `git commit-tree` (see
+  § Versioning § Release flow), not via the GitHub merge UI.
 
 ### Parallel development with git worktrees
 
@@ -188,14 +191,25 @@ Release flow:
 3. Run the verification commands (`uv run pytest`, `uv run ruff check .`,
    `uv run ruff format --check .`) and report the actual output.
 4. Open a PR to `develop`, merge with `--no-ff` once it's green.
-5. Squash-merge `develop` into `main`, tag the merge commit, and push:
+5. Build the release commit on `main` with `git commit-tree`. The tree comes
+   from `develop`'s release-point; the parents are `main`'s current tip and
+   `develop`'s release-point. This is what gives the graph a visible
+   "branched-from" edge from `main` to `develop` at each release while keeping
+   the release tree byte-identical to what gets published:
    ```bash
-   git checkout main && git pull
-   git merge --squash develop
-   git commit -m "Release vX.Y.Z"
+   git fetch origin
+   TREE=$(git rev-parse origin/develop^{tree})
+   COMMIT=$(git commit-tree "$TREE" \
+              -p origin/main \
+              -p origin/develop \
+              -m "Release vX.Y.Z")
+   git update-ref refs/heads/main "$COMMIT"
+   git checkout main
    git tag -a vX.Y.Z -m "Release vX.Y.Z"
    git push origin main vX.Y.Z
    ```
+   To see only the release commits on `main` (skipping the develop history
+   reachable via second parents), use `git log --first-parent main`.
 6. Create the GitHub release:
    ```bash
    gh release create vX.Y.Z --title "vX.Y.Z" --notes-from-tag --latest

@@ -173,12 +173,14 @@ If any fail, report the actual output — do not suppress or simplify failures.
 - Design docs live in `docs/superpowers/specs/`, named `YYYY-MM-DD-topic.md`. The design
   doc carries a revision log in its header — keep it current when the design changes.
 - Tests are grouped into `Test*` classes, one per unit or behaviour under test.
-- Git: `develop` is the trunk; `main` carries one squash-merge commit per
-  release. Never commit to `develop` directly; branch (`feature/`, `bugfix/`,
-  `chore/`) off `develop` and PR back with `--no-ff` (never squash, preserve
-  branch history). Releases squash-merge `develop` into `main` and are tagged
-  on `main`. Use conventional commits (`feat:`, `fix:`, `docs:`, `test:`,
-  `style:`, `chore:`).
+- Git: `develop` is the trunk; `main` carries one merge commit per release.
+  Never commit to `develop` directly; branch (`feature/`, `bugfix/`, `chore/`)
+  off `develop` and PR back with `--no-ff` (never squash, preserve branch
+  history). Releases are hand-assembled merge commits on `main` (tree =
+  develop's release-point tree; second parent = develop's release-point) —
+  see CONTRIBUTING.md § Versioning for the `git commit-tree` recipe. Tagged on
+  `main`. Use `git log --first-parent main` for the release-only view. Use
+  conventional commits (`feat:`, `fix:`, `docs:`, `test:`, `style:`, `chore:`).
 - Versioning: `pyproject.toml`'s `[project] version` is the single source of truth;
   `src/lintle/__init__.py` resolves `__version__` from it at runtime via
   `importlib.metadata`. Bump it once, add a `CHANGELOG.md` entry — see CONTRIBUTING.md
