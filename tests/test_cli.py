@@ -301,12 +301,40 @@ class TestShutdownHelpers:
         cli._terminate_workers(_FakeExecutor(procs))
         assert all(proc.terminated for proc in procs.values())
 
-    def test_terminate_workers_tolerates_missing_processes(self):
-        class _Bare:
-            pass
+    def test_terminate_workers_falls_back_to_shutdown_when_processes_missing(self):
+        # If a future CPython removes or renames the private `_processes`
+        # attribute, we must still stop the pool — fall back to the public
+        # shutdown(cancel_futures=True) API instead of silently no-op'ing.
+        class _NoPrivateExecutor:
+            def __init__(self):
+                self.shutdown_kwargs = None
 
-        # An executor with no `_processes` attribute must not raise.
-        cli._terminate_workers(_Bare())
+            @property
+            def _processes(self):
+                raise AttributeError("simulated CPython API change")
+
+            def shutdown(self, **kwargs):
+                self.shutdown_kwargs = kwargs
+
+        executor = _NoPrivateExecutor()
+        cli._terminate_workers(executor)
+        assert executor.shutdown_kwargs == {"cancel_futures": True}
+
+    def test_terminate_workers_warns_to_stderr_when_processes_missing(self, capsys):
+        # The fallback path is observable — print a one-line note so the
+        # operator knows shutdown took the slow path (waits for in-flight
+        # tasks to cancel) rather than the immediate-terminate path.
+        class _NoPrivateExecutor:
+            @property
+            def _processes(self):
+                raise AttributeError
+
+            def shutdown(self, **kwargs):
+                pass
+
+        cli._terminate_workers(_NoPrivateExecutor())
+        err = capsys.readouterr().err
+        assert "_processes" in err
 
 
 class TestProgressDisplay:
