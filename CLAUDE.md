@@ -134,7 +134,9 @@ check it out in the main directory — no worktree needed.
    and add a `CHANGELOG.md` entry in the same merge — see `CONTRIBUTING.md`
    § Versioning
 9. Clean up: `git worktree remove .worktrees/<branch-dir>` then
-   `git branch -d <branch-name>`
+   `git branch -D <branch-name>` (use `-D`, not `-d`: rebase-and-merge
+   rewrites the SHAs on `develop`, so the local branch won't look "merged"
+   to git even though its content has landed)
 
 **Small-chore workflow (branch in main checkout):** branch (`git checkout -b
 <branch-name>`), edit, run the same verification chain, commit, PR to `develop`.
