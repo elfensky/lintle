@@ -1,11 +1,20 @@
 # Git Workflow — `develop` Trunk, `main` Releases — Design
 
 - **Date:** 2026-05-23
-- **Status:** Approved; ready for implementation planning
+- **Status:** Implemented; §4 and §7.3 revised post-build (2026-05-23) — see Revision.
+- **Revision (2026-05-23):** the initial implementation used an *orphan* `main` with
+  single-parent squash commits (§4, §7.3 as originally written). When rendered in graph
+  visualizers, `main` floated disconnected from `develop` with no visible "branched-from"
+  edges at release points. To get the intended visualization, `main` was rebuilt as a
+  branch rooted at `ab9fcec` (shared root with `develop`), with each release commit
+  hand-assembled via `git commit-tree`: tree = develop's release-point tree (byte-equal
+  to PyPI, as before); parents = [previous `main` commit, develop's release-point
+  commit]. §4 ("Why orphan main?") is replaced with §4 ("Why merge commits with a shared
+  root?"); §7.3 is rewritten to use `commit-tree`.
 - **Topic:** Restructure the repository's git workflow so `develop` is the long-running
-  trunk carrying full history, and `main` is a curated, orphan branch containing one
-  squash-merge commit per release. Existing release commits and tags are reissued so that
-  the new `main` is byte-identical to what is on PyPI.
+  trunk carrying full history, and `main` is a curated branch containing one merge commit
+  per release. Existing release commits and tags are reissued so that the new `main` is
+  byte-identical to what is on PyPI.
 
 ## 1. Problem statement
 
@@ -47,9 +56,14 @@ After the operation the repository looks like:
 
 - **`develop`** — unchanged. 23 commits, root at `ab9fcec`. Remains the GitHub default
   branch.
-- **`main`** — orphan branch, no shared ancestor with `develop`, exactly two commits:
-  - `Release v0.1.1` — tree-identical to current `v0.1.1` tag (`tree e8f1960…`)
-  - `Release v0.1.2` — tree-identical to current `v0.1.2` tag (`tree ed5aa79…`)
+- **`main`** — branch rooted at `ab9fcec` (shared with `develop`), with two release
+  commits on top:
+  - `Release v0.1.1` — merge commit; tree-identical to current `v0.1.1` tag
+    (`tree e8f1960…`); parents = [`ab9fcec`, `3f1ec99`].
+  - `Release v0.1.2` — merge commit; tree-identical to current `v0.1.2` tag
+    (`tree ed5aa79…`); parents = [v0.1.1, `044594f`].
+  Use `git log --first-parent main` to see only the release commits without
+  develop's history.
 - **Tags** `v0.1.1` and `v0.1.2` re-pointed at the new commits on `main`. The previously
   tagged commits (`d09f314`, `fe881ef`) become unreachable and will GC out of the local
   repo over the standard 30–90 day reflog window.
@@ -59,18 +73,34 @@ After the operation the repository looks like:
   doc update lands via the new flow itself (feature branch → PR → `--no-ff` into
   `develop`).
 
-## 4. Why orphan `main`?
+## 4. Why merge commits with a shared root?
 
-`main` and `develop` having no shared history is the cleanest expression of the
-contract: `develop` is *the* history; `main` is a sequence of release snapshots, each
-independent. A non-orphan `main` rooted at `ab9fcec` (the design-doc commit) would imply a
-shared ancestor that the new workflow does not actually use — we never `git merge
-main` into `develop` and we never branch features from `main`. Orphan removes that
-implication.
+Two structural choices, taken together:
 
-Practical effects: `git log main..develop` still works (it lists everything on
-`develop`, which is what you want for "what's not released yet"). `git diff main develop`
-still works (it diffs trees, ancestry is irrelevant). There is no operational downside.
+- **Shared root at `ab9fcec`.** `main` and `develop` share their first commit (the
+  design-doc commit). This gives graph visualizers an anchor — without it, `main` floats
+  disconnected from `develop` in any tool that places branches by ancestry. The shared
+  root has no operational cost: we never `git merge main` into `develop` and never branch
+  features from `main`, so the shared ancestor is purely a visualization affordance.
+- **Each release commit on `main` is a merge commit with two parents.** First parent is
+  the previous `main` commit (so `git log --first-parent main` yields a clean release
+  timeline); second parent is the develop commit the release was cut from. The second
+  parent is what gives visualizers a "branched-from" edge from the release on `main` back
+  to its origin on `develop`.
+
+Both effects together produce the layout where `main` lives as a side-branch beside
+`develop`, with horizontal connector lines at each release point — the conventional
+git-flow visualization.
+
+The trees of the release commits remain byte-identical to what is on PyPI: the
+`git commit-tree` recipe sets the tree explicitly from develop's release-point tree,
+independent of what `--no-ff merge` would have produced from a 3-way merge.
+
+Practical effects: `git log main..develop` still works (it lists develop's commits not
+yet released). `git diff main develop` still works. `git log main` shows all ancestors
+reachable from `main` (release commits + every develop commit below them) — that's
+git's default behaviour for merge commits. For the release-only view, use
+`git log --first-parent main`.
 
 ## 5. Why backfill v0.1.1 and v0.1.2 onto the new `main`?
 
@@ -141,30 +171,43 @@ git branch -D main
 git push origin --delete main
 ```
 
-### 7.3 Rebuild `main` as an orphan branch
+### 7.3 Rebuild `main` with `git commit-tree`
+
+Each release commit is hand-assembled: tree is taken from the original release-point
+(so byte-equality with PyPI is guaranteed by construction); the two parents wire the
+commit into both the `main` first-parent chain and the corresponding develop release
+point. Original release dates are preserved via `GIT_AUTHOR_DATE` /
+`GIT_COMMITTER_DATE` so visualizers position the commits next to their origin commits
+on `develop`.
 
 ```bash
-git checkout --orphan main
-git rm -rf .                          # empty the index/working tree
+set -euo pipefail
 
-# v0.1.1 — source from the original tagged commit
-git checkout d09f314 -- .
-git add -A
-git commit -m "Release v0.1.1"
-git tag -a v0.1.1 -m "Release v0.1.1"
+TREE_V011=e8f19600628e89df2622886db0a07d602b723668
+TREE_V012=ed5aa79b204895e72093718453c3351c640c3945
 
-# v0.1.2 — source from develop's release-bump commit
-git rm -rf .
-git checkout 044594f -- .
-git add -A
-git commit -m "Release v0.1.2"
-git tag -a v0.1.2 -m "Release v0.1.2"
+ROOT=$(git rev-parse ab9fcec)        # shared root with develop
+DEV_V011=$(git rev-parse 3f1ec99)    # develop's v0.1.1 release point
+DEV_V012=$(git rev-parse 044594f)    # develop's v0.1.2 release point
 
-# Tree-equality assertion — must hold before pushing
-[ "$(git rev-parse v0.1.1^{tree})" = "e8f19600628e89df2622886db0a07d602b723668" ] \
+DATE_V011='2026-05-23T03:30:17+02:00'  # original d09f314 author/committer date
+DATE_V012='2026-05-23T11:32:20+02:00'  # original fe881ef author/committer date
+
+# v0.1.1 — tree from d09f314; parents = [root, develop's v0.1.1 point]
+COMMIT_V011=$(GIT_AUTHOR_DATE="$DATE_V011" GIT_COMMITTER_DATE="$DATE_V011" \
+              git commit-tree "$TREE_V011" -p "$ROOT" -p "$DEV_V011" -m "Release v0.1.1")
+[ "$(git rev-parse ${COMMIT_V011}^{tree})" = "$TREE_V011" ] \
     || { echo "v0.1.1 tree mismatch"; exit 1; }
-[ "$(git rev-parse v0.1.2^{tree})" = "ed5aa79b204895e72093718453c3351c640c3945" ] \
+
+# v0.1.2 — tree from 044594f; parents = [v0.1.1, develop's v0.1.2 point]
+COMMIT_V012=$(GIT_AUTHOR_DATE="$DATE_V012" GIT_COMMITTER_DATE="$DATE_V012" \
+              git commit-tree "$TREE_V012" -p "$COMMIT_V011" -p "$DEV_V012" -m "Release v0.1.2")
+[ "$(git rev-parse ${COMMIT_V012}^{tree})" = "$TREE_V012" ] \
     || { echo "v0.1.2 tree mismatch"; exit 1; }
+
+git branch main "$COMMIT_V012"
+GIT_COMMITTER_DATE="$DATE_V011" git tag -a v0.1.1 "$COMMIT_V011" -m "Release v0.1.1"
+GIT_COMMITTER_DATE="$DATE_V012" git tag -a v0.1.2 "$COMMIT_V012" -m "Release v0.1.2"
 ```
 
 Note on the tree SHAs above: `git rev-parse` printed
@@ -251,9 +294,15 @@ about worktree usage changes.
 After §7.5 the following must be true:
 
 ```bash
-# Branch shape
-git log --oneline main           # exactly two commits: Release v0.1.2, Release v0.1.1
-git rev-parse main^^             # should fail — only two commits, no parent below v0.1.1
+# Branch shape (first-parent only — the release-only view)
+git log --oneline --first-parent main
+#   <SHA> Release v0.1.2
+#   <SHA> Release v0.1.1
+#   ab9fcec Add design doc for TLE corpus validator & cleaner
+
+# Parent structure
+git rev-parse v0.1.1^@           # ab9fcec ...  3f1ec99 ...   (two parents)
+git rev-parse v0.1.2^@           # <v0.1.1>     044594f ...   (two parents)
 
 # Tag shape
 git tag -l                       # v0.1.1  v0.1.2
