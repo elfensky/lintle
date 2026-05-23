@@ -99,20 +99,25 @@ uv run lintle clean             # Clean data/source/ -> data/output/
 
 ## Worktree Workflow
 
-Trunk is `develop`; `main` carries one merge commit per release. Every
-non-release change goes through a branch + PR off `develop` and lands via
-**rebase-and-merge** so `develop` stays linear (see `CONTRIBUTING.md` § Git
-Workflow). **Worktrees are the parallel-development mechanism** — they let
-multiple branches share one clone without contention, so you can keep a
+Trunk is `develop`; `main` carries one merge commit per release and never
+receives direct commits. Two paths into `develop`:
+
+- **Direct commits** for chores and bugfixes (`chore:`, `fix:`, `docs:`,
+  `test:`, `style:`) — commit on `develop`, push. No branch, no PR.
+- **Branch + PR** for features and multi-file refactors (`feature/<desc>` or
+  `refactor/<desc>`) — land via **rebase-and-merge** so `develop` stays linear
+  (see `CONTRIBUTING.md` § Git Workflow).
+
+**Worktrees are the parallel-development mechanism for branched work** — they
+let multiple branches share one clone without contention, so you can keep a
 long-running test run in one worktree while editing in another.
 
-**When to use a worktree (features):** new modules, multi-file refactors, anything
-you'd raise a PR for, anything large enough to want isolation while iterating.
-Default for any non-trivial change.
+**When to use a worktree:** any `feature/<desc>` or `refactor/<desc>` branch.
+Default for any non-trivial change you'd raise a PR for.
 
-**When a worktree is overkill (small chores):** single-file doc edits, a one-line
-bugfix, a `ruff format` pass. Still branch (`feature/`, `bugfix/`, `chore/`), but
-check it out in the main directory — no worktree needed.
+**When to skip the worktree:** chores and bugfixes — single-line fixes, doc
+edits, dependency bumps, `ruff format` passes. Commit directly on `develop` in
+the main checkout. No branch, no PR.
 
 **Feature workflow (worktree):**
 
@@ -130,17 +135,22 @@ check it out in the main directory — no worktree needed.
    PR against `develop`, then use the GitHub UI's **"Rebase and merge"**
    button (or `gh pr merge --rebase --delete-branch`). Do not use "Create a
    merge commit" or "Squash and merge".
-8. If the change is user-visible, bump `pyproject.toml`'s `[project] version`
-   and add a `CHANGELOG.md` entry in the same merge — see `CONTRIBUTING.md`
-   § Versioning
-9. Clean up: `git worktree remove .worktrees/<branch-dir>` then
+8. Clean up: `git worktree remove .worktrees/<branch-dir>` then
    `git branch -D <branch-name>` (use `-D`, not `-d`: rebase-and-merge
    rewrites the SHAs on `develop`, so the local branch won't look "merged"
-   to git even though its content has landed)
+   to git even though its content has landed).
 
-**Small-chore workflow (branch in main checkout):** branch (`git checkout -b
-<branch-name>`), edit, run the same verification chain, commit, PR to `develop`.
-Skip steps 1, 2, 4, 9 above.
+**No per-merge version bumps.** Feature merges to `develop` do not touch
+`pyproject.toml`'s version. Version bumps and the dated `CHANGELOG.md` section
+land together on a `chore/release-X.Y.Z` branch — see `CONTRIBUTING.md`
+§ Versioning § Release flow. Add CHANGELOG-worthy notes alongside the code in
+your feature branch; they'll be collected under the next dated version when the
+release is cut.
+
+**Chore/bugfix workflow (direct on develop):** stay on `develop` in the main
+checkout, edit, run the same verification chain, commit with the right
+conventional-commit prefix (`chore:`, `fix:`, `docs:`, `test:`, `style:`),
+push. No branch, no worktree, no PR.
 
 **Worktree directory:** `.worktrees/` in project root (git-ignored). Directory
 names mirror the branch with slashes replaced by hyphens —
@@ -177,14 +187,16 @@ If any fail, report the actual output — do not suppress or simplify failures.
 - Design docs live in `docs/superpowers/specs/`, named `YYYY-MM-DD-topic.md`. The design
   doc carries a revision log in its header — keep it current when the design changes.
 - Tests are grouped into `Test*` classes, one per unit or behaviour under test.
-- Git: `develop` is the trunk; `main` carries one merge commit per release.
-  Never commit to `develop` directly; branch (`feature/`, `bugfix/`, `chore/`)
-  off `develop` and land via **rebase-and-merge** so `develop` stays linear.
-  Releases are hand-assembled merge commits on `main` (tree = develop's
-  release-point tree; second parent = develop's release-point) — see
-  CONTRIBUTING.md § Versioning for the `git commit-tree` recipe. Tagged on
-  `main`. Use `git log --first-parent main` for the release-only view. Use
-  conventional commits (`feat:`, `fix:`, `docs:`, `test:`, `style:`, `chore:`).
+- Git: `develop` is the trunk; `main` carries one merge commit per release and
+  never receives direct commits. On `develop`: chores and bugfixes (`chore:`,
+  `fix:`, `docs:`, `test:`, `style:`) commit directly; features and multi-file
+  refactors go on a `feature/<desc>` or `refactor/<desc>` branch and land via
+  **rebase-and-merge** so `develop` stays linear. Releases are hand-assembled
+  merge commits on `main` (tree = develop's release-point tree; second parent =
+  develop's release-point) — see CONTRIBUTING.md § Versioning for the
+  `git commit-tree` recipe. Tagged on `main`. Use `git log --first-parent main`
+  for the release-only view. Use conventional commits (`feat:`, `fix:`,
+  `docs:`, `test:`, `refactor:`, `style:`, `chore:`).
 - Versioning: `pyproject.toml`'s `[project] version` is the single source of truth;
   `src/lintle/__init__.py` resolves `__version__` from it at runtime via
   `importlib.metadata`. Bump it once, add a `CHANGELOG.md` entry — see CONTRIBUTING.md
