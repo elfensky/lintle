@@ -1,0 +1,29 @@
+# TLE corpus data — multi-gigabyte inputs and cleaner output, not version-controlled.
+# data/source/ holds the raw tle*.txt files and TLEs.zip; data/output/ is where
+# the cleaner writes <name>.cleaned.txt / <name>.broken.txt.
+/data/
+
+# Legacy / alternate locations (in case files are placed at the repo root)
+/tle*.txt
+/*.zip
+/cleaned/
+/output/
+
+# Claude Code session state
+/.claude/
+
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/

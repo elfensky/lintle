@@ -1,0 +1,50 @@
+name: Publish
+
+# Manually triggered. Pick the target from the input dropdown (defaults to
+# the TestPyPI sandbox), and click Run workflow. Trusted Publishing (OIDC)
+# handles authentication for both PyPI and TestPyPI — no API tokens stored.
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Where to publish"
+        type: choice
+        options:
+          - testpypi
+          - pypi
+        default: testpypi
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: ${{ inputs.target == 'pypi' && 'https://pypi.org/project/lintle/' || 'https://test.pypi.org/project/lintle/' }}
+    permissions:
+      id-token: write # required for Trusted Publishing (OIDC)
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.1.0
+        with:
+          python-version: "3.11"
+
+      - name: Verify before publishing
+        run: |
+          uv sync
+          uv run pytest
+          uv run ruff check .
+          uv run ruff format --check .
+
+      - name: Build sdist and wheel
+        run: uv build
+
+      - name: Publish to TestPyPI
+        if: inputs.target == 'testpypi'
+        run: uv publish --index testpypi --trusted-publishing always
+
+      - name: Publish to PyPI
+        if: inputs.target == 'pypi'
+        run: uv publish --trusted-publishing always
