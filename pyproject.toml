@@ -67,3 +67,10 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# `slow` is opt-in — long-running throughput tests excluded from the default
+# suite (and from the CI matrix, which runs `uv run pytest` with no `-m`).
+# Run them explicitly with `uv run pytest -m slow`.
+markers = [
+    "slow: opt-in long-running tests, excluded from the default suite",
+]
+addopts = "-m 'not slow'"
