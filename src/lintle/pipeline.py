@@ -144,6 +144,7 @@ def _run(src_path, out_dir, mode, stats, progress_queue, progress_every):
     cleaned_tmp = None
     cleaned_path = None
     broken_path = None
+    jsonl_path = None
     if mode == "clean":
         cleaned_dir = os.path.join(out_dir, "cleaned")
         os.makedirs(cleaned_dir, exist_ok=True)
@@ -161,12 +162,23 @@ def _run(src_path, out_dir, mode, stats, progress_queue, progress_every):
         broken_dir = os.path.join(out_dir, "broken")
         os.makedirs(broken_dir, exist_ok=True)
         broken_path = os.path.join(broken_dir, stem(src_name) + ".broken.txt")
+        # Per-file findings shard for the corpus-wide report.jsonl (issue #9).
+        # Lives in ``.shards/`` so it's clearly an internal staging directory;
+        # the cli concatenates shards into ``report.jsonl`` at end of run and
+        # then ``rmtree``s the whole directory. Spec §4.6.
+        shard_dir = os.path.join(out_dir, ".shards")
+        os.makedirs(shard_dir, exist_ok=True)
+        jsonl_path = os.path.join(shard_dir, stem(src_name) + ".findings.jsonl")
 
     # The sink owns the BrokenFileWriter lifecycle in clean mode and the
     # bounded in-memory sample in both modes. Issue #19: cap-enforcement
     # is now a structural property of the sink, not a convention spread
-    # across pipeline._record_reject.
-    sink = report.RejectSink(broken_path=broken_path, src_name=src_name)
+    # across pipeline._record_reject. Issue #9: the sink also owns the
+    # optional JsonlFindingsWriter, which streams structured findings to
+    # the per-file shard alongside the .broken.txt byte-faithful catalog.
+    sink = report.RejectSink(
+        broken_path=broken_path, src_name=src_name, jsonl_path=jsonl_path
+    )
 
     completed = False
     # Tracks paired+orphan yields — the "entries processed" count, used to
