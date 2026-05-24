@@ -28,15 +28,21 @@ class RejectEntry:
 
     ``raw_lines`` are original bytes (1 line for an orphan, 2 for a record)
     and are written verbatim so the sidecar is byte-faithful. ``primary``
-    is the headline :class:`Diagnostic` shown on the entry's first line;
-    ``related`` carries any secondary diagnostics, rendered on indented
-    continuation lines.
+    is the headline :class:`Diagnostic`; ``related`` carries any secondary
+    diagnostics, rendered on indented continuation lines. ``norad_id``
+    (issue #9) carries the 5-digit catalog ID extracted from line 1,
+    populated by ``pipeline._record_reject`` — consumed by the structured
+    ``report.jsonl`` emitter, not rendered into ``.broken.txt``. ``norad_id``
+    MUST stay the trailing field: the pipeline call site constructs this
+    dataclass positionally, so any reorder would silently corrupt the
+    per-call arguments.
     """
 
     raw_lines: list
     source_lines: list
     primary: Diagnostic
     related: tuple[Diagnostic, ...] = ()
+    norad_id: int | None = None
 
 
 @dataclasses.dataclass(frozen=True)

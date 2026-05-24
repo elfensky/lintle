@@ -52,6 +52,45 @@ def _two_file_stats():
     return [a, b]
 
 
+class TestRejectEntryConstructorContract:
+    """Lock the RejectEntry field order so pipeline._record_reject's positional
+    construction (pipeline.py:299) stays correct. norad_id MUST be the trailing
+    field — see issue #9 spec §4.5.
+    """
+
+    def test_existing_keyword_construction_unchanged(self):
+        # Locks the default-value contract for the 18 existing test-fixture
+        # call sites that omit norad_id.
+        entry = report.RejectEntry(
+            raw_lines=[b"1 garbage"],
+            source_lines=[42],
+            primary=_diag(RuleID.BAD_PREFIX, src=42),
+        )
+        assert entry.norad_id is None
+        assert entry.related == ()
+
+    def test_positional_construction_pins_field_order(self):
+        # Locks the (raw_lines, source_lines, primary, related) positional
+        # contract used by pipeline._record_reject.
+        primary = _diag(RuleID.CHECKSUM_MISMATCH, src=10)
+        related = (_diag(RuleID.LINE_LENGTH, src=10),)
+        entry = report.RejectEntry([b"1 x"], [10], primary, related)
+        assert entry.raw_lines == [b"1 x"]
+        assert entry.source_lines == [10]
+        assert entry.primary is primary
+        assert entry.related is related
+        assert entry.norad_id is None  # appended trailing default
+
+    def test_norad_id_must_be_keyword_to_avoid_corruption(self):
+        # Documents the construction pattern that pipeline._record_reject
+        # MUST use after adding norad_id to RejectEntry.
+        primary = _diag(RuleID.CHECKSUM_MISMATCH, src=10)
+        entry = report.RejectEntry(
+            [b"1 x"], [10], primary, (), norad_id=12345
+        )
+        assert entry.norad_id == 12345
+
+
 class TestWriteBrokenFile:
     def test_write_broken_file(self, tmp_path):
         stats = report.FileStats(src_name="tle2099.txt")
