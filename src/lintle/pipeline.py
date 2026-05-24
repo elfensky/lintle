@@ -108,12 +108,32 @@ def process_file(src_path, out_dir, mode, progress_queue=None, progress_every=25
 
     When ``progress_queue`` is given, the count of newly processed records
     is pushed to it every ``progress_every`` records — and once more when
-    the file ends — so the caller can render live progress. With no queue
-    (or ``progress_every`` set to 0) no progress is reported.
+    the file ends — so the caller can render live progress. The queue also
+    receives ``("start", src_name)`` before processing begins and
+    ``("end", src_name)`` in a ``finally`` (so failures still emit it),
+    letting the caller track which files are currently in flight. With no
+    queue (or ``progress_every`` set to 0) no progress is reported.
     """
     src_name = os.path.basename(src_path)
     stats = report.FileStats(src_name=src_name)
+    progress_enabled = progress_queue is not None and bool(progress_every)
+    if progress_enabled:
+        progress_queue.put(("start", src_name))
 
+    try:
+        return _run(src_path, out_dir, mode, stats, progress_queue, progress_every)
+    finally:
+        if progress_enabled:
+            progress_queue.put(("end", src_name))
+
+
+def _run(src_path, out_dir, mode, stats, progress_queue, progress_every):
+    """Process one file once start/end progress events are accounted for —
+    body of :func:`process_file`. Kept separate so the wrapper above can
+    own the queue-event lifecycle without doubling this function's
+    indentation.
+    """
+    src_name = stats.src_name
     cleaned_handle = None
     cleaned_tmp = None
     cleaned_path = None

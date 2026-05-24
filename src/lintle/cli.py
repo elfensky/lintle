@@ -292,6 +292,11 @@ class _ProgressDisplay:
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
+        # Files currently in flight, keyed by basename in insertion order so
+        # the earliest entry is the candidate "slow" file once peers finish.
+        # Values are start-times — kept for symmetry with the worker events,
+        # not currently rendered.
+        self._active = {}
 
     def __enter__(self):
         self._thread.start()
@@ -345,24 +350,52 @@ class _ProgressDisplay:
             self._drain()
 
     def _drain(self):
-        """Fold every queued record-count delta into the running total."""
+        """Fold every queued message into the running state. Two kinds
+        share one queue: ``int`` deltas (records processed since the last
+        tick) and ``(kind, name)`` lifecycle events (``"start"`` / ``"end"``)
+        from each worker.
+        """
         batch = 0
+        started = []
+        ended = []
         with contextlib.suppress(queue.Empty):
             while True:
-                batch += self._queue.get_nowait()
-        if batch:
+                msg = self._queue.get_nowait()
+                if isinstance(msg, int):
+                    batch += msg
+                else:
+                    kind, name = msg
+                    (started if kind == "start" else ended).append(name)
+        if batch or started or ended:
             with self._lock:
                 self._records += batch
+                for name in started:
+                    self._active[name] = time.monotonic()
+                for name in ended:
+                    self._active.pop(name, None)
 
     def _render(self):
         with self._lock:
             frame = self._SPINNER[self._frame % len(self._SPINNER)]
             self._frame += 1
+            elapsed = time.monotonic() - self._start
+            # Guard against the first frame's near-zero elapsed: integer
+            # division by 0 raises; floor it to 0 rec/s until time accrues.
+            rps = int(self._records / elapsed) if elapsed >= 1.0 else 0
             line = (
-                f"{frame} {_format_elapsed(time.monotonic() - self._start)} · "
+                f"{frame} {_format_elapsed(elapsed)} · "
                 f"{self._files_done}/{self._total_files} files · "
-                f"{self._records:,} records"
+                f"{self._records:,} records · "
+                f"{rps:,} rec/s"
             )
+            if self._active:
+                # The oldest entry is the longest-running file — the one
+                # that surfaces alone once peers finish, which is the whole
+                # point of showing names at all.
+                names = list(self._active)
+                line += f" · {names[0]}"
+                if len(names) > 1:
+                    line += f" +{len(names) - 1} more"
             sys.stderr.write("\r\x1b[K" + line)
             sys.stderr.flush()
 
