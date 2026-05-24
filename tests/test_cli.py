@@ -421,6 +421,59 @@ class TestMain:
 
         assert rc == 130
 
+    def test_main_interrupt_writes_no_report_or_ndjson(
+        self, tmp_path, line1, line2, monkeypatch
+    ):
+        # An interrupted `clean` run must not publish corpus-wide artifacts:
+        # `report.md` and `broken-noradids.ndjson` are only written after the
+        # results loop completes, so the early `return 130` path must leave
+        # the out-dir free of those files (issue #25). Worker-side `.partial`
+        # cleanup is covered by `test_failed_run_does_not_leak_temp_file` in
+        # test_pipeline.py — here we fake the executor outright so no worker
+        # ever runs, making the parent-side assertion fully deterministic.
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "tle2099.txt").write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
+        out = tmp_path / "out"
+
+        class _NoopFuture:
+            def result(self):  # pragma: no cover — must not be awaited
+                raise AssertionError("fake future must not be awaited")
+
+        class _FakeExecutor:
+            def __init__(self, *_args, **_kwargs):
+                self._processes = {}  # _terminate_workers iterates this
+
+            def submit(self, *_args, **_kwargs):
+                return _NoopFuture()
+
+            def shutdown(self, **_kwargs):
+                pass
+
+        monkeypatch.setattr(
+            cli.concurrent.futures, "ProcessPoolExecutor", _FakeExecutor
+        )
+
+        def _interrupt(_futures):
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(cli.concurrent.futures, "as_completed", _interrupt)
+
+        original_sigint = signal.getsignal(signal.SIGINT)
+        try:
+            rc = cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
+        finally:
+            signal.signal(signal.SIGINT, original_sigint)
+
+        assert rc == 130
+        assert not (out / "report.md").exists()
+        assert not (out / "broken-noradids.ndjson").exists()
+        # No worker ran, so cleaned/ and broken/ must either be absent or empty
+        # — in particular, no published `.cleaned.txt` and no stray `.partial`.
+        assert not list(out.rglob("*.cleaned.txt"))
+        assert not list(out.rglob("*.broken.txt"))
+        assert not list(out.rglob("*.partial"))
+
 
 class TestFormatElapsed:
     def test_format_elapsed_renders_minutes_and_hours(self):
