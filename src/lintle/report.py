@@ -91,6 +91,42 @@ class FileSample:
 
 
 @dataclasses.dataclass
+class NoradTracker:
+    """Per-NORAD per-rule quarantine accounting for one source file (issue #47).
+
+    Wraps the previously-raw ``dict[int, dict[RuleID, int]]`` field on
+    :class:`FileStats` so all mutations route through :meth:`record` —
+    a single named entry point future writers can grep for instead of
+    reinventing the ``setdefault``/``+1`` dance. The read surface is the
+    public ``counts`` dict by deliberate choice: production consumers
+    (``summary_dict``, ``_aggregate_per_norad``, ``aggregate_broken_norad_ids``)
+    each want different access shapes (``.items()``, key iteration,
+    value-clone) and a proxy-method API would add surface tax with no
+    encapsulation gain.
+
+    Bounded by the satellite catalog and the ``RuleID`` enum — never
+    "full", no drops, no cap. Mutable through its life; no freeze
+    boundary. No ``merge`` method — corpus rollup stays a free
+    function in :func:`_aggregate_per_norad` so the per-NORAD data
+    shape stays free to evolve (timestamps, provenance) without
+    breaking a monoid contract.
+    """
+
+    counts: dict = dataclasses.field(default_factory=dict)
+
+    def record(self, norad_id, rule_id):
+        """Tally one quarantine for ``norad_id`` against ``rule_id``.
+
+        The only sanctioned mutation entry point. Outer key is the
+        catalog-decoded integer NORAD ID; inner key is the
+        :class:`RuleID` member, value is a running count. First call
+        for a NORAD initialises the bucket; repeated calls accrue.
+        """
+        per_rule = self.counts.setdefault(norad_id, {})
+        per_rule[rule_id] = per_rule.get(rule_id, 0) + 1
+
+
+@dataclasses.dataclass
 class FileStats:
     """Accumulated results for one processed source file.
 
