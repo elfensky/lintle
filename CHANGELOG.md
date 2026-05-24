@@ -112,6 +112,21 @@ All notable changes to this project are documented in this file. The format is b
   `quarantined_count` semantics are unchanged: orphans still go to
   `.broken.txt` and remain tallied under `reject_categories['orphan-line']`.
   Closes #5.
+- `cli.main` now refuses to run when two distinct inputs share a basename,
+  because their `cleaned/` and `broken/` sidecars would otherwise silently
+  overwrite each other under `data/output/` — exactly the kind of
+  wrong-but-valid-looking outcome the spec forbids. `discover_paths` also
+  dedupes inputs by `os.path.realpath`, so the same canonical file listed
+  twice (literally, via a parent directory, or through a symlink) is
+  processed once. Closes #4.
+- `cli.check_paths` no longer pre-checks readability via `os.access`. That
+  call consults POSIX mode bits only and false-negatives on filesystems
+  that grant read via ACLs (NFSv4, SMB, FUSE), producing a misleading
+  "unreadable" verdict on inputs the worker can in fact open. The
+  authoritative readability test is the worker's `open()`; a real
+  permission failure surfaces through the per-file processing path with
+  the same exit code 2. Landed alongside the basename-collision fix in
+  commit `a898fb9`. Closes #7.
 
 ### Added
 
