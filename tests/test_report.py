@@ -91,6 +91,142 @@ class TestRejectEntryConstructorContract:
         assert entry.norad_id == 12345
 
 
+class TestEntryToJsonlDict:
+    """The pure-function envelope+nested renderer that produces the wire
+    shape of one ``report.jsonl`` line (issue #9, spec §4.2). Tests cover
+    field presence, StrEnum coercion, tuple-to-list flattening, null
+    handling, and the related-array nesting.
+    """
+
+    def test_envelope_carries_required_fields(self):
+        entry = report.RejectEntry(
+            raw_lines=[b"1 x", b"2 x"],
+            source_lines=[12345, 12346],
+            primary=diagnostic(
+                RuleID.CHECKSUM_MISMATCH,
+                source_line_nos=(12345, 12346),
+                tier_attempted=RepairTier.NONE,
+                column_range=(69, 69),
+                observed="0",
+                expected="3",
+            ),
+            norad_id=25544,
+        )
+        out = report.entry_to_jsonl_dict(entry, file="tle2022.txt", norad_id=25544)
+        expected_keys = {
+            "schema_version",
+            "outcome",
+            "file",
+            "rule_id",
+            "source_lines",
+            "tier_attempted",
+            "norad_id",
+            "column_range",
+            "observed",
+            "expected",
+            "note",
+            "related",
+        }
+        assert set(out.keys()) == expected_keys
+        assert out["schema_version"] == "1"
+        assert out["outcome"] == "quarantined"
+        assert out["file"] == "tle2022.txt"
+        assert out["rule_id"] == "TLE-CHK-001"
+        assert out["source_lines"] == [12345, 12346]
+        assert out["tier_attempted"] == "none"
+        assert out["norad_id"] == 25544
+        assert out["column_range"] == [69, 69]
+        assert out["observed"] == "0"
+        assert out["expected"] == "3"
+        assert out["note"] is None  # empty Diagnostic.note coerces to JSON null
+        assert out["related"] == []
+
+    def test_related_diagnostics_nested(self):
+        primary = diagnostic(RuleID.CHECKSUM_MISMATCH, source_line_nos=(10, 11))
+        related = (
+            diagnostic(RuleID.LINE_LENGTH, source_line_nos=(10,), note="too long"),
+            diagnostic(RuleID.NON_ASCII_BYTE, source_line_nos=(11,)),
+        )
+        entry = report.RejectEntry([b"1", b"2"], [10, 11], primary, related)
+        out = report.entry_to_jsonl_dict(entry, file="x.txt", norad_id=None)
+        assert len(out["related"]) == 2
+        # Nested entries carry no envelope fields (no schema_version, outcome,
+        # file, or norad_id).
+        nested_keys = {
+            "rule_id",
+            "source_lines",
+            "tier_attempted",
+            "column_range",
+            "observed",
+            "expected",
+            "note",
+        }
+        assert set(out["related"][0].keys()) == nested_keys
+        assert out["related"][0]["rule_id"] == "TLE-COL-001"
+        assert out["related"][0]["note"] == "too long"
+        assert out["related"][1]["rule_id"] == "TLE-COL-003"
+        assert out["related"][1]["note"] is None  # empty -> null
+
+    def test_strenum_values_render_as_strings(self):
+        # rule_id and tier_attempted are StrEnum members internally; the
+        # output MUST be their stable wire token, not the enum repr.
+        entry = report.RejectEntry(
+            [b"1"],
+            [1],
+            diagnostic(
+                RuleID.NON_ASCII_BYTE,
+                source_line_nos=(1,),
+                tier_attempted=RepairTier.NORMALIZATION,
+            ),
+        )
+        out = report.entry_to_jsonl_dict(entry, file="x.txt", norad_id=None)
+        assert out["rule_id"] == "TLE-COL-003"
+        assert out["tier_attempted"] == "tier-1"
+        # And these must be plain JSON-serializable strings — round-tripping
+        # through json must not raise.
+        assert json.dumps(out)
+
+    def test_tuples_become_lists(self):
+        # source_line_nos is a tuple internally; JSON has no tuple type, so
+        # the renderer MUST coerce to list. Same for column_range.
+        entry = report.RejectEntry(
+            [b"1"],
+            [10],
+            diagnostic(
+                RuleID.CHECKSUM_MISMATCH,
+                source_line_nos=(10, 11),
+                column_range=(69, 69),
+            ),
+        )
+        out = report.entry_to_jsonl_dict(entry, file="x.txt", norad_id=None)
+        assert isinstance(out["source_lines"], list)
+        assert isinstance(out["column_range"], list)
+
+    def test_none_fields_stay_none(self):
+        # Diagnostic fields that are absent (column_range, observed, expected)
+        # render as JSON null. note coerces "" -> null.
+        entry = report.RejectEntry(
+            [b"x"],
+            [1],
+            diagnostic(RuleID.BAD_PREFIX, source_line_nos=(1,)),
+        )
+        out = report.entry_to_jsonl_dict(entry, file="x.txt", norad_id=None)
+        assert out["column_range"] is None
+        assert out["observed"] is None
+        assert out["expected"] is None
+        assert out["note"] is None
+
+    def test_norad_id_null_when_unreadable(self):
+        entry = report.RejectEntry(
+            [b"2 something"],
+            [42],
+            diagnostic(RuleID.ORPHAN_LINE, source_line_nos=(42,)),
+            norad_id=None,
+        )
+        out = report.entry_to_jsonl_dict(entry, file="x.txt", norad_id=None)
+        assert out["norad_id"] is None
+
+
 class TestWriteBrokenFile:
     def test_write_broken_file(self, tmp_path):
         stats = report.FileStats(src_name="tle2099.txt")

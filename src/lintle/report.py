@@ -183,6 +183,51 @@ class FileStats:
     )
 
 
+def _diagnostic_to_nested(diag):
+    """Render one :class:`Diagnostic` as a JSON-ready dict (issue #9).
+
+    Used both inside the ``related`` array and as the body of the
+    envelope shape produced by :func:`entry_to_jsonl_dict`. ``StrEnum``
+    values coerce to their stable wire token (``"TLE-CHK-001"``,
+    ``"tier-1"``); tuples become lists (JSON has no tuple type); the
+    empty-string default of ``Diagnostic.note`` coerces to JSON ``null``
+    so consumers see uniform ``null``-vs-string semantics across the
+    three optional string fields.
+    """
+    return {
+        "rule_id": diag.rule_id.value,
+        "source_lines": list(diag.source_line_nos),
+        "tier_attempted": diag.tier_attempted.value,
+        "column_range": list(diag.column_range) if diag.column_range else None,
+        "observed": diag.observed,
+        "expected": diag.expected,
+        "note": diag.note or None,
+    }
+
+
+def entry_to_jsonl_dict(entry, *, file, norad_id):
+    """Render one :class:`RejectEntry` as a single ``report.jsonl`` line dict.
+
+    Envelope shape carries ``schema_version`` (``"1"`` for this spec),
+    ``outcome`` (always ``"quarantined"`` in v1; reserved for future
+    ``"fixed"`` emission), the per-file ``file`` basename, the
+    ``norad_id`` decoded at quarantine time, and the primary
+    :class:`Diagnostic`'s nested fields spread inline. Secondary
+    diagnostics fold into the ``related`` array, each rendered through
+    :func:`_diagnostic_to_nested` so the envelope fields appear exactly
+    once per line. See spec §4.1 for the field contract.
+    """
+    nested = _diagnostic_to_nested(entry.primary)
+    return {
+        "schema_version": "1",
+        "outcome": "quarantined",
+        "file": file,
+        "norad_id": norad_id,
+        **nested,
+        "related": [_diagnostic_to_nested(d) for d in entry.related],
+    }
+
+
 def _format_diagnostic(diag):
     """Render one :class:`Diagnostic` as a single-line string fragment.
 
