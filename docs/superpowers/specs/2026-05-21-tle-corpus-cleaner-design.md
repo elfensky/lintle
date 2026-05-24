@@ -10,6 +10,11 @@
   output into `cleaned/` and `broken/` subdirectories and writes a `report.md` run report.
   **2026-05-22:** project renamed `tlekit` → `lintle` — the package, PyPI distribution, and
   console script are all now `lintle` (no behavioural change).
+  **2026-05-24:** §9 — `FileStats.total_records` split into three independent
+  counters (`paired_records`, `orphan_entries`, `input_lines_seen`) so the
+  per-file and run-report columns no longer conflate a half-record (a single
+  orphan line) with a full 2-line record. Fix counts and reject categories
+  are unchanged; report wording adjusted (issue #5).
 - **Topic:** A tool to validate and clean a multi-gigabyte corpus of Two-Line Element (TLE) files exported from space-track.org
 
 ## 1. Problem statement
@@ -443,7 +448,7 @@ Per source file, formatted to be detailed enough to file a report with space-tra
 ```
 # tle2022.broken.txt — quarantined records
 # source: tle2022.txt | generated: 2026-05-21T14:03:00Z | lintle 0.1.0
-# 3 records quarantined of 8,412,067 total
+# 3 quarantined of 8,412,067 entries
 
 [1] source lines 14820-14821 — reason: Line 2 checksum mismatch (col 69 is '3', computed '7')
 1 43210U 18014A   22045.12345678  .00001234  00000-0  12345-4 0  9991
@@ -465,10 +470,17 @@ verbatim. The header carries totals, an ISO-8601 timestamp, and the tool version
 Printed to stdout (and as JSON with `--report json`):
 
 ```
-tle2022.txt   8,412,067 records   8,412,064 clean   3 quarantined
+tle2022.txt   8,412,066 records   8,412,064 clean   3 quarantined   (1 orphan, 16,824,135 lines)
   fixes:   trailing-backslash 8,412,064 | reconstructed-checksum 195,293 | crlf 0 | trailing-ws 0
   rejects: checksum-mismatch 1 | orphan-line 1 | wrong-length 1
 ```
+
+The header counters are independent (issue #5): `paired_records` is the count
+of true 2-line TLEs (here 8,412,066), `orphan_entries` is the count of
+unpaired single lines surfaced as findings (here 1, also visible in the
+`orphan-line` reject category), and `input_lines_seen` is every physical
+line read from the file. `clean + quarantined == paired + orphan` (the
+invariant), so the percentages stay coherent.
 
 `reconstructed-checksum` is reported as its own line item, separate from content-preserving
 fixes: those records are format-conformant but their checksums are computed, not verified

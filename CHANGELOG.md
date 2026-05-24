@@ -6,6 +6,20 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Fixed
+
+- `pipeline.process_file` no longer conflates unpaired orphan lines with
+  paired 2-line records in its counter. `FileStats.total_records` is replaced
+  by three independent counters: `paired_records` (true 2-line entries),
+  `orphan_entries` (unpaired single lines surfaced as findings), and
+  `input_lines_seen` (every physical line read from the file). Per-file
+  summary, JSON output (`--report json`), `.broken.txt` sidecar header, and
+  `report.md` run report all surface the three counters in their own columns
+  so percentages and breakdowns are unambiguous. `clean_count` /
+  `quarantined_count` semantics are unchanged: orphans still go to
+  `.broken.txt` and remain tallied under `reject_categories['orphan-line']`.
+  Closes #5.
+
 ### Added
 
 - `tests/test_pipeline_throughput.py` — an opt-in end-to-end throughput

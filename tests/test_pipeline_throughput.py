@@ -146,7 +146,7 @@ def _time_validate_run(src: Path, out_dir: Path) -> tuple[int, float]:
     t0 = time.perf_counter()
     stats = pipeline.process_file(str(src), str(out_dir), "validate")
     elapsed = time.perf_counter() - t0
-    return stats.total_records, elapsed
+    return stats.paired_records, elapsed
 
 
 def _load_baseline() -> dict[str, dict[str, float]]:
