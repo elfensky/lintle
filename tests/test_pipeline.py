@@ -5,7 +5,7 @@ import queue
 
 import pytest
 
-from lintle import pipeline
+from lintle import pipeline, report
 from lintle.diagnostics import RuleID
 
 
@@ -280,7 +280,7 @@ class TestStreamingRejects:
     def test_exemplars_bucketed_per_rule_with_complete_broken_catalog(self, tmp_path):
         # Far more bad-prefix orphans than the per-rule exemplar bound —
         # the full catalog must reach disk; only the in-memory bucket caps.
-        n = pipeline._PER_RULE_EXEMPLAR_BOUND + 1500
+        n = report._PER_RULE_EXEMPLAR_BOUND + 1500
         src = tmp_path / "tle2099.txt"
         src.write_bytes(b"\n".join(f"junk {i:08d}".encode("ascii") for i in range(n)))
         out = tmp_path / "out"
@@ -293,7 +293,7 @@ class TestStreamingRejects:
         # …but the in-memory bucket for that rule is capped at the bound.
         assert (
             len(stats.reject_sample.buckets[RuleID.BAD_PREFIX])
-            == pipeline._PER_RULE_EXEMPLAR_BOUND
+            == report._PER_RULE_EXEMPLAR_BOUND
         )
         # The on-disk catalog header and trailing entry both reflect every
         # quarantined record — none were dropped due to the in-memory cap.
@@ -305,7 +305,7 @@ class TestStreamingRejects:
     def test_validate_mode_bucket_caps_per_rule(self, tmp_path):
         # In validate mode no sidecar is written, but each per-rule bucket
         # still caps so peak memory does not grow with reject count.
-        n = pipeline._PER_RULE_EXEMPLAR_BOUND + 500
+        n = report._PER_RULE_EXEMPLAR_BOUND + 500
         src = tmp_path / "tle2099.txt"
         src.write_bytes(b"\n".join(f"junk {i:08d}".encode("ascii") for i in range(n)))
 
@@ -314,7 +314,7 @@ class TestStreamingRejects:
         assert stats.quarantined_count == n
         assert (
             len(stats.reject_sample.buckets[RuleID.BAD_PREFIX])
-            == pipeline._PER_RULE_EXEMPLAR_BOUND
+            == report._PER_RULE_EXEMPLAR_BOUND
         )
 
     def test_rare_rules_preserved_under_skew(self, tmp_path):
@@ -347,7 +347,7 @@ class TestStreamingRejects:
         # Force ``repair.process_record`` to raise so every paired record
         # lands in RuleID.INTERNAL_ERROR. With many more rejects than the
         # cap, the bucket caps just like a data-defect rule.
-        n = pipeline._PER_RULE_EXEMPLAR_BOUND + 5
+        n = report._PER_RULE_EXEMPLAR_BOUND + 5
         line1_tmpl = (
             "1 {i:05d}U 24001A   24001.00000000  .00000000  00000-0  00000-0 0  0001"
         )
@@ -373,7 +373,7 @@ class TestStreamingRejects:
         assert stats.reject_counts.get(RuleID.INTERNAL_ERROR) == n
         assert (
             len(stats.reject_sample.buckets[RuleID.INTERNAL_ERROR])
-            == pipeline._PER_RULE_EXEMPLAR_BOUND
+            == report._PER_RULE_EXEMPLAR_BOUND
         )
 
 

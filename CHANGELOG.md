@@ -40,6 +40,20 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Changed
 
+- Internal: extracted `RejectSink` and `FileSample` from `FileStats` so
+  the 5-per-rule exemplar cap is enforced by construction rather than by
+  convention in a single caller. `pipeline.process_file` no longer
+  juggles a separate `broken_writer` and exemplar dict — `RejectSink`
+  owns both responsibilities and the cap is now a structural property of
+  the sink type. `FileStats.reject_exemplars` is replaced by
+  `FileStats.reject_sample: FileSample` (a frozen, per-rule bounded
+  sample). `FileSample.from_bounded(cap=N, entries_by_rule={...})` is
+  the test-fixture entry point; production code writes through
+  `sink.add(entry)`. Renderers (`format_reject_lines`,
+  `write_broken_file`) read from `stats.reject_sample.buckets`. No
+  user-visible byte format changes (`.broken.txt`, JSON output, and
+  `report.md` are byte-identical to the pre-refactor baseline). Closes
+  #19.
 - Free-form short tags used across `repair.py`, `pipeline.py`, and tests
   are now defined in `lintle.categories` (for `FixClass`, the successful-repair
   taxonomy) and `lintle.diagnostics` (for `RuleID`, the rejection taxonomy)
