@@ -23,6 +23,20 @@ All notable changes to this project are documented in this file. The format is b
   auto-generated from the `diagnostics.RULES` registry, listing every rule
   that fired in the run with its short title so the report is
   self-explanatory.
+- `report.md` now ends with a `## Per-NORAD breakdown` table: one row per
+  satellite catalog number whose records were quarantined, with the
+  corpus-wide quarantine count, the per-rule defect breakdown, and the
+  source filenames the satellite appeared in. Rows are sorted by
+  quarantined-record count descending (NORAD ID ascending on ties); the
+  Files column shows the first five filenames alphabetically followed by a
+  `+N more` suffix when the satellite spans more files than that, keeping
+  the cell bounded for persistent NORADs. The table caps at
+  `format_run_report(all_stats, top_n=100)` rows by default with an
+  italicised "...and N more — see broken-noradids.ndjson for the full list."
+  footer when truncation activates; pass `top_n=None` to render every row.
+  The richer per-NORAD data is the human-facing counterpart to
+  `broken-noradids.ndjson`, whose `{"noradId":N}` contract stays minimal.
+  Closes #40.
 
 ### Changed
 
@@ -43,10 +57,27 @@ All notable changes to this project are documented in this file. The format is b
   per-file `"reject_categories"` field is renamed `"reject_counts"` and its
   inner keys change from free-form tags (`"checksum-mismatch"`) to stable
   rule IDs (`"TLE-CHK-001"`). `fix_counts` and its inner keys are
-  unchanged.
+  unchanged. The per-file payload also gains `"quarantined_norad_ids"`
+  carrying the per-satellite per-rule breakdown that backs the new
+  Markdown per-NORAD section (see Added above), shaped as
+  `{"<noradId>": {"TLE-CHK-001": count, ...}, ...}` — integer NORAD keys
+  auto-stringify, `RuleID` keys serialise as their stable wire token.
 - `FileStats.reject_categories` is renamed `FileStats.reject_counts` to
   match the new vocabulary; values are keyed by `diagnostics.RuleID`
   (which compares and hashes as its stable string value).
+- `FileStats.quarantined_norad_ids` is now a `dict[int, dict[RuleID, int]]`
+  instead of a `set[int]`: outer keys are still the satellite catalog
+  numbers, but each value is a per-rule count dict tallying which
+  diagnostics that satellite hit in this file. `pipeline._record_reject`
+  records the rule ID alongside the satellite at quarantine time, feeding
+  the new `## Per-NORAD breakdown` section. The `broken-noradids.ndjson`
+  sidecar still emits one `{"noradId":N}` line per ID —
+  `aggregate_broken_norad_ids` now iterates the dict's keys — so that
+  downstream contract is byte-identical. The per-file map is O(IDs × 9),
+  and the corpus-wide rollup adds an O(IDs × source files) term for the
+  Files column; both are bounded by the satellite catalog and the small
+  fixed number of source files, preserving the constant-memory invariant.
+  Closes #40.
 
 ### Removed
 

@@ -22,6 +22,13 @@
   [`2026-05-24-stable-rule-id-registry-design.md`](2026-05-24-stable-rule-id-registry-design.md)
   (issue #8). Other sections of this design (validator definition, repair tiers,
   streaming/constant-memory, pairing) remain authoritative.
+  **2026-05-24:** §9.4 — `report.md` gains a `## Per-NORAD breakdown`
+  section at the bottom: per-satellite quarantine count, per-rule defect
+  rollup, and source filenames the satellite appeared in, sorted by count
+  descending and capped at top-N (default 100) with a remainder footer.
+  `FileStats.quarantined_norad_ids` changes type from `set[int]` to
+  `dict[int, dict[RuleID, int]]` to carry the per-rule context; the
+  `broken-noradids.ndjson` sidecar contract is unchanged (issue #40).
 - **Topic:** A tool to validate and clean a multi-gigabyte corpus of Two-Line Element (TLE) files exported from space-track.org
 
 ## 1. Problem statement
@@ -497,8 +504,12 @@ fixes: those records are format-conformant but their checksums are computed, not
 
 A `clean` run writes a Markdown report to the `--out-dir` root, aggregating every processed
 file: corpus totals (records, percentage cleaned, percentage quarantined), the corpus-wide fix
-counts, the defect-category breakdown, and a per-file table. It is the human-readable companion
-to the per-file `.broken.txt` sidecars — a single at-a-glance picture of what the run did.
+counts, the defect-rule breakdown, a per-file table, and a per-NORAD breakdown table
+listing each satellite whose records were quarantined with its per-rule counts and the
+files it appeared in (sorted descending by quarantined-record count, capped at top-N rows with
+a "...and N more" footer pointing at `broken-noradids.ndjson` for the long tail). It is the
+human-readable companion to the per-file `.broken.txt` sidecars and the minimal
+`broken-noradids.ndjson` feed — a single at-a-glance picture of what the run did.
 
 ## 10. Error handling
 

@@ -312,8 +312,9 @@ class TestStreamingRejects:
 
 
 class TestQuarantinedNoradIds:
-    """The corpus-wide ``broken-noradids.csv`` feed: extract NORAD IDs from
-    quarantined records' line 1, when that line is readable.
+    """The corpus-wide ``broken-noradids.ndjson`` feed (and the per-NORAD
+    breakdown in ``report.md``): extract NORAD IDs from quarantined records'
+    line 1, when that line is readable, and bucket them by rule ID.
     """
 
     def test_extracts_id_from_record_reject(self, tmp_path, line1, line2):
@@ -325,7 +326,9 @@ class TestQuarantinedNoradIds:
 
         stats = pipeline.process_file(str(src), str(tmp_path / "out"), "clean")
 
-        assert stats.quarantined_norad_ids == {5}  # canonical NORAD 00005
+        # canonical NORAD 00005; the rule is checksum-mismatch since the
+        # only defect was the tampered column-69 digit.
+        assert stats.quarantined_norad_ids == {5: {RuleID.CHECKSUM_MISMATCH: 1}}
 
     def test_extracts_id_from_orphan_line1(self, tmp_path, line1):
         src = tmp_path / "tle2099.txt"
@@ -334,18 +337,18 @@ class TestQuarantinedNoradIds:
         stats = pipeline.process_file(str(src), str(tmp_path / "out"), "clean")
 
         assert stats.quarantined_count == 1
-        assert stats.quarantined_norad_ids == {5}
+        assert stats.quarantined_norad_ids == {5: {RuleID.ORPHAN_LINE: 1}}
 
     def test_orphan_line2_is_skipped(self, tmp_path, line2):
         # An orphan line 2 has no line 1 to read — the issue contract is
-        # explicit: line 1 unrecoverable -> omit from the CSV.
+        # explicit: line 1 unrecoverable -> omit from the map.
         src = tmp_path / "tle2099.txt"
         src.write_bytes((line2 + "\n").encode("ascii"))
 
         stats = pipeline.process_file(str(src), str(tmp_path / "out"), "clean")
 
         assert stats.quarantined_count == 1
-        assert stats.quarantined_norad_ids == set()
+        assert stats.quarantined_norad_ids == {}
 
     def test_bad_prefix_orphan_is_skipped(self, tmp_path):
         # A line that doesn't start with "1 " or "2 " is unparseable as a
@@ -356,15 +359,53 @@ class TestQuarantinedNoradIds:
         stats = pipeline.process_file(str(src), str(tmp_path / "out"), "clean")
 
         assert stats.quarantined_count == 1
-        assert stats.quarantined_norad_ids == set()
+        assert stats.quarantined_norad_ids == {}
 
-    def test_clean_records_do_not_populate_the_set(self, tmp_path, line1, line2):
+    def test_clean_records_do_not_populate_the_map(self, tmp_path, line1, line2):
         # Only quarantined records contribute — a fully clean file
-        # produces an empty NORAD-ID set.
+        # produces an empty per-NORAD map.
         src = tmp_path / "tle2099.txt"
         src.write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
 
         stats = pipeline.process_file(str(src), str(tmp_path / "out"), "clean")
 
         assert stats.clean_count == 1
-        assert stats.quarantined_norad_ids == set()
+        assert stats.quarantined_norad_ids == {}
+
+    def test_multiple_rejects_for_same_id_accrue_per_rule(self, tmp_path, line1, line2):
+        # Two checksum-mismatched records for the same NORAD ID should
+        # surface as one entry with a count of 2 under the same rule,
+        # confirming the per-rule accumulator advances rather than
+        # overwriting on each call.
+        src = tmp_path / "tle2099.txt"
+        bad_line1 = line1[:68] + "9"
+        body = (bad_line1 + "\n" + line2 + "\n") * 2
+        src.write_bytes(body.encode("ascii"))
+
+        stats = pipeline.process_file(str(src), str(tmp_path / "out"), "clean")
+
+        assert stats.quarantined_count == 2
+        assert stats.quarantined_norad_ids == {5: {RuleID.CHECKSUM_MISMATCH: 2}}
+
+    def test_two_distinct_rules_for_same_id_accrue_independently(
+        self, tmp_path, line1, line2
+    ):
+        # Same NORAD ID quarantined under two different rules in the same
+        # file: each per-rule bucket must accumulate independently rather
+        # than the second overwriting the first. Mix a paired record with
+        # a tampered checksum (TLE-CHK-001) and a trailing lone line 1
+        # (TLE-PAIR-001) — both surface NORAD 5.
+        src = tmp_path / "tle2099.txt"
+        bad_line1 = line1[:68] + "9"
+        body = bad_line1 + "\n" + line2 + "\n" + line1 + "\n"
+        src.write_bytes(body.encode("ascii"))
+
+        stats = pipeline.process_file(str(src), str(tmp_path / "out"), "clean")
+
+        assert stats.quarantined_count == 2
+        assert stats.quarantined_norad_ids == {
+            5: {
+                RuleID.CHECKSUM_MISMATCH: 1,
+                RuleID.ORPHAN_LINE: 1,
+            }
+        }

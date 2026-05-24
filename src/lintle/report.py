@@ -60,11 +60,14 @@ class FileStats:
     fix_counts: dict = dataclasses.field(default_factory=dict)
     reject_counts: dict = dataclasses.field(default_factory=dict)
     reject_exemplars: list = dataclasses.field(default_factory=list)
-    # NORAD IDs of records quarantined in this file, decoded once at
-    # reject time from line-1 columns 3-7. Bounded by the satellite
-    # catalog (~tens of thousands of IDs corpus-wide), so the in-memory
-    # set is independent of reject count and keeps memory constant.
-    quarantined_norad_ids: set = dataclasses.field(default_factory=set)
+    # Per-NORAD breakdown for records quarantined in this file. Outer keys
+    # are the 5-digit catalog numbers decoded once at reject time from
+    # line-1 columns 3-7; each value is a ``{RuleID: count}`` dict tallying
+    # which diagnostics that satellite hit in this file. Bounded by the
+    # satellite catalog (~tens of thousands of IDs corpus-wide) and the
+    # ``RuleID`` enum, so the per-file structure is O(catalog × |RuleID|)
+    # — independent of reject count and constant-memory at corpus scale.
+    quarantined_norad_ids: dict = dataclasses.field(default_factory=dict)
 
 
 def _format_diagnostic(diag):
@@ -232,7 +235,11 @@ def summary_dict(stats):
 
     The ``reject_counts`` map is keyed by stable rule IDs (e.g.
     ``"TLE-CHK-001"``) — the same handles cited in ``report.md`` and the
-    ``.broken.txt`` sidecar.
+    ``.broken.txt`` sidecar. The per-NORAD breakdown is shallow-copied per
+    ID so caller mutations do not leak back into the live ``FileStats``;
+    integer NORAD IDs and ``RuleID`` (``StrEnum``) members both serialise
+    natively under ``json.dumps`` — int keys auto-stringify and StrEnum
+    keys coerce to their stable wire token.
     """
     return {
         "src_name": stats.src_name,
@@ -243,6 +250,9 @@ def summary_dict(stats):
         "quarantined_count": stats.quarantined_count,
         "fix_counts": dict(stats.fix_counts),
         "reject_counts": dict(stats.reject_counts),
+        "quarantined_norad_ids": {
+            nid: dict(cats) for nid, cats in stats.quarantined_norad_ids.items()
+        },
     }
 
 
@@ -287,17 +297,123 @@ def _aggregate(all_stats):
     return paired, orphans, lines_seen, clean, quarantined, fixes, rejects
 
 
-def format_run_report(all_stats):
+# How many filenames to enumerate before collapsing the trailing tail into
+# a "+N more" suffix in the per-NORAD breakdown's Files column. Keeps the
+# cell width bounded for satellites quarantined across many source files
+# without coupling to any specific filename convention; the full file list
+# for a given NORAD can be recovered by grepping the per-file ``.broken.txt``
+# sidecars (``broken-noradids.ndjson`` carries only catalog IDs).
+_PER_NORAD_FILES_PREVIEW = 5
+
+
+def _aggregate_per_norad(all_stats):
+    """Roll the per-file per-NORAD breakdowns up into a corpus-wide view.
+
+    Returns a ``dict[int, dict]`` keyed by NORAD ID; each value has
+    ``"total"`` (int), ``"categories"`` (``{RuleID: count}`` summed across
+    files — the dict key is kept named ``categories`` since the column
+    header in ``report.md`` reads "Defect categories" to stay readable),
+    and ``"files"`` (set of source filenames where the ID had at least one
+    quarantine). Memory is O(unique IDs × (|RuleID| + |source files|)) —
+    bounded by the satellite catalog (~tens of thousands) and the small
+    fixed number of source files in a corpus run, so the rollup stays
+    constant-memory regardless of total reject count.
+    """
+    rollup = {}
+    for stats in all_stats:
+        for nid, categories in stats.quarantined_norad_ids.items():
+            if not categories:
+                continue
+            entry = rollup.setdefault(
+                nid, {"total": 0, "categories": {}, "files": set()}
+            )
+            entry["files"].add(stats.src_name)
+            for cat, count in categories.items():
+                entry["total"] += count
+                entry["categories"][cat] = entry["categories"].get(cat, 0) + count
+    return rollup
+
+
+def _format_per_norad_categories(categories):
+    """Render a per-NORAD ``categories`` mapping as ``"a (2), b (1)"`` text.
+
+    Sorted by count descending then rule-ID ascending so the order is
+    deterministic and the dominant defect surfaces first. ``str(cat)``
+    coerces ``RuleID`` enum members via their ``StrEnum`` value, so the
+    output matches the stable wire tokens (``"TLE-CHK-001"``, etc.) used
+    elsewhere in the report.
+    """
+    items = sorted(categories.items(), key=lambda kv: (-kv[1], str(kv[0])))
+    return ", ".join(f"{cat} ({count})" for cat, count in items)
+
+
+def _format_per_norad_files(files):
+    """Render a set of filenames as ``"a, b, c, d, e, +N more"`` text.
+
+    Files are sorted alphabetically — `tleYYYY.txt` corpora sort by year as
+    a side effect, but the helper makes no assumption about the naming
+    convention. The first ``_PER_NORAD_FILES_PREVIEW`` names are shown
+    verbatim; any trailing remainder collapses to ``", +N more"`` so the
+    Files column stays bounded for persistent satellites.
+    """
+    ordered = sorted(files)
+    if len(ordered) <= _PER_NORAD_FILES_PREVIEW:
+        return ", ".join(ordered)
+    head = ", ".join(ordered[:_PER_NORAD_FILES_PREVIEW])
+    return f"{head}, +{len(ordered) - _PER_NORAD_FILES_PREVIEW} more"
+
+
+def _format_per_norad_section(all_stats, top_n):
+    """Render the ``## Per-NORAD breakdown`` Markdown section as a line list.
+
+    Rows are sorted by quarantined-record count descending then NORAD ID
+    ascending — deterministic so cross-run diffs of ``report.md`` show only
+    real changes. When the rollup has more than ``top_n`` rows the table is
+    truncated to ``top_n`` and an italicised "...and N more" footer points
+    the operator at ``broken-noradids.ndjson`` for the full catalog; pass
+    ``top_n=None`` to disable the cap entirely (used by tests asserting the
+    long tail). Returns the lines including a leading blank-line separator,
+    so the caller can ``lines += _format_per_norad_section(...)`` without
+    inserting glue.
+    """
+    rollup = _aggregate_per_norad(all_stats)
+    lines = ["", "## Per-NORAD breakdown", ""]
+    if not rollup:
+        lines.append("_None — no records quarantined._")
+        return lines
+    items = sorted(rollup.items(), key=lambda kv: (-kv[1]["total"], kv[0]))
+    shown = items if top_n is None else items[:top_n]
+    lines += [
+        "| NORAD ID | Quarantined records | Defect categories | Files |",
+        "|---------:|--------------------:|-------------------|-------|",
+    ]
+    for nid, entry in shown:
+        cats = _format_per_norad_categories(entry["categories"])
+        files = _format_per_norad_files(entry["files"])
+        lines.append(f"| {nid} | {entry['total']:,} | {cats} | {files} |")
+    if top_n is not None and len(items) > top_n:
+        remaining = len(items) - top_n
+        lines += [
+            "",
+            f"_...and {remaining:,} more — "
+            "see broken-noradids.ndjson for the full list._",
+        ]
+    return lines
+
+
+def format_run_report(all_stats, top_n=100):
     """Render a Markdown report aggregating every processed file.
 
     Written to ``<out-dir>/report.md`` after a ``clean`` run: corpus
     totals, the percentage cleaned/quarantined, the corpus-wide fix and
-    rule-ID counts, a per-file breakdown table, and a rule reference
-    section auto-generated from ``diagnostics.RULES`` for every rule that
-    fired in this run. Percentages use ``paired_records + orphan_entries``
-    as the denominator — equal to ``clean + quarantined`` by the FileStats
-    invariant, so the cleaned and quarantined shares sum to 100 % even
-    when orphans are present.
+    rule-ID counts, a per-file breakdown table, a rule reference section
+    auto-generated from ``diagnostics.RULES`` for every rule that fired in
+    this run, and a per-NORAD breakdown table capped at ``top_n`` rows
+    (default 100; pass ``None`` to render every quarantined satellite).
+    Percentages use ``paired_records + orphan_entries`` as the denominator
+    — equal to ``clean + quarantined`` by the FileStats invariant, so the
+    cleaned and quarantined shares sum to 100 % even when orphans are
+    present.
     """
     timestamp = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     paired, orphans, lines_seen, clean, quarantined, fixes, rejects = _aggregate(
@@ -366,6 +482,7 @@ def format_run_report(all_stats):
             else:
                 lines.append(f"- `{key}` — {spec.short_title}")
 
+    lines += _format_per_norad_section(all_stats, top_n=top_n)
     lines.append("")
     return "\n".join(lines)
 
@@ -390,7 +507,7 @@ def aggregate_broken_norad_ids(all_stats):
     """Return the sorted, deduplicated NORAD IDs quarantined corpus-wide."""
     ids = set()
     for stats in all_stats:
-        ids |= stats.quarantined_norad_ids
+        ids |= set(stats.quarantined_norad_ids)
     return sorted(ids)
 
 
