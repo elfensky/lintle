@@ -86,9 +86,7 @@ class TestRejectEntryConstructorContract:
         # Documents the construction pattern that pipeline._record_reject
         # MUST use after adding norad_id to RejectEntry.
         primary = _diag(RuleID.CHECKSUM_MISMATCH, src=10)
-        entry = report.RejectEntry(
-            [b"1 x"], [10], primary, (), norad_id=12345
-        )
+        entry = report.RejectEntry([b"1 x"], [10], primary, (), norad_id=12345)
         assert entry.norad_id == 12345
 
 
@@ -271,9 +269,7 @@ class TestReportJsonlSchemaLock:
         # The exact set of top-level keys is the spec contract; both
         # accidental additions and accidental removals fail here.
         entry = self._entry()
-        out = report.entry_to_jsonl_dict(
-            entry, file="x.txt", norad_id=entry.norad_id
-        )
+        out = report.entry_to_jsonl_dict(entry, file="x.txt", norad_id=entry.norad_id)
         expected = {
             "schema_version",
             "outcome",
@@ -1071,7 +1067,8 @@ class TestConcatFindingsShards:
 
     def _make_shard(self, shard_dir, stem_name, payload_lines):
         path = shard_dir / f"{stem_name}.findings.jsonl"
-        path.write_text("".join(line + "\n" for line in payload_lines), encoding="utf-8")
+        body = "".join(line + "\n" for line in payload_lines)
+        path.write_text(body, encoding="utf-8")
         return path
 
     def test_concat_orders_alphabetically_by_src_name(self, tmp_path):
@@ -1147,9 +1144,7 @@ class TestConcatFindingsShards:
         assert dest.exists()
         assert not (tmp_path / "report.jsonl.partial").exists()
 
-    def test_concat_failure_preserves_prior_report_jsonl(
-        self, tmp_path, monkeypatch
-    ):
+    def test_concat_failure_preserves_prior_report_jsonl(self, tmp_path, monkeypatch):
         # If os.replace raises during concat, the destination from a
         # prior run (if any) stays unchanged and the partial is left
         # behind — next run's pre-run scrub purges. Spec §8.7.

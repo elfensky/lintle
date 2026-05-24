@@ -527,9 +527,7 @@ class TestReportJsonl:
         # .shards/ is cleaned up by concat.
         assert not (out / ".shards").exists()
 
-    def test_clean_jsonl_empty_when_zero_quarantines(
-        self, tmp_path, line1, line2
-    ):
+    def test_clean_jsonl_empty_when_zero_quarantines(self, tmp_path, line1, line2):
         # An all-clean run still produces report.jsonl, just empty —
         # matches broken-noradids.ndjson's contract that the artifact
         # is always present after a successful clean.

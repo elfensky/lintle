@@ -936,9 +936,7 @@ def concat_findings_shards(out_dir, dest_path, all_stats):
     tmp_path = dest_path + ".partial"
     with open(tmp_path, "wb") as out:
         for stats in all_stats:
-            shard = os.path.join(
-                shard_dir, stem(stats.src_name) + ".findings.jsonl"
-            )
+            shard = os.path.join(shard_dir, stem(stats.src_name) + ".findings.jsonl")
             if not os.path.exists(shard):
                 # Worker crashed before finalize, validate-mode worker, or
                 # an out-of-band cleanup removed it — skip silently.
