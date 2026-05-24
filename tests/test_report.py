@@ -286,20 +286,22 @@ class TestSummaries:
         # and RuleID members coerced to their stable wire token.
         stats = report.FileStats(
             src_name="tle2099.txt",
-            quarantined_norad_ids={
-                25544: {
-                    RuleID.CHECKSUM_MISMATCH: 3,
-                    RuleID.NON_ASCII_BYTE: 1,
-                },
-                42: {RuleID.ORPHAN_LINE: 1},
-            },
+            quarantined_norad_ids=report.NoradTracker(
+                counts={
+                    25544: {
+                        RuleID.CHECKSUM_MISMATCH: 3,
+                        RuleID.NON_ASCII_BYTE: 1,
+                    },
+                    42: {RuleID.ORPHAN_LINE: 1},
+                }
+            ),
         )
         data = report.summary_dict(stats)
         assert data["quarantined_norad_ids"][25544][RuleID.CHECKSUM_MISMATCH] == 3
         # Shallow-copy: mutating the returned dict must not leak back to
         # the live FileStats (mirrors fix_counts / reject_counts).
         data["quarantined_norad_ids"].pop(42)
-        assert 42 in stats.quarantined_norad_ids
+        assert 42 in stats.quarantined_norad_ids.counts
         # JSON round-trip: int keys auto-stringify, RuleID keys coerce to
         # their stable wire token (TLE-CHK-001, TLE-COL-003, TLE-PAIR-001).
         rendered = json.loads(json.dumps(report.summary_dict(stats)))
@@ -715,7 +717,9 @@ class TestBrokenNoradIdsNdjson:
         # NDJSON has no header; an empty corpus produces an empty file,
         # not a blank line — consumers reading line-by-line just see zero
         # records, which is the same shape as a non-quarantine run.
-        stats = report.FileStats(src_name="tle2099.txt", quarantined_norad_ids={})
+        stats = report.FileStats(
+            src_name="tle2099.txt", quarantined_norad_ids=report.NoradTracker(counts={})
+        )
         out = report.format_broken_noradids_ndjson([stats])
         assert out == ""
 
@@ -724,9 +728,13 @@ class TestBrokenNoradIdsNdjson:
         # outer dict keys); per-category counts inside each entry feed the
         # report.md per-NORAD breakdown but are irrelevant here.
         a = report.FileStats(
-            src_name="tle2008.txt", quarantined_norad_ids={26125: {}, 5: {}}
+            src_name="tle2008.txt",
+            quarantined_norad_ids=report.NoradTracker(counts={26125: {}, 5: {}}),
         )
-        b = report.FileStats(src_name="tle2009.txt", quarantined_norad_ids={42: {}})
+        b = report.FileStats(
+            src_name="tle2009.txt",
+            quarantined_norad_ids=report.NoradTracker(counts={42: {}}),
+        )
         out = report.format_broken_noradids_ndjson([a, b])
         assert out == '{"noradId":5}\n{"noradId":42}\n{"noradId":26125}\n'
 
@@ -734,17 +742,21 @@ class TestBrokenNoradIdsNdjson:
         # Compact separators (no space after the colon) keep the wire
         # format tight — kilobytes matter less than predictability for
         # downstream diffs and byte-exact CI assertions.
-        stats = report.FileStats(src_name="x.txt", quarantined_norad_ids={5: {}})
+        stats = report.FileStats(
+            src_name="x.txt", quarantined_norad_ids=report.NoradTracker(counts={5: {}})
+        )
         assert report.format_broken_noradids_ndjson([stats]) == '{"noradId":5}\n'
 
     def test_format_dedupes_across_files(self):
         # A NORAD ID seen in two files appears once — the deduplication is
         # the entire point of a corpus-wide artifact.
         a = report.FileStats(
-            src_name="tle2008.txt", quarantined_norad_ids={1234: {}, 5678: {}}
+            src_name="tle2008.txt",
+            quarantined_norad_ids=report.NoradTracker(counts={1234: {}, 5678: {}}),
         )
         b = report.FileStats(
-            src_name="tle2009.txt", quarantined_norad_ids={5678: {}, 9999: {}}
+            src_name="tle2009.txt",
+            quarantined_norad_ids=report.NoradTracker(counts={5678: {}, 9999: {}}),
         )
         out = report.format_broken_noradids_ndjson([a, b])
         assert out == '{"noradId":1234}\n{"noradId":5678}\n{"noradId":9999}\n'
@@ -753,7 +765,10 @@ class TestBrokenNoradIdsNdjson:
         # Every line must round-trip through json.loads independently —
         # the defining NDJSON guarantee.
         stats = report.FileStats(
-            src_name="x.txt", quarantined_norad_ids={5: {}, 42: {}, 26125: {}}
+            src_name="x.txt",
+            quarantined_norad_ids=report.NoradTracker(
+                counts={5: {}, 42: {}, 26125: {}}
+            ),
         )
         out = report.format_broken_noradids_ndjson([stats])
         ids = [json.loads(line)["noradId"] for line in out.splitlines()]
@@ -762,20 +777,31 @@ class TestBrokenNoradIdsNdjson:
     def test_write_emits_lf_line_endings(self, tmp_path):
         # CRLF on Windows would break consumers expecting plain LF; the
         # writer must pin to ``\n`` regardless of platform default.
-        stats = report.FileStats(src_name="x.txt", quarantined_norad_ids={1: {}, 2: {}})
+        stats = report.FileStats(
+            src_name="x.txt",
+            quarantined_norad_ids=report.NoradTracker(counts={1: {}, 2: {}}),
+        )
         out = tmp_path / "broken-noradids.ndjson"
         report.write_broken_noradids_ndjson(str(out), [stats])
         assert out.read_bytes() == b'{"noradId":1}\n{"noradId":2}\n'
 
     def test_write_emits_empty_file_when_nothing_quarantined(self, tmp_path):
-        stats = report.FileStats(src_name="x.txt", quarantined_norad_ids={})
+        stats = report.FileStats(
+            src_name="x.txt", quarantined_norad_ids=report.NoradTracker(counts={})
+        )
         out = tmp_path / "broken-noradids.ndjson"
         report.write_broken_noradids_ndjson(str(out), [stats])
         assert out.read_bytes() == b""
 
     def test_aggregate_returns_sorted_unique_ids(self):
-        a = report.FileStats(src_name="a.txt", quarantined_norad_ids={3: {}, 1: {}})
-        b = report.FileStats(src_name="b.txt", quarantined_norad_ids={2: {}, 1: {}})
+        a = report.FileStats(
+            src_name="a.txt",
+            quarantined_norad_ids=report.NoradTracker(counts={3: {}, 1: {}}),
+        )
+        b = report.FileStats(
+            src_name="b.txt",
+            quarantined_norad_ids=report.NoradTracker(counts={2: {}, 1: {}}),
+        )
         assert report.aggregate_broken_norad_ids([a, b]) == [1, 2, 3]
 
 
@@ -784,13 +810,14 @@ class TestPerNoradBreakdown:
 
     Covers the rollup, ordering, top-N cap, file-list truncation, and the
     italicised "...and N more" footer — exercising the renderer with
-    hand-crafted ``FileStats.quarantined_norad_ids`` dicts rather than
-    routing through the pipeline so each test isolates a single property.
+    hand-crafted ``FileStats.quarantined_norad_ids`` :class:`NoradTracker`
+    instances rather than routing through the pipeline so each test
+    isolates a single property.
     """
 
     def test_empty_when_no_quarantines(self):
-        # Default ``quarantined_norad_ids`` is an empty dict, so the
-        # section renders the italicised placeholder rather than an
+        # Default ``quarantined_norad_ids`` is an empty NoradTracker, so
+        # the section renders the italicised placeholder rather than an
         # empty table — keeps the report parseable when a corpus run
         # is fully clean.
         a = report.FileStats(src_name="tle2099.txt")
@@ -803,7 +830,9 @@ class TestPerNoradBreakdown:
     def test_single_norad_single_category_single_file(self):
         a = report.FileStats(
             src_name="tle2022.txt",
-            quarantined_norad_ids={25544: {RuleID.CHECKSUM_MISMATCH: 3}},
+            quarantined_norad_ids=report.NoradTracker(
+                counts={25544: {RuleID.CHECKSUM_MISMATCH: 3}}
+            ),
         )
         out = report.format_run_report([a])
         assert "## Per-NORAD breakdown" in out
@@ -815,12 +844,14 @@ class TestPerNoradBreakdown:
         # break alphabetically for determinism across runs.
         a = report.FileStats(
             src_name="tle2022.txt",
-            quarantined_norad_ids={
-                25544: {
-                    RuleID.CHECKSUM_MISMATCH: 5,
-                    RuleID.NON_ASCII_BYTE: 2,
+            quarantined_norad_ids=report.NoradTracker(
+                counts={
+                    25544: {
+                        RuleID.CHECKSUM_MISMATCH: 5,
+                        RuleID.NON_ASCII_BYTE: 2,
+                    }
                 }
-            },
+            ),
         )
         out = report.format_run_report([a])
         # Rule IDs sort by stable wire token after count-desc — TLE-CHK-001
@@ -832,11 +863,15 @@ class TestPerNoradBreakdown:
         # corpus-wide total and a comma-separated alphabetical file list.
         a = report.FileStats(
             src_name="tle2008.txt",
-            quarantined_norad_ids={25544: {RuleID.CHECKSUM_MISMATCH: 1}},
+            quarantined_norad_ids=report.NoradTracker(
+                counts={25544: {RuleID.CHECKSUM_MISMATCH: 1}}
+            ),
         )
         b = report.FileStats(
             src_name="tle2009.txt",
-            quarantined_norad_ids={25544: {RuleID.CHECKSUM_MISMATCH: 2}},
+            quarantined_norad_ids=report.NoradTracker(
+                counts={25544: {RuleID.CHECKSUM_MISMATCH: 2}}
+            ),
         )
         out = report.format_run_report([a, b])
         assert ("| 25544 | 3 | TLE-CHK-001 (3) | tle2008.txt, tle2009.txt |") in out
@@ -847,11 +882,15 @@ class TestPerNoradBreakdown:
         # each file's contribution as additive.
         a = report.FileStats(
             src_name="tle2008.txt",
-            quarantined_norad_ids={25544: {RuleID.CHECKSUM_MISMATCH: 2}},
+            quarantined_norad_ids=report.NoradTracker(
+                counts={25544: {RuleID.CHECKSUM_MISMATCH: 2}}
+            ),
         )
         b = report.FileStats(
             src_name="tle2009.txt",
-            quarantined_norad_ids={25544: {RuleID.NON_ASCII_BYTE: 1}},
+            quarantined_norad_ids=report.NoradTracker(
+                counts={25544: {RuleID.NON_ASCII_BYTE: 1}}
+            ),
         )
         out = report.format_run_report([a, b])
         # Total: 3 ; rules sorted by count desc: TLE-CHK-001 (2) before
@@ -867,11 +906,13 @@ class TestPerNoradBreakdown:
         # produce a deterministic order across runs.
         a = report.FileStats(
             src_name="x.txt",
-            quarantined_norad_ids={
-                100: {RuleID.CHECKSUM_MISMATCH: 5},
-                200: {RuleID.CHECKSUM_MISMATCH: 5},
-                300: {RuleID.CHECKSUM_MISMATCH: 10},
-            },
+            quarantined_norad_ids=report.NoradTracker(
+                counts={
+                    100: {RuleID.CHECKSUM_MISMATCH: 5},
+                    200: {RuleID.CHECKSUM_MISMATCH: 5},
+                    300: {RuleID.CHECKSUM_MISMATCH: 10},
+                }
+            ),
         )
         out = report.format_run_report([a])
         idx_300 = out.index("| 300 |")
@@ -885,11 +926,13 @@ class TestPerNoradBreakdown:
         # worst and a footer points at the NDJSON for the long tail.
         a = report.FileStats(
             src_name="x.txt",
-            quarantined_norad_ids={
-                1: {RuleID.CHECKSUM_MISMATCH: 1},
-                2: {RuleID.CHECKSUM_MISMATCH: 2},
-                3: {RuleID.CHECKSUM_MISMATCH: 3},
-            },
+            quarantined_norad_ids=report.NoradTracker(
+                counts={
+                    1: {RuleID.CHECKSUM_MISMATCH: 1},
+                    2: {RuleID.CHECKSUM_MISMATCH: 2},
+                    3: {RuleID.CHECKSUM_MISMATCH: 3},
+                }
+            ),
         )
         out = report.format_run_report([a], top_n=2)
         assert "| 3 |" in out
@@ -904,9 +947,9 @@ class TestPerNoradBreakdown:
         # opt-out used by tests asserting the long-tail tail.
         a = report.FileStats(
             src_name="x.txt",
-            quarantined_norad_ids={
-                i: {RuleID.CHECKSUM_MISMATCH: 1} for i in range(1, 6)
-            },
+            quarantined_norad_ids=report.NoradTracker(
+                counts={i: {RuleID.CHECKSUM_MISMATCH: 1} for i in range(1, 6)}
+            ),
         )
         out = report.format_run_report([a], top_n=None)
         for nid in range(1, 6):
@@ -917,10 +960,12 @@ class TestPerNoradBreakdown:
         # Exactly top_n entries → table is complete, footer must be absent.
         a = report.FileStats(
             src_name="x.txt",
-            quarantined_norad_ids={
-                1: {RuleID.CHECKSUM_MISMATCH: 1},
-                2: {RuleID.CHECKSUM_MISMATCH: 2},
-            },
+            quarantined_norad_ids=report.NoradTracker(
+                counts={
+                    1: {RuleID.CHECKSUM_MISMATCH: 1},
+                    2: {RuleID.CHECKSUM_MISMATCH: 2},
+                }
+            ),
         )
         out = report.format_run_report([a], top_n=2)
         assert "...and" not in out
@@ -935,10 +980,12 @@ class TestPerNoradBreakdown:
         # unexpected zero.
         a = report.FileStats(
             src_name="x.txt",
-            quarantined_norad_ids={
-                1: {RuleID.CHECKSUM_MISMATCH: 1},
-                2: {RuleID.CHECKSUM_MISMATCH: 1},
-            },
+            quarantined_norad_ids=report.NoradTracker(
+                counts={
+                    1: {RuleID.CHECKSUM_MISMATCH: 1},
+                    2: {RuleID.CHECKSUM_MISMATCH: 1},
+                }
+            ),
         )
         out = report.format_run_report([a], top_n=0)
         # Header present.
@@ -958,7 +1005,9 @@ class TestPerNoradBreakdown:
         all_stats = [
             report.FileStats(
                 src_name=f"tle{year}.txt",
-                quarantined_norad_ids={25544: {RuleID.CHECKSUM_MISMATCH: 1}},
+                quarantined_norad_ids=report.NoradTracker(
+                    counts={25544: {RuleID.CHECKSUM_MISMATCH: 1}}
+                ),
             )
             for year in range(2008, 2015)
         ]
@@ -974,7 +1023,9 @@ class TestPerNoradBreakdown:
         all_stats = [
             report.FileStats(
                 src_name=f"tle{year}.txt",
-                quarantined_norad_ids={25544: {RuleID.CHECKSUM_MISMATCH: 1}},
+                quarantined_norad_ids=report.NoradTracker(
+                    counts={25544: {RuleID.CHECKSUM_MISMATCH: 1}}
+                ),
             )
             for year in range(2008, 2013)  # 5 files exactly
         ]
@@ -991,7 +1042,9 @@ class TestPerNoradBreakdown:
         # first stays at the top.
         a = report.FileStats(
             src_name="x.txt",
-            quarantined_norad_ids={25544: {RuleID.CHECKSUM_MISMATCH: 1}},
+            quarantined_norad_ids=report.NoradTracker(
+                counts={25544: {RuleID.CHECKSUM_MISMATCH: 1}}
+            ),
         )
         out = report.format_run_report([a])
         idx_per_file = out.index("## Per-file breakdown")
@@ -1001,7 +1054,9 @@ class TestPerNoradBreakdown:
     def test_round_trip_through_write_run_report(self, tmp_path):
         a = report.FileStats(
             src_name="x.txt",
-            quarantined_norad_ids={25544: {RuleID.CHECKSUM_MISMATCH: 1}},
+            quarantined_norad_ids=report.NoradTracker(
+                counts={25544: {RuleID.CHECKSUM_MISMATCH: 1}}
+            ),
         )
         out = tmp_path / "report.md"
         report.write_run_report(str(out), [a])
@@ -1014,7 +1069,10 @@ class TestPerNoradBreakdown:
         # treated as no data and the section is empty — matches the
         # rendering contract that a NORAD must have at least one defect
         # to show up in the table.
-        a = report.FileStats(src_name="x.txt", quarantined_norad_ids={25544: {}})
+        a = report.FileStats(
+            src_name="x.txt",
+            quarantined_norad_ids=report.NoradTracker(counts={25544: {}}),
+        )
         out = report.format_run_report([a])
         assert "_None — no records quarantined._" in out
 

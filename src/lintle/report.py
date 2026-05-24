@@ -160,14 +160,21 @@ class FileStats:
     reject_sample: FileSample = dataclasses.field(
         default_factory=lambda: FileSample.empty(_PER_RULE_EXEMPLAR_BOUND)
     )
-    # Per-NORAD breakdown for records quarantined in this file. Outer keys
-    # are the 5-digit catalog numbers decoded once at reject time from
-    # line-1 columns 3-7; each value is a ``{RuleID: count}`` dict tallying
-    # which diagnostics that satellite hit in this file. Bounded by the
-    # satellite catalog (~tens of thousands of IDs corpus-wide) and the
-    # ``RuleID`` enum, so the per-file structure is O(catalog × |RuleID|)
-    # — independent of reject count and constant-memory at corpus scale.
-    quarantined_norad_ids: dict = dataclasses.field(default_factory=dict)
+    # Per-NORAD breakdown for records quarantined in this file (issue #47:
+    # wrapped behind :class:`NoradTracker` so the single-writer convention
+    # is enforced by the type — ``stats.quarantined_norad_ids.record(...)``
+    # is the only sanctioned mutation entry point). Outer keys (in
+    # ``.counts``) are the 5-digit catalog numbers decoded once at reject
+    # time from line-1 columns 3-7; each value is a ``{RuleID: count}``
+    # dict tallying which diagnostics that satellite hit in this file.
+    # Bounded by the satellite catalog (~tens of thousands of IDs corpus-
+    # wide) and the ``RuleID`` enum, so the per-file structure is O(catalog
+    # × |RuleID|) — independent of reject count and constant-memory at
+    # corpus scale. Field name preserved to keep the ``summary_dict`` JSON
+    # output key contract intact; only the type changed.
+    quarantined_norad_ids: NoradTracker = dataclasses.field(
+        default_factory=NoradTracker
+    )
 
 
 def _format_diagnostic(diag):
@@ -459,7 +466,7 @@ def summary_dict(stats):
         # FileSample. Parallels reject_counts in shape and key vocabulary.
         "dropped_counts": dict(stats.reject_sample.dropped_count),
         "quarantined_norad_ids": {
-            nid: dict(cats) for nid, cats in stats.quarantined_norad_ids.items()
+            nid: dict(cats) for nid, cats in stats.quarantined_norad_ids.counts.items()
         },
     }
 
@@ -562,7 +569,7 @@ def _aggregate_per_norad(all_stats):
     """
     rollup = {}
     for stats in all_stats:
-        for nid, categories in stats.quarantined_norad_ids.items():
+        for nid, categories in stats.quarantined_norad_ids.counts.items():
             if not categories:
                 continue
             entry = rollup.setdefault(
@@ -753,7 +760,7 @@ def aggregate_broken_norad_ids(all_stats):
     """Return the sorted, deduplicated NORAD IDs quarantined corpus-wide."""
     ids = set()
     for stats in all_stats:
-        ids |= set(stats.quarantined_norad_ids)
+        ids |= set(stats.quarantined_norad_ids.counts)
     return sorted(ids)
 
 

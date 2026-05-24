@@ -394,7 +394,7 @@ class TestQuarantinedNoradIds:
 
         # canonical NORAD 00005; the rule is checksum-mismatch since the
         # only defect was the tampered column-69 digit.
-        assert stats.quarantined_norad_ids == {5: {RuleID.CHECKSUM_MISMATCH: 1}}
+        assert stats.quarantined_norad_ids.counts == {5: {RuleID.CHECKSUM_MISMATCH: 1}}
 
     def test_extracts_id_from_orphan_line1(self, tmp_path, line1):
         src = tmp_path / "tle2099.txt"
@@ -403,7 +403,7 @@ class TestQuarantinedNoradIds:
         stats = pipeline.process_file(str(src), str(tmp_path / "out"), "clean")
 
         assert stats.quarantined_count == 1
-        assert stats.quarantined_norad_ids == {5: {RuleID.ORPHAN_LINE: 1}}
+        assert stats.quarantined_norad_ids.counts == {5: {RuleID.ORPHAN_LINE: 1}}
 
     def test_orphan_line2_is_skipped(self, tmp_path, line2):
         # An orphan line 2 has no line 1 to read — the issue contract is
@@ -414,7 +414,7 @@ class TestQuarantinedNoradIds:
         stats = pipeline.process_file(str(src), str(tmp_path / "out"), "clean")
 
         assert stats.quarantined_count == 1
-        assert stats.quarantined_norad_ids == {}
+        assert stats.quarantined_norad_ids.counts == {}
 
     def test_bad_prefix_orphan_is_skipped(self, tmp_path):
         # A line that doesn't start with "1 " or "2 " is unparseable as a
@@ -425,7 +425,7 @@ class TestQuarantinedNoradIds:
         stats = pipeline.process_file(str(src), str(tmp_path / "out"), "clean")
 
         assert stats.quarantined_count == 1
-        assert stats.quarantined_norad_ids == {}
+        assert stats.quarantined_norad_ids.counts == {}
 
     def test_clean_records_do_not_populate_the_map(self, tmp_path, line1, line2):
         # Only quarantined records contribute — a fully clean file
@@ -436,7 +436,7 @@ class TestQuarantinedNoradIds:
         stats = pipeline.process_file(str(src), str(tmp_path / "out"), "clean")
 
         assert stats.clean_count == 1
-        assert stats.quarantined_norad_ids == {}
+        assert stats.quarantined_norad_ids.counts == {}
 
     def test_multiple_rejects_for_same_id_accrue_per_rule(self, tmp_path, line1, line2):
         # Two checksum-mismatched records for the same NORAD ID should
@@ -451,7 +451,7 @@ class TestQuarantinedNoradIds:
         stats = pipeline.process_file(str(src), str(tmp_path / "out"), "clean")
 
         assert stats.quarantined_count == 2
-        assert stats.quarantined_norad_ids == {5: {RuleID.CHECKSUM_MISMATCH: 2}}
+        assert stats.quarantined_norad_ids.counts == {5: {RuleID.CHECKSUM_MISMATCH: 2}}
 
     def test_two_distinct_rules_for_same_id_accrue_independently(
         self, tmp_path, line1, line2
@@ -469,7 +469,7 @@ class TestQuarantinedNoradIds:
         stats = pipeline.process_file(str(src), str(tmp_path / "out"), "clean")
 
         assert stats.quarantined_count == 2
-        assert stats.quarantined_norad_ids == {
+        assert stats.quarantined_norad_ids.counts == {
             5: {
                 RuleID.CHECKSUM_MISMATCH: 1,
                 RuleID.ORPHAN_LINE: 1,
