@@ -6,14 +6,9 @@ import os
 
 from lintle import repair, report, stem, tle
 from lintle.diagnostics import Diagnostic, RuleID, diagnostic
-
-# How many quarantined records to retain in memory as exemplars per
-# ``RuleID`` for the ``validate`` summary. The full byte-faithful catalog
-# goes straight to the ``.broken.txt`` sidecar via ``BrokenFileWriter`` —
-# this bound only caps the per-rule in-memory display sample, so peak
-# memory stays constant even on files where every record is corrupt.
-# Total ceiling per file is ``|RuleID| × _PER_RULE_EXEMPLAR_BOUND``.
-_PER_RULE_EXEMPLAR_BOUND = 5
+from lintle.report import (
+    _PER_RULE_EXEMPLAR_BOUND,  # noqa: F401  # re-exported during transition
+)
 
 
 @dataclasses.dataclass
