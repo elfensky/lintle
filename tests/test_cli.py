@@ -498,6 +498,48 @@ class TestMain:
         assert not list(out.rglob("*.partial"))
 
 
+class TestPreRunShardScrub:
+    """Issue #9 spec §4.6 / §8.10: the pre-run shard-dir scrub removes
+    any leftover ``.shards/`` from a prior aborted run so this run's
+    ``report.jsonl`` cannot inherit stale entries.
+    """
+
+    def test_pre_run_scrub_purges_stale_shards(self, tmp_path, line1, line2):
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "tle2099.txt").write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
+        out = tmp_path / "out"
+        out.mkdir()
+        # Preseed a finalized shard from a previous run for a file that
+        # the current run does NOT process.
+        stale_shard_dir = out / ".shards"
+        stale_shard_dir.mkdir()
+        stale = stale_shard_dir / "tle1999.findings.jsonl"
+        stale.write_text('{"bogus": "from-prior-run"}\n', encoding="utf-8")
+
+        cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
+
+        # The scrub removed .shards/ before workers wrote anything;
+        # the concat then runs and either removes the dir again or
+        # leaves no trace either way.
+        assert not stale.exists()
+
+    def test_pre_run_scrub_purges_partials(self, tmp_path, line1, line2):
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "tle2099.txt").write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
+        out = tmp_path / "out"
+        out.mkdir()
+        stale_shard_dir = out / ".shards"
+        stale_shard_dir.mkdir()
+        stale = stale_shard_dir / "tle1999.findings.jsonl.partial"
+        stale.write_text("incomplete-write\n", encoding="utf-8")
+
+        cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
+
+        assert not stale.exists()
+
+
 class TestFormatElapsed:
     def test_format_elapsed_renders_minutes_and_hours(self):
         assert cli._format_elapsed(0) == "0:00"

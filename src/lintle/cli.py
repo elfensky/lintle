@@ -451,6 +451,17 @@ def main(argv=None):
         if disk_error:
             print(f"error: {disk_error}", file=sys.stderr)
             return 2
+        # Pre-run shard-dir scrub (issue #9, spec §4.6). Workers write
+        # per-file findings shards under ``<out_dir>/.shards/`` which the
+        # post-run concat consumes. Leftover shards from a prior aborted
+        # run (SIGINT terminates workers outright, bypassing context-
+        # manager cleanup) would contaminate this run's ``report.jsonl``
+        # if not purged before any new shard is written. The scrub is
+        # required, not best-effort — relying on ``os.makedirs(exist_ok=True)``
+        # alone preserves prior contents.
+        shard_dir = os.path.join(args.out_dir, ".shards")
+        if os.path.exists(shard_dir):
+            shutil.rmtree(shard_dir)
 
     print(
         f"processing {len(files)} file(s) with {args.jobs} worker(s)...",
