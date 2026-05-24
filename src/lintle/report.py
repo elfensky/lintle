@@ -44,11 +44,14 @@ class FileStats:
     ``reject_counts`` is keyed by :class:`diagnostics.RuleID` string values
     (e.g. ``"TLE-CHK-001"``) so reports cite stable, citable rule IDs.
 
-    ``reject_exemplars`` is a *bounded* sample of quarantined records used
-    only by the human-facing ``validate`` summary; the byte-faithful full
-    catalog is streamed to ``.broken.txt`` during processing. The bound is
-    enforced by the pipeline, not by this dataclass, so tests can populate
-    it freely.
+    ``reject_exemplars`` is a *per-rule bounded* sample of quarantined records
+    keyed by :class:`diagnostics.RuleID`, used only by the human-facing
+    ``validate`` summary; each per-rule list is capped at
+    ``pipeline._PER_RULE_EXEMPLAR_BOUND`` so a single noisy rule cannot
+    crowd out rarer ones (issue #21). The byte-faithful full catalog is
+    streamed to ``.broken.txt`` during processing. The cap is enforced
+    by the pipeline, not by this dataclass, so tests can populate it freely
+    via ``stats.reject_exemplars.setdefault(rule_id, []).append(entry)``.
     """
 
     src_name: str
@@ -59,7 +62,7 @@ class FileStats:
     quarantined_count: int = 0
     fix_counts: dict = dataclasses.field(default_factory=dict)
     reject_counts: dict = dataclasses.field(default_factory=dict)
-    reject_exemplars: list = dataclasses.field(default_factory=list)
+    reject_exemplars: dict = dataclasses.field(default_factory=dict)
     # Per-NORAD breakdown for records quarantined in this file. Outer keys
     # are the 5-digit catalog numbers decoded once at reject time from
     # line-1 columns 3-7; each value is a ``{RuleID: count}`` dict tallying
@@ -195,13 +198,18 @@ class BrokenFileWriter:
 def write_broken_file(path, src_name, stats):
     """Write the ``.broken.txt`` sidecar from a populated ``FileStats``.
 
-    Thin wrapper around ``BrokenFileWriter`` that emits whatever is in
-    ``stats.reject_exemplars``. Suitable for tests and small-corpus paths
-    where the full reject list fits in memory; production cleaning streams
+    Thin wrapper that flattens ``stats.reject_exemplars`` (a per-rule dict)
+    and sorts by ``source_lines[0]`` so the rendered sidecar matches
+    production encounter order. Suitable for tests and small-corpus paths
+    where the sampled set fits in memory; production cleaning streams
     entries through ``BrokenFileWriter`` directly so memory stays bounded.
     """
     with BrokenFileWriter(path, src_name) as writer:
-        for entry in stats.reject_exemplars:
+        flattened = [
+            entry for bucket in stats.reject_exemplars.values() for entry in bucket
+        ]
+        flattened.sort(key=lambda e: e.source_lines[0])
+        for entry in flattened:
             writer.write_entry(entry)
         writer.finalize(stats.paired_records + stats.orphan_entries)
 
@@ -256,28 +264,37 @@ def summary_dict(stats):
     }
 
 
-def format_reject_lines(stats, limit=100):
-    """Return a listing of quarantined records' source locations.
+def format_reject_lines(stats):
+    """Render grouped reject exemplars for the ``validate`` summary.
 
-    Used by ``validate`` mode. At most ``limit`` entries are shown; the
-    remainder are summarised as a trailing count. Reads from the bounded
-    ``reject_exemplars`` buffer — full counts live in ``quarantined_count``.
-    Related diagnostics fold onto indented continuation lines so a record
-    where both lines failed still surfaces both rule IDs.
+    Walks rule IDs in descending order of total occurrences from
+    ``stats.reject_counts`` and emits up to N exemplars per rule from
+    ``stats.reject_exemplars``, each rendered via :func:`_format_diagnostic`
+    so column ranges / observed / expected / tier survive into the
+    operator view. Related diagnostics fold onto indented continuation
+    lines, identical to ``.broken.txt``. A trailing ``...and X more``
+    appears under a rule when its bucket is shorter than the rule total.
+    A single noisy rule cannot hide rarer defects (issue #21).
     """
-    lines = []
-    for entry in stats.reject_exemplars[:limit]:
-        if len(entry.source_lines) == 2:
-            location = f"{entry.source_lines[0]}-{entry.source_lines[1]}"
-        else:
-            location = str(entry.source_lines[0])
-        lines.append(f"  line {location}: {_format_diagnostic(entry.primary)}")
-        for extra in entry.related:
-            lines.append(f"    and: {_format_diagnostic(extra)}")
-    remaining = stats.quarantined_count - min(len(stats.reject_exemplars), limit)
-    if remaining > 0:
-        lines.append(f"  ...and {remaining} more")
-    return "\n".join(lines)
+    blocks = []
+    for rule_id, total in sorted(
+        stats.reject_counts.items(), key=lambda kv: (-kv[1], kv[0])
+    ):
+        bucket = stats.reject_exemplars.get(rule_id, [])
+        lines = [f"  {rule_id} ({total:,}):"]
+        for entry in bucket:
+            if len(entry.source_lines) == 2:
+                location = f"{entry.source_lines[0]}-{entry.source_lines[1]}"
+            else:
+                location = str(entry.source_lines[0])
+            lines.append(f"    line {location}: {_format_diagnostic(entry.primary)}")
+            for extra in entry.related:
+                lines.append(f"      and: {_format_diagnostic(extra)}")
+        remaining = total - len(bucket)
+        if remaining > 0:
+            lines.append(f"    ...and {remaining:,} more")
+        blocks.append("\n".join(lines))
+    return "\n".join(blocks)
 
 
 def _aggregate(all_stats):

@@ -54,7 +54,7 @@ class TestWriteBrokenFile:
         stats = report.FileStats(src_name="tle2099.txt")
         stats.paired_records = 5
         stats.quarantined_count = 1
-        stats.reject_exemplars.append(
+        stats.reject_exemplars.setdefault(RuleID.BAD_PREFIX, []).append(
             report.RejectEntry(
                 raw_lines=[b"1 garbage"],
                 source_lines=[42],
@@ -83,7 +83,7 @@ class TestWriteBrokenFile:
         # A line quarantined for a non-ASCII byte must appear verbatim.
         stats = report.FileStats(src_name="x.txt")
         stats.quarantined_count = 1
-        stats.reject_exemplars.append(
+        stats.reject_exemplars.setdefault(RuleID.NON_ASCII_BYTE, []).append(
             report.RejectEntry(
                 raw_lines=[b"1 \xff\xfe non-ascii"],
                 source_lines=[7],
@@ -99,7 +99,7 @@ class TestWriteBrokenFile:
     def test_two_line_record_location(self, tmp_path):
         stats = report.FileStats(src_name="x.txt")
         stats.quarantined_count = 1
-        stats.reject_exemplars.append(
+        stats.reject_exemplars.setdefault(RuleID.CHECKSUM_MISMATCH, []).append(
             report.RejectEntry(
                 raw_lines=[b"1 aaa", b"2 bbb"],
                 source_lines=[14820, 14821],
@@ -130,7 +130,7 @@ class TestWriteBrokenFile:
         # lines failed), the related ones fold onto indented "and: ..." lines.
         stats = report.FileStats(src_name="x.txt")
         stats.quarantined_count = 1
-        stats.reject_exemplars.append(
+        stats.reject_exemplars.setdefault(RuleID.CHECKSUM_MISMATCH, []).append(
             report.RejectEntry(
                 raw_lines=[b"1 aaa", b"2 bbb"],
                 source_lines=[5, 6],
@@ -154,6 +154,63 @@ class TestWriteBrokenFile:
         text = out.read_bytes()
         assert b"rule: TLE-CHK-001" in text
         assert b"    and: rule: TLE-COL-001" in text
+
+    def test_write_broken_file_flattens_multiple_rules(self, tmp_path):
+        stats = report.FileStats(src_name="x.txt")
+        stats.paired_records = 6
+        stats.quarantined_count = 6
+        # Three rules, two entries each, source lines interleaved
+        # (10/40, 20/50, 30/60) so a correct sort by source_lines[0] yields
+        # the order 10, 20, 30, 40, 50, 60.
+        for rule, srcs in (
+            (RuleID.CHECKSUM_MISMATCH, [10, 40]),
+            (RuleID.BAD_PREFIX, [20, 50]),
+            (RuleID.NON_ASCII_BYTE, [30, 60]),
+        ):
+            for s in srcs:
+                stats.reject_exemplars.setdefault(rule, []).append(
+                    report.RejectEntry(
+                        raw_lines=[f"row-{s}".encode("ascii")],
+                        source_lines=[s],
+                        primary=_diag(rule, src=s),
+                    )
+                )
+
+        out = tmp_path / "x.broken.txt"
+        report.write_broken_file(str(out), "x.txt", stats)
+
+        text = out.read_bytes()
+        for s in (10, 20, 30, 40, 50, 60):
+            assert f"row-{s}".encode("ascii") in text
+        for i in range(1, 7):
+            assert f"[{i}] source line".encode("ascii") in text
+
+    def test_write_broken_file_orders_by_source_line(self, tmp_path):
+        stats = report.FileStats(src_name="x.txt")
+        stats.paired_records = 6
+        stats.quarantined_count = 6
+        for rule, srcs in (
+            (RuleID.CHECKSUM_MISMATCH, [10, 40]),
+            (RuleID.BAD_PREFIX, [20, 50]),
+            (RuleID.NON_ASCII_BYTE, [30, 60]),
+        ):
+            for s in srcs:
+                stats.reject_exemplars.setdefault(rule, []).append(
+                    report.RejectEntry(
+                        raw_lines=[f"row-{s}".encode("ascii")],
+                        source_lines=[s],
+                        primary=_diag(rule, src=s),
+                    )
+                )
+
+        out = tmp_path / "x.broken.txt"
+        report.write_broken_file(str(out), "x.txt", stats)
+        text = out.read_text("ascii")
+
+        # Order of appearance must follow source_lines, not dict insertion
+        # order or rule grouping.
+        positions = [text.index(f"row-{s}") for s in (10, 20, 30, 40, 50, 60)]
+        assert positions == sorted(positions)
 
 
 class TestSummaries:
@@ -227,9 +284,14 @@ class TestSummaries:
 
 
 class TestFormatRejectLines:
-    def test_format_reject_lines_lists_locations(self):
+    def test_format_reject_lines_groups_by_rule(self):
         stats = report.FileStats(src_name="x.txt")
-        stats.reject_exemplars.append(
+        stats.quarantined_count = 4
+        stats.reject_counts = {
+            RuleID.CHECKSUM_MISMATCH: 2,
+            RuleID.BAD_PREFIX: 2,
+        }
+        stats.reject_exemplars.setdefault(RuleID.CHECKSUM_MISMATCH, []).append(
             report.RejectEntry(
                 raw_lines=[b"1 a", b"2 b"],
                 source_lines=[10, 11],
@@ -240,16 +302,154 @@ class TestFormatRejectLines:
                 ),
             )
         )
+        stats.reject_exemplars.setdefault(RuleID.BAD_PREFIX, []).append(
+            report.RejectEntry(
+                raw_lines=[b"x"],
+                source_lines=[20],
+                primary=_diag(RuleID.BAD_PREFIX, src=20, note="line does not start"),
+            )
+        )
+
         out = report.format_reject_lines(stats)
-        assert "10-11" in out and "TLE-CHK-001" in out
+
+        # Two rule-heading blocks appear, each with their count.
+        assert "TLE-CHK-001 (2):" in out
+        assert "TLE-PAIR-002 (2):" in out
+        # Exemplars appear under their headings — rule_id embedded in the
+        # diagnostic body line.
+        assert "line 10-11: rule: TLE-CHK-001" in out
+        assert "line 20: rule: TLE-PAIR-002" in out
+
+    def test_format_reject_lines_sorts_by_descending_count(self):
+        stats = report.FileStats(src_name="x.txt")
+        stats.quarantined_count = 115
+        stats.reject_counts = {
+            RuleID.NON_ASCII_BYTE: 5,
+            RuleID.CHECKSUM_MISMATCH: 100,
+            RuleID.BAD_PREFIX: 10,
+        }
+        for rule in (
+            RuleID.NON_ASCII_BYTE,
+            RuleID.CHECKSUM_MISMATCH,
+            RuleID.BAD_PREFIX,
+        ):
+            stats.reject_exemplars.setdefault(rule, []).append(
+                report.RejectEntry(
+                    raw_lines=[b"x"],
+                    source_lines=[1],
+                    primary=_diag(rule, src=1),
+                )
+            )
+
+        out = report.format_reject_lines(stats)
+
+        # CHECKSUM (100) → BAD_PREFIX (10) → NON_ASCII (5)
+        # rule_ids: TLE-CHK-001, TLE-PAIR-002, TLE-COL-003
+        pos_chk = out.index("TLE-CHK-001 (100)")
+        pos_pair = out.index("TLE-PAIR-002 (10)")
+        pos_col = out.index("TLE-COL-003 (5)")
+        assert pos_chk < pos_pair < pos_col
+
+    def test_format_reject_lines_ties_break_alphabetically(self):
+        stats = report.FileStats(src_name="x.txt")
+        stats.quarantined_count = 14
+        # Same count — alphabetic tiebreak on rule_id string value.
+        # TLE-CHK-001 < TLE-PAIR-002 alphabetically.
+        stats.reject_counts = {
+            RuleID.BAD_PREFIX: 7,  # "TLE-PAIR-002"
+            RuleID.CHECKSUM_MISMATCH: 7,  # "TLE-CHK-001"
+        }
+        for rule in (RuleID.BAD_PREFIX, RuleID.CHECKSUM_MISMATCH):
+            stats.reject_exemplars.setdefault(rule, []).append(
+                report.RejectEntry(
+                    raw_lines=[b"x"],
+                    source_lines=[1],
+                    primary=_diag(rule, src=1),
+                )
+            )
+
+        out = report.format_reject_lines(stats)
+
+        assert out.index("TLE-CHK-001") < out.index("TLE-PAIR-002")
+
+    def test_format_reject_lines_emits_per_rule_remainder(self):
+        stats = report.FileStats(src_name="x.txt")
+        stats.quarantined_count = 1003
+        stats.reject_counts = {
+            RuleID.CHECKSUM_MISMATCH: 1000,
+            RuleID.BAD_PREFIX: 3,
+        }
+        # Full bucket of 5 for the noisy rule.
+        for i in range(5):
+            stats.reject_exemplars.setdefault(RuleID.CHECKSUM_MISMATCH, []).append(
+                report.RejectEntry(
+                    raw_lines=[b"x"],
+                    source_lines=[i],
+                    primary=_diag(RuleID.CHECKSUM_MISMATCH, src=i),
+                )
+            )
+        # Bucket equal to the rule's total count — no remainder.
+        for i in range(3):
+            stats.reject_exemplars.setdefault(RuleID.BAD_PREFIX, []).append(
+                report.RejectEntry(
+                    raw_lines=[b"x"],
+                    source_lines=[100 + i],
+                    primary=_diag(RuleID.BAD_PREFIX, src=100 + i),
+                )
+            )
+
+        out = report.format_reject_lines(stats)
+
+        assert "...and 995 more" in out
+        # Only the noisy rule has a remainder; "...and" appears exactly once.
+        assert out.count("...and") == 1
+
+    def test_format_reject_lines_empty_when_no_rejects(self):
+        stats = report.FileStats(src_name="x.txt")
+        assert report.format_reject_lines(stats) == ""
+
+    def test_format_reject_lines_indentation_contract(self):
+        stats = report.FileStats(src_name="x.txt")
+        stats.quarantined_count = 1
+        stats.reject_counts = {RuleID.CHECKSUM_MISMATCH: 1}
+        stats.reject_exemplars.setdefault(RuleID.CHECKSUM_MISMATCH, []).append(
+            report.RejectEntry(
+                raw_lines=[b"x"],
+                source_lines=[10, 11],
+                primary=diagnostic(
+                    RuleID.CHECKSUM_MISMATCH,
+                    source_line_nos=(10,),
+                    column_range=(69, 69),
+                ),
+                related=(
+                    diagnostic(
+                        RuleID.NON_ASCII_BYTE,
+                        source_line_nos=(11,),
+                        note="line 2: non-ascii",
+                    ),
+                ),
+            )
+        )
+
+        out = report.format_reject_lines(stats)
+        lines = out.splitlines()
+
+        # Rule heading is 2-space indented.
+        assert lines[0].startswith("  TLE-CHK-001")
+        assert not lines[0].startswith("   ")
+        # Exemplar line is 4-space indented (one nest deeper).
+        assert lines[1].startswith("    line ")
+        assert not lines[1].startswith("     ")
+        # Related diagnostic is 6-space indented (one nest deeper still).
+        assert lines[2].startswith("      and: ")
+        assert not lines[2].startswith("       ")
 
     def test_format_reject_lines_surfaces_related_diagnostics(self):
-        # A dual-failure record (both lines bad) carries a primary plus a
-        # related diagnostic. Validate-mode must show both — pre-PR-#43 the
-        # free-form reason string included both line failures, so hiding
-        # related here would be a user-visible regression.
+        # Dual-failure record: primary + related, both must render.
         stats = report.FileStats(src_name="x.txt")
-        stats.reject_exemplars.append(
+        stats.quarantined_count = 1
+        stats.reject_counts = {RuleID.CHECKSUM_MISMATCH: 1}
+        stats.reject_exemplars.setdefault(RuleID.CHECKSUM_MISMATCH, []).append(
             report.RejectEntry(
                 raw_lines=[b"1 a", b"2 b"],
                 source_lines=[10, 11],
@@ -269,22 +469,8 @@ class TestFormatRejectLines:
         )
         out = report.format_reject_lines(stats)
         assert "TLE-CHK-001" in out
-        assert "    and:" in out
-        assert "TLE-COL-003" in out  # NON_ASCII_BYTE
-
-    def test_format_reject_lines_caps_long_lists(self):
-        stats = report.FileStats(src_name="x.txt")
-        stats.quarantined_count = 250
-        for i in range(250):
-            stats.reject_exemplars.append(
-                report.RejectEntry(
-                    raw_lines=[b"1 a"],
-                    source_lines=[i],
-                    primary=_diag(RuleID.BAD_PREFIX, src=i),
-                )
-            )
-        out = report.format_reject_lines(stats, limit=100)
-        assert "150 more" in out
+        assert "      and:" in out  # 6-space indent for related under a group
+        assert "TLE-COL-003" in out
 
 
 class TestRunReport:
