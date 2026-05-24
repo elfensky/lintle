@@ -520,17 +520,22 @@ def main(argv=None):
 
     all_stats.sort(key=lambda stats: stats.src_name)
 
-    # A `clean` run writes a Markdown run report and a corpus-wide NDJSON
-    # of NORAD IDs whose records were quarantined anywhere — the NDJSON is
-    # always written (empty file when nothing was quarantined) so the
-    # downstream consumer always sees the same artifact present.
+    # A `clean` run writes a Markdown run report, a corpus-wide NDJSON of
+    # NORAD IDs whose records were quarantined anywhere, and (issue #9) a
+    # corpus-wide ``report.jsonl`` of structured findings concatenated
+    # from the per-worker shards. All three are always written on a
+    # successful clean run — empty when nothing was quarantined — so
+    # downstream consumers see a stable artifact set.
     report_path = None
     noradids_path = None
+    findings_path = None
     if args.command == "clean" and all_stats:
         report_path = os.path.join(args.out_dir, "report.md")
         report.write_run_report(report_path, all_stats)
         noradids_path = os.path.join(args.out_dir, "broken-noradids.ndjson")
         report.write_broken_noradids_ndjson(noradids_path, all_stats)
+        findings_path = os.path.join(args.out_dir, "report.jsonl")
+        report.concat_findings_shards(args.out_dir, findings_path, all_stats)
 
     if args.report == "json":
         print(json.dumps([report.summary_dict(s) for s in all_stats], indent=2))
@@ -543,6 +548,8 @@ def main(argv=None):
             print(f"\nrun report: {report_path}")
         if noradids_path:
             print(f"broken NORAD IDs: {noradids_path}")
+        if findings_path:
+            print(f"findings: {findings_path}")
 
     # A file that could not be processed is an operational error (spec §10),
     # and that outranks the quarantined-record signal.
