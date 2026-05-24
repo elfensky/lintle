@@ -34,18 +34,24 @@ class Orphan:
     reason: str
 
 
-def iter_records(path):
+def iter_records(path, stats=None):
     """Yield ``RecordCandidate`` / ``Orphan`` items streamed from ``path``.
 
     The file is read in binary so ``\\r`` and stray bytes are observed
     exactly. Blank, whitespace-only, and CR-only lines are dropped.
     Pairing is prefix-driven and resynchronises on every ``1 `` line, so
     one missing line cannot cascade into a run of mispaired records.
+
+    When ``stats`` is given, ``stats.input_lines_seen`` is updated to the
+    1-indexed lineno of the line just consumed — including blanks the
+    pairing loop drops, so the counter reflects every physical line read.
     """
     held = None  # (raw_bytes, line_number) of a line-1 awaiting its line-2
 
     with open(path, "rb") as handle:
         for lineno, raw in enumerate(handle, start=1):
+            if stats is not None:
+                stats.input_lines_seen = lineno
             line = raw.rstrip(b"\n")
             if line.strip(b" \t\r") == b"":
                 continue  # blank, whitespace-only, or CR-only line — dropped
@@ -136,18 +142,24 @@ def process_file(src_path, out_dir, mode, progress_queue=None, progress_every=25
         broken_writer.__enter__()
 
     completed = False
+    # Tracks paired+orphan yields — the "entries processed" count, used to
+    # drive progress reporting. Kept local because the stats counters are
+    # split: paired_records and orphan_entries each advance on their own
+    # branch below, but progress is an aggregate signal.
+    entries_processed = 0
     try:
-        for candidate in iter_records(src_path):
-            stats.total_records += 1
+        for candidate in iter_records(src_path, stats):
+            entries_processed += 1
 
             if (
                 progress_queue is not None
                 and progress_every
-                and stats.total_records % progress_every == 0
+                and entries_processed % progress_every == 0
             ):
                 progress_queue.put(progress_every)
 
             if isinstance(candidate, Orphan):
+                stats.orphan_entries += 1
                 _record_reject(
                     stats,
                     broken_writer,
@@ -157,6 +169,8 @@ def process_file(src_path, out_dir, mode, progress_queue=None, progress_every=25
                     [candidate.src],
                 )
                 continue
+
+            stats.paired_records += 1
 
             try:
                 result = repair.process_record(
@@ -194,7 +208,7 @@ def process_file(src_path, out_dir, mode, progress_queue=None, progress_every=25
                 )
         # Push the trailing partial batch so the caller's tally is exact.
         if progress_queue is not None and progress_every:
-            remainder = stats.total_records % progress_every
+            remainder = entries_processed % progress_every
             if remainder:
                 progress_queue.put(remainder)
         completed = True
@@ -213,7 +227,7 @@ def process_file(src_path, out_dir, mode, progress_queue=None, progress_every=25
 
     if mode == "clean":
         os.replace(cleaned_tmp, cleaned_path)
-        broken_writer.finalize(stats.total_records)
+        broken_writer.finalize(stats.paired_records + stats.orphan_entries)
         broken_writer.__exit__(None, None, None)
 
     return stats

@@ -7,7 +7,9 @@ from lintle import report
 
 def _stats_with_counts():
     stats = report.FileStats(src_name="tle2022.txt")
-    stats.total_records = 100
+    stats.paired_records = 100
+    stats.orphan_entries = 0
+    stats.input_lines_seen = 200
     stats.clean_count = 98
     stats.quarantined_count = 2
     stats.fix_counts = {"trailing-backslash": 50, "reconstructed-checksum": 7}
@@ -17,13 +19,17 @@ def _stats_with_counts():
 
 def _two_file_stats():
     a = report.FileStats(src_name="tle2004.txt")
-    a.total_records = 1000
+    a.paired_records = 1000
+    a.orphan_entries = 0
+    a.input_lines_seen = 2000
     a.clean_count = 990
     a.quarantined_count = 10
     a.fix_counts = {"trailing-backslash": 990}
     a.reject_categories = {"checksum-mismatch": 10}
     b = report.FileStats(src_name="tle2005.txt")
-    b.total_records = 3000
+    b.paired_records = 3000
+    b.orphan_entries = 0
+    b.input_lines_seen = 6000
     b.clean_count = 3000
     b.quarantined_count = 0
     b.fix_counts = {"trailing-backslash": 1000, "reconstructed-checksum": 500}
@@ -33,7 +39,7 @@ def _two_file_stats():
 class TestWriteBrokenFile:
     def test_write_broken_file(self, tmp_path):
         stats = report.FileStats(src_name="tle2099.txt")
-        stats.total_records = 5
+        stats.paired_records = 5
         stats.quarantined_count = 1
         stats.reject_exemplars.append(
             report.RejectEntry(
@@ -48,7 +54,10 @@ class TestWriteBrokenFile:
 
         text = out.read_bytes()
         assert b"# source: tle2099.txt" in text
-        assert b"1 records quarantined of 5 total" in text
+        # Denominator is paired_records + orphan_entries — what the file's
+        # quarantine count is measured against. With 0 orphans here, that
+        # equals paired_records (5).
+        assert b"1 quarantined of 5 entries" in text
         assert b"source line 42" in text
         assert b"1 garbage" in text
 
@@ -90,16 +99,31 @@ class TestSummaries:
     def test_format_summary_shows_counts(self):
         out = report.format_summary(_stats_with_counts())
         assert "tle2022.txt" in out
-        assert "100" in out  # total_records — the anchor field of the header
+        assert "100" in out  # paired_records — the anchor field of the header
         assert "98" in out
         assert "trailing-backslash 50" in out
         assert "reconstructed-checksum 7" in out
         assert "checksum-mismatch 2" in out
 
+    def test_format_summary_distinguishes_paired_from_orphan(self):
+        stats = report.FileStats(src_name="tle2099.txt")
+        stats.paired_records = 7
+        stats.orphan_entries = 2
+        stats.input_lines_seen = 17  # 7*2 + 2 + 1 blank, say
+        stats.clean_count = 6
+        stats.quarantined_count = 3  # 1 paired-failure + 2 orphans
+        out = report.format_summary(stats)
+        # The summary must surface the three independent counters from issue #5.
+        assert "7" in out  # paired records
+        assert "2" in out  # orphan lines
+        assert "17" in out  # lines read
+
     def test_summary_dict_is_json_friendly(self):
         data = report.summary_dict(_stats_with_counts())
         assert data["src_name"] == "tle2022.txt"
-        assert data["total_records"] == 100
+        assert data["paired_records"] == 100
+        assert data["orphan_entries"] == 0
+        assert data["input_lines_seen"] == 200
         assert data["fix_counts"]["trailing-backslash"] == 50
         assert data["reject_categories"]["checksum-mismatch"] == 2
         json.dumps(data)  # must not raise — cli.py serialises this in json mode
@@ -136,7 +160,9 @@ class TestRunReport:
         out = report.format_run_report(_two_file_stats())
         assert "# lintle clean run report" in out
         assert "Files processed: 2" in out
-        assert "Records: 4,000" in out  # 1000 + 3000
+        assert "Records: 4,000" in out  # paired: 1000 + 3000
+        assert "Orphan lines: 0" in out
+        assert "Input lines: 8,000" in out  # 2000 + 6000
         assert "Cleaned: 3,990" in out  # 990 + 3000
         assert "Quarantined: 10" in out
         assert "99.7500%" in out  # 3990 / 4000
@@ -145,6 +171,31 @@ class TestRunReport:
         assert "checksum-mismatch | 10" in out
         # Per-file rows present.
         assert "tle2004.txt" in out and "tle2005.txt" in out
+
+    def test_format_run_report_surfaces_orphans_per_file(self):
+        # Two files: one with orphans, one without. The per-file breakdown
+        # must distinguish paired records from orphan lines so the reader can
+        # see WHICH file contributed the orphans.
+        a = report.FileStats(src_name="messy.txt")
+        a.paired_records = 100
+        a.orphan_entries = 5
+        a.input_lines_seen = 210
+        a.clean_count = 99
+        a.quarantined_count = 6  # 1 paired-failure + 5 orphans
+        a.reject_categories = {"orphan-line": 5, "checksum-mismatch": 1}
+        b = report.FileStats(src_name="clean.txt")
+        b.paired_records = 50
+        b.orphan_entries = 0
+        b.input_lines_seen = 100
+        b.clean_count = 50
+        b.quarantined_count = 0
+        out = report.format_run_report([a, b])
+        # Per-file breakdown must show orphan counts; an "0" is ambiguous on
+        # its own so we anchor on the row that actually has orphans.
+        assert "messy.txt" in out
+        assert "5" in out  # the orphan count for messy.txt
+        # The corpus-level orphan total surfaces too.
+        assert "Orphan lines: 5" in out
 
     def test_write_run_report(self, tmp_path):
         out = tmp_path / "report.md"

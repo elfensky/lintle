@@ -78,12 +78,50 @@ class TestProcessFile:
 
         stats = pipeline.process_file(str(src), str(out), "clean")
 
-        assert stats.total_records == 2
+        assert stats.paired_records == 2
+        assert stats.orphan_entries == 0
+        assert stats.input_lines_seen == 4
         assert stats.clean_count == 2
         assert stats.quarantined_count == 0
         cleaned = (out / "cleaned" / "tle2099.cleaned.txt").read_text()
         assert cleaned == line1 + "\n" + line2 + "\n" + line1 + "\n" + line2 + "\n"
         assert (out / "broken" / "tle2099.broken.txt").exists()
+
+    def test_orphan_does_not_count_as_paired_record(self, tmp_path, line1, line2):
+        # One paired record, then an orphan line 1 at EOF. Orphans must not
+        # contribute to ``paired_records`` (issue #5) — they live in
+        # ``orphan_entries`` instead. ``quarantined_count`` still counts the
+        # orphan since orphans are written to ``.broken.txt``.
+        src = tmp_path / "tle2099.txt"
+        src.write_bytes((line1 + "\n" + line2 + "\n" + line1 + "\n").encode("ascii"))
+        out = tmp_path / "out"
+
+        stats = pipeline.process_file(str(src), str(out), "clean")
+
+        assert stats.paired_records == 1
+        assert stats.orphan_entries == 1
+        assert stats.input_lines_seen == 3
+        assert stats.clean_count == 1
+        assert stats.quarantined_count == 1
+        assert stats.reject_categories.get("orphan-line") == 1
+
+    def test_input_lines_seen_counts_blank_lines(self, tmp_path, line1, line2):
+        # ``input_lines_seen`` is the count of physical lines read — including
+        # blanks that the pairing loop silently drops. With one blank line
+        # between two records the count is 5 (line1, line2, blank, line1, line2).
+        src = tmp_path / "tle2099.txt"
+        src.write_bytes(
+            (line1 + "\n" + line2 + "\n\n" + line1 + "\n" + line2 + "\n").encode(
+                "ascii"
+            )
+        )
+        out = tmp_path / "out"
+
+        stats = pipeline.process_file(str(src), str(out), "clean")
+
+        assert stats.paired_records == 2
+        assert stats.orphan_entries == 0
+        assert stats.input_lines_seen == 5
 
     def test_process_file_quarantines_bad_record(self, tmp_path, line1, line2):
         src = tmp_path / "tle2099.txt"
@@ -201,7 +239,10 @@ class TestStreamingRejects:
         # The on-disk catalog header and trailing entry both reflect every
         # quarantined record — none were dropped due to the in-memory cap.
         broken = (out / "broken" / "tle2099.broken.txt").read_bytes()
-        assert f"# {n} records quarantined of {n} total".encode("ascii") in broken
+        # Every yielded entry here is an orphan ("bad-prefix") — so the
+        # paired/orphan split puts all `n` into orphan_entries, and the
+        # denominator on the sidecar header is paired+orphan = n.
+        assert f"# {n} quarantined of {n} entries".encode("ascii") in broken
         last = f"junk {n - 1:08d}".encode("ascii")
         assert last in broken
 
