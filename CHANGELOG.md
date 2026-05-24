@@ -6,19 +6,54 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Added
+
+- New `lintle.diagnostics` module defines a stable, citable rule-ID registry
+  (`TLE-COL-001`, `TLE-CHK-001`, `TLE-PAIR-001`, …) and a structured
+  `Diagnostic` dataclass with `rule_id`, `source_line_nos`, `tier_attempted`,
+  `column_range`, `observed`, `expected`, and `note` fields. Reject reasons
+  are no longer free-form prose — they are now structured records keyed by a
+  stable identifier that downstream consumers can pin in `report.md`, the
+  `.broken.txt` sidecar, JSON output, and future tooling. Rule IDs follow
+  the `TLE-<FAMILY>-<NNN>` shape (families: COL, CHK, PAIR, SEM, INT) and
+  are never recycled — retired IDs stay readable forever. Includes a
+  `RuleSpec` registry (`RULES`) with metadata about every rule, queryable
+  for future `lintle explain TLE-XXX-NNN` tooling. Closes #8.
+- The `report.md` run report now includes a "Rule reference" section,
+  auto-generated from the `diagnostics.RULES` registry, listing every rule
+  that fired in the run with its short title so the report is
+  self-explanatory.
+
 ### Changed
 
-- The free-form short tags used for fix classes (e.g. `"reconstructed-checksum"`,
-  `"trailing-backslash"`) and reject categories (e.g. `"orphan-line"`,
-  `"checksum-mismatch"`) are now defined once in a new `lintle.categories`
-  module as two `enum.StrEnum` classes: `FixClass` and `RejectCategory`. The
-  old free-form string literals are gone from `repair.py`, `pipeline.py`, and
-  the test suite, replaced by enum members so typos and renames are caught
-  rather than silently drifting across call sites. Because `StrEnum` members
-  *are* strings, on-disk output (`report.md`, `.broken.txt` sidecar, JSON
-  via `--report json`) and dict-keyed access (e.g.
-  `stats.reject_categories['orphan-line']`) are byte-identical to before.
-  Closes #18.
+- Free-form short tags used across `repair.py`, `pipeline.py`, and tests
+  are now defined in `lintle.categories` (for `FixClass`, the successful-repair
+  taxonomy) and `lintle.diagnostics` (for `RuleID`, the rejection taxonomy)
+  as `enum.StrEnum` classes, so typos and renames are caught rather than
+  silently drifting across call sites. Closes #18.
+- **Breaking — `.broken.txt` sidecar line format.** The per-entry headline
+  now cites the rule ID and structured fields instead of a free-form
+  sentence: `[N] source lines X-Y - rule: TLE-CHK-001 (tier-1) - col 69
+  observed='7' expected='3'`. Related diagnostics on the same record
+  (when both lines of a record fail) render on indented `    and: ...`
+  continuation lines. The sidecar header (`# source: ... | generated:
+  ... | lintle <version>`) is unchanged and already pins the format to
+  a release, so downstream parsers can dispatch on version.
+- **Breaking — JSON output via `lintle validate --report json`.** The
+  per-file `"reject_categories"` field is renamed `"reject_counts"` and its
+  inner keys change from free-form tags (`"checksum-mismatch"`) to stable
+  rule IDs (`"TLE-CHK-001"`). `fix_counts` and its inner keys are
+  unchanged.
+- `FileStats.reject_categories` is renamed `FileStats.reject_counts` to
+  match the new vocabulary; values are keyed by `diagnostics.RuleID`
+  (which compares and hashes as its stable string value).
+
+### Removed
+
+- `lintle.categories.RejectCategory` (replaced by
+  `lintle.diagnostics.RuleID`). Call sites updated; `RejectCategory` was
+  internal — no external API breakage beyond the JSON / `.broken.txt`
+  changes noted above.
 
 ## [0.2.0] - 2026-05-24
 
