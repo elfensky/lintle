@@ -359,6 +359,115 @@ class TestProgressDisplay:
         assert "0/3 files" in err
         assert "1,234 records" in err
 
+    def test_render_includes_records_per_second(self, capsys, monkeypatch):
+        # Long runs are easier to monitor with a throughput number. Stubbing
+        # cli.time.monotonic pins elapsed to exactly 4 seconds so the rate
+        # is exactly 2,500 rec/s, not 2,499 (real-clock drift between the
+        # _start assignment and the _render call would otherwise floor it).
+        display = cli._ProgressDisplay(total_files=1, progress_queue=queue.Queue())
+        display._live = True
+        display._records = 10_000
+        display._start = 0.0
+        monkeypatch.setattr(cli.time, "monotonic", lambda: 4.0)
+
+        display._render()
+
+        err = capsys.readouterr().err
+        assert "2,500 rec/s" in err
+
+    def test_render_rps_handles_zero_elapsed_without_dividing(
+        self, capsys, monkeypatch
+    ):
+        # On the first frame elapsed is sub-second — never raise
+        # ZeroDivisionError, just show 0 rec/s until a second has passed.
+        display = cli._ProgressDisplay(total_files=1, progress_queue=queue.Queue())
+        display._live = True
+        display._records = 100
+        display._start = 0.0
+        monkeypatch.setattr(cli.time, "monotonic", lambda: 0.0)
+
+        display._render()
+
+        err = capsys.readouterr().err
+        assert "0 rec/s" in err
+
+    def test_render_shows_the_active_filename(self, capsys):
+        display = cli._ProgressDisplay(total_files=2, progress_queue=queue.Queue())
+        display._live = True
+        display._active["tle2024.txt"] = 0.0
+
+        display._render()
+
+        assert "tle2024.txt" in capsys.readouterr().err
+
+    def test_render_collapses_multiple_active_files(self, capsys):
+        # With --jobs N, several files run in parallel. Show the
+        # earliest-started one (the candidate slow file once peers finish)
+        # plus a count of the others so the line stays readable.
+        display = cli._ProgressDisplay(total_files=3, progress_queue=queue.Queue())
+        display._live = True
+        # Insertion order doubles as start-order: tle_first is the oldest.
+        display._active["tle_first.txt"] = 0.0
+        display._active["tle_second.txt"] = 1.0
+        display._active["tle_third.txt"] = 2.0
+
+        display._render()
+
+        err = capsys.readouterr().err
+        assert "tle_first.txt" in err
+        assert "+2 more" in err
+        # The other two names aren't spelled out — only the oldest is shown.
+        assert "tle_second.txt" not in err
+        assert "tle_third.txt" not in err
+
+    def test_drain_handles_start_event(self):
+        progress = queue.Queue()
+        progress.put(("start", "tle2024.txt"))
+        display = cli._ProgressDisplay(total_files=1, progress_queue=progress)
+
+        display._drain()
+
+        assert "tle2024.txt" in display._active
+
+    def test_drain_handles_end_event(self):
+        progress = queue.Queue()
+        progress.put(("end", "tle2024.txt"))
+        display = cli._ProgressDisplay(total_files=1, progress_queue=progress)
+        display._active["tle2024.txt"] = 0.0
+
+        display._drain()
+
+        assert "tle2024.txt" not in display._active
+
+    def test_drain_handles_mixed_int_and_event_messages(self):
+        # The queue interleaves record deltas with lifecycle events; drain
+        # must fold all of them in one pass without dropping any.
+        progress = queue.Queue()
+        progress.put(("start", "tle_a.txt"))
+        progress.put(100)
+        progress.put(("start", "tle_b.txt"))
+        progress.put(50)
+        progress.put(("end", "tle_a.txt"))
+        display = cli._ProgressDisplay(total_files=2, progress_queue=progress)
+
+        display._drain()
+
+        assert display._records == 150
+        assert "tle_a.txt" not in display._active
+        assert "tle_b.txt" in display._active
+
+    def test_drain_preserves_active_insertion_order(self):
+        # Showing the earliest-still-active file relies on dict insertion
+        # order — verify it survives a drain.
+        progress = queue.Queue()
+        progress.put(("start", "tle_first.txt"))
+        progress.put(("start", "tle_second.txt"))
+        display = cli._ProgressDisplay(total_files=2, progress_queue=progress)
+
+        display._drain()
+
+        assert list(display._active) == ["tle_first.txt", "tle_second.txt"]
+
     def test_log_prints_the_message(self, capsys):
         display = cli._ProgressDisplay(total_files=1, progress_queue=queue.Queue())
         display.log("hello")

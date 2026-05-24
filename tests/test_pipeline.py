@@ -1,5 +1,6 @@
 """Tests for lintle.pipeline — streaming I/O, line pairing, file processing."""
 
+import contextlib
 import queue
 
 import pytest
@@ -158,13 +159,61 @@ class TestProcessFile:
             progress_queue=progress,
             progress_every=2,
         )
-        deltas = []
+        messages = []
         while not progress.empty():
-            deltas.append(progress.get_nowait())
+            messages.append(progress.get_nowait())
+        # Tuples are lifecycle events; ints are record-count deltas.
+        deltas = [m for m in messages if isinstance(m, int)]
         assert sum(deltas) == 3
 
+    def test_process_file_emits_start_and_end_events(self, tmp_path, line1, line2):
+        # The display needs to know which files are in flight to surface
+        # filenames in its live line. process_file frames each run with
+        # ('start', src_name) and ('end', src_name) on the same queue.
+        src = tmp_path / "tle2099.txt"
+        src.write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
+        progress = queue.Queue()
+        pipeline.process_file(
+            str(src),
+            str(tmp_path / "out"),
+            "clean",
+            progress_queue=progress,
+            progress_every=2,
+        )
+        messages = []
+        while not progress.empty():
+            messages.append(progress.get_nowait())
+        events = [m for m in messages if isinstance(m, tuple)]
+        assert ("start", "tle2099.txt") in events
+        assert ("end", "tle2099.txt") in events
+        # Start must precede end so the display's active set is transiently
+        # populated rather than instantly cancelled.
+        assert events.index(("start", "tle2099.txt")) < events.index(
+            ("end", "tle2099.txt")
+        )
+
+    def test_end_event_emitted_even_on_failure(self, tmp_path):
+        # A failing open would otherwise leave 'start' lingering forever in
+        # the display's active set — emit 'end' from a finally so cleanup
+        # is unconditional.
+        progress = queue.Queue()
+        with contextlib.suppress(Exception):
+            pipeline.process_file(
+                str(tmp_path / "missing.txt"),
+                str(tmp_path / "out"),
+                "clean",
+                progress_queue=progress,
+                progress_every=2,
+            )
+        messages = []
+        while not progress.empty():
+            messages.append(progress.get_nowait())
+        events = [m for m in messages if isinstance(m, tuple)]
+        assert ("end", "missing.txt") in events
+
     def test_progress_disabled_when_every_is_zero(self, tmp_path, line1, line2):
-        # progress_every=0 disables reporting: nothing reaches the queue.
+        # progress_every=0 disables reporting: nothing reaches the queue —
+        # neither record deltas nor lifecycle events.
         src = tmp_path / "tle2099.txt"
         src.write_bytes(((line1 + "\n" + line2 + "\n") * 3).encode("ascii"))
         progress = queue.Queue()

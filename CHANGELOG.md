@@ -8,6 +8,15 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Added
 
+- The live progress line on a TTY now reports throughput (`records/sec`) and
+  the longest-running file currently in flight (with `+N more` when other
+  files are also being processed). With `--jobs N` the oldest active file
+  surfaces alone once peers finish — making a single slow file visible at a
+  glance during long runs of the 29-file corpus. The progress queue now
+  carries `("start", name)` / `("end", name)` lifecycle events alongside the
+  existing integer record-count deltas; `process_file` always emits
+  `("end", name)` from a `finally`, so a failed file is correctly cleared
+  from the display's active set. Closes #24.
 - `tests/test_pipeline_throughput.py` — an opt-in end-to-end throughput
   regression test for `pipeline.process_file()` that streams synthetic TLE
   records and fails on a severe slowdown. Gated by the new `slow` pytest
