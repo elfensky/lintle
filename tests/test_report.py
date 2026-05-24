@@ -485,6 +485,7 @@ class TestFormatRejectLines:
                     for i in range(3)
                 ],
             },
+            dropped_count={RuleID.CHECKSUM_MISMATCH: 995},
         )
 
         out = report.format_reject_lines(stats)
@@ -492,6 +493,48 @@ class TestFormatRejectLines:
         assert "...and 995 more" in out
         # Only the noisy rule has a remainder; "...and" appears exactly once.
         assert out.count("...and") == 1
+
+    def test_format_reject_lines_heading_shows_drop_count_when_truncated(self):
+        # When the sink had to drop entries, the rule heading switches to
+        # the explicit "(N of M hits, K dropped)" form so an operator sees
+        # the truncation at a glance, not just via the trailing
+        # "...and X more" hint (issue #46).
+        stats = report.FileStats(src_name="x.txt")
+        stats.quarantined_count = 1003
+        stats.reject_counts = {
+            RuleID.CHECKSUM_MISMATCH: 1000,
+            RuleID.BAD_PREFIX: 3,
+        }
+        stats.reject_sample = report.FileSample.from_bounded(
+            cap=5,
+            entries_by_rule={
+                RuleID.CHECKSUM_MISMATCH: [
+                    report.RejectEntry(
+                        raw_lines=[b"x"],
+                        source_lines=[i],
+                        primary=_diag(RuleID.CHECKSUM_MISMATCH, src=i),
+                    )
+                    for i in range(5)
+                ],
+                RuleID.BAD_PREFIX: [
+                    report.RejectEntry(
+                        raw_lines=[b"x"],
+                        source_lines=[100 + i],
+                        primary=_diag(RuleID.BAD_PREFIX, src=100 + i),
+                    )
+                    for i in range(3)
+                ],
+            },
+            dropped_count={RuleID.CHECKSUM_MISMATCH: 995},
+        )
+
+        out = report.format_reject_lines(stats)
+
+        # Truncated rule uses the explicit form.
+        assert "TLE-CHK-001 (5 of 1,000 hits, 995 dropped):" in out
+        # Rule with no drops keeps the simple form — heading stays readable
+        # for the common, well-bounded case.
+        assert "TLE-PAIR-002 (3):" in out
 
     def test_format_reject_lines_empty_when_no_rejects(self):
         stats = report.FileStats(src_name="x.txt")
@@ -585,9 +628,44 @@ class TestRunReport:
         assert "99.7500%" in out  # 3990 / 4000
         assert "trailing-backslash | 1,990" in out  # 990 + 1000, summed
         assert "reconstructed-checksum | 500" in out
-        assert "TLE-CHK-001 | 10" in out
+        # Quarantined-by-rule table has a Dropped column (issue #46);
+        # _two_file_stats does not set reject_sample so every rule's
+        # dropped count is the zero default.
+        assert "TLE-CHK-001 | 10 | 0" in out
         # Per-file rows present.
         assert "tle2004.txt" in out and "tle2005.txt" in out
+
+    def test_format_run_report_quarantined_table_aggregates_drops_across_files(self):
+        # Two files both contributing drops on the same rule; the
+        # corpus-wide table sums them (issue #46). The Dropped column
+        # is the operator-visible counterpart to the JSON dropped_counts
+        # field, scoped to "how much evidence did the cap discard for
+        # each rule across the whole run."
+        a = report.FileStats(src_name="tle-a.txt")
+        a.paired_records = 1000
+        a.clean_count = 0
+        a.quarantined_count = 1000
+        a.reject_counts = {RuleID.CHECKSUM_MISMATCH: 1000}
+        a.reject_sample = report.FileSample.from_bounded(
+            cap=5,
+            entries_by_rule={},
+            dropped_count={RuleID.CHECKSUM_MISMATCH: 995},
+        )
+        b = report.FileStats(src_name="tle-b.txt")
+        b.paired_records = 500
+        b.clean_count = 0
+        b.quarantined_count = 500
+        b.reject_counts = {RuleID.CHECKSUM_MISMATCH: 500}
+        b.reject_sample = report.FileSample.from_bounded(
+            cap=5,
+            entries_by_rule={},
+            dropped_count={RuleID.CHECKSUM_MISMATCH: 495},
+        )
+
+        out = report.format_run_report([a, b])
+
+        # 1,000 + 500 hits, 995 + 495 dropped — table sums both.
+        assert "TLE-CHK-001 | 1,500 | 1,490" in out
 
     def test_format_run_report_includes_rule_reference_section(self):
         # Every rule ID that fired in the run gets a Rule reference entry
