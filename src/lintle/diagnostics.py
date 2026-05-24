@@ -141,19 +141,34 @@ RULES: dict[RuleID, RuleSpec] = {
 
 
 # Fail fast at import time if a RuleID is added without a matching RuleSpec.
-assert set(RULES) == set(RuleID), (
-    f"RULES mismatch: missing={set(RuleID) - set(RULES)} "
-    f"extra={set(RULES) - set(RuleID)}"
-)
+# Uses ``raise`` rather than ``assert`` so the guard survives ``python -O``
+# (asserts are compiled out under optimization; this check must always run).
+if set(RULES) != set(RuleID):
+    raise RuntimeError(
+        f"RULES mismatch: missing={set(RuleID) - set(RULES)} "
+        f"extra={set(RULES) - set(RuleID)}"
+    )
+
+
+_OBSERVED_EXPECTED_MAX = 16
+_NOTE_MAX = 80
+# ASCII ellipsis (3 dots). The ``.broken.txt`` sidecar encodes diagnostics
+# with ``str.encode("ascii", errors="replace")``, which would turn a
+# Unicode U+2026 ellipsis into the literal ``?`` character — obscuring the
+# truncation indicator. Using three ASCII dots keeps the marker readable
+# on every platform without an encoding workaround.
+_ELLIPSIS = "..."
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class Diagnostic:
     """One structured rejection — the unit cited in reports and the sidecar.
 
-    Construct via :func:`diagnostic`, which enforces the size bounds on
-    ``observed`` / ``expected`` / ``note``. Constructing directly bypasses
-    bounding and can leak unbounded strings into memory at 30 GB scale.
+    Construct via :func:`diagnostic`, which silently truncates oversized
+    strings to the bounds below. Direct construction is supported (tests,
+    deserialization) but is checked by ``__post_init__``: oversized
+    ``observed``/``expected``/``note`` raises :class:`ValueError`, so the
+    bound cannot be bypassed even when the helper is skipped.
     """
 
     rule_id: RuleID
@@ -164,21 +179,46 @@ class Diagnostic:
     expected: str | None = None
     note: str = ""
 
-
-_OBSERVED_EXPECTED_MAX = 16
-_NOTE_MAX = 80
-_ELLIPSIS = "…"
+    def __post_init__(self):
+        if self.observed is not None and len(self.observed) > _OBSERVED_EXPECTED_MAX:
+            raise ValueError(
+                f"Diagnostic.observed exceeds {_OBSERVED_EXPECTED_MAX} chars "
+                f"({len(self.observed)}); use diagnostic() to truncate"
+            )
+        if self.expected is not None and len(self.expected) > _OBSERVED_EXPECTED_MAX:
+            raise ValueError(
+                f"Diagnostic.expected exceeds {_OBSERVED_EXPECTED_MAX} chars "
+                f"({len(self.expected)}); use diagnostic() to truncate"
+            )
+        if len(self.note) > _NOTE_MAX:
+            raise ValueError(
+                f"Diagnostic.note exceeds {_NOTE_MAX} chars "
+                f"({len(self.note)}); use diagnostic() to truncate"
+            )
 
 
 def _bound(value: str | None, limit: int) -> str | None:
-    """Truncate ``value`` to ``limit`` chars, appending ``…`` if cut.
+    """Truncate ``value`` to ``limit`` chars, appending ``...`` if cut.
 
     ``None`` passes through. The ellipsis is included *within* the limit so
     the returned string is never longer than ``limit``.
     """
     if value is None or len(value) <= limit:
         return value
-    return value[: limit - 1] + _ELLIPSIS
+    return value[: limit - len(_ELLIPSIS)] + _ELLIPSIS
+
+
+def _sanitize_note(value: str) -> str:
+    """Replace non-printable characters in a note with ``?``.
+
+    Defense-in-depth: ``note`` content comes from validator error strings
+    that flow into the ``.broken.txt`` sidecar verbatim. ASCII control
+    characters and escape sequences in those strings could mis-render
+    when an analyst views the sidecar with ``cat`` or ``less``. We strip
+    them at construction time rather than at render time so the in-memory
+    Diagnostic is always safe to print.
+    """
+    return "".join(c if c.isprintable() else "?" for c in value)
 
 
 def diagnostic(
@@ -191,12 +231,13 @@ def diagnostic(
     expected: str | None = None,
     note: str = "",
 ) -> Diagnostic:
-    """Construct a :class:`Diagnostic` with size-bounded strings.
+    """Construct a :class:`Diagnostic` with size-bounded, sanitized strings.
 
-    ``observed`` and ``expected`` cap at 16 chars; ``note`` caps at 80. A
-    truncated value gets a trailing ``…``. Bounding is silent — the goal is
-    to keep memory and on-disk size constant regardless of input corruption,
-    not to warn on truncation.
+    ``observed`` and ``expected`` cap at 16 chars; ``note`` is sanitized
+    (non-printable chars replaced with ``?``) and capped at 80. A
+    truncated value gets a trailing ``...``. Truncation and sanitization
+    are silent — the goal is to keep memory, on-disk size, and terminal
+    output safe regardless of input corruption, not to warn on contact.
     """
     return Diagnostic(
         rule_id=rule_id,
@@ -205,5 +246,5 @@ def diagnostic(
         column_range=column_range,
         observed=_bound(observed, _OBSERVED_EXPECTED_MAX),
         expected=_bound(expected, _OBSERVED_EXPECTED_MAX),
-        note=_bound(note, _NOTE_MAX) or "",
+        note=_bound(_sanitize_note(note), _NOTE_MAX) or "",
     )

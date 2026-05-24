@@ -209,6 +209,35 @@ class TestFormatRejectLines:
         out = report.format_reject_lines(stats)
         assert "10-11" in out and "TLE-CHK-001" in out
 
+    def test_format_reject_lines_surfaces_related_diagnostics(self):
+        # A dual-failure record (both lines bad) carries a primary plus a
+        # related diagnostic. Validate-mode must show both — pre-PR-#43 the
+        # free-form reason string included both line failures, so hiding
+        # related here would be a user-visible regression.
+        stats = report.FileStats(src_name="x.txt")
+        stats.reject_exemplars.append(
+            report.RejectEntry(
+                raw_lines=[b"1 a", b"2 b"],
+                source_lines=[10, 11],
+                primary=diagnostic(
+                    RuleID.CHECKSUM_MISMATCH,
+                    source_line_nos=(10,),
+                    column_range=(69, 69),
+                ),
+                related=(
+                    diagnostic(
+                        RuleID.NON_ASCII_BYTE,
+                        source_line_nos=(11,),
+                        note="line 2: non-ascii byte",
+                    ),
+                ),
+            )
+        )
+        out = report.format_reject_lines(stats)
+        assert "TLE-CHK-001" in out
+        assert "    and:" in out
+        assert "TLE-COL-003" in out  # NON_ASCII_BYTE
+
     def test_format_reject_lines_caps_long_lists(self):
         stats = report.FileStats(src_name="x.txt")
         stats.quarantined_count = 250

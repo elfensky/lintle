@@ -8,6 +8,7 @@ import pytest
 from lintle import diagnostics
 from lintle.diagnostics import (
     RULES,
+    Diagnostic,
     RepairTier,
     RuleID,
     RuleSpec,
@@ -112,7 +113,7 @@ class TestDiagnosticHelperBounds:
             observed="x" * 50,
         )
         assert len(diag.observed) == 16
-        assert diag.observed.endswith("…")
+        assert diag.observed.endswith("...")
 
     def test_expected_truncated_at_16_chars(self):
         diag = diagnostic(
@@ -121,7 +122,7 @@ class TestDiagnosticHelperBounds:
             expected="y" * 50,
         )
         assert len(diag.expected) == 16
-        assert diag.expected.endswith("…")
+        assert diag.expected.endswith("...")
 
     def test_note_truncated_at_80_chars(self):
         diag = diagnostic(
@@ -130,7 +131,7 @@ class TestDiagnosticHelperBounds:
             note="z" * 500,
         )
         assert len(diag.note) == 80
-        assert diag.note.endswith("…")
+        assert diag.note.endswith("...")
 
     def test_short_strings_pass_through_unmodified(self):
         diag = diagnostic(
@@ -148,6 +149,83 @@ class TestDiagnosticHelperBounds:
         diag = diagnostic(RuleID.ORPHAN_LINE, source_line_nos=(1,))
         assert diag.observed is None
         assert diag.expected is None
+
+    def test_ellipsis_is_ascii(self):
+        # The .broken.txt sidecar encodes with errors="replace"; a Unicode
+        # ellipsis would render as "?" and obscure the truncation marker.
+        diag = diagnostic(RuleID.INTERNAL_ERROR, source_line_nos=(1,), note="z" * 500)
+        suffix = diag.note[-3:]
+        # All chars in the suffix must be ASCII-encodable round-trip-safe.
+        assert suffix.encode("ascii", errors="strict") == b"..."
+
+    def test_note_strips_non_printable_characters(self):
+        # ANSI escape sequences and control characters in note must be
+        # neutralised at construction so cat-ing the sidecar is safe.
+        diag = diagnostic(
+            RuleID.INTERNAL_ERROR,
+            source_line_nos=(1,),
+            note="hello\x1b[31mRED\x1b[0m\x00\x07world",
+        )
+        # Control bytes replaced with '?'; visible text survives.
+        assert "\x1b" not in diag.note
+        assert "\x00" not in diag.note
+        assert "\x07" not in diag.note
+        assert "hello" in diag.note and "RED" in diag.note and "world" in diag.note
+
+
+class TestDiagnosticPostInitGuard:
+    """Direct ``Diagnostic(...)`` construction (bypassing the helper) must
+    not be a back door for unbounded strings — ``__post_init__`` raises.
+    """
+
+    def test_direct_construction_with_oversize_observed_raises(self):
+        with pytest.raises(ValueError, match="observed exceeds"):
+            Diagnostic(
+                rule_id=RuleID.CHECKSUM_MISMATCH,
+                source_line_nos=(1,),
+                observed="x" * 100,
+            )
+
+    def test_direct_construction_with_oversize_expected_raises(self):
+        with pytest.raises(ValueError, match="expected exceeds"):
+            Diagnostic(
+                rule_id=RuleID.CHECKSUM_MISMATCH,
+                source_line_nos=(1,),
+                expected="y" * 100,
+            )
+
+    def test_direct_construction_with_oversize_note_raises(self):
+        with pytest.raises(ValueError, match="note exceeds"):
+            Diagnostic(
+                rule_id=RuleID.INTERNAL_ERROR,
+                source_line_nos=(1,),
+                note="z" * 500,
+            )
+
+    def test_helper_truncation_passes_post_init(self):
+        # The helper produces values within bounds, so direct __post_init__
+        # validation accepts them — the two paths agree.
+        diag = diagnostic(
+            RuleID.INTERNAL_ERROR,
+            source_line_nos=(1,),
+            note="z" * 500,
+        )
+        # Round-trips through dataclass.replace without re-raising.
+        dataclasses.replace(diag, source_line_nos=(2,))
+
+
+class TestRulesRegistryGuard:
+    def test_module_uses_raise_not_assert_for_registry_check(self):
+        # Source-level guarantee that python -O does not strip the check.
+        # An ``assert`` statement would be compiled out under optimization;
+        # the spec mandates the guard must always run.
+        import inspect
+
+        source = inspect.getsource(diagnostics)
+        # The keyword "assert set(RULES)" must not appear; "raise RuntimeError"
+        # for the same check must.
+        assert "assert set(RULES)" not in source
+        assert "raise RuntimeError" in source
 
 
 class TestModuleSurface:

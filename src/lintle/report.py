@@ -252,6 +252,8 @@ def format_reject_lines(stats, limit=100):
     Used by ``validate`` mode. At most ``limit`` entries are shown; the
     remainder are summarised as a trailing count. Reads from the bounded
     ``reject_exemplars`` buffer — full counts live in ``quarantined_count``.
+    Related diagnostics fold onto indented continuation lines so a record
+    where both lines failed still surfaces both rule IDs.
     """
     lines = []
     for entry in stats.reject_exemplars[:limit]:
@@ -260,6 +262,8 @@ def format_reject_lines(stats, limit=100):
         else:
             location = str(entry.source_lines[0])
         lines.append(f"  line {location}: {_format_diagnostic(entry.primary)}")
+        for extra in entry.related:
+            lines.append(f"    and: {_format_diagnostic(extra)}")
     remaining = stats.quarantined_count - min(len(stats.reject_exemplars), limit)
     if remaining > 0:
         lines.append(f"  ...and {remaining} more")
@@ -367,11 +371,13 @@ def format_run_report(all_stats):
 
 
 def _spec_for_key(key):
-    """Return the :class:`diagnostics.RuleSpec` for a rule-ID string, or ``None``."""
-    for rule_id, spec in RULES.items():
-        if rule_id.value == key:
-            return spec
-    return None
+    """Return the :class:`diagnostics.RuleSpec` for a rule-ID key, or ``None``.
+
+    ``key`` may be a :class:`diagnostics.RuleID` or its string value —
+    both hash and compare identically (StrEnum extends ``str``), so a
+    single dict lookup serves both cases without a linear scan.
+    """
+    return RULES.get(key)
 
 
 def write_run_report(path, all_stats):
