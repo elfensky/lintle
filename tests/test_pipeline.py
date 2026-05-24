@@ -306,3 +306,62 @@ class TestStreamingRejects:
 
         assert stats.quarantined_count == n
         assert len(stats.reject_exemplars) == pipeline._EXEMPLAR_BOUND
+
+
+class TestQuarantinedNoradIds:
+    """The corpus-wide ``broken-noradids.csv`` feed: extract NORAD IDs from
+    quarantined records' line 1, when that line is readable.
+    """
+
+    def test_extracts_id_from_record_reject(self, tmp_path, line1, line2):
+        # A 2-line record with a wrong checksum gets quarantined; line 1 is
+        # otherwise intact, so the catalog number must be recovered.
+        src = tmp_path / "tle2099.txt"
+        bad_line1 = line1[:68] + "9"
+        src.write_bytes((bad_line1 + "\n" + line2 + "\n").encode("ascii"))
+
+        stats = pipeline.process_file(str(src), str(tmp_path / "out"), "clean")
+
+        assert stats.quarantined_norad_ids == {5}  # canonical NORAD 00005
+
+    def test_extracts_id_from_orphan_line1(self, tmp_path, line1):
+        src = tmp_path / "tle2099.txt"
+        src.write_bytes((line1 + "\n").encode("ascii"))  # lone line 1 at EOF
+
+        stats = pipeline.process_file(str(src), str(tmp_path / "out"), "clean")
+
+        assert stats.quarantined_count == 1
+        assert stats.quarantined_norad_ids == {5}
+
+    def test_orphan_line2_is_skipped(self, tmp_path, line2):
+        # An orphan line 2 has no line 1 to read — the issue contract is
+        # explicit: line 1 unrecoverable -> omit from the CSV.
+        src = tmp_path / "tle2099.txt"
+        src.write_bytes((line2 + "\n").encode("ascii"))
+
+        stats = pipeline.process_file(str(src), str(tmp_path / "out"), "clean")
+
+        assert stats.quarantined_count == 1
+        assert stats.quarantined_norad_ids == set()
+
+    def test_bad_prefix_orphan_is_skipped(self, tmp_path):
+        # A line that doesn't start with "1 " or "2 " is unparseable as a
+        # TLE line 1 — no NORAD ID is recoverable.
+        src = tmp_path / "tle2099.txt"
+        src.write_bytes(b"garbage line\n")
+
+        stats = pipeline.process_file(str(src), str(tmp_path / "out"), "clean")
+
+        assert stats.quarantined_count == 1
+        assert stats.quarantined_norad_ids == set()
+
+    def test_clean_records_do_not_populate_the_set(self, tmp_path, line1, line2):
+        # Only quarantined records contribute — a fully clean file
+        # produces an empty NORAD-ID set.
+        src = tmp_path / "tle2099.txt"
+        src.write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
+
+        stats = pipeline.process_file(str(src), str(tmp_path / "out"), "clean")
+
+        assert stats.clean_count == 1
+        assert stats.quarantined_norad_ids == set()

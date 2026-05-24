@@ -203,3 +203,61 @@ class TestRunReport:
         text = out.read_text(encoding="utf-8")
         assert text.startswith("# lintle clean run report")
         assert "Per-file breakdown" in text
+
+
+class TestBrokenNoradIdsNdjson:
+    def test_format_emits_empty_when_nothing_quarantined(self):
+        # NDJSON has no header; an empty corpus produces an empty file,
+        # not a blank line — consumers reading line-by-line just see zero
+        # records, which is the same shape as a non-quarantine run.
+        stats = report.FileStats(src_name="tle2099.txt", quarantined_norad_ids=set())
+        out = report.format_broken_noradids_ndjson([stats])
+        assert out == ""
+
+    def test_format_sorts_ids_ascending(self):
+        a = report.FileStats(src_name="tle2008.txt", quarantined_norad_ids={26125, 5})
+        b = report.FileStats(src_name="tle2009.txt", quarantined_norad_ids={42})
+        out = report.format_broken_noradids_ndjson([a, b])
+        assert out == '{"noradId":5}\n{"noradId":42}\n{"noradId":26125}\n'
+
+    def test_format_uses_compact_json(self):
+        # Compact separators (no space after the colon) keep the wire
+        # format tight — kilobytes matter less than predictability for
+        # downstream diffs and byte-exact CI assertions.
+        stats = report.FileStats(src_name="x.txt", quarantined_norad_ids={5})
+        assert report.format_broken_noradids_ndjson([stats]) == '{"noradId":5}\n'
+
+    def test_format_dedupes_across_files(self):
+        # A NORAD ID seen in two files appears once — the deduplication is
+        # the entire point of a corpus-wide artifact.
+        a = report.FileStats(src_name="tle2008.txt", quarantined_norad_ids={1234, 5678})
+        b = report.FileStats(src_name="tle2009.txt", quarantined_norad_ids={5678, 9999})
+        out = report.format_broken_noradids_ndjson([a, b])
+        assert out == '{"noradId":1234}\n{"noradId":5678}\n{"noradId":9999}\n'
+
+    def test_format_each_line_is_parseable_json(self):
+        # Every line must round-trip through json.loads independently —
+        # the defining NDJSON guarantee.
+        stats = report.FileStats(src_name="x.txt", quarantined_norad_ids={5, 42, 26125})
+        out = report.format_broken_noradids_ndjson([stats])
+        ids = [json.loads(line)["noradId"] for line in out.splitlines()]
+        assert ids == [5, 42, 26125]
+
+    def test_write_emits_lf_line_endings(self, tmp_path):
+        # CRLF on Windows would break consumers expecting plain LF; the
+        # writer must pin to ``\n`` regardless of platform default.
+        stats = report.FileStats(src_name="x.txt", quarantined_norad_ids={1, 2})
+        out = tmp_path / "broken-noradids.ndjson"
+        report.write_broken_noradids_ndjson(str(out), [stats])
+        assert out.read_bytes() == b'{"noradId":1}\n{"noradId":2}\n'
+
+    def test_write_emits_empty_file_when_nothing_quarantined(self, tmp_path):
+        stats = report.FileStats(src_name="x.txt", quarantined_norad_ids=set())
+        out = tmp_path / "broken-noradids.ndjson"
+        report.write_broken_noradids_ndjson(str(out), [stats])
+        assert out.read_bytes() == b""
+
+    def test_aggregate_returns_sorted_unique_ids(self):
+        a = report.FileStats(src_name="a.txt", quarantined_norad_ids={3, 1})
+        b = report.FileStats(src_name="b.txt", quarantined_norad_ids={2, 1})
+        assert report.aggregate_broken_norad_ids([a, b]) == [1, 2, 3]

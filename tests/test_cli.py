@@ -193,6 +193,41 @@ class TestMain:
         assert "# lintle clean run report" in report_md
         assert "tle2099.txt" in report_md
         assert "Records:" in report_md
+        # broken-noradids.ndjson is always emitted on clean — empty when
+        # nothing was quarantined, so downstream sees a stable artifact.
+        assert (out / "broken-noradids.ndjson").read_bytes() == b""
+
+    def test_main_clean_writes_norad_ids_for_quarantined_records(
+        self, tmp_path, line1, line2
+    ):
+        # A wrong-checksum record is quarantined but its NORAD ID is
+        # recoverable from line 1, so it lands in broken-noradids.ndjson.
+        src = tmp_path / "src"
+        src.mkdir()
+        bad_line1 = line1[:68] + "9"
+        (src / "tle2099.txt").write_bytes(
+            (bad_line1 + "\n" + line2 + "\n").encode("ascii")
+        )
+        out = tmp_path / "out"
+
+        rc = cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
+
+        assert rc == 1
+        # NORAD 00005 (Vanguard 1) — the canonical fixture's catalog number.
+        assert (out / "broken-noradids.ndjson").read_bytes() == b'{"noradId":5}\n'
+
+    def test_main_validate_does_not_write_norad_ids_ndjson(
+        self, tmp_path, line1, line2
+    ):
+        # validate is read-only — no NDJSON, no run report, no out-dir.
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "tle2099.txt").write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
+        out = tmp_path / "out"
+
+        cli.main(["validate", str(src), "--out-dir", str(out), "--jobs", "1"])
+
+        assert not (out / "broken-noradids.ndjson").exists()
 
     def test_main_returns_one_when_records_quarantined(self, tmp_path, line1, line2):
         src = tmp_path / "src"

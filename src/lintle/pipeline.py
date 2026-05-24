@@ -4,7 +4,7 @@ import contextlib
 import dataclasses
 import os
 
-from lintle import repair, report, stem
+from lintle import repair, report, stem, tle
 
 # How many quarantined records to retain in memory as exemplars for the
 # ``validate`` summary. The full byte-faithful catalog goes straight to the
@@ -268,3 +268,9 @@ def _record_reject(stats, broken_writer, category, reason, raw_lines, source_lin
         stats.reject_exemplars.append(entry)
     if broken_writer is not None:
         broken_writer.write_entry(entry)
+    # Recover a NORAD ID from line 1 when one is readable; orphan-line-2
+    # and bad-prefix rejects expose no line-1 catalog field and are
+    # silently skipped per the issue contract (line 1 unreadable -> omit).
+    norad_id = tle.extract_norad_id(raw_lines[0])
+    if norad_id is not None:
+        stats.quarantined_norad_ids.add(norad_id)
