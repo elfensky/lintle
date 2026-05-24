@@ -5,6 +5,7 @@ import dataclasses
 import os
 
 from lintle import repair, report, stem, tle
+from lintle.categories import RejectCategory
 
 # How many quarantined records to retain in memory as exemplars for the
 # ``validate`` summary. The full byte-faithful catalog goes straight to the
@@ -30,7 +31,7 @@ class Orphan:
 
     raw_line: bytes
     src: int
-    category: str
+    category: RejectCategory
     reason: str
 
 
@@ -62,7 +63,7 @@ def iter_records(path, stats=None):
                     yield Orphan(
                         held[0],
                         held[1],
-                        "orphan-line",
+                        RejectCategory.ORPHAN_LINE,
                         "orphan line 1: followed by another line 1",
                     )
                 held = (line, lineno)
@@ -74,7 +75,7 @@ def iter_records(path, stats=None):
                     yield Orphan(
                         line,
                         lineno,
-                        "orphan-line",
+                        RejectCategory.ORPHAN_LINE,
                         "orphan line 2: no preceding line 1",
                     )
             else:
@@ -82,19 +83,24 @@ def iter_records(path, stats=None):
                     yield Orphan(
                         held[0],
                         held[1],
-                        "orphan-line",
+                        RejectCategory.ORPHAN_LINE,
                         "orphan line 1: followed by a non-TLE line",
                     )
                     held = None
                 yield Orphan(
                     line,
                     lineno,
-                    "bad-prefix",
+                    RejectCategory.BAD_PREFIX,
                     "line does not start with '1 ' or '2 '",
                 )
 
     if held is not None:
-        yield Orphan(held[0], held[1], "orphan-line", "orphan line 1 at end of file")
+        yield Orphan(
+            held[0],
+            held[1],
+            RejectCategory.ORPHAN_LINE,
+            "orphan line 1 at end of file",
+        )
 
 
 def process_file(src_path, out_dir, mode, progress_queue=None, progress_every=25_000):
@@ -203,7 +209,7 @@ def _run(src_path, out_dir, mode, stats, progress_queue, progress_every):
                 _record_reject(
                     stats,
                     broken_writer,
-                    "internal-error",
+                    RejectCategory.INTERNAL_ERROR,
                     f"internal-error: {exc!r}",
                     [candidate.raw_line1, candidate.raw_line2],
                     [candidate.src1, candidate.src2],

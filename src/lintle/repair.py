@@ -7,8 +7,7 @@ committed only if the result passes. Pure functions — no I/O.
 import dataclasses
 
 from lintle import tle
-
-RECONSTRUCTED_CHECKSUM = "reconstructed-checksum"
+from lintle.categories import FixClass, RejectCategory
 
 
 def repair_line(raw, lineno):
@@ -18,32 +17,32 @@ def repair_line(raw, lineno):
     (a trailing ``\\r`` may remain). ``lineno`` is 1 or 2.
 
     Returns ``(clean_line, fixes, error, category)``:
-      * success -> ``(str, list[str], None, None)``
-      * failure -> ``(None, list[str], str, str)`` where ``category`` is a
-        short tag for summary aggregation.
+      * success -> ``(str, list[FixClass], None, None)``
+      * failure -> ``(None, list[FixClass], str, RejectCategory)`` where
+        ``category`` is the short tag used for summary aggregation.
     """
     fixes = []
 
     try:
         line = raw.decode("ascii")
     except UnicodeDecodeError:
-        return None, fixes, "line contains a non-ASCII byte", "non-ascii"
+        return None, fixes, "line contains a non-ASCII byte", RejectCategory.NON_ASCII
 
     # Fix order is fixed (spec §6.6).
     if line.endswith("\r"):
         line = line[:-1]
-        fixes.append("crlf")
+        fixes.append(FixClass.CRLF)
     lstripped = line.lstrip(" \t")
     if lstripped != line:
         line = lstripped
-        fixes.append("leading-trim")
+        fixes.append(FixClass.LEADING_TRIM)
     rstripped = line.rstrip(" \t")
     if rstripped != line:
         line = rstripped
-        fixes.append("trailing-ws")
+        fixes.append(FixClass.TRAILING_WS)
     if line.endswith("\\"):
         line = line[:-1]
-        fixes.append("trailing-backslash")
+        fixes.append(FixClass.TRAILING_BACKSLASH)
 
     # Build a 69-character candidate.
     if len(line) == tle.LINE_LENGTH:
@@ -56,25 +55,25 @@ def repair_line(raw, lineno):
                 fixes,
                 "68-char line; columns 1-68 fail layout/semantic checks "
                 "(interior character missing): " + "; ".join(body_errors),
-                "interior-char-missing",
+                RejectCategory.INTERIOR_CHAR_MISSING,
             )
         candidate = line + str(tle.compute_checksum(line))
-        fixes.append(RECONSTRUCTED_CHECKSUM)
+        fixes.append(FixClass.RECONSTRUCTED_CHECKSUM)
     else:
         return (
             None,
             fixes,
             f"line length {len(line)} after normalization, expected 68 or 69",
-            "wrong-length",
+            RejectCategory.WRONG_LENGTH,
         )
 
     # Single full re-validation of the final candidate (spec §4.1, §6.6).
     errors = tle.validate_line(candidate, lineno)
     if errors:
         category = (
-            "checksum-mismatch"
+            RejectCategory.CHECKSUM_MISMATCH
             if any("checksum" in e for e in errors)
-            else "invalid-columns"
+            else RejectCategory.INVALID_COLUMNS
         )
         return None, fixes, "; ".join(errors), category
 
@@ -84,24 +83,25 @@ def repair_line(raw, lineno):
 @dataclasses.dataclass
 class Accepted:
     """A record that is valid after repair. ``fixes`` lists the fix-class
-    names applied across both lines (e.g. ``"trailing-backslash"``).
+    tags applied across both lines (e.g. ``FixClass.TRAILING_BACKSLASH``).
     """
 
     line1: str
     line2: str
-    fixes: list
+    fixes: list[FixClass]
 
 
 @dataclasses.dataclass
 class Rejected:
     """A record that could not be safely repaired. ``raw_lines`` holds the
-    original bytes for byte-faithful quarantine; ``category`` is a short
-    tag for summary aggregation; ``reason`` is the human-readable detail.
+    original bytes for byte-faithful quarantine; ``category`` is the
+    short tag for summary aggregation; ``reason`` is the human-readable
+    detail.
     """
 
     raw_lines: list
     source_lines: list
-    category: str
+    category: RejectCategory
     reason: str
 
 
@@ -133,7 +133,7 @@ def process_record(raw_line1, src1, raw_line2, src2):
         return Rejected(
             [raw_line1, raw_line2],
             [src1, src2],
-            "catalog-mismatch",
+            RejectCategory.CATALOG_MISMATCH,
             "; ".join(record_errors),
         )
 

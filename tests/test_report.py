@@ -3,6 +3,7 @@
 import json
 
 from lintle import report
+from lintle.categories import FixClass, RejectCategory
 
 
 def _stats_with_counts():
@@ -12,8 +13,11 @@ def _stats_with_counts():
     stats.input_lines_seen = 200
     stats.clean_count = 98
     stats.quarantined_count = 2
-    stats.fix_counts = {"trailing-backslash": 50, "reconstructed-checksum": 7}
-    stats.reject_categories = {"checksum-mismatch": 2}
+    stats.fix_counts = {
+        FixClass.TRAILING_BACKSLASH: 50,
+        FixClass.RECONSTRUCTED_CHECKSUM: 7,
+    }
+    stats.reject_categories = {RejectCategory.CHECKSUM_MISMATCH: 2}
     return stats
 
 
@@ -24,15 +28,18 @@ def _two_file_stats():
     a.input_lines_seen = 2000
     a.clean_count = 990
     a.quarantined_count = 10
-    a.fix_counts = {"trailing-backslash": 990}
-    a.reject_categories = {"checksum-mismatch": 10}
+    a.fix_counts = {FixClass.TRAILING_BACKSLASH: 990}
+    a.reject_categories = {RejectCategory.CHECKSUM_MISMATCH: 10}
     b = report.FileStats(src_name="tle2005.txt")
     b.paired_records = 3000
     b.orphan_entries = 0
     b.input_lines_seen = 6000
     b.clean_count = 3000
     b.quarantined_count = 0
-    b.fix_counts = {"trailing-backslash": 1000, "reconstructed-checksum": 500}
+    b.fix_counts = {
+        FixClass.TRAILING_BACKSLASH: 1000,
+        FixClass.RECONSTRUCTED_CHECKSUM: 500,
+    }
     return [a, b]
 
 
@@ -182,7 +189,10 @@ class TestRunReport:
         a.input_lines_seen = 210
         a.clean_count = 99
         a.quarantined_count = 6  # 1 paired-failure + 5 orphans
-        a.reject_categories = {"orphan-line": 5, "checksum-mismatch": 1}
+        a.reject_categories = {
+            RejectCategory.ORPHAN_LINE: 5,
+            RejectCategory.CHECKSUM_MISMATCH: 1,
+        }
         b = report.FileStats(src_name="clean.txt")
         b.paired_records = 50
         b.orphan_entries = 0
