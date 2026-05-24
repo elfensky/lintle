@@ -78,6 +78,17 @@ All notable changes to this project are documented in this file. The format is b
   Files column; both are bounded by the satellite catalog and the small
   fixed number of source files, preserving the constant-memory invariant.
   Closes #40.
+- `validate` mode now groups reject exemplars by rule ID (up to 5 per
+  rule, sorted by descending occurrence count with alphabetic tiebreak),
+  so a single noisy defect class can no longer hide rarer rules in the
+  operator summary. `FileStats.reject_exemplars` is now
+  `dict[RuleID, list[RejectEntry]]` capped at
+  `_PER_RULE_EXEMPLAR_BOUND = 5` per rule; the per-file memory ceiling
+  drops from 1000 entries to `|RuleID| × 5 = 45`. Each exemplar line
+  reuses `_format_diagnostic` so column ranges, observed/expected, repair
+  tier, and related-diagnostic continuations carry over. The on-disk
+  `.broken.txt` streaming path is untouched — every reject still reaches
+  the byte-faithful catalog. Closes #21.
 
 ### Removed
 
