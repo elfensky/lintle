@@ -49,13 +49,20 @@ class FileSample:
     per-rule cap invariant is locked in at construction time. ``cap``
     travels with the sample so renderers can surface truncation against
     the bound that was in force when the sample was built.
+
+    ``dropped_count`` (issue #46) records how many entries the sink
+    dropped per rule because the bucket was already at ``cap``. It is
+    derivable from ``reject_counts - len(buckets[rule])`` but stored
+    explicitly so programmatic consumers (JSON output, aggregators) can
+    read it as a first-class field. Missing keys mean zero drops.
     """
 
     buckets: dict
     cap: int
+    dropped_count: dict = dataclasses.field(default_factory=dict)
 
     @classmethod
-    def from_bounded(cls, cap, entries_by_rule):
+    def from_bounded(cls, cap, entries_by_rule, dropped_count=None):
         """Build a FileSample, asserting every bucket honours ``cap``.
 
         Test-friendly constructor: clones each bucket into a ``tuple`` so
@@ -63,7 +70,8 @@ class FileSample:
         (naming the rule and counts) if any bucket exceeds ``cap``.
         Strict by design — silent over-cap inputs would mask test fixture
         mistakes that the sink's cap-enforcement is meant to prevent in
-        production.
+        production. ``dropped_count`` (issue #46) is optional and shallow-
+        cloned so caller mutations to the source dict do not leak through.
         """
         for rule_id, entries in entries_by_rule.items():
             if len(entries) > cap:
@@ -73,12 +81,13 @@ class FileSample:
         return cls(
             buckets={rid: tuple(entries) for rid, entries in entries_by_rule.items()},
             cap=cap,
+            dropped_count=dict(dropped_count) if dropped_count else {},
         )
 
     @classmethod
     def empty(cls, cap):
         """Empty sentinel — saves renderer consumers a None-check per file."""
-        return cls(buckets={}, cap=cap)
+        return cls(buckets={}, cap=cap, dropped_count={})
 
 
 @dataclasses.dataclass
