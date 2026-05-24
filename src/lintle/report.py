@@ -10,6 +10,17 @@ import shutil
 from lintle import __version__, stem
 from lintle.diagnostics import RULES, Diagnostic, RepairTier
 
+# How many quarantined records to retain in memory as exemplars per
+# ``RuleID`` for the ``validate`` summary. The full byte-faithful catalog
+# goes straight to the ``.broken.txt`` sidecar via ``BrokenFileWriter`` —
+# this bound only caps the per-rule in-memory display sample, so peak
+# memory stays constant even on files where every record is corrupt.
+# Total ceiling per file is ``|RuleID| × _PER_RULE_EXEMPLAR_BOUND``. Owned
+# here because :class:`RejectSink` is the canonical cap-enforcement
+# boundary; ``pipeline.py`` re-imports until the dict-write transition
+# completes.
+_PER_RULE_EXEMPLAR_BOUND = 5
+
 
 @dataclasses.dataclass
 class RejectEntry:
