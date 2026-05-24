@@ -15,6 +15,13 @@
   per-file and run-report columns no longer conflate a half-record (a single
   orphan line) with a full 2-line record. Fix counts and reject categories
   are unchanged; report wording adjusted (issue #5).
+  **2026-05-24:** §6 / §9 — the rejection model (`RejectCategory` + free-form
+  `reason: str`) is superseded by a stable `RuleID` registry and a structured
+  `Diagnostic` dataclass; `.broken.txt` line format is rewritten under a 0.3.0
+  minor bump. See companion spec
+  [`2026-05-24-stable-rule-id-registry-design.md`](2026-05-24-stable-rule-id-registry-design.md)
+  (issue #8). Other sections of this design (validator definition, repair tiers,
+  streaming/constant-memory, pairing) remain authoritative.
 - **Topic:** A tool to validate and clean a multi-gigabyte corpus of Two-Line Element (TLE) files exported from space-track.org
 
 ## 1. Problem statement
