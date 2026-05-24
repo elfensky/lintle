@@ -416,6 +416,12 @@ def summary_dict(stats):
         "quarantined_count": stats.quarantined_count,
         "fix_counts": dict(stats.fix_counts),
         "reject_counts": dict(stats.reject_counts),
+        # Per-rule count of entries the sink had to drop because the bucket
+        # was already at cap (issue #46). Always present (empty when no
+        # truncation) so programmatic consumers can rely on the field;
+        # shallow-copied so caller mutations don't leak into the frozen
+        # FileSample. Parallels reject_counts in shape and key vocabulary.
+        "dropped_counts": dict(stats.reject_sample.dropped_count),
         "quarantined_norad_ids": {
             nid: dict(cats) for nid, cats in stats.quarantined_norad_ids.items()
         },

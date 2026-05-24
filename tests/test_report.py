@@ -313,6 +313,42 @@ class TestSummaries:
         data = report.summary_dict(_stats_with_counts())
         assert data["quarantined_norad_ids"] == {}
 
+    def test_summary_dict_surfaces_dropped_counts(self):
+        # Sample with drops surfaces them in JSON under a stable
+        # rule-ID key, so programmatic consumers can show "K of N
+        # examples retained" without recomputing (issue #46).
+        stats = _stats_with_counts()
+        stats.reject_sample = report.FileSample.from_bounded(
+            cap=5,
+            entries_by_rule={},
+            dropped_count={RuleID.CHECKSUM_MISMATCH: 995},
+        )
+        data = report.summary_dict(stats)
+        assert data["dropped_counts"][RuleID.CHECKSUM_MISMATCH] == 995
+        # JSON round-trip: StrEnum key coerces to its stable wire token.
+        rendered = json.loads(json.dumps(data))
+        assert rendered["dropped_counts"]["TLE-CHK-001"] == 995
+
+    def test_summary_dict_dropped_counts_empty_by_default(self):
+        # A run with no truncation produces an empty dict, not a missing
+        # key — same contract as fix_counts / reject_counts. JSON
+        # consumers can rely on the field always being present.
+        data = report.summary_dict(_stats_with_counts())
+        assert data["dropped_counts"] == {}
+
+    def test_summary_dict_dropped_counts_is_shallow_copy(self):
+        # Mutating the returned dict must not leak back to the live
+        # FileSample (mirrors fix_counts / reject_counts contract).
+        stats = report.FileStats(src_name="x.txt")
+        stats.reject_sample = report.FileSample.from_bounded(
+            cap=5,
+            entries_by_rule={},
+            dropped_count={RuleID.CHECKSUM_MISMATCH: 42},
+        )
+        data = report.summary_dict(stats)
+        data["dropped_counts"].pop(RuleID.CHECKSUM_MISMATCH)
+        assert RuleID.CHECKSUM_MISMATCH in stats.reject_sample.dropped_count
+
 
 class TestFormatRejectLines:
     def test_format_reject_lines_groups_by_rule(self):
