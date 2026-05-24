@@ -51,6 +51,27 @@ All notable changes to this project are documented in this file. The format is b
   rule block in the validate summary stays, so the existing
   truncation-indicator stays visually anchored to the exemplars it
   applies to. Closes #46.
+- `lintle clean` now emits a corpus-wide `report.jsonl` alongside
+  `report.md` and `broken-noradids.ndjson`: one JSON object per
+  quarantined record, citing the stable `RuleID` (`TLE-CHK-001`,
+  `TLE-COL-003`, …) and carrying the structured fields downstream
+  automation needs — `file`, `source_lines`, `tier_attempted`,
+  `norad_id`, `column_range`, `observed`, `expected`, `note`, and
+  `related` (secondary diagnostics). Every line carries
+  `schema_version: "1"` and `outcome: "quarantined"` (the latter
+  reserves space for future `"fixed"` emission without breaking
+  consumers). The format is compact (`json.dumps(..., separators=(",", ":"))`),
+  key-sorted (`sort_keys=True`), UTF-8, LF-terminated — byte-deterministic
+  across runs on identical input, enabling content-hash caching and the
+  `lintle diff` consumer (issue #10). Streaming is per-worker: each
+  worker writes `<out_dir>/.shards/<stem>.findings.jsonl`; the main
+  process concatenates shards in alphabetical `src_name` order at end
+  of run and removes the shard directory. A pre-run shard-dir scrub
+  prevents contamination from prior aborted runs. The byte-faithful
+  catalog stays in `broken/<stem>.broken.txt`; `report.jsonl` is the
+  structured-findings stream consumers can `jq` against. The
+  `RejectEntry` dataclass gains a trailing optional `norad_id` field
+  decoded once at quarantine time. Closes #9.
 
 ### Changed
 
