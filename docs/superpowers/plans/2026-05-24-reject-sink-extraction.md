@@ -5,6 +5,21 @@
 > `superpowers:executing-plans` to implement this plan task-by-task. Steps
 > use checkbox (`- [ ]`) syntax for tracking.
 
+> **2026-05-24 post-review note:** This plan was revised after a multi-AI
+> adversarial debate (Claude Opus 4.7 + Sonnet 4.6 + Codex + Gemini). Two
+> reviewers independently caught a `sink.finalize()` placement bug in the
+> original Task 4 Step 3 pseudocode — fixed below (`finalize()` must be
+> *inside* the `with` block, before the writer's `__exit__` deletes the
+> body partial). Task 4's ordering was also restructured per Sonnet's
+> bisectability concern: the new `reject_sample` field lives alongside the
+> legacy `reject_exemplars` through Tasks 4–5, and `reject_exemplars` is
+> deleted in Task 6 — keeps `uv run pytest` green at every commit.
+> Test-line-change estimate revised from "~30" to "~50–80" per a grep
+> audit. Task 6 Step 4 smoke-test step simplified (the original referenced
+> a recipe that doesn't exist). Task 3 Step 2's "golden output" language
+> clarified to mean dynamic `_render_entry` comparison, matching the
+> existing `TestStreamingRejects` pattern.
+
 **Goal:** Extract a `RejectSink` class and a `FileSample` immutable value
 object so the 5-per-rule exemplar cap is structurally enforced rather than
 respected by convention in exactly one caller. `pipeline.process_file`'s
@@ -187,7 +202,10 @@ production consumers depend on it until Task 4.
     leakage in a `tmp_path` parent dir.
   - `test_clean_mode_writes_byte_faithful_sidecar` — `RejectSink(broken_path=tmp_path/"x.broken.txt", src_name="x")`,
     add a fixed set of entries, finalize, read the file back, assert bytes
-    match the existing `_render_entry` golden output.
+    equal the result of calling `_render_entry(idx, entry)` for each entry
+    in turn (plus the `_render_header` preamble). This follows the
+    dynamic-render comparison pattern from the existing
+    `TestStreamingRejects` — there is no stored golden file in this repo.
   - `test_exit_without_finalize_cleans_partials` — open sink with
     `broken_path`, add an entry, raise inside the `with`-block, assert no
     `*.partial` files remain in the directory.
@@ -249,9 +267,13 @@ production consumers depend on it until Task 4.
 - Modify: `tests/test_pipeline.py` — update shape assertions that read
   `stats.reject_exemplars[rule]` to `stats.reject_sample.buckets[rule]`.
 
-- [ ] **Step 1: Change `FileStats.reject_exemplars` → `reject_sample`.**
+- [ ] **Step 1: Add `reject_sample` field ALONGSIDE `reject_exemplars`.**
 
-  In `src/lintle/report.py`:
+  Per the post-review note at the top of this plan, both fields stay alive
+  through Tasks 4–5 so every commit is green and bisectable. The legacy
+  field is deleted in Task 6.
+
+  In `src/lintle/report.py`, add to `FileStats`:
 
   ```python
   reject_sample: FileSample = dataclasses.field(
@@ -259,13 +281,15 @@ production consumers depend on it until Task 4.
   )
   ```
 
-  Remove the now-stale paragraph from the `FileStats` docstring (the one
-  documenting the "cap enforced by pipeline, not dataclass" convention —
-  that convention is dead). Replace with a one-sentence pointer to
-  `FileSample` and `RejectSink`.
+  (Keep `reject_exemplars: dict = dataclasses.field(default_factory=dict)`
+  for now. Update its docstring to note the transition: "Legacy mirror;
+  removed in the final cleanup of this refactor — new code should read
+  `reject_sample.buckets` instead.")
 
-  Tests will be red until Steps 2–4 finish; that's expected for a refactor
-  of this shape (the data flow changes shape across all consumers).
+  Add a one-sentence pointer to `FileSample` and `RejectSink` in the
+  `FileStats` class docstring.
+
+  Tests should pass after this step — no behavior change yet.
 
 - [ ] **Step 2: Rewrite `pipeline._record_reject`.**
 
@@ -281,13 +305,23 @@ production consumers depend on it until Task 4.
   )
   entry = report.RejectEntry(raw_lines, source_lines, primary, related)
   sink.add(entry)  # one call: cap-checked, streamed if writer is open
+  # TRANSITION: keep the legacy dict populated so renderers (which still
+  # read reject_exemplars until Task 5) see the same data. Removed in
+  # Task 6 Step 1 once renderers migrate to reject_sample.
+  bucket = stats.reject_exemplars.get(primary.rule_id)
+  if bucket is None:
+      bucket = []
+      stats.reject_exemplars[primary.rule_id] = bucket
+  if len(bucket) < _PER_RULE_EXEMPLAR_BOUND:
+      bucket.append(entry)
   norad_id = tle.extract_norad_id(raw_lines[0])
   if norad_id is not None:
       per_rule = stats.quarantined_norad_ids.setdefault(norad_id, {})
       per_rule[primary.rule_id] = per_rule.get(primary.rule_id, 0) + 1
   ```
 
-  The three-line dict bookkeeping in the previous version goes away.
+  The legacy bookkeeping is retained temporarily to keep tests green
+  during the migration; Task 6 Step 1 removes it.
 
 - [ ] **Step 3: Rewrite `pipeline.process_file`.**
 
@@ -305,34 +339,42 @@ production consumers depend on it until Task 4.
   ```
 
   Replace the `try/finally` that juggles `broken_writer.__exit__` with the
-  `with sink:` idiom:
+  `with sink:` idiom. **CRITICAL: `sink.finalize()` MUST be called inside
+  the `with` block, before `__exit__` fires.** If finalize is outside the
+  `with`, the sink's `__exit__` runs first, sees `_completed = False`,
+  deletes the body partial, and then `finalize` tries to stitch a file
+  that no longer exists. This bug was caught independently by two
+  adversarial-review voices.
 
   ```python
   with sink:
       # ... existing record loop, calling _record_reject(stats, sink, ...) ...
-      if completed and mode == "clean":
+      completed = True
+      if mode == "clean":
           os.replace(cleaned_tmp, cleaned_path)
+      sample = sink.finalize(
+          entries=stats.paired_records + stats.orphan_entries
+      )
 
-  stats.reject_sample = sink.finalize(
-      entries=stats.paired_records + stats.orphan_entries
-  )
+  stats.reject_sample = sample
   ```
 
-  Subtlety: `BrokenFileWriter.finalize` today is called *inside* the
-  `try/finally`'s success branch and `__exit__` is called twice in the
-  success path (once explicitly at line 269, once by an implicit `with`
-  exit — actually the current code calls `__exit__` manually). Confirm the
-  new flow by tracing the test
-  `tests/test_pipeline.py::TestStreamingRejects::test_high_reject_density_creates_complete_sidecar`
-  step-by-step: `with sink:` enters writer, loop adds entries, `sink.finalize`
-  stitches and atomic-renames the sidecar before `with` exits, `__exit__`
-  on the (now-completed) writer is a no-op.
+  Inside the `with` block, `sink.finalize` stitches the sidecar and marks
+  the sink as completed; when `__exit__` then fires on context exit, it
+  sees `_completed = True` and the partial cleanup path is a no-op. The
+  current code's manual `__enter__`/`__exit__` pair at `pipeline.py:175-176,
+  268-269` collapses to one `with` block.
 
   **Edge case:** if `process_file` raises mid-loop, the `with sink:` exits
   without `finalize` being called; the writer's `__exit__` discards
-  partials. `stats.reject_sample` remains the default `empty(...)` — caller
-  must handle "exception → no sample." Existing tests already exercise this
-  shape via `TestStreamingRejects::test_interrupt_leaves_no_debris`.
+  partials and `stats.reject_sample` keeps the default `empty(...)`.
+  `reject_counts` and `quarantined_count` will already have been
+  incremented before the exception — this counter/sample divergence is
+  observable on abnormal exit, matches today's behavior (the legacy dict
+  also gets partial entries), and is not a regression. Add a brief
+  comment in `_record_reject` noting why the two can diverge on
+  exception. Existing test `TestStreamingRejects::test_interrupt_leaves_no_debris`
+  exercises this shape.
 
 - [ ] **Step 4: Update affected pipeline tests.**
 
@@ -447,10 +489,31 @@ production consumers depend on it until Task 4.
 
 ## Task 6: Retire `FileStats.reject_exemplars` (the rename's final mile)
 
-By this point the dict should be unused. This step is a grep-and-delete to
-confirm.
+Renderers and pipeline now read `reject_sample`; the legacy
+`reject_exemplars` field and its parallel-population code in
+`_record_reject` are dead weight. This task removes them.
 
-- [ ] **Step 1: Grep the tree.**
+- [ ] **Step 1: Remove the transitional dict-write from `_record_reject`.**
+
+  In `src/lintle/pipeline.py`, delete the legacy `bucket = stats.reject_exemplars.get(...)` block
+  added in Task 4 Step 2 (the comment block marked `# TRANSITION`). Only
+  `sink.add(entry)` populates exemplars now.
+
+  Run `uv run pytest tests/test_pipeline.py` — should still pass
+  (`reject_exemplars` is no longer read by renderers as of Task 5).
+
+- [ ] **Step 2: Delete the `reject_exemplars` field from `FileStats`.**
+
+  In `src/lintle/report.py`, remove
+  `reject_exemplars: dict = dataclasses.field(default_factory=dict)`
+  and any docstring lines referencing it. Update the `FileStats` docstring
+  to describe `reject_sample` as the canonical sample carrier.
+
+  Also remove the import of `_PER_RULE_EXEMPLAR_BOUND` in `pipeline.py`
+  if no other reference remains (the constant lives only on the sink
+  default now). Verify with `grep -n _PER_RULE_EXEMPLAR_BOUND src/lintle/pipeline.py`.
+
+- [ ] **Step 3: Grep the tree.**
 
   ```bash
   grep -rn "reject_exemplars" src/ tests/
@@ -458,8 +521,7 @@ confirm.
 
   Expected: **zero matches**. If anything turns up, fix it before continuing.
 
-- [ ] **Step 2: Verify the CHANGELOG `[Unreleased]` section is ready for the
-  refactor note.**
+- [ ] **Step 4: Update the CHANGELOG `[Unreleased]` section.**
 
   ```bash
   grep -n "Unreleased" CHANGELOG.md
@@ -475,7 +537,7 @@ confirm.
     No user-visible byte format changes. Closes #19.
   ```
 
-- [ ] **Step 3: Final verification.**
+- [ ] **Step 5: Final verification.**
 
   ```bash
   uv run pytest
@@ -483,21 +545,13 @@ confirm.
   uv run ruff format --check .
   ```
 
-  All green.
+  All green. The byte-format-lock tests in
+  `tests/test_report.py::TestStreamingRejects` and
+  `tests/test_cli.py` are the authoritative check that
+  `.broken.txt` output is byte-identical to the pre-refactor baseline —
+  no separate CLI smoke-test step is needed.
 
-- [ ] **Step 4: Smoke-test the CLI against a real file.**
-
-  ```bash
-  uv run lintle validate data/source/tle2024.txt --first-only
-  uv run lintle clean --in data/source/tle2024.txt --out-dir /tmp/lintle-smoke
-  diff -q /tmp/lintle-smoke/broken/tle2024.broken.txt <(uv run lintle clean ...)
-  ```
-
-  (Adapt the second command to whatever the current single-file smoke
-  recipe is.) The cleaned and broken sidecars should be byte-identical to
-  a pre-refactor run.
-
-- [ ] **Step 5: Commit the CHANGELOG.**
+- [ ] **Step 6: Commit the CHANGELOG.**
 
   ```
   docs(changelog): document RejectSink extraction (issue #19)

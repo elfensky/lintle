@@ -1,7 +1,14 @@
 # Reject Sink Extraction — Design
 
 - **Date:** 2026-05-24
-- **Status:** Draft; awaiting multi-AI adversarial review
+- **Status:** Approved (post-review); ready for implementation
+- **Revision:** **2026-05-24:** §4.5 / §4.7 / §7 / §10 — applied findings from
+  a multi-AI adversarial review (Codex + Gemini + Sonnet). §4.5 pins
+  post-finalize `add()` behavior (raises `RuntimeError`). §4.7 corrects the
+  test-line-change estimate from "~30" to "~50–80" per Sonnet's grep. §7
+  gains a post-finalize-add test. §10 carries the resolved status for each
+  open question; `dropped_count` observability per Gemini becomes a follow-up
+  issue.
 - **Topic:** Issue #19 — encapsulate the bounded reject sample and the
   streaming `.broken.txt` writer behind a single `RejectSink` type so the
   5-per-rule cap is a structural property of the data, not a convention
@@ -182,10 +189,25 @@ class RejectSink:
     ): ...
 
     def add(self, entry: RejectEntry) -> None:
-        """Append ``entry`` to its rule's bucket if cap permits, then stream."""
+        """Append ``entry`` to its rule's bucket if cap permits, then stream.
+
+        Silently drops past-cap entries — matches today's
+        ``pipeline._record_reject`` behavior, and the full count is still
+        retained in ``stats.reject_counts`` so no information is lost.
+        Raises ``RuntimeError`` if called after ``finalize`` — the sink is
+        single-use and post-finalize mutation has no defined semantics.
+        """
 
     def finalize(self, *, entries: int) -> FileSample:
-        """Stitch the sidecar (if any) and return the immutable sample."""
+        """Stitch the sidecar (if any) and return the immutable sample.
+
+        Marks the sink as finalized — any subsequent ``add`` raises
+        ``RuntimeError``. The returned ``FileSample`` is built via the
+        sink's own bookkeeping; it is NOT re-validated by
+        ``FileSample.from_bounded`` because the sink IS the invariant
+        boundary. ``from_bounded`` stays strict for test fixtures and any
+        future external construction path.
+        """
 
     # context-manager methods delegate to the writer when broken_path is set
 ```
@@ -223,9 +245,13 @@ even for zero-reject files — measured in nanoseconds, irrelevant against
   This is *intentional*: the renderers don't care about the sink; they care
   about the value object.
 
-Net test diff: ~30 mechanical line changes across two files. The
-`from_bounded` constructor turns 2-line setup blocks into 1-line ones, so
-total LOC may actually drop.
+Net test diff: ~50–80 line changes across two files (revised upward from
+the initial ~30 estimate after a grep audit: `test_report.py` has 14
+mutation sites, several inside nested loops over multiple rules — those
+require collapsing into a pre-built bucket dict for `from_bounded`, not a
+1-for-1 line swap). The `from_bounded` constructor still collapses many
+setup blocks, but the net diff is dominated by the loop-collapsing
+rewrites.
 
 ## 5. Module-level changes
 
@@ -270,6 +296,10 @@ total LOC may actually drop.
    `broken_path`, add an entry, exit the context without calling `finalize`,
    assert no `*.partial` files remain. Mirrors `TestStreamingRejects`'s
    existing partial-cleanup assertion at the sink level.
+6. **Post-finalize-add behavior test.** `TestRejectSink::
+   test_add_after_finalize_raises` — finalize the sink, then call `add()`,
+   assert `RuntimeError`. Locks the §4.5 single-use contract so future
+   contributors can't accidentally turn the sink into a reusable container.
 
 Coverage target: `RejectSink` and `FileSample` at 100 % branch coverage. The
 classes are tiny; this is achievable.
@@ -309,26 +339,55 @@ Per `CLAUDE.md` §Working Style — test-first.
   runtime is stdlib-only and `hypothesis` is not currently a dev dep; adopt
   it project-wide as its own decision, not as a side effect of this refactor.
 
-## 10. Open questions (for debate)
+## 10. Open questions (resolved by multi-AI debate, 2026-05-24)
 
-1. **Ownership model A/B/C (§4.1).** Recommendation is A. Are B's "one fewer
-   type" or C's "literal match to the issue title" more important than A's
-   write/read separation?
-2. **`FileSample` default — `None` or `empty()` sentinel?** (§4.6.) Empty
-   eliminates `is not None` boilerplate at every consumer. `None` is more
-   honest about "this file had no rejects." Pick one and lock it.
-3. **`from_bounded` strictness (§4.4).** Strict (raise on over-cap input) vs
-   forgiving (truncate). Strict catches mistakes; forgiving is friendlier
-   to future stats-merge scenarios that don't yet exist (YAGNI).
-4. **Should `quarantined_norad_ids` ride along?** (§9.) Bundling doubles the
-   diff and the test surface; splitting risks the same problem reappearing
-   later. Recommendation: split. Defensible to bundle if reviewers feel the
-   pattern should be locked in everywhere at once.
-5. **Where does `cap` come from?** Module constant default in `RejectSink.
-   __init__` (`cap=_PER_RULE_EXEMPLAR_BOUND`) vs always-passed-by-caller.
-   Module default is simpler; always-passed is more testable. Recommendation:
-   module default with override permitted (current sketch in §4.5).
+All five open questions were settled by an adversarial four-way review
+(Claude Opus 4.7 + Sonnet 4.6 + Codex + Gemini). Three of four voices
+agreed on every question; Gemini was the consistent dissenter (4 of 5
+questions) but surfaced one strong novel point captured as a follow-up.
+
+1. **Ownership model A/B/C (§4.1).** ✅ A. `FileSample`'s frozen-ness
+   structurally prevents a renderer from being handed an unfinalized sink
+   — that's the load-bearing benefit, not aesthetics. Dissent (Gemini)
+   pushed B but did not engage with the immutability argument.
+2. **`FileSample` default — `None` or `empty()`?** (§4.6.) ✅ `empty()`.
+   Production access surface is 3 sites; None-guards add ceremony with no
+   payoff. Dissent (Gemini) called it a "zombie pattern" but the
+   alternative would require ceremony at every consumer.
+3. **`from_bounded` strictness (§4.4).** ✅ Strict. Raises on over-cap
+   input so test mistakes surface immediately. The sink's `finalize`
+   builds the `FileSample` directly without re-validating (sink IS the
+   invariant boundary, see §4.5 finalize docstring).
+4. **Should `quarantined_norad_ids` ride along?** (§9.) ✅ Defer.
+   Different contract (per-satellite accounting, not display sample),
+   different lifetime (alive at `_aggregate_per_norad` time), different
+   cap semantics (catalog-bounded). Dissent (Gemini) called the deferral
+   "hypocritical" but didn't engage with the contract difference. Will
+   file as a follow-up issue.
+5. **Where does `cap` come from?** ✅ Module default with override
+   permitted (sketch in §4.5 retained).
+
+### Carry-forward as follow-up issues
+
+- **`FileSample.dropped_count: Mapping[RuleID, int]`** — operator
+  observability so reports can distinguish "5 of 5 hits" from "5 of
+  50,000 hits." Gemini's strongest novel point; not part of the
+  encapsulation refactor but a clean mechanical follow-up. Field shape:
+  `Mapping[RuleID, int]`, incremented in `RejectSink.add` when the cap
+  blocks an append, surfaced in `FileSample` and in
+  `format_reject_lines` / `report.md`'s rule reference.
+- **`quarantined_norad_ids` encapsulation** — same architectural argument
+  as this refactor; different abstraction (`NoradTracker` shape, not
+  `RejectSink`). File once this refactor lands cleanly.
 
 ## 11. Revision log
 
 - **2026-05-24:** Initial draft.
+- **2026-05-24:** Spec revisions from multi-AI adversarial review.
+  §4.5 pins post-finalize `add()` behavior (raises `RuntimeError`) and
+  documents that `finalize` builds the `FileSample` without re-validating.
+  §4.7 corrects the test-line-change estimate "~30" → "~50–80" per a
+  grep audit. §7 gains test 6 (post-finalize add raises). §10 carries
+  resolved status for each open question and captures `dropped_count`
+  observability + `quarantined_norad_ids` encapsulation as
+  follow-up-issue work. Status changed from Draft to Approved.
