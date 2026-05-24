@@ -2,9 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Replace lintle's flat `reject_exemplars` buffer with per-category bounded sampling so the `validate` summary surfaces up to 5 exemplars *per* `RejectCategory`, sorted by descending occurrence count. No noisy defect class can drown out rarer ones.
+> **2026-05-24 post-refactor note:** This plan predates the diagnostics refactor that landed in 0.3.0 ([`2026-05-24-stable-rule-id-registry-design.md`](../specs/2026-05-24-stable-rule-id-registry-design.md)). The old `lintle.categories.RejectCategory` enum has been removed and replaced by `lintle.diagnostics.RuleID`; `FileStats.reject_categories` is now `FileStats.reject_counts`. Some member names changed too: `NON_ASCII` → `NON_ASCII_BYTE`, `WRONG_LENGTH` → `LINE_LENGTH`, `INVALID_COLUMNS` → `INVALID_COLUMN_LAYOUT`. `RejectEntry` now carries `primary: Diagnostic` + `related: tuple[Diagnostic, ...]` instead of `reason: str`, so any test fixture below that constructs `RejectEntry(raw_lines=..., source_lines=..., reason="...")` must be rewritten to `RejectEntry(raw_lines=..., source_lines=..., primary=diagnostic(RuleID.X, source_line_nos=(...,), note="..."))`. Display-format assertions also need rewriting: the new `format_reject_lines` output is `"  TLE-CHK-001 (N):"` not `"  checksum-mismatch (N):"`, since rules surface by their stable `RuleID` wire token. The bucketing design itself composes cleanly because `RuleID` is also a `StrEnum`, so the structure of the change is unchanged — only the type and attribute names move.
 
-**Architecture:** `FileStats.reject_exemplars` flips from `list[RejectEntry]` to `dict[RejectCategory, list[RejectEntry]]`. The pipeline's `_record_reject` uses a get-or-create insertion pattern capped at `_PER_CATEGORY_EXEMPLAR_BOUND = 5`. `format_reject_lines` walks categories sorted by total count (alphabetic tiebreak), emitting heading + exemplars + per-category remainder. `write_broken_file` (test-only helper) flattens the dict and sorts by `source_lines[0]` so its sidecar mirrors production encounter order. The on-disk `.broken.txt` streaming path is untouched — the full byte-faithful catalog still reaches disk.
+**Goal:** Replace lintle's flat `reject_exemplars` buffer with per-rule bounded sampling so the `validate` summary surfaces up to 5 exemplars *per* `RuleID`, sorted by descending occurrence count. No noisy rule can drown out rarer ones.
+
+**Architecture:** `FileStats.reject_exemplars` flips from `list[RejectEntry]` to `dict[RuleID, list[RejectEntry]]`. The pipeline's `_record_reject` uses a get-or-create insertion pattern capped at `_PER_RULE_EXEMPLAR_BOUND = 5`, keyed by `primary.rule_id`. `format_reject_lines` walks rules sorted by total count from `stats.reject_counts` (alphabetic tiebreak on the rule-ID string), emitting heading + exemplars + per-rule remainder. `write_broken_file` (test-only helper) flattens the dict and sorts by `source_lines[0]` so its sidecar mirrors production encounter order. The on-disk `.broken.txt` streaming path is untouched — the full byte-faithful catalog still reaches disk.
 
 **Tech Stack:** Python 3.11 · uv · pure stdlib runtime · pytest · ruff · `sgp4` (test oracle, dev-only).
 
@@ -103,12 +105,12 @@ class FileStats:
     including blanks the pairing loop drops. The invariant
     ``paired_records + orphan_entries == clean_count + quarantined_count``
     holds — orphans still flow through ``_record_reject`` so they are tallied
-    in ``quarantined_count`` and ``reject_categories['orphan-line']``.
+    in ``quarantined_count`` and ``reject_counts[RuleID.ORPHAN_LINE]``.
 
     ``reject_exemplars`` is a *per-category bounded* sample of quarantined
-    records keyed by ``RejectCategory``, used only by the human-facing
+    records keyed by ``RuleID``, used only by the human-facing
     ``validate`` summary; each per-category list is capped at
-    ``pipeline._PER_CATEGORY_EXEMPLAR_BOUND`` so a single noisy category
+    ``pipeline._PER_RULE_EXEMPLAR_BOUND`` so a single noisy category
     cannot crowd out rarer ones (issue #21). The byte-faithful full catalog
     is streamed to ``.broken.txt`` during processing. The cap is enforced
     by the pipeline, not by this dataclass, so tests can populate it freely
@@ -122,7 +124,7 @@ class FileStats:
     clean_count: int = 0
     quarantined_count: int = 0
     fix_counts: dict = dataclasses.field(default_factory=dict)
-    reject_categories: dict = dataclasses.field(default_factory=dict)
+    reject_counts: dict = dataclasses.field(default_factory=dict)
     reject_exemplars: dict = dataclasses.field(default_factory=dict)
     # NORAD IDs of records quarantined in this file, decoded once at
     # reject time from line-1 columns 3-7. Bounded by the satellite
@@ -137,13 +139,13 @@ Open `src/lintle/pipeline.py`. Replace the constant definition (line 15) and its
 
 ```python
 # How many quarantined records to retain in memory as exemplars per
-# ``RejectCategory`` for the ``validate`` summary. The full byte-faithful
+# ``RuleID`` for the ``validate`` summary. The full byte-faithful
 # catalog goes straight to the ``.broken.txt`` sidecar via
 # ``BrokenFileWriter`` — this bound only caps the per-category in-memory
 # display sample, so peak memory stays constant even on files where every
 # record is corrupt. Total ceiling per file is bounded by
-# ``|RejectCategory| × _PER_CATEGORY_EXEMPLAR_BOUND``.
-_PER_CATEGORY_EXEMPLAR_BOUND = 5
+# ``|RuleID| × _PER_RULE_EXEMPLAR_BOUND``.
+_PER_RULE_EXEMPLAR_BOUND = 5
 ```
 
 Then in `_record_reject` (around line 262), replace the old insertion block:
@@ -153,13 +155,13 @@ def _record_reject(stats, broken_writer, category, reason, raw_lines, source_lin
     """Tally one quarantined record; stream its bytes to the broken sidecar.
 
     The in-memory ``reject_exemplars`` dict holds up to
-    ``_PER_CATEGORY_EXEMPLAR_BOUND`` entries per ``RejectCategory`` so the
+    ``_PER_RULE_EXEMPLAR_BOUND`` entries per ``RuleID`` so the
     ``validate`` summary surfaces every observed defect class (issue #21).
     The full byte-faithful catalog streams to the sidecar via
     ``BrokenFileWriter`` when one is open (``clean`` mode).
     """
     stats.quarantined_count += 1
-    stats.reject_categories[category] = stats.reject_categories.get(category, 0) + 1
+    stats.reject_counts[category] = stats.reject_counts.get(category, 0) + 1
     entry = report.RejectEntry(raw_lines, source_lines, reason)
     # Get-or-create avoids the per-call empty-list allocation that
     # ``setdefault(category, [])`` would incur on the hot path.
@@ -167,7 +169,7 @@ def _record_reject(stats, broken_writer, category, reason, raw_lines, source_lin
     if bucket is None:
         bucket = []
         stats.reject_exemplars[category] = bucket
-    if len(bucket) < _PER_CATEGORY_EXEMPLAR_BOUND:
+    if len(bucket) < _PER_RULE_EXEMPLAR_BOUND:
         bucket.append(entry)
     if broken_writer is not None:
         broken_writer.write_entry(entry)
@@ -188,14 +190,14 @@ def format_reject_lines(stats):
     """Render grouped reject exemplars for the ``validate`` summary.
 
     Walks categories in descending order of total occurrences from
-    ``stats.reject_categories`` and emits up to N exemplars per category
+    ``stats.reject_counts`` and emits up to N exemplars per category
     from ``stats.reject_exemplars``, followed by a trailing
     ``...and X more`` when the bucket is shorter than the category total.
     A single noisy category cannot hide rarer defects (issue #21).
     """
     blocks = []
     for category, total in sorted(
-        stats.reject_categories.items(), key=lambda kv: (-kv[1], kv[0])
+        stats.reject_counts.items(), key=lambda kv: (-kv[1], kv[0])
     ):
         bucket = stats.reject_exemplars.get(category, [])
         lines = [f"  {category} ({total:,}):"]
@@ -247,7 +249,7 @@ Open `tests/test_pipeline.py`. Replace the entire `TestStreamingRejects` class (
 
 ```python
 class TestStreamingRejects:
-    """The constant-memory invariant: each ``RejectCategory`` bucket in
+    """The constant-memory invariant: each ``RuleID`` bucket in
     ``reject_exemplars`` stays bounded even on reject-heavy files, while the
     on-disk ``.broken.txt`` catalog is complete.
     """
@@ -257,7 +259,7 @@ class TestStreamingRejects:
     ):
         # Far more bad-prefix orphans than the per-category exemplar bound —
         # the full catalog must reach disk; only the in-memory bucket caps.
-        n = pipeline._PER_CATEGORY_EXEMPLAR_BOUND + 1500
+        n = pipeline._PER_RULE_EXEMPLAR_BOUND + 1500
         src = tmp_path / "tle2099.txt"
         src.write_bytes(b"\n".join(f"junk {i:08d}".encode("ascii") for i in range(n)))
         out = tmp_path / "out"
@@ -266,11 +268,11 @@ class TestStreamingRejects:
 
         # Full counters reflect every reject…
         assert stats.quarantined_count == n
-        assert stats.reject_categories.get(RejectCategory.BAD_PREFIX) == n
+        assert stats.reject_counts.get(RuleID.BAD_PREFIX) == n
         # …but the in-memory bucket for that category is capped at the bound.
         assert (
-            len(stats.reject_exemplars[RejectCategory.BAD_PREFIX])
-            == pipeline._PER_CATEGORY_EXEMPLAR_BOUND
+            len(stats.reject_exemplars[RuleID.BAD_PREFIX])
+            == pipeline._PER_RULE_EXEMPLAR_BOUND
         )
         # The on-disk catalog header and trailing entry both reflect every
         # quarantined record — none were dropped due to the in-memory cap.
@@ -282,7 +284,7 @@ class TestStreamingRejects:
     def test_validate_mode_bucket_caps_per_category(self, tmp_path):
         # In validate mode no sidecar is written, but each per-category
         # bucket still caps so peak memory does not grow with reject count.
-        n = pipeline._PER_CATEGORY_EXEMPLAR_BOUND + 500
+        n = pipeline._PER_RULE_EXEMPLAR_BOUND + 500
         src = tmp_path / "tle2099.txt"
         src.write_bytes(b"\n".join(f"junk {i:08d}".encode("ascii") for i in range(n)))
 
@@ -290,8 +292,8 @@ class TestStreamingRejects:
 
         assert stats.quarantined_count == n
         assert (
-            len(stats.reject_exemplars[RejectCategory.BAD_PREFIX])
-            == pipeline._PER_CATEGORY_EXEMPLAR_BOUND
+            len(stats.reject_exemplars[RuleID.BAD_PREFIX])
+            == pipeline._PER_RULE_EXEMPLAR_BOUND
         )
 ```
 
@@ -307,7 +309,7 @@ class TestWriteBrokenFile:
         stats = report.FileStats(src_name="tle2099.txt")
         stats.paired_records = 5
         stats.quarantined_count = 1
-        stats.reject_exemplars.setdefault(RejectCategory.BAD_PREFIX, []).append(
+        stats.reject_exemplars.setdefault(RuleID.BAD_PREFIX, []).append(
             report.RejectEntry(
                 raw_lines=[b"1 garbage"],
                 source_lines=[42],
@@ -327,7 +329,7 @@ class TestWriteBrokenFile:
     def test_broken_file_is_byte_faithful(self, tmp_path):
         stats = report.FileStats(src_name="x.txt")
         stats.quarantined_count = 1
-        stats.reject_exemplars.setdefault(RejectCategory.NON_ASCII, []).append(
+        stats.reject_exemplars.setdefault(RuleID.NON_ASCII_BYTE, []).append(
             report.RejectEntry(
                 raw_lines=[b"1 \xff\xfe non-ascii"],
                 source_lines=[7],
@@ -344,7 +346,7 @@ class TestWriteBrokenFile:
         stats = report.FileStats(src_name="x.txt")
         stats.quarantined_count = 1
         stats.reject_exemplars.setdefault(
-            RejectCategory.CHECKSUM_MISMATCH, []
+            RuleID.CHECKSUM_MISMATCH, []
         ).append(
             report.RejectEntry(
                 raw_lines=[b"1 aaa", b"2 bbb"],
@@ -368,12 +370,12 @@ class TestFormatRejectLines:
     def test_format_reject_lines_groups_by_category(self):
         stats = report.FileStats(src_name="x.txt")
         stats.quarantined_count = 4
-        stats.reject_categories = {
-            RejectCategory.CHECKSUM_MISMATCH: 2,
-            RejectCategory.BAD_PREFIX: 2,
+        stats.reject_counts = {
+            RuleID.CHECKSUM_MISMATCH: 2,
+            RuleID.BAD_PREFIX: 2,
         }
         stats.reject_exemplars.setdefault(
-            RejectCategory.CHECKSUM_MISMATCH, []
+            RuleID.CHECKSUM_MISMATCH, []
         ).append(
             report.RejectEntry(
                 raw_lines=[b"1 a", b"2 b"],
@@ -381,7 +383,7 @@ class TestFormatRejectLines:
                 reason="line 2: checksum mismatch",
             )
         )
-        stats.reject_exemplars.setdefault(RejectCategory.BAD_PREFIX, []).append(
+        stats.reject_exemplars.setdefault(RuleID.BAD_PREFIX, []).append(
             report.RejectEntry(
                 raw_lines=[b"x"], source_lines=[20], reason="bad-prefix"
             )
@@ -429,8 +431,8 @@ git add src/lintle/pipeline.py src/lintle/report.py tests/test_pipeline.py tests
 git commit -m "$(cat <<'EOF'
 refactor: per-category bounded sampling for reject exemplars (issue #21)
 
-`FileStats.reject_exemplars` becomes `dict[RejectCategory, list[RejectEntry]]`
-with `_PER_CATEGORY_EXEMPLAR_BOUND = 5`. `_record_reject` uses a
+`FileStats.reject_exemplars` becomes `dict[RuleID, list[RejectEntry]]`
+with `_PER_RULE_EXEMPLAR_BOUND = 5`. `_record_reject` uses a
 get-or-create insertion pattern (no per-call empty-list allocation).
 `format_reject_lines` walks categories sorted by descending count and
 emits a category heading plus up to N exemplars and a per-category
@@ -440,7 +442,7 @@ encounter order.
 
 The on-disk `.broken.txt` streaming path is untouched: the full
 byte-faithful catalog still reaches disk. Memory ceiling per file
-drops from 1000 entries to |RejectCategory| × 5 = 45 entries.
+drops from 1000 entries to |RuleID| × 5 = 45 entries.
 
 EOF
 )"
@@ -471,7 +473,7 @@ Append a new method to `TestStreamingRejects` in `tests/test_pipeline.py`:
         few = 3
         lines = [f"junk {i:08d}".encode("ascii") for i in range(many)]
         # Append a few orphan line-1 records (no following line-2): these
-        # land in RejectCategory.ORPHAN_LINE, distinct from BAD_PREFIX.
+        # land in RuleID.ORPHAN_LINE, distinct from BAD_PREFIX.
         lines.extend(
             f"1 {i:05d}U 24001A   24001.00000000  .00000000  00000-0  00000-0 0  0001".encode(
                 "ascii"
@@ -485,10 +487,10 @@ Append a new method to `TestStreamingRejects` in `tests/test_pipeline.py`:
 
         # Both categories appear in the sample dict — the failure mode of
         # the old flat buffer is gone.
-        assert RejectCategory.BAD_PREFIX in stats.reject_exemplars
-        assert RejectCategory.ORPHAN_LINE in stats.reject_exemplars
+        assert RuleID.BAD_PREFIX in stats.reject_exemplars
+        assert RuleID.ORPHAN_LINE in stats.reject_exemplars
         # The rare category has all its occurrences (well under the cap).
-        assert len(stats.reject_exemplars[RejectCategory.ORPHAN_LINE]) == few
+        assert len(stats.reject_exemplars[RuleID.ORPHAN_LINE]) == few
 ```
 
 - [ ] **Step 2: Run the test**
@@ -521,7 +523,7 @@ git commit -m "test: rare-category exemplars preserved under skew (issue #21)"
 **Files:**
 - Modify: `tests/test_pipeline.py` — add a method to `TestStreamingRejects`
 
-`RejectCategory.INTERNAL_ERROR` is the catch-all in `pipeline._run` (line 208) for unexpected per-record exceptions. The new per-category sampling must treat it like any other category.
+`RuleID.INTERNAL_ERROR` is the catch-all in `pipeline._run` (line 208) for unexpected per-record exceptions. The new per-category sampling must treat it like any other category.
 
 - [ ] **Step 1: Write the test**
 
@@ -532,9 +534,9 @@ Append to `TestStreamingRejects` in `tests/test_pipeline.py`:
         self, tmp_path, monkeypatch
     ):
         # Force ``repair.process_record`` to raise so every paired record
-        # lands in RejectCategory.INTERNAL_ERROR. With many more rejects
+        # lands in RuleID.INTERNAL_ERROR. With many more rejects
         # than the cap, the bucket caps just like a data-defect category.
-        n = pipeline._PER_CATEGORY_EXEMPLAR_BOUND + 5
+        n = pipeline._PER_RULE_EXEMPLAR_BOUND + 5
         lines = []
         for i in range(n):
             lines.append(
@@ -561,10 +563,10 @@ Append to `TestStreamingRejects` in `tests/test_pipeline.py`:
 
         # Every paired record raised, so all n become INTERNAL_ERROR rejects;
         # the bucket caps at the per-category bound.
-        assert stats.reject_categories.get(RejectCategory.INTERNAL_ERROR) == n
+        assert stats.reject_counts.get(RuleID.INTERNAL_ERROR) == n
         assert (
-            len(stats.reject_exemplars[RejectCategory.INTERNAL_ERROR])
-            == pipeline._PER_CATEGORY_EXEMPLAR_BOUND
+            len(stats.reject_exemplars[RuleID.INTERNAL_ERROR])
+            == pipeline._PER_RULE_EXEMPLAR_BOUND
         )
 ```
 
@@ -608,15 +610,15 @@ Append to `TestFormatRejectLines` in `tests/test_report.py`:
     def test_format_reject_lines_sorts_by_descending_count(self):
         stats = report.FileStats(src_name="x.txt")
         stats.quarantined_count = 115
-        stats.reject_categories = {
-            RejectCategory.NON_ASCII: 5,
-            RejectCategory.CHECKSUM_MISMATCH: 100,
-            RejectCategory.BAD_PREFIX: 10,
+        stats.reject_counts = {
+            RuleID.NON_ASCII_BYTE: 5,
+            RuleID.CHECKSUM_MISMATCH: 100,
+            RuleID.BAD_PREFIX: 10,
         }
         for cat in (
-            RejectCategory.NON_ASCII,
-            RejectCategory.CHECKSUM_MISMATCH,
-            RejectCategory.BAD_PREFIX,
+            RuleID.NON_ASCII_BYTE,
+            RuleID.CHECKSUM_MISMATCH,
+            RuleID.BAD_PREFIX,
         ):
             stats.reject_exemplars.setdefault(cat, []).append(
                 report.RejectEntry(
@@ -637,11 +639,11 @@ Append to `TestFormatRejectLines` in `tests/test_report.py`:
         stats = report.FileStats(src_name="x.txt")
         stats.quarantined_count = 14
         # Same count for both categories — alphabetic tiebreak applies.
-        stats.reject_categories = {
-            RejectCategory.WRONG_LENGTH: 7,
-            RejectCategory.BAD_PREFIX: 7,
+        stats.reject_counts = {
+            RuleID.LINE_LENGTH: 7,
+            RuleID.BAD_PREFIX: 7,
         }
-        for cat in (RejectCategory.WRONG_LENGTH, RejectCategory.BAD_PREFIX):
+        for cat in (RuleID.LINE_LENGTH, RuleID.BAD_PREFIX):
             stats.reject_exemplars.setdefault(cat, []).append(
                 report.RejectEntry(
                     raw_lines=[b"x"], source_lines=[1], reason="r"
@@ -694,14 +696,14 @@ Append to `TestFormatRejectLines` in `tests/test_report.py`:
     def test_format_reject_lines_emits_per_category_remainder(self):
         stats = report.FileStats(src_name="x.txt")
         stats.quarantined_count = 1003
-        stats.reject_categories = {
-            RejectCategory.CHECKSUM_MISMATCH: 1000,
-            RejectCategory.BAD_PREFIX: 3,
+        stats.reject_counts = {
+            RuleID.CHECKSUM_MISMATCH: 1000,
+            RuleID.BAD_PREFIX: 3,
         }
         # Full bucket of 5 for the noisy category.
         for i in range(5):
             stats.reject_exemplars.setdefault(
-                RejectCategory.CHECKSUM_MISMATCH, []
+                RuleID.CHECKSUM_MISMATCH, []
             ).append(
                 report.RejectEntry(
                     raw_lines=[b"x"],
@@ -711,7 +713,7 @@ Append to `TestFormatRejectLines` in `tests/test_report.py`:
             )
         # Bucket equal to the category's total count — no remainder.
         for i in range(3):
-            stats.reject_exemplars.setdefault(RejectCategory.BAD_PREFIX, []).append(
+            stats.reject_exemplars.setdefault(RuleID.BAD_PREFIX, []).append(
                 report.RejectEntry(
                     raw_lines=[b"x"],
                     source_lines=[100 + i],
@@ -730,15 +732,15 @@ Append to `TestFormatRejectLines` in `tests/test_report.py`:
 
     def test_format_reject_lines_empty_when_no_rejects(self):
         stats = report.FileStats(src_name="x.txt")
-        # reject_categories is empty by default; reject_exemplars is {}.
+        # reject_counts is empty by default; reject_exemplars is {}.
         assert report.format_reject_lines(stats) == ""
 
     def test_format_reject_lines_indentation_contract(self):
         stats = report.FileStats(src_name="x.txt")
         stats.quarantined_count = 1
-        stats.reject_categories = {RejectCategory.CHECKSUM_MISMATCH: 1}
+        stats.reject_counts = {RuleID.CHECKSUM_MISMATCH: 1}
         stats.reject_exemplars.setdefault(
-            RejectCategory.CHECKSUM_MISMATCH, []
+            RuleID.CHECKSUM_MISMATCH, []
         ).append(
             report.RejectEntry(
                 raw_lines=[b"x"],
@@ -803,9 +805,9 @@ Append to `TestWriteBrokenFile` in `tests/test_report.py`:
         # (10/40, 20/50, 30/60) so a correct sort by source_lines[0] yields
         # the order 10, 20, 30, 40, 50, 60.
         for cat, srcs in (
-            (RejectCategory.CHECKSUM_MISMATCH, [10, 40]),
-            (RejectCategory.BAD_PREFIX, [20, 50]),
-            (RejectCategory.NON_ASCII, [30, 60]),
+            (RuleID.CHECKSUM_MISMATCH, [10, 40]),
+            (RuleID.BAD_PREFIX, [20, 50]),
+            (RuleID.NON_ASCII_BYTE, [30, 60]),
         ):
             for s in srcs:
                 stats.reject_exemplars.setdefault(cat, []).append(
@@ -832,9 +834,9 @@ Append to `TestWriteBrokenFile` in `tests/test_report.py`:
         stats.paired_records = 6
         stats.quarantined_count = 6
         for cat, srcs in (
-            (RejectCategory.CHECKSUM_MISMATCH, [10, 40]),
-            (RejectCategory.BAD_PREFIX, [20, 50]),
-            (RejectCategory.NON_ASCII, [30, 60]),
+            (RuleID.CHECKSUM_MISMATCH, [10, 40]),
+            (RuleID.BAD_PREFIX, [20, 50]),
+            (RuleID.NON_ASCII_BYTE, [30, 60]),
         ):
             for s in srcs:
                 stats.reject_exemplars.setdefault(cat, []).append(
@@ -897,7 +899,7 @@ Expected: a single match showing the line number and the enclosing context. The 
 
 - [ ] **Step 2: Write the test**
 
-Append the new method to that class (typically near `test_main_validate_lists_reject_locations`). The fixture pattern (`line1`, `line2`, `capsys`) is the same the existing test uses, and a `bad_line1` with a wrong checksum produces a `RejectCategory.CHECKSUM_MISMATCH` reject:
+Append the new method to that class (typically near `test_main_validate_lists_reject_locations`). The fixture pattern (`line1`, `line2`, `capsys`) is the same the existing test uses, and a `bad_line1` with a wrong checksum produces a `RuleID.CHECKSUM_MISMATCH` reject:
 
 ```python
     def test_main_validate_renders_grouped_exemplars(
@@ -1011,15 +1013,15 @@ Expected: `* [new branch]      feature/grouped-reject-exemplars -> feature/group
 gh pr create --base develop --title "feat: grouped reject exemplars (first N per category)" --body "$(cat <<'EOF'
 ## Summary
 
-Closes #21. `validate` now surfaces up to 5 exemplars per `RejectCategory`,
+Closes #21. `validate` now surfaces up to 5 exemplars per `RuleID`,
 sorted by descending occurrence count (alphabetic tiebreak). A noisy defect
 class can no longer drown out rarer ones, making the output immediately
 usable for filing space-track defect reports.
 
 Design: `docs/superpowers/specs/2026-05-24-grouped-reject-exemplars-design.md`.
 
-`FileStats.reject_exemplars` becomes `dict[RejectCategory, list[RejectEntry]]`
-with `_PER_CATEGORY_EXEMPLAR_BOUND = 5`. The pipeline's get-or-create
+`FileStats.reject_exemplars` becomes `dict[RuleID, list[RejectEntry]]`
+with `_PER_RULE_EXEMPLAR_BOUND = 5`. The pipeline's get-or-create
 insertion is allocation-quiet on the hot path. `format_reject_lines` walks
 categories sorted by descending count and emits heading + N exemplars +
 per-category remainder. `write_broken_file` (test-only helper) flattens
