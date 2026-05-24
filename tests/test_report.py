@@ -1286,3 +1286,44 @@ class TestRejectSink:
             bucket_size = len(sample.buckets.get(rule, ()))
             dropped = sample.dropped_count.get(rule, 0)
             assert bucket_size + dropped == total, rule
+
+
+class TestNoradTracker:
+    """Per-NORAD per-rule quarantine tracker (issue #47 refactor)."""
+
+    def test_record_creates_new_satellite_bucket(self):
+        # The single mutation entry point — first record() for a NORAD
+        # must initialise the bucket and tally the rule at 1.
+        tracker = report.NoradTracker()
+        tracker.record(25544, RuleID.CHECKSUM_MISMATCH)
+        assert tracker.counts == {25544: {RuleID.CHECKSUM_MISMATCH: 1}}
+
+    def test_record_increments_existing_pair(self):
+        # Repeated calls for the same (norad, rule) accrue — the
+        # encapsulation contract is that record() owns the +1.
+        tracker = report.NoradTracker()
+        for _ in range(3):
+            tracker.record(25544, RuleID.CHECKSUM_MISMATCH)
+        assert tracker.counts[25544][RuleID.CHECKSUM_MISMATCH] == 3
+
+    def test_record_distinguishes_rules_for_same_satellite(self):
+        # Two rule violations against the same NORAD live in the same
+        # inner dict under their own RuleID keys, each tallied separately.
+        tracker = report.NoradTracker()
+        tracker.record(25544, RuleID.CHECKSUM_MISMATCH)
+        tracker.record(25544, RuleID.NON_ASCII_BYTE)
+        assert tracker.counts[25544] == {
+            RuleID.CHECKSUM_MISMATCH: 1,
+            RuleID.NON_ASCII_BYTE: 1,
+        }
+
+    def test_record_distinguishes_satellites_for_same_rule(self):
+        # Two NORADs hitting the same rule each get their own outer
+        # entry with the rule tallied at 1 — no cross-contamination.
+        tracker = report.NoradTracker()
+        tracker.record(25544, RuleID.CHECKSUM_MISMATCH)
+        tracker.record(42, RuleID.CHECKSUM_MISMATCH)
+        assert tracker.counts == {
+            25544: {RuleID.CHECKSUM_MISMATCH: 1},
+            42: {RuleID.CHECKSUM_MISMATCH: 1},
+        }
