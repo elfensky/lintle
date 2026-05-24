@@ -270,8 +270,11 @@ class TestProcessFile:
 
 class TestStreamingRejects:
     """The constant-memory invariant: each ``RuleID`` bucket in
-    ``reject_exemplars`` stays bounded even on reject-heavy files, while the
-    on-disk ``.broken.txt`` catalog is complete.
+    ``stats.reject_sample.buckets`` stays bounded even on reject-heavy
+    files, while the on-disk ``.broken.txt`` catalog is complete. The
+    bound is now enforced structurally by :class:`report.RejectSink`
+    (issue #19) — these tests exercise the invariant end-to-end through
+    ``process_file``.
     """
 
     def test_exemplars_bucketed_per_rule_with_complete_broken_catalog(self, tmp_path):
@@ -289,7 +292,7 @@ class TestStreamingRejects:
         assert stats.reject_counts.get(RuleID.BAD_PREFIX) == n
         # …but the in-memory bucket for that rule is capped at the bound.
         assert (
-            len(stats.reject_exemplars[RuleID.BAD_PREFIX])
+            len(stats.reject_sample.buckets[RuleID.BAD_PREFIX])
             == pipeline._PER_RULE_EXEMPLAR_BOUND
         )
         # The on-disk catalog header and trailing entry both reflect every
@@ -310,13 +313,13 @@ class TestStreamingRejects:
 
         assert stats.quarantined_count == n
         assert (
-            len(stats.reject_exemplars[RuleID.BAD_PREFIX])
+            len(stats.reject_sample.buckets[RuleID.BAD_PREFIX])
             == pipeline._PER_RULE_EXEMPLAR_BOUND
         )
 
     def test_rare_rules_preserved_under_skew(self, tmp_path):
         # Feed 1000 bad-prefix rejects then a smaller batch of a different
-        # rule. With per-rule buckets, both appear in stats.reject_exemplars.
+        # rule. With per-rule buckets, both appear in stats.reject_sample.
         many = 1000
         few = 3
         lines = [f"junk {i:08d}".encode("ascii") for i in range(many)]
@@ -331,12 +334,12 @@ class TestStreamingRejects:
 
         stats = pipeline.process_file(str(src), str(tmp_path / "out"), "validate")
 
-        # Both rules appear in the sample dict — the old flat buffer's
-        # failure mode is gone.
-        assert RuleID.BAD_PREFIX in stats.reject_exemplars
-        assert RuleID.ORPHAN_LINE in stats.reject_exemplars
+        # Both rules appear in the sample — the old flat buffer's failure
+        # mode is gone.
+        assert RuleID.BAD_PREFIX in stats.reject_sample.buckets
+        assert RuleID.ORPHAN_LINE in stats.reject_sample.buckets
         # The rare rule has all its occurrences (well under the cap).
-        assert len(stats.reject_exemplars[RuleID.ORPHAN_LINE]) == few
+        assert len(stats.reject_sample.buckets[RuleID.ORPHAN_LINE]) == few
 
     def test_internal_error_rule_bucketed_like_data_defects(
         self, tmp_path, monkeypatch
@@ -369,7 +372,7 @@ class TestStreamingRejects:
 
         assert stats.reject_counts.get(RuleID.INTERNAL_ERROR) == n
         assert (
-            len(stats.reject_exemplars[RuleID.INTERNAL_ERROR])
+            len(stats.reject_sample.buckets[RuleID.INTERNAL_ERROR])
             == pipeline._PER_RULE_EXEMPLAR_BOUND
         )
 

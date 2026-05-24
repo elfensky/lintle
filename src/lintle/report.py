@@ -97,14 +97,17 @@ class FileStats:
     ``reject_counts`` is keyed by :class:`diagnostics.RuleID` string values
     (e.g. ``"TLE-CHK-001"``) so reports cite stable, citable rule IDs.
 
-    ``reject_exemplars`` is a *per-rule bounded* sample of quarantined records
-    keyed by :class:`diagnostics.RuleID`, used only by the human-facing
-    ``validate`` summary; each per-rule list is capped at
-    ``pipeline._PER_RULE_EXEMPLAR_BOUND`` so a single noisy rule cannot
-    crowd out rarer ones (issue #21). The byte-faithful full catalog is
-    streamed to ``.broken.txt`` during processing. The cap is enforced
-    by the pipeline, not by this dataclass, so tests can populate it freely
-    via ``stats.reject_exemplars.setdefault(rule_id, []).append(entry)``.
+    ``reject_sample`` (issue #19) is an immutable :class:`FileSample`
+    holding the per-rule bounded sample of quarantined records. The cap
+    is enforced structurally by :class:`RejectSink` during processing,
+    not by this dataclass. The byte-faithful full catalog is streamed to
+    ``.broken.txt`` during processing.
+
+    ``reject_exemplars`` is the legacy mirror retained through the issue
+    #19 dual-field migration so renderers (and existing tests) keep
+    working while consumers migrate to ``reject_sample.buckets``. It is
+    removed in the final cleanup commit of that refactor — new code must
+    read ``reject_sample``.
     """
 
     src_name: str
@@ -116,6 +119,9 @@ class FileStats:
     fix_counts: dict = dataclasses.field(default_factory=dict)
     reject_counts: dict = dataclasses.field(default_factory=dict)
     reject_exemplars: dict = dataclasses.field(default_factory=dict)
+    reject_sample: FileSample = dataclasses.field(
+        default_factory=lambda: FileSample.empty(_PER_RULE_EXEMPLAR_BOUND)
+    )
     # Per-NORAD breakdown for records quarantined in this file. Outer keys
     # are the 5-digit catalog numbers decoded once at reject time from
     # line-1 columns 3-7; each value is a ``{RuleID: count}`` dict tallying

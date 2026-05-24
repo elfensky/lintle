@@ -146,7 +146,7 @@ def _run(src_path, out_dir, mode, stats, progress_queue, progress_every):
     cleaned_handle = None
     cleaned_tmp = None
     cleaned_path = None
-    broken_writer = None
+    broken_path = None
     if mode == "clean":
         cleaned_dir = os.path.join(out_dir, "cleaned")
         os.makedirs(cleaned_dir, exist_ok=True)
@@ -164,11 +164,12 @@ def _run(src_path, out_dir, mode, stats, progress_queue, progress_every):
         broken_dir = os.path.join(out_dir, "broken")
         os.makedirs(broken_dir, exist_ok=True)
         broken_path = os.path.join(broken_dir, stem(src_name) + ".broken.txt")
-        # Stream rejects straight to disk so memory stays constant even on
-        # reject-heavy files. The writer's own context-manager exit discards
-        # its partials when finalize() isn't reached.
-        broken_writer = report.BrokenFileWriter(broken_path, src_name)
-        broken_writer.__enter__()
+
+    # The sink owns the BrokenFileWriter lifecycle in clean mode and the
+    # bounded in-memory sample in both modes. Issue #19: cap-enforcement
+    # is now a structural property of the sink, not a convention spread
+    # across pipeline._record_reject.
+    sink = report.RejectSink(broken_path=broken_path, src_name=src_name)
 
     completed = False
     # Tracks paired+orphan yields — the "entries processed" count, used to
@@ -176,97 +177,101 @@ def _run(src_path, out_dir, mode, stats, progress_queue, progress_every):
     # split: paired_records and orphan_entries each advance on their own
     # branch below, but progress is an aggregate signal.
     entries_processed = 0
-    try:
-        for candidate in iter_records(src_path, stats):
-            entries_processed += 1
+    with sink:
+        try:
+            for candidate in iter_records(src_path, stats):
+                entries_processed += 1
 
-            if (
-                progress_queue is not None
-                and progress_every
-                and entries_processed % progress_every == 0
-            ):
-                progress_queue.put(progress_every)
+                if (
+                    progress_queue is not None
+                    and progress_every
+                    and entries_processed % progress_every == 0
+                ):
+                    progress_queue.put(progress_every)
 
-            if isinstance(candidate, Orphan):
-                stats.orphan_entries += 1
-                _record_reject(
-                    stats,
-                    broken_writer,
-                    candidate.diagnostic,
-                    (),
-                    [candidate.raw_line],
-                    [candidate.src],
-                )
-                continue
+                if isinstance(candidate, Orphan):
+                    stats.orphan_entries += 1
+                    _record_reject(
+                        stats,
+                        sink,
+                        candidate.diagnostic,
+                        (),
+                        [candidate.raw_line],
+                        [candidate.src],
+                    )
+                    continue
 
-            stats.paired_records += 1
+                stats.paired_records += 1
 
-            try:
-                result = repair.process_record(
-                    candidate.raw_line1,
-                    candidate.src1,
-                    candidate.raw_line2,
-                    candidate.src2,
-                )
-            except Exception as exc:  # one bad record must not kill the run
-                _record_reject(
-                    stats,
-                    broken_writer,
-                    diagnostic(
-                        RuleID.INTERNAL_ERROR,
-                        source_line_nos=(candidate.src1, candidate.src2),
-                        note=repr(exc),
-                    ),
-                    (),
-                    [candidate.raw_line1, candidate.raw_line2],
-                    [candidate.src1, candidate.src2],
-                )
-                continue
+                try:
+                    result = repair.process_record(
+                        candidate.raw_line1,
+                        candidate.src1,
+                        candidate.raw_line2,
+                        candidate.src2,
+                    )
+                except Exception as exc:  # one bad record must not kill the run
+                    _record_reject(
+                        stats,
+                        sink,
+                        diagnostic(
+                            RuleID.INTERNAL_ERROR,
+                            source_line_nos=(candidate.src1, candidate.src2),
+                            note=repr(exc),
+                        ),
+                        (),
+                        [candidate.raw_line1, candidate.raw_line2],
+                        [candidate.src1, candidate.src2],
+                    )
+                    continue
 
-            if isinstance(result, repair.Accepted):
-                stats.clean_count += 1
-                for fix in result.fixes:
-                    stats.fix_counts[fix] = stats.fix_counts.get(fix, 0) + 1
-                if cleaned_handle is not None:
-                    cleaned_handle.write(result.line1 + "\n")
-                    cleaned_handle.write(result.line2 + "\n")
-            else:
-                _record_reject(
-                    stats,
-                    broken_writer,
-                    result.primary,
-                    result.related,
-                    result.raw_lines,
-                    result.source_lines,
-                )
-        # Push the trailing partial batch so the caller's tally is exact.
-        if progress_queue is not None and progress_every:
-            remainder = entries_processed % progress_every
-            if remainder:
-                progress_queue.put(remainder)
-        completed = True
-    finally:
-        if cleaned_handle is not None:
-            cleaned_handle.close()
-        # On any failure, discard the partial temp file — never publish a
-        # half-written .cleaned.txt and never leak the .tmp behind.
-        if cleaned_tmp is not None and not completed:
-            with contextlib.suppress(OSError):
-                os.unlink(cleaned_tmp)
-        if broken_writer is not None and not completed:
-            # Discard the broken-file partials — never publish a half-written
-            # sidecar. The context-manager __exit__ does the cleanup.
-            broken_writer.__exit__(None, None, None)
+                if isinstance(result, repair.Accepted):
+                    stats.clean_count += 1
+                    for fix in result.fixes:
+                        stats.fix_counts[fix] = stats.fix_counts.get(fix, 0) + 1
+                    if cleaned_handle is not None:
+                        cleaned_handle.write(result.line1 + "\n")
+                        cleaned_handle.write(result.line2 + "\n")
+                else:
+                    _record_reject(
+                        stats,
+                        sink,
+                        result.primary,
+                        result.related,
+                        result.raw_lines,
+                        result.source_lines,
+                    )
+            # Push the trailing partial batch so the caller's tally is exact.
+            if progress_queue is not None and progress_every:
+                remainder = entries_processed % progress_every
+                if remainder:
+                    progress_queue.put(remainder)
+            completed = True
+        finally:
+            if cleaned_handle is not None:
+                cleaned_handle.close()
+            # On any failure, discard the partial temp file — never publish a
+            # half-written .cleaned.txt and never leak the .tmp behind. The
+            # sink's own __exit__ (fires below when `with sink:` ends)
+            # handles the .broken.txt partials.
+            if cleaned_tmp is not None and not completed:
+                with contextlib.suppress(OSError):
+                    os.unlink(cleaned_tmp)
 
-    if mode == "clean":
-        os.replace(cleaned_tmp, cleaned_path)
-        broken_writer.finalize(stats.paired_records + stats.orphan_entries)
-        broken_writer.__exit__(None, None, None)
+        # Still inside `with sink:` — finalize must happen BEFORE __exit__
+        # fires, otherwise the writer's exit handler sees _completed=False
+        # and deletes the body partial before finalize can stitch it. Two
+        # adversarial-review voices caught this bug in the original spec.
+        if completed and mode == "clean":
+            os.replace(cleaned_tmp, cleaned_path)
+        stats.reject_sample = sink.finalize(
+            entries=stats.paired_records + stats.orphan_entries
+        )
 
     return stats
 
 
-def _record_reject(stats, broken_writer, primary, related, raw_lines, source_lines):
+def _record_reject(stats, sink, primary, related, raw_lines, source_lines):
     """Tally one quarantined record; stream its bytes to the broken sidecar.
 
     ``primary`` is the headline :class:`Diagnostic`; its ``rule_id`` (string
@@ -274,11 +279,19 @@ def _record_reject(stats, broken_writer, primary, related, raw_lines, source_lin
     ``stats.reject_counts``. ``related`` carries supporting diagnostics, if
     any, and is rendered as indented continuation lines in ``.broken.txt``.
 
-    The in-memory ``reject_exemplars`` dict holds up to
-    ``_PER_RULE_EXEMPLAR_BOUND`` entries per ``RuleID`` so the ``validate``
-    summary surfaces every observed rule (issue #21). The full
-    byte-faithful catalog streams to the sidecar via ``BrokenFileWriter``
-    when one is open (``clean`` mode).
+    Issue #19 transition: the call delegates the bounded-sample insert
+    and the byte-faithful sidecar write to :class:`RejectSink` (which
+    owns both responsibilities now), then keeps populating the legacy
+    ``stats.reject_exemplars`` dict so renderers that still read it
+    continue to work. Task 6 removes the legacy dict-write once the
+    renderers migrate to ``stats.reject_sample.buckets``.
+
+    Note: ``stats.reject_counts`` and ``stats.quarantined_count`` are
+    incremented up front, so on an exception mid-file these counters
+    will reflect every reject encountered while ``stats.reject_sample``
+    stays at its empty default (the ``with sink:`` exit discards the
+    in-flight sample). That counter/sample divergence is observable
+    only on the abnormal-exit path and matches today's behaviour.
     """
     stats.quarantined_count += 1
     # primary.rule_id is a StrEnum — equal to and hashable as its string
@@ -288,17 +301,16 @@ def _record_reject(stats, broken_writer, primary, related, raw_lines, source_lin
         stats.reject_counts.get(primary.rule_id, 0) + 1
     )
     entry = report.RejectEntry(raw_lines, source_lines, primary, related)
-    # Get-or-create avoids the per-call empty-list allocation that
-    # ``setdefault(primary.rule_id, [])`` would incur on the hot path —
-    # CPython evaluates the default argument before checking key membership.
+    sink.add(entry)  # cap-checked, streamed if writer is open (issue #19)
+    # TRANSITION: populate the legacy dict so renderers (which still read
+    # reject_exemplars until Task 5) see the same data. Removed in
+    # Task 6 Step 1 once renderers migrate to reject_sample.
     bucket = stats.reject_exemplars.get(primary.rule_id)
     if bucket is None:
         bucket = []
         stats.reject_exemplars[primary.rule_id] = bucket
     if len(bucket) < _PER_RULE_EXEMPLAR_BOUND:
         bucket.append(entry)
-    if broken_writer is not None:
-        broken_writer.write_entry(entry)
     # Recover a NORAD ID from line 1 when one is readable; orphan-line-2
     # and bad-prefix rejects expose no line-1 catalog field and are
     # silently skipped per the issue contract (line 1 unreadable -> omit).
