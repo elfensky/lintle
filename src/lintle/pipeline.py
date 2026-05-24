@@ -6,9 +6,6 @@ import os
 
 from lintle import repair, report, stem, tle
 from lintle.diagnostics import Diagnostic, RuleID, diagnostic
-from lintle.report import (
-    _PER_RULE_EXEMPLAR_BOUND,  # noqa: F401  # re-exported during transition
-)
 
 
 @dataclasses.dataclass
@@ -272,19 +269,18 @@ def _run(src_path, out_dir, mode, stats, progress_queue, progress_every):
 
 
 def _record_reject(stats, sink, primary, related, raw_lines, source_lines):
-    """Tally one quarantined record; stream its bytes to the broken sidecar.
+    """Tally one quarantined record; hand it to the sink for sampling + streaming.
 
     ``primary`` is the headline :class:`Diagnostic`; its ``rule_id`` (string
     value, e.g. ``"TLE-CHK-001"``) is the aggregation key written to
     ``stats.reject_counts``. ``related`` carries supporting diagnostics, if
     any, and is rendered as indented continuation lines in ``.broken.txt``.
 
-    Issue #19 transition: the call delegates the bounded-sample insert
-    and the byte-faithful sidecar write to :class:`RejectSink` (which
-    owns both responsibilities now), then keeps populating the legacy
-    ``stats.reject_exemplars`` dict so renderers that still read it
-    continue to work. Task 6 removes the legacy dict-write once the
-    renderers migrate to ``stats.reject_sample.buckets``.
+    :class:`RejectSink` owns the bounded-sample insert (cap enforced by
+    construction, issue #19) and — in clean mode — the byte-faithful
+    sidecar stream via its owned :class:`BrokenFileWriter`. The sample
+    surfaces on ``stats.reject_sample`` once ``sink.finalize`` runs at
+    end of file in :func:`_run`.
 
     Note: ``stats.reject_counts`` and ``stats.quarantined_count`` are
     incremented up front, so on an exception mid-file these counters
@@ -302,15 +298,6 @@ def _record_reject(stats, sink, primary, related, raw_lines, source_lines):
     )
     entry = report.RejectEntry(raw_lines, source_lines, primary, related)
     sink.add(entry)  # cap-checked, streamed if writer is open (issue #19)
-    # TRANSITION: populate the legacy dict so renderers (which still read
-    # reject_exemplars until Task 5) see the same data. Removed in
-    # Task 6 Step 1 once renderers migrate to reject_sample.
-    bucket = stats.reject_exemplars.get(primary.rule_id)
-    if bucket is None:
-        bucket = []
-        stats.reject_exemplars[primary.rule_id] = bucket
-    if len(bucket) < _PER_RULE_EXEMPLAR_BOUND:
-        bucket.append(entry)
     # Recover a NORAD ID from line 1 when one is readable; orphan-line-2
     # and bad-prefix rejects expose no line-1 catalog field and are
     # silently skipped per the issue contract (line 1 unreadable -> omit).

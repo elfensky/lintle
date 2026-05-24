@@ -102,12 +102,6 @@ class FileStats:
     is enforced structurally by :class:`RejectSink` during processing,
     not by this dataclass. The byte-faithful full catalog is streamed to
     ``.broken.txt`` during processing.
-
-    ``reject_exemplars`` is the legacy mirror retained through the issue
-    #19 dual-field migration so renderers (and existing tests) keep
-    working while consumers migrate to ``reject_sample.buckets``. It is
-    removed in the final cleanup commit of that refactor — new code must
-    read ``reject_sample``.
     """
 
     src_name: str
@@ -118,7 +112,6 @@ class FileStats:
     quarantined_count: int = 0
     fix_counts: dict = dataclasses.field(default_factory=dict)
     reject_counts: dict = dataclasses.field(default_factory=dict)
-    reject_exemplars: dict = dataclasses.field(default_factory=dict)
     reject_sample: FileSample = dataclasses.field(
         default_factory=lambda: FileSample.empty(_PER_RULE_EXEMPLAR_BOUND)
     )
