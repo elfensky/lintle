@@ -29,7 +29,9 @@ class TestEndToEnd:
 
         stats = pipeline.process_file(str(src), str(out), "clean")
 
-        assert stats.total_records == 3
+        assert stats.paired_records == 3
+        assert stats.orphan_entries == 0
+        assert stats.input_lines_seen == 6
         assert stats.clean_count == 2
         assert stats.quarantined_count == 1
         assert stats.fix_counts.get("reconstructed-checksum") == 2

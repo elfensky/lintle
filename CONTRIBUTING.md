@@ -105,18 +105,39 @@ Never claim success without the output. If a check fails, report the failure.
 
 ## Git Workflow
 
-Single trunk on `main`. Branch off it for every change, work, PR back to `main`,
-merge with `--no-ff` so branch history is preserved. Releases are annotated tags
-on `main` — there is no separate release branch.
+Two branches, two roles:
 
-- Branch names: `feature/<desc>`, `bugfix/<desc>`, `chore/<desc>` — lowercase,
-  hyphens.
+- **`develop`** is the long-running trunk. All non-release history lives here.
+  Two paths in, by scope:
+  - **Direct commits** for chores and bugfixes (`chore:`, `fix:`, `docs:`,
+    `test:`, `style:`) — commit on `develop`, push. No branch, no PR.
+  - **Branch + PR** for features and multi-file refactors
+    (`feature/<desc>` or `refactor/<desc>`) — land via **rebase-and-merge**
+    so `develop` stays linear (no merge bubbles).
+- **`main`** is the release branch. Each release is a single merge commit on
+  `main` whose tree is develop's release-point tree and whose second parent is
+  develop's release-point commit. The second parent gives graph visualizers a
+  "branched-from" edge from each release on `main` back to its origin on
+  `develop`. Use `git log --first-parent main` to see only the releases.
+  Releases are annotated tags on `main`. There is no separate release branch.
+  **Never commit directly to `main`** — release commits only, hand-built with
+  `git commit-tree` (see § Versioning § Release flow).
+
+- Branch names (when branching): `feature/<desc>`, `refactor/<desc>` —
+  lowercase, hyphens. The release-prep branch is the documented exception:
+  `chore/release-X.Y.Z` (see § Versioning § Release flow) carries the version
+  bump + dated `CHANGELOG.md` section through a review PR.
 - Use [Conventional Commits](https://www.conventionalcommits.org/): `feat:`,
-  `fix:`, `docs:`, `test:`, `refactor:`, `style:`, `chore:`.
-- Never commit directly to `main`. Open a PR; run the verification commands
-  above before merging.
-- Never squash PRs to `main` — use `--no-ff` (or "Create a merge commit" in the
-  GitHub UI) so branch history survives.
+  `fix:`, `docs:`, `test:`, `refactor:`, `style:`, `chore:`. Direct commits to
+  `develop` use these as the commit prefix; branched work uses them on
+  individual commits inside the branch.
+- Run the verification commands above before pushing any commit to `develop`
+  (direct or via PR merge).
+- Land PRs to `develop` via **"Rebase and merge"** in the GitHub UI (or
+  `gh pr merge --rebase --delete-branch` locally). Do not use "Create a merge
+  commit" — merge bubbles fragment the visualizer into apparent multiple
+  develop lanes. Do not use "Squash and merge" either — keep the individual
+  commits readable in `git log develop`.
 
 ### Parallel development with git worktrees
 
@@ -125,8 +146,8 @@ directory with its own `.venv/`. Use one for any non-trivial feature; iterate in
 one worktree while a slow test run finishes in another.
 
 ```bash
-# 1. Create the worktree from main
-git worktree add .worktrees/<branch-dir> -b feature/<desc> main
+# 1. Create the worktree from develop
+git worktree add .worktrees/<branch-dir> -b feature/<desc> develop
 
 # 2. Enter and install
 cd .worktrees/<branch-dir>
@@ -138,12 +159,15 @@ ln -s ../../data data
 # 4. Work, commit incrementally, then verify
 uv run pytest && uv run ruff check . && uv run ruff format --check .
 
-# 5. Merge back (from the main checkout)
-cd ../.. && git checkout main && git merge --no-ff feature/<desc>
+# 5. Push and open a PR; land via "Rebase and merge"
+git push -u origin feature/<desc>
+gh pr create --base develop --title "<title>" --body "<body>"
+gh pr merge --rebase --delete-branch
 
-# 6. Clean up
+# 6. Clean up (use -D, not -d: rebase rewrites SHAs so the local branch
+#    won't appear "merged" to git even after origin landed it)
 git worktree remove .worktrees/<branch-dir>
-git branch -d feature/<desc>
+git branch -D feature/<desc>
 ```
 
 Worktree directory names mirror the branch with slashes replaced by hyphens —
@@ -174,20 +198,37 @@ current — every dev workflow in this repo already does.
 
 Release flow:
 
-1. On a `chore/release-X.Y.Z` branch off `main`, bump `version` in
+1. On a `chore/release-X.Y.Z` branch off `develop`, bump `version` in
    `pyproject.toml`.
 2. Add a new `## [X.Y.Z] - YYYY-MM-DD` section at the top of `CHANGELOG.md` with
    `### Added` / `### Changed` / `### Fixed` subsections (see Keep a Changelog).
 3. Run the verification commands (`uv run pytest`, `uv run ruff check .`,
    `uv run ruff format --check .`) and report the actual output.
-4. Open a PR to `main`, merge with `--no-ff` once it's green.
-5. Tag the merge commit on `main` and push the tag:
+4. Open a PR to `develop`, land via **"Rebase and merge"** once it's green.
+5. Build the release commit on `main` with `git commit-tree`. The tree comes
+   from `develop`'s release-point; the parents are `main`'s current tip and
+   `develop`'s release-point. This is what gives the graph a visible
+   "branched-from" edge from `main` to `develop` at each release while keeping
+   the release tree byte-identical to what gets published:
    ```bash
-   git checkout main && git pull
-   git tag -a vX.Y.Z -m "Release X.Y.Z"
-   git push origin vX.Y.Z
+   git fetch origin
+   TREE=$(git rev-parse origin/develop^{tree})
+   COMMIT=$(git commit-tree "$TREE" \
+              -p origin/main \
+              -p origin/develop \
+              -m "Release vX.Y.Z")
+   git update-ref refs/heads/main "$COMMIT"
+   git checkout main
+   git tag -a vX.Y.Z -m "Release vX.Y.Z"
+   git push origin main vX.Y.Z
    ```
-6. Trigger the `Publish` workflow.
+   To see only the release commits on `main` (skipping the develop history
+   reachable via second parents), use `git log --first-parent main`.
+6. Create the GitHub release:
+   ```bash
+   gh release create vX.Y.Z --title "vX.Y.Z" --notes-from-tag --latest
+   ```
+7. Trigger the `Publish` workflow.
 
 Nothing else needs to change — `lintle --version`, the `report.py` headers, and
 any downstream `from lintle import __version__` import all pick the new value up

@@ -4,6 +4,62 @@ All notable changes to this project are documented in this file. The format is b
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+## [0.2.0] - 2026-05-24
+
+### Fixed
+
+- `pipeline.process_file` no longer conflates unpaired orphan lines with
+  paired 2-line records in its counter. `FileStats.total_records` is replaced
+  by three independent counters: `paired_records` (true 2-line entries),
+  `orphan_entries` (unpaired single lines surfaced as findings), and
+  `input_lines_seen` (every physical line read from the file). Per-file
+  summary, JSON output (`--report json`), `.broken.txt` sidecar header, and
+  `report.md` run report all surface the three counters in their own columns
+  so percentages and breakdowns are unambiguous. `clean_count` /
+  `quarantined_count` semantics are unchanged: orphans still go to
+  `.broken.txt` and remain tallied under `reject_categories['orphan-line']`.
+  Closes #5.
+
+### Added
+
+- `lintle clean` now emits a corpus-wide `broken-noradids.ndjson` at the
+  `--out-dir` root, alongside `cleaned/`, `broken/`, and `report.md`. One
+  `{"noradId":N}` object per line, deduplicated and sorted ascending,
+  listing every NORAD catalog number whose records were quarantined
+  anywhere in the run. Records whose line 1 is itself unreadable are
+  omitted (no catalog number to recover). Intended for downstream
+  consumers (e.g. descent-app) that need to flag affected satellites
+  without parsing the human-readable `broken/*.txt` defect reports. The
+  file is always written in `clean` mode — empty when nothing was
+  quarantined — so the artifact is always present. Schema is deliberately
+  minimal (one field); future releases can extend each record additively
+  without breaking compat. Closes #2.
+- `tle.extract_norad_id()` — recovers the 5-digit catalog number from a
+  TLE line 1, used by the new NDJSON emitter.
+
+- The live progress line on a TTY now reports throughput (`records/sec`) and
+  the longest-running file currently in flight (with `+N more` when other
+  files are also being processed). With `--jobs N` the oldest active file
+  surfaces alone once peers finish — making a single slow file visible at a
+  glance during long runs of the 29-file corpus. The progress queue now
+  carries `("start", name)` / `("end", name)` lifecycle events alongside the
+  existing integer record-count deltas; `process_file` always emits
+  `("end", name)` from a `finally`, so a failed file is correctly cleared
+  from the display's active set. Closes #24.
+
+- `tests/test_pipeline_throughput.py` — an opt-in end-to-end throughput
+  regression test for `pipeline.process_file()` that streams synthetic TLE
+  records and fails on a severe slowdown. Gated by the new `slow` pytest
+  marker (registered in `pyproject.toml`, excluded from the default suite via
+  `addopts`), so the existing CI matrix is unaffected. Combines a within-run
+  stability check (no timed run more than 30% slower than the median) with an
+  opt-in per-machine stored baseline at `tests/.throughput_baseline.json`
+  (git-ignored). Run with `uv run pytest -m slow -s`; refresh the baseline
+  after intentional perf changes with
+  `LINTLE_UPDATE_BASELINE=1 uv run pytest -m slow`. Closes #23.
+
 ## [0.1.2] - 2026-05-23
 
 ### Fixed

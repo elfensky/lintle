@@ -1,5 +1,6 @@
 """Tests for lintle.pipeline — streaming I/O, line pairing, file processing."""
 
+import contextlib
 import queue
 
 import pytest
@@ -78,12 +79,50 @@ class TestProcessFile:
 
         stats = pipeline.process_file(str(src), str(out), "clean")
 
-        assert stats.total_records == 2
+        assert stats.paired_records == 2
+        assert stats.orphan_entries == 0
+        assert stats.input_lines_seen == 4
         assert stats.clean_count == 2
         assert stats.quarantined_count == 0
         cleaned = (out / "cleaned" / "tle2099.cleaned.txt").read_text()
         assert cleaned == line1 + "\n" + line2 + "\n" + line1 + "\n" + line2 + "\n"
         assert (out / "broken" / "tle2099.broken.txt").exists()
+
+    def test_orphan_does_not_count_as_paired_record(self, tmp_path, line1, line2):
+        # One paired record, then an orphan line 1 at EOF. Orphans must not
+        # contribute to ``paired_records`` (issue #5) — they live in
+        # ``orphan_entries`` instead. ``quarantined_count`` still counts the
+        # orphan since orphans are written to ``.broken.txt``.
+        src = tmp_path / "tle2099.txt"
+        src.write_bytes((line1 + "\n" + line2 + "\n" + line1 + "\n").encode("ascii"))
+        out = tmp_path / "out"
+
+        stats = pipeline.process_file(str(src), str(out), "clean")
+
+        assert stats.paired_records == 1
+        assert stats.orphan_entries == 1
+        assert stats.input_lines_seen == 3
+        assert stats.clean_count == 1
+        assert stats.quarantined_count == 1
+        assert stats.reject_categories.get("orphan-line") == 1
+
+    def test_input_lines_seen_counts_blank_lines(self, tmp_path, line1, line2):
+        # ``input_lines_seen`` is the count of physical lines read — including
+        # blanks that the pairing loop silently drops. With one blank line
+        # between two records the count is 5 (line1, line2, blank, line1, line2).
+        src = tmp_path / "tle2099.txt"
+        src.write_bytes(
+            (line1 + "\n" + line2 + "\n\n" + line1 + "\n" + line2 + "\n").encode(
+                "ascii"
+            )
+        )
+        out = tmp_path / "out"
+
+        stats = pipeline.process_file(str(src), str(out), "clean")
+
+        assert stats.paired_records == 2
+        assert stats.orphan_entries == 0
+        assert stats.input_lines_seen == 5
 
     def test_process_file_quarantines_bad_record(self, tmp_path, line1, line2):
         src = tmp_path / "tle2099.txt"
@@ -158,13 +197,61 @@ class TestProcessFile:
             progress_queue=progress,
             progress_every=2,
         )
-        deltas = []
+        messages = []
         while not progress.empty():
-            deltas.append(progress.get_nowait())
+            messages.append(progress.get_nowait())
+        # Tuples are lifecycle events; ints are record-count deltas.
+        deltas = [m for m in messages if isinstance(m, int)]
         assert sum(deltas) == 3
 
+    def test_process_file_emits_start_and_end_events(self, tmp_path, line1, line2):
+        # The display needs to know which files are in flight to surface
+        # filenames in its live line. process_file frames each run with
+        # ('start', src_name) and ('end', src_name) on the same queue.
+        src = tmp_path / "tle2099.txt"
+        src.write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
+        progress = queue.Queue()
+        pipeline.process_file(
+            str(src),
+            str(tmp_path / "out"),
+            "clean",
+            progress_queue=progress,
+            progress_every=2,
+        )
+        messages = []
+        while not progress.empty():
+            messages.append(progress.get_nowait())
+        events = [m for m in messages if isinstance(m, tuple)]
+        assert ("start", "tle2099.txt") in events
+        assert ("end", "tle2099.txt") in events
+        # Start must precede end so the display's active set is transiently
+        # populated rather than instantly cancelled.
+        assert events.index(("start", "tle2099.txt")) < events.index(
+            ("end", "tle2099.txt")
+        )
+
+    def test_end_event_emitted_even_on_failure(self, tmp_path):
+        # A failing open would otherwise leave 'start' lingering forever in
+        # the display's active set — emit 'end' from a finally so cleanup
+        # is unconditional.
+        progress = queue.Queue()
+        with contextlib.suppress(Exception):
+            pipeline.process_file(
+                str(tmp_path / "missing.txt"),
+                str(tmp_path / "out"),
+                "clean",
+                progress_queue=progress,
+                progress_every=2,
+            )
+        messages = []
+        while not progress.empty():
+            messages.append(progress.get_nowait())
+        events = [m for m in messages if isinstance(m, tuple)]
+        assert ("end", "missing.txt") in events
+
     def test_progress_disabled_when_every_is_zero(self, tmp_path, line1, line2):
-        # progress_every=0 disables reporting: nothing reaches the queue.
+        # progress_every=0 disables reporting: nothing reaches the queue —
+        # neither record deltas nor lifecycle events.
         src = tmp_path / "tle2099.txt"
         src.write_bytes(((line1 + "\n" + line2 + "\n") * 3).encode("ascii"))
         progress = queue.Queue()
@@ -201,7 +288,10 @@ class TestStreamingRejects:
         # The on-disk catalog header and trailing entry both reflect every
         # quarantined record — none were dropped due to the in-memory cap.
         broken = (out / "broken" / "tle2099.broken.txt").read_bytes()
-        assert f"# {n} records quarantined of {n} total".encode("ascii") in broken
+        # Every yielded entry here is an orphan ("bad-prefix") — so the
+        # paired/orphan split puts all `n` into orphan_entries, and the
+        # denominator on the sidecar header is paired+orphan = n.
+        assert f"# {n} quarantined of {n} entries".encode("ascii") in broken
         last = f"junk {n - 1:08d}".encode("ascii")
         assert last in broken
 
@@ -216,3 +306,62 @@ class TestStreamingRejects:
 
         assert stats.quarantined_count == n
         assert len(stats.reject_exemplars) == pipeline._EXEMPLAR_BOUND
+
+
+class TestQuarantinedNoradIds:
+    """The corpus-wide ``broken-noradids.csv`` feed: extract NORAD IDs from
+    quarantined records' line 1, when that line is readable.
+    """
+
+    def test_extracts_id_from_record_reject(self, tmp_path, line1, line2):
+        # A 2-line record with a wrong checksum gets quarantined; line 1 is
+        # otherwise intact, so the catalog number must be recovered.
+        src = tmp_path / "tle2099.txt"
+        bad_line1 = line1[:68] + "9"
+        src.write_bytes((bad_line1 + "\n" + line2 + "\n").encode("ascii"))
+
+        stats = pipeline.process_file(str(src), str(tmp_path / "out"), "clean")
+
+        assert stats.quarantined_norad_ids == {5}  # canonical NORAD 00005
+
+    def test_extracts_id_from_orphan_line1(self, tmp_path, line1):
+        src = tmp_path / "tle2099.txt"
+        src.write_bytes((line1 + "\n").encode("ascii"))  # lone line 1 at EOF
+
+        stats = pipeline.process_file(str(src), str(tmp_path / "out"), "clean")
+
+        assert stats.quarantined_count == 1
+        assert stats.quarantined_norad_ids == {5}
+
+    def test_orphan_line2_is_skipped(self, tmp_path, line2):
+        # An orphan line 2 has no line 1 to read — the issue contract is
+        # explicit: line 1 unrecoverable -> omit from the CSV.
+        src = tmp_path / "tle2099.txt"
+        src.write_bytes((line2 + "\n").encode("ascii"))
+
+        stats = pipeline.process_file(str(src), str(tmp_path / "out"), "clean")
+
+        assert stats.quarantined_count == 1
+        assert stats.quarantined_norad_ids == set()
+
+    def test_bad_prefix_orphan_is_skipped(self, tmp_path):
+        # A line that doesn't start with "1 " or "2 " is unparseable as a
+        # TLE line 1 — no NORAD ID is recoverable.
+        src = tmp_path / "tle2099.txt"
+        src.write_bytes(b"garbage line\n")
+
+        stats = pipeline.process_file(str(src), str(tmp_path / "out"), "clean")
+
+        assert stats.quarantined_count == 1
+        assert stats.quarantined_norad_ids == set()
+
+    def test_clean_records_do_not_populate_the_set(self, tmp_path, line1, line2):
+        # Only quarantined records contribute — a fully clean file
+        # produces an empty NORAD-ID set.
+        src = tmp_path / "tle2099.txt"
+        src.write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
+
+        stats = pipeline.process_file(str(src), str(tmp_path / "out"), "clean")
+
+        assert stats.clean_count == 1
+        assert stats.quarantined_norad_ids == set()

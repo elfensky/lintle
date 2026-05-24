@@ -4,7 +4,7 @@ import contextlib
 import dataclasses
 import os
 
-from lintle import repair, report, stem
+from lintle import repair, report, stem, tle
 
 # How many quarantined records to retain in memory as exemplars for the
 # ``validate`` summary. The full byte-faithful catalog goes straight to the
@@ -34,18 +34,24 @@ class Orphan:
     reason: str
 
 
-def iter_records(path):
+def iter_records(path, stats=None):
     """Yield ``RecordCandidate`` / ``Orphan`` items streamed from ``path``.
 
     The file is read in binary so ``\\r`` and stray bytes are observed
     exactly. Blank, whitespace-only, and CR-only lines are dropped.
     Pairing is prefix-driven and resynchronises on every ``1 `` line, so
     one missing line cannot cascade into a run of mispaired records.
+
+    When ``stats`` is given, ``stats.input_lines_seen`` is updated to the
+    1-indexed lineno of the line just consumed — including blanks the
+    pairing loop drops, so the counter reflects every physical line read.
     """
     held = None  # (raw_bytes, line_number) of a line-1 awaiting its line-2
 
     with open(path, "rb") as handle:
         for lineno, raw in enumerate(handle, start=1):
+            if stats is not None:
+                stats.input_lines_seen = lineno
             line = raw.rstrip(b"\n")
             if line.strip(b" \t\r") == b"":
                 continue  # blank, whitespace-only, or CR-only line — dropped
@@ -102,12 +108,32 @@ def process_file(src_path, out_dir, mode, progress_queue=None, progress_every=25
 
     When ``progress_queue`` is given, the count of newly processed records
     is pushed to it every ``progress_every`` records — and once more when
-    the file ends — so the caller can render live progress. With no queue
-    (or ``progress_every`` set to 0) no progress is reported.
+    the file ends — so the caller can render live progress. The queue also
+    receives ``("start", src_name)`` before processing begins and
+    ``("end", src_name)`` in a ``finally`` (so failures still emit it),
+    letting the caller track which files are currently in flight. With no
+    queue (or ``progress_every`` set to 0) no progress is reported.
     """
     src_name = os.path.basename(src_path)
     stats = report.FileStats(src_name=src_name)
+    progress_enabled = progress_queue is not None and bool(progress_every)
+    if progress_enabled:
+        progress_queue.put(("start", src_name))
 
+    try:
+        return _run(src_path, out_dir, mode, stats, progress_queue, progress_every)
+    finally:
+        if progress_enabled:
+            progress_queue.put(("end", src_name))
+
+
+def _run(src_path, out_dir, mode, stats, progress_queue, progress_every):
+    """Process one file once start/end progress events are accounted for —
+    body of :func:`process_file`. Kept separate so the wrapper above can
+    own the queue-event lifecycle without doubling this function's
+    indentation.
+    """
+    src_name = stats.src_name
     cleaned_handle = None
     cleaned_tmp = None
     cleaned_path = None
@@ -136,18 +162,24 @@ def process_file(src_path, out_dir, mode, progress_queue=None, progress_every=25
         broken_writer.__enter__()
 
     completed = False
+    # Tracks paired+orphan yields — the "entries processed" count, used to
+    # drive progress reporting. Kept local because the stats counters are
+    # split: paired_records and orphan_entries each advance on their own
+    # branch below, but progress is an aggregate signal.
+    entries_processed = 0
     try:
-        for candidate in iter_records(src_path):
-            stats.total_records += 1
+        for candidate in iter_records(src_path, stats):
+            entries_processed += 1
 
             if (
                 progress_queue is not None
                 and progress_every
-                and stats.total_records % progress_every == 0
+                and entries_processed % progress_every == 0
             ):
                 progress_queue.put(progress_every)
 
             if isinstance(candidate, Orphan):
+                stats.orphan_entries += 1
                 _record_reject(
                     stats,
                     broken_writer,
@@ -157,6 +189,8 @@ def process_file(src_path, out_dir, mode, progress_queue=None, progress_every=25
                     [candidate.src],
                 )
                 continue
+
+            stats.paired_records += 1
 
             try:
                 result = repair.process_record(
@@ -194,7 +228,7 @@ def process_file(src_path, out_dir, mode, progress_queue=None, progress_every=25
                 )
         # Push the trailing partial batch so the caller's tally is exact.
         if progress_queue is not None and progress_every:
-            remainder = stats.total_records % progress_every
+            remainder = entries_processed % progress_every
             if remainder:
                 progress_queue.put(remainder)
         completed = True
@@ -213,7 +247,7 @@ def process_file(src_path, out_dir, mode, progress_queue=None, progress_every=25
 
     if mode == "clean":
         os.replace(cleaned_tmp, cleaned_path)
-        broken_writer.finalize(stats.total_records)
+        broken_writer.finalize(stats.paired_records + stats.orphan_entries)
         broken_writer.__exit__(None, None, None)
 
     return stats
@@ -234,3 +268,9 @@ def _record_reject(stats, broken_writer, category, reason, raw_lines, source_lin
         stats.reject_exemplars.append(entry)
     if broken_writer is not None:
         broken_writer.write_entry(entry)
+    # Recover a NORAD ID from line 1 when one is readable; orphan-line-2
+    # and bad-prefix rejects expose no line-1 catalog field and are
+    # silently skipped per the issue contract (line 1 unreadable -> omit).
+    norad_id = tle.extract_norad_id(raw_lines[0])
+    if norad_id is not None:
+        stats.quarantined_norad_ids.add(norad_id)

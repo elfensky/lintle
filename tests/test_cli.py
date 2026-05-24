@@ -92,12 +92,88 @@ class TestCheckPaths:
         f.write_text("x")
         assert cli.check_paths([str(f), str(tmp_path)], using_default=False) is None
 
+    def test_os_access_false_negative_does_not_refuse_run(self, tmp_path, monkeypatch):
+        # os.access() consults POSIX mode bits and is a false-negative on
+        # filesystems that grant read via ACLs (NFSv4, SMB, FUSE). The
+        # preflight must not refuse a run on os.access() alone — the
+        # authoritative answer is whatever the worker's open() returns.
+        f = tmp_path / "readable.txt"
+        f.write_text("x")
+        monkeypatch.setattr(cli.os, "access", lambda _p, _m: False)
+        assert cli.check_paths([str(f)], using_default=False) is None
+
 
 class TestDiscoverPathsEdgeCases:
     def test_nonexistent_path_is_dropped(self, tmp_path):
         # main() validates first, but discover_paths must be robust on its own:
         # a missing entry no longer silently masquerades as a file.
         assert cli.discover_paths([str(tmp_path / "missing")]) == []
+
+    def test_duplicate_explicit_paths_are_deduped(self, tmp_path):
+        # Passing the same file twice on the CLI is harmless; discover_paths
+        # collapses duplicates so process_file isn't invoked on the same path
+        # twice (its outputs would otherwise overwrite themselves).
+        f = tmp_path / "tle2099.txt"
+        f.write_text("x")
+        assert cli.discover_paths([str(f), str(f)]) == [str(f)]
+
+    def test_dir_and_explicit_file_inside_it_are_deduped(self, tmp_path):
+        # `lintle clean dirA dirA/tle2099.txt` should process the file once,
+        # not twice. Dedup is by canonical realpath so this works for plain
+        # paths and symlinks alike.
+        f = tmp_path / "tle2099.txt"
+        f.write_text("x")
+        found = cli.discover_paths([str(tmp_path), str(f)])
+        # One canonical entry, regardless of which spelling won the race.
+        canonical = {os.path.realpath(p) for p in found}
+        assert canonical == {os.path.realpath(f)}
+        assert len(found) == 1
+
+    def test_symlinked_path_is_deduped(self, tmp_path):
+        real = tmp_path / "tle2099.txt"
+        real.write_text("x")
+        link = tmp_path / "tle2099-link.txt"
+        link.symlink_to(real)
+        found = cli.discover_paths([str(real), str(link)])
+        # The link and its target are the same file; only one survives.
+        assert len(found) == 1
+
+
+class TestDetectBasenameCollisions:
+    def test_no_collisions_returns_none(self, tmp_path):
+        a = tmp_path / "tle2001.txt"
+        b = tmp_path / "tle2002.txt"
+        assert cli._detect_basename_collisions([str(a), str(b)]) is None
+
+    def test_returns_error_with_each_colliding_path(self, tmp_path):
+        # Two inputs with the same basename would write to the same
+        # cleaned/broken sidecar — silently overwriting each other.
+        dir_a = tmp_path / "a"
+        dir_a.mkdir()
+        dir_b = tmp_path / "b"
+        dir_b.mkdir()
+        a = dir_a / "tle2022.txt"
+        b = dir_b / "tle2022.txt"
+        err = cli._detect_basename_collisions([str(a), str(b)])
+        assert err is not None
+        assert "tle2022.txt" in err
+        assert str(a) in err and str(b) in err
+
+    def test_lists_all_collision_groups(self, tmp_path):
+        # Multiple distinct basename collisions all surface in one message.
+        dir_a = tmp_path / "a"
+        dir_a.mkdir()
+        dir_b = tmp_path / "b"
+        dir_b.mkdir()
+        files = [
+            str(dir_a / "tle2001.txt"),
+            str(dir_b / "tle2001.txt"),
+            str(dir_a / "tle2002.txt"),
+            str(dir_b / "tle2002.txt"),
+        ]
+        err = cli._detect_basename_collisions(files)
+        assert err is not None
+        assert "tle2001.txt" in err and "tle2002.txt" in err
 
 
 class TestMain:
@@ -117,6 +193,41 @@ class TestMain:
         assert "# lintle clean run report" in report_md
         assert "tle2099.txt" in report_md
         assert "Records:" in report_md
+        # broken-noradids.ndjson is always emitted on clean — empty when
+        # nothing was quarantined, so downstream sees a stable artifact.
+        assert (out / "broken-noradids.ndjson").read_bytes() == b""
+
+    def test_main_clean_writes_norad_ids_for_quarantined_records(
+        self, tmp_path, line1, line2
+    ):
+        # A wrong-checksum record is quarantined but its NORAD ID is
+        # recoverable from line 1, so it lands in broken-noradids.ndjson.
+        src = tmp_path / "src"
+        src.mkdir()
+        bad_line1 = line1[:68] + "9"
+        (src / "tle2099.txt").write_bytes(
+            (bad_line1 + "\n" + line2 + "\n").encode("ascii")
+        )
+        out = tmp_path / "out"
+
+        rc = cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
+
+        assert rc == 1
+        # NORAD 00005 (Vanguard 1) — the canonical fixture's catalog number.
+        assert (out / "broken-noradids.ndjson").read_bytes() == b'{"noradId":5}\n'
+
+    def test_main_validate_does_not_write_norad_ids_ndjson(
+        self, tmp_path, line1, line2
+    ):
+        # validate is read-only — no NDJSON, no run report, no out-dir.
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "tle2099.txt").write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
+        out = tmp_path / "out"
+
+        cli.main(["validate", str(src), "--out-dir", str(out), "--jobs", "1"])
+
+        assert not (out / "broken-noradids.ndjson").exists()
 
     def test_main_returns_one_when_records_quarantined(self, tmp_path, line1, line2):
         src = tmp_path / "src"
@@ -189,6 +300,49 @@ class TestMain:
         rc = cli.main(["validate", str(src), "--jobs", "0"])
         assert rc == 2
         assert "--jobs must be >= 1" in capsys.readouterr().err
+
+    def test_main_returns_two_on_basename_collision(self, tmp_path, capsys):
+        # Two input dirs each contain a file named tle2022.txt — their cleaned
+        # and broken outputs would silently overwrite each other under
+        # data/output/. main() must catch this upfront and refuse the run.
+        dir_a = tmp_path / "a"
+        dir_a.mkdir()
+        dir_b = tmp_path / "b"
+        dir_b.mkdir()
+        (dir_a / "tle2022.txt").write_text("x")
+        (dir_b / "tle2022.txt").write_text("x")
+
+        rc = cli.main(["validate", str(dir_a), str(dir_b), "--jobs", "1"])
+
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "tle2022.txt" in err
+        assert "collision" in err.lower() or "overwrite" in err.lower()
+        assert "Traceback" not in err
+
+    def test_main_does_not_collide_when_same_file_listed_twice(
+        self, tmp_path, line1, line2
+    ):
+        # `lintle clean dirA dirA/tle.txt` resolves to one file via
+        # discover_paths' realpath dedup — there's no collision to report.
+        src = tmp_path / "src"
+        src.mkdir()
+        f = src / "tle2099.txt"
+        f.write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
+
+        rc = cli.main(
+            [
+                "clean",
+                str(src),
+                str(f),
+                "--out-dir",
+                str(tmp_path / "out"),
+                "--jobs",
+                "1",
+            ]
+        )
+
+        assert rc == 0
 
     def test_main_returns_two_on_disk_shortfall(
         self, tmp_path, line1, line2, monkeypatch
@@ -301,12 +455,40 @@ class TestShutdownHelpers:
         cli._terminate_workers(_FakeExecutor(procs))
         assert all(proc.terminated for proc in procs.values())
 
-    def test_terminate_workers_tolerates_missing_processes(self):
-        class _Bare:
-            pass
+    def test_terminate_workers_falls_back_to_shutdown_when_processes_missing(self):
+        # If a future CPython removes or renames the private `_processes`
+        # attribute, we must still stop the pool — fall back to the public
+        # shutdown(cancel_futures=True) API instead of silently no-op'ing.
+        class _NoPrivateExecutor:
+            def __init__(self):
+                self.shutdown_kwargs = None
 
-        # An executor with no `_processes` attribute must not raise.
-        cli._terminate_workers(_Bare())
+            @property
+            def _processes(self):
+                raise AttributeError("simulated CPython API change")
+
+            def shutdown(self, **kwargs):
+                self.shutdown_kwargs = kwargs
+
+        executor = _NoPrivateExecutor()
+        cli._terminate_workers(executor)
+        assert executor.shutdown_kwargs == {"cancel_futures": True}
+
+    def test_terminate_workers_warns_to_stderr_when_processes_missing(self, capsys):
+        # The fallback path is observable — print a one-line note so the
+        # operator knows shutdown took the slow path (waits for in-flight
+        # tasks to cancel) rather than the immediate-terminate path.
+        class _NoPrivateExecutor:
+            @property
+            def _processes(self):
+                raise AttributeError
+
+            def shutdown(self, **kwargs):
+                pass
+
+        cli._terminate_workers(_NoPrivateExecutor())
+        err = capsys.readouterr().err
+        assert "_processes" in err
 
 
 class TestProgressDisplay:
@@ -330,6 +512,115 @@ class TestProgressDisplay:
         err = capsys.readouterr().err
         assert "0/3 files" in err
         assert "1,234 records" in err
+
+    def test_render_includes_records_per_second(self, capsys, monkeypatch):
+        # Long runs are easier to monitor with a throughput number. Stubbing
+        # cli.time.monotonic pins elapsed to exactly 4 seconds so the rate
+        # is exactly 2,500 rec/s, not 2,499 (real-clock drift between the
+        # _start assignment and the _render call would otherwise floor it).
+        display = cli._ProgressDisplay(total_files=1, progress_queue=queue.Queue())
+        display._live = True
+        display._records = 10_000
+        display._start = 0.0
+        monkeypatch.setattr(cli.time, "monotonic", lambda: 4.0)
+
+        display._render()
+
+        err = capsys.readouterr().err
+        assert "2,500 rec/s" in err
+
+    def test_render_rps_handles_zero_elapsed_without_dividing(
+        self, capsys, monkeypatch
+    ):
+        # On the first frame elapsed is sub-second — never raise
+        # ZeroDivisionError, just show 0 rec/s until a second has passed.
+        display = cli._ProgressDisplay(total_files=1, progress_queue=queue.Queue())
+        display._live = True
+        display._records = 100
+        display._start = 0.0
+        monkeypatch.setattr(cli.time, "monotonic", lambda: 0.0)
+
+        display._render()
+
+        err = capsys.readouterr().err
+        assert "0 rec/s" in err
+
+    def test_render_shows_the_active_filename(self, capsys):
+        display = cli._ProgressDisplay(total_files=2, progress_queue=queue.Queue())
+        display._live = True
+        display._active["tle2024.txt"] = 0.0
+
+        display._render()
+
+        assert "tle2024.txt" in capsys.readouterr().err
+
+    def test_render_collapses_multiple_active_files(self, capsys):
+        # With --jobs N, several files run in parallel. Show the
+        # earliest-started one (the candidate slow file once peers finish)
+        # plus a count of the others so the line stays readable.
+        display = cli._ProgressDisplay(total_files=3, progress_queue=queue.Queue())
+        display._live = True
+        # Insertion order doubles as start-order: tle_first is the oldest.
+        display._active["tle_first.txt"] = 0.0
+        display._active["tle_second.txt"] = 1.0
+        display._active["tle_third.txt"] = 2.0
+
+        display._render()
+
+        err = capsys.readouterr().err
+        assert "tle_first.txt" in err
+        assert "+2 more" in err
+        # The other two names aren't spelled out — only the oldest is shown.
+        assert "tle_second.txt" not in err
+        assert "tle_third.txt" not in err
+
+    def test_drain_handles_start_event(self):
+        progress = queue.Queue()
+        progress.put(("start", "tle2024.txt"))
+        display = cli._ProgressDisplay(total_files=1, progress_queue=progress)
+
+        display._drain()
+
+        assert "tle2024.txt" in display._active
+
+    def test_drain_handles_end_event(self):
+        progress = queue.Queue()
+        progress.put(("end", "tle2024.txt"))
+        display = cli._ProgressDisplay(total_files=1, progress_queue=progress)
+        display._active["tle2024.txt"] = 0.0
+
+        display._drain()
+
+        assert "tle2024.txt" not in display._active
+
+    def test_drain_handles_mixed_int_and_event_messages(self):
+        # The queue interleaves record deltas with lifecycle events; drain
+        # must fold all of them in one pass without dropping any.
+        progress = queue.Queue()
+        progress.put(("start", "tle_a.txt"))
+        progress.put(100)
+        progress.put(("start", "tle_b.txt"))
+        progress.put(50)
+        progress.put(("end", "tle_a.txt"))
+        display = cli._ProgressDisplay(total_files=2, progress_queue=progress)
+
+        display._drain()
+
+        assert display._records == 150
+        assert "tle_a.txt" not in display._active
+        assert "tle_b.txt" in display._active
+
+    def test_drain_preserves_active_insertion_order(self):
+        # Showing the earliest-still-active file relies on dict insertion
+        # order — verify it survives a drain.
+        progress = queue.Queue()
+        progress.put(("start", "tle_first.txt"))
+        progress.put(("start", "tle_second.txt"))
+        display = cli._ProgressDisplay(total_files=2, progress_queue=progress)
+
+        display._drain()
+
+        assert list(display._active) == ["tle_first.txt", "tle_second.txt"]
 
     def test_log_prints_the_message(self, capsys):
         display = cli._ProgressDisplay(total_files=1, progress_queue=queue.Queue())

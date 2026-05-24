@@ -42,8 +42,19 @@ def discover_paths(paths):
     ``tle*.txt`` files (excluding ``*.cleaned.txt`` / ``*.broken.txt`` tool
     output); a file is passed through unchanged. Nonexistent entries are
     dropped — callers should validate inputs with :func:`check_paths` first.
+    Duplicates (same canonical path via ``os.path.realpath``) are collapsed,
+    so e.g. ``lintle clean dirA dirA/foo.txt`` processes ``foo.txt`` once.
     """
     result = []
+    seen = set()
+
+    def _add(candidate):
+        canonical = os.path.realpath(candidate)
+        if canonical in seen:
+            return
+        seen.add(canonical)
+        result.append(candidate)
+
     for path in paths:
         if os.path.isdir(path):
             for name in sorted(os.listdir(path)):
@@ -53,17 +64,48 @@ def discover_paths(paths):
                     and not name.endswith(".cleaned.txt")
                     and not name.endswith(".broken.txt")
                 ):
-                    result.append(os.path.join(path, name))
+                    _add(os.path.join(path, name))
         elif os.path.isfile(path):
-            result.append(path)
+            _add(path)
     return result
 
 
+def _detect_basename_collisions(files):
+    """Return a user-facing error string if any two ``files`` share a
+    basename, else ``None``. Cleaned and broken outputs are keyed by
+    basename, so colliding inputs would silently overwrite each other —
+    safer to refuse the run than to publish a wrong-but-valid-looking
+    output (spec §1, "correctness over recovery").
+    """
+    groups = {}
+    for path in files:
+        groups.setdefault(os.path.basename(path), []).append(path)
+    collisions = {name: ps for name, ps in groups.items() if len(ps) > 1}
+    if not collisions:
+        return None
+    lines = [
+        "output collision: inputs share a basename and would overwrite each other:"
+    ]
+    for name in sorted(collisions):
+        lines.append(f"  '{name}':")
+        for path in collisions[name]:
+            lines.append(f"    - {path}")
+    lines.append("  rename the inputs or process them in separate runs (--out-dir).")
+    return "\n".join(lines)
+
+
 def check_paths(paths, using_default):
-    """Return a user-facing error string if any ``paths`` entry is missing
-    or unreadable, else ``None``. ``using_default`` tailors the message for
-    the case where the user passed no paths at all and the default
-    (``data/source``) is what's missing.
+    """Return a user-facing error string if any ``paths`` entry is missing,
+    else ``None``. ``using_default`` tailors the message for the case where
+    the user passed no paths at all and the default (``data/source``) is
+    what's missing.
+
+    Readability is *not* checked here — :func:`os.access` consults the
+    POSIX mode bits only and is a false-negative on filesystems that grant
+    read through ACLs (NFSv4, SMB, FUSE). The authoritative answer is
+    whatever the worker's :func:`open` returns; a genuine permission error
+    surfaces through the per-file failure path in :func:`main` with the
+    same exit code 2.
     """
     missing = [p for p in paths if not os.path.exists(p)]
     if missing:
@@ -78,10 +120,6 @@ def check_paths(paths, using_default):
             return f"no such file or directory: {missing[0]!r}"
         joined = ", ".join(repr(p) for p in missing)
         return f"no such files or directories: {joined}"
-    unreadable = [p for p in paths if not os.access(p, os.R_OK)]
-    if unreadable:
-        joined = ", ".join(repr(p) for p in unreadable)
-        return f"permission denied: {joined}"
     return None
 
 
@@ -195,8 +233,24 @@ def _terminate_workers(executor):
     ``with`` block runs ``shutdown(wait=True)``, which blocks until every
     running task finishes — and one TLE corpus file can take minutes.
     Terminating the worker processes directly makes Ctrl-C feel immediate.
+
+    The fast path reaches into the private ``_processes`` mapping (no
+    public equivalent exists on CPython 3.11–3.13). If a future runtime
+    removes or renames it, fall back to ``shutdown(cancel_futures=True)`` —
+    slower (waits for running tasks) but always available — and tell the
+    operator why Ctrl-C felt sluggish.
     """
-    processes = getattr(executor, "_processes", None) or {}
+    try:
+        processes = executor._processes
+    except AttributeError:
+        print(
+            "lintle: ProcessPoolExecutor._processes unavailable; "
+            "falling back to shutdown(cancel_futures=True) — "
+            "Ctrl-C may wait for in-flight tasks.",
+            file=sys.stderr,
+        )
+        executor.shutdown(cancel_futures=True)
+        return
     for proc in list(processes.values()):
         proc.terminate()
 
@@ -238,6 +292,11 @@ class _ProgressDisplay:
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
+        # Files currently in flight, keyed by basename in insertion order so
+        # the earliest entry is the candidate "slow" file once peers finish.
+        # Values are start-times — kept for symmetry with the worker events,
+        # not currently rendered.
+        self._active = {}
 
     def __enter__(self):
         self._thread.start()
@@ -291,24 +350,52 @@ class _ProgressDisplay:
             self._drain()
 
     def _drain(self):
-        """Fold every queued record-count delta into the running total."""
+        """Fold every queued message into the running state. Two kinds
+        share one queue: ``int`` deltas (records processed since the last
+        tick) and ``(kind, name)`` lifecycle events (``"start"`` / ``"end"``)
+        from each worker.
+        """
         batch = 0
+        started = []
+        ended = []
         with contextlib.suppress(queue.Empty):
             while True:
-                batch += self._queue.get_nowait()
-        if batch:
+                msg = self._queue.get_nowait()
+                if isinstance(msg, int):
+                    batch += msg
+                else:
+                    kind, name = msg
+                    (started if kind == "start" else ended).append(name)
+        if batch or started or ended:
             with self._lock:
                 self._records += batch
+                for name in started:
+                    self._active[name] = time.monotonic()
+                for name in ended:
+                    self._active.pop(name, None)
 
     def _render(self):
         with self._lock:
             frame = self._SPINNER[self._frame % len(self._SPINNER)]
             self._frame += 1
+            elapsed = time.monotonic() - self._start
+            # Guard against the first frame's near-zero elapsed: integer
+            # division by 0 raises; floor it to 0 rec/s until time accrues.
+            rps = int(self._records / elapsed) if elapsed >= 1.0 else 0
             line = (
-                f"{frame} {_format_elapsed(time.monotonic() - self._start)} · "
+                f"{frame} {_format_elapsed(elapsed)} · "
                 f"{self._files_done}/{self._total_files} files · "
-                f"{self._records:,} records"
+                f"{self._records:,} records · "
+                f"{rps:,} rec/s"
             )
+            if self._active:
+                # The oldest entry is the longest-running file — the one
+                # that surfaces alone once peers finish, which is the whole
+                # point of showing names at all.
+                names = list(self._active)
+                line += f" · {names[0]}"
+                if len(names) > 1:
+                    line += f" +{len(names) - 1} more"
             sys.stderr.write("\r\x1b[K" + line)
             sys.stderr.flush()
 
@@ -351,6 +438,11 @@ def main(argv=None):
             )
         else:
             print("error: no input files found", file=sys.stderr)
+        return 2
+
+    collision_error = _detect_basename_collisions(files)
+    if collision_error:
+        print(f"error: {collision_error}", file=sys.stderr)
         return 2
 
     if args.command == "clean":
@@ -417,11 +509,17 @@ def main(argv=None):
 
     all_stats.sort(key=lambda stats: stats.src_name)
 
-    # A `clean` run writes a Markdown run report to the out-dir root.
+    # A `clean` run writes a Markdown run report and a corpus-wide NDJSON
+    # of NORAD IDs whose records were quarantined anywhere — the NDJSON is
+    # always written (empty file when nothing was quarantined) so the
+    # downstream consumer always sees the same artifact present.
     report_path = None
+    noradids_path = None
     if args.command == "clean" and all_stats:
         report_path = os.path.join(args.out_dir, "report.md")
         report.write_run_report(report_path, all_stats)
+        noradids_path = os.path.join(args.out_dir, "broken-noradids.ndjson")
+        report.write_broken_noradids_ndjson(noradids_path, all_stats)
 
     if args.report == "json":
         print(json.dumps([report.summary_dict(s) for s in all_stats], indent=2))
@@ -432,6 +530,8 @@ def main(argv=None):
                 print(report.format_reject_lines(stats))
         if report_path:
             print(f"\nrun report: {report_path}")
+        if noradids_path:
+            print(f"broken NORAD IDs: {noradids_path}")
 
     # A file that could not be processed is an operational error (spec §10),
     # and that outranks the quarantined-record signal.

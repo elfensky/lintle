@@ -3,6 +3,7 @@
 import contextlib
 import dataclasses
 import datetime
+import json
 import os
 import shutil
 
@@ -26,6 +27,15 @@ class RejectEntry:
 class FileStats:
     """Accumulated results for one processed source file.
 
+    Three independent counters disambiguate what was previously a single
+    ``total_records`` tally (issue #5): ``paired_records`` counts proper
+    2-line entries; ``orphan_entries`` counts unpaired single lines surfaced
+    as findings; ``input_lines_seen`` counts every physical line read,
+    including blanks the pairing loop drops. The invariant
+    ``paired_records + orphan_entries == clean_count + quarantined_count``
+    holds — orphans still flow through ``_record_reject`` so they are tallied
+    in ``quarantined_count`` and ``reject_categories['orphan-line']``.
+
     ``reject_exemplars`` is a *bounded* sample of quarantined records used
     only by the human-facing ``validate`` summary; the byte-faithful full
     catalog is streamed to ``.broken.txt`` during processing. The bound is
@@ -34,12 +44,19 @@ class FileStats:
     """
 
     src_name: str
-    total_records: int = 0
+    paired_records: int = 0
+    orphan_entries: int = 0
+    input_lines_seen: int = 0
     clean_count: int = 0
     quarantined_count: int = 0
     fix_counts: dict = dataclasses.field(default_factory=dict)
     reject_categories: dict = dataclasses.field(default_factory=dict)
     reject_exemplars: list = dataclasses.field(default_factory=list)
+    # NORAD IDs of records quarantined in this file, decoded once at
+    # reject time from line-1 columns 3-7. Bounded by the satellite
+    # catalog (~tens of thousands of IDs corpus-wide), so the in-memory
+    # set is independent of reject count and keeps memory constant.
+    quarantined_norad_ids: set = dataclasses.field(default_factory=set)
 
 
 def _render_entry(index, entry):
@@ -60,13 +77,18 @@ def _render_entry(index, entry):
     return b"".join(chunks)
 
 
-def _render_header(src_name, quarantined, total):
-    """Render the three-line ASCII header of a ``.broken.txt`` sidecar."""
+def _render_header(src_name, quarantined, entries):
+    """Render the three-line ASCII header of a ``.broken.txt`` sidecar.
+
+    ``entries`` is ``paired_records + orphan_entries`` — the count of things
+    that became findings or clean output, which is the meaningful denominator
+    for ``quarantined``.
+    """
     timestamp = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     return (
         f"# {stem(src_name)}.broken.txt - quarantined records\n"
         f"# source: {src_name} | generated: {timestamp} | lintle {__version__}\n"
-        f"# {quarantined} records quarantined of {total} total\n\n"
+        f"# {quarantined} quarantined of {entries} entries\n\n"
     ).encode("ascii")
 
 
@@ -98,11 +120,15 @@ class BrokenFileWriter:
         self._entry_count += 1
         self._handle.write(_render_entry(self._entry_count, entry))
 
-    def finalize(self, total_records):
-        """Stitch header + body into the final path; atomic-rename in place."""
+    def finalize(self, entries):
+        """Stitch header + body into the final path; atomic-rename in place.
+
+        ``entries`` is the denominator shown in the header — pass
+        ``paired_records + orphan_entries`` from the source file's stats.
+        """
         if self._handle is not None and not self._handle.closed:
             self._handle.close()
-        header = _render_header(self.src_name, self._entry_count, total_records)
+        header = _render_header(self.src_name, self._entry_count, entries)
         with open(self._final_partial, "wb") as out, open(self._body_path, "rb") as src:
             out.write(header)
             shutil.copyfileobj(src, out, length=65536)
@@ -134,7 +160,7 @@ def write_broken_file(path, src_name, stats):
     with BrokenFileWriter(path, src_name) as writer:
         for entry in stats.reject_exemplars:
             writer.write_entry(entry)
-        writer.finalize(stats.total_records)
+        writer.finalize(stats.paired_records + stats.orphan_entries)
 
 
 def _join_counts(counts):
@@ -143,10 +169,16 @@ def _join_counts(counts):
 
 
 def format_summary(stats):
-    """Return the human-readable multi-line summary block for one file."""
+    """Return the human-readable multi-line summary block for one file.
+
+    The header line shows ``paired_records`` (true 2-line TLEs), followed by
+    clean and quarantined counts, then a parenthetical with the orphan and
+    input-line counters — separated so issue #5's conflation never returns.
+    """
     lines = [
-        f"{stats.src_name}   {stats.total_records:,} records   "
-        f"{stats.clean_count:,} clean   {stats.quarantined_count:,} quarantined"
+        f"{stats.src_name}   {stats.paired_records:,} records   "
+        f"{stats.clean_count:,} clean   {stats.quarantined_count:,} quarantined   "
+        f"({stats.orphan_entries:,} orphan, {stats.input_lines_seen:,} lines)"
     ]
     if stats.fix_counts:
         lines.append(f"  fixes:   {_join_counts(stats.fix_counts)}")
@@ -159,7 +191,9 @@ def summary_dict(stats):
     """Return a JSON-serialisable summary of one file's stats."""
     return {
         "src_name": stats.src_name,
-        "total_records": stats.total_records,
+        "paired_records": stats.paired_records,
+        "orphan_entries": stats.orphan_entries,
+        "input_lines_seen": stats.input_lines_seen,
         "clean_count": stats.clean_count,
         "quarantined_count": stats.quarantined_count,
         "fix_counts": dict(stats.fix_counts),
@@ -189,7 +223,9 @@ def format_reject_lines(stats, limit=100):
 
 def _aggregate(all_stats):
     """Sum every file's stats into corpus-wide totals and count dicts."""
-    total = sum(s.total_records for s in all_stats)
+    paired = sum(s.paired_records for s in all_stats)
+    orphans = sum(s.orphan_entries for s in all_stats)
+    lines_seen = sum(s.input_lines_seen for s in all_stats)
     clean = sum(s.clean_count for s in all_stats)
     quarantined = sum(s.quarantined_count for s in all_stats)
     fixes = {}
@@ -199,7 +235,7 @@ def _aggregate(all_stats):
             fixes[key] = fixes.get(key, 0) + value
         for key, value in stats.reject_categories.items():
             rejects[key] = rejects.get(key, 0) + value
-    return total, clean, quarantined, fixes, rejects
+    return paired, orphans, lines_seen, clean, quarantined, fixes, rejects
 
 
 def format_run_report(all_stats):
@@ -207,13 +243,19 @@ def format_run_report(all_stats):
 
     Written to ``<out-dir>/report.md`` after a ``clean`` run: corpus
     totals, the percentage cleaned/quarantined, the corpus-wide fix and
-    defect-category counts, and a per-file breakdown table.
+    defect-category counts, and a per-file breakdown table. Percentages
+    use ``paired_records + orphan_entries`` as the denominator — equal to
+    ``clean + quarantined`` by the FileStats invariant, so the cleaned and
+    quarantined shares sum to 100 % even when orphans are present.
     """
     timestamp = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    total, clean, quarantined, fixes, rejects = _aggregate(all_stats)
+    paired, orphans, lines_seen, clean, quarantined, fixes, rejects = _aggregate(
+        all_stats
+    )
+    denominator = paired + orphans
 
     def pct(count):
-        return f"{100 * count / total:.4f}%" if total else "n/a"
+        return f"{100 * count / denominator:.4f}%" if denominator else "n/a"
 
     lines = [
         "# lintle clean run report",
@@ -224,7 +266,9 @@ def format_run_report(all_stats):
         "",
         "## Corpus totals",
         "",
-        f"- Records: {total:,}",
+        f"- Records: {paired:,}",
+        f"- Orphan lines: {orphans:,}",
+        f"- Input lines: {lines_seen:,}",
         f"- Cleaned: {clean:,} ({pct(clean)})",
         f"- Quarantined: {quarantined:,} ({pct(quarantined)})",
         "",
@@ -252,12 +296,13 @@ def format_run_report(all_stats):
         "",
         "## Per-file breakdown",
         "",
-        "| File | Records | Cleaned | Quarantined |",
-        "|------|--------:|--------:|------------:|",
+        "| File | Records | Orphans | Cleaned | Quarantined |",
+        "|------|--------:|--------:|--------:|------------:|",
     ]
     for stats in all_stats:
         lines.append(
-            f"| {stats.src_name} | {stats.total_records:,} | "
+            f"| {stats.src_name} | {stats.paired_records:,} | "
+            f"{stats.orphan_entries:,} | "
             f"{stats.clean_count:,} | {stats.quarantined_count:,} |"
         )
     lines.append("")
@@ -268,3 +313,38 @@ def write_run_report(path, all_stats):
     """Write the Markdown run report (``format_run_report``) to ``path``."""
     with open(path, "w", encoding="utf-8") as handle:
         handle.write(format_run_report(all_stats))
+
+
+def aggregate_broken_norad_ids(all_stats):
+    """Return the sorted, deduplicated NORAD IDs quarantined corpus-wide."""
+    ids = set()
+    for stats in all_stats:
+        ids |= stats.quarantined_norad_ids
+    return sorted(ids)
+
+
+def format_broken_noradids_ndjson(all_stats):
+    """Render the corpus-wide quarantined-NORAD-ID NDJSON as a string.
+
+    One ``{"noradId": N}`` object per line, deduplicated across every
+    processed file and sorted ascending so diffs across runs are
+    deterministic. NDJSON has no header; an empty string is returned
+    when no records were quarantined. The minimal one-field shape is
+    deliberately additive — downstream consumers ignore unknown fields,
+    so later releases can extend each record without breaking compat.
+    """
+    lines = [
+        json.dumps({"noradId": nid}, separators=(",", ":"))
+        for nid in aggregate_broken_norad_ids(all_stats)
+    ]
+    return "".join(line + "\n" for line in lines)
+
+
+def write_broken_noradids_ndjson(path, all_stats):
+    """Write the corpus-wide ``broken-noradids.ndjson`` to ``path``.
+
+    Thin wrapper around ``format_broken_noradids_ndjson`` that pins LF
+    line endings so the artifact is byte-deterministic across platforms.
+    """
+    with open(path, "w", encoding="ascii", newline="\n") as handle:
+        handle.write(format_broken_noradids_ndjson(all_stats))

@@ -1,7 +1,9 @@
 # TLE corpus data — multi-gigabyte inputs and cleaner output, not version-controlled.
 # data/source/ holds the raw tle*.txt files and TLEs.zip; data/output/ is where
-# the cleaner writes <name>.cleaned.txt / <name>.broken.txt.
-/data/
+# the cleaner writes <name>.cleaned.txt / <name>.broken.txt. No trailing slash
+# so the pattern also covers the per-worktree `data` symlink (see CLAUDE.md
+# § Worktree Workflow step 4).
+/data
 
 # Legacy / alternate locations (in case files are placed at the repo root)
 /tle*.txt
@@ -14,6 +16,10 @@
 
 # Parallel-development worktrees (see CLAUDE.md § Worktree Workflow)
 /.worktrees/
+
+# Per-machine throughput baseline (hardware variance makes a shared committed
+# baseline lie). See tests/test_pipeline_throughput.py for the write/read flow.
+/tests/.throughput_baseline.json
 
 # macOS
 .DS_Store
