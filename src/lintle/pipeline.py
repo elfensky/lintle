@@ -5,7 +5,7 @@ import dataclasses
 import os
 
 from lintle import repair, report, stem, tle
-from lintle.categories import RejectCategory
+from lintle.diagnostics import Diagnostic, RuleID, diagnostic
 
 # How many quarantined records to retain in memory as exemplars for the
 # ``validate`` summary. The full byte-faithful catalog goes straight to the
@@ -27,12 +27,19 @@ class RecordCandidate:
 
 @dataclasses.dataclass
 class Orphan:
-    """A line that could not be paired into a record."""
+    """A line that could not be paired into a record. The diagnostic carries
+    the rule ID and source line; the raw bytes survive verbatim for the
+    quarantine sidecar.
+    """
 
     raw_line: bytes
     src: int
-    category: RejectCategory
-    reason: str
+    diagnostic: Diagnostic
+
+
+def _orphan(raw_line, src, rule_id, note):
+    """Build an :class:`Orphan` with a pre-constructed :class:`Diagnostic`."""
+    return Orphan(raw_line, src, diagnostic(rule_id, source_line_nos=(src,), note=note))
 
 
 def iter_records(path, stats=None):
@@ -60,10 +67,10 @@ def iter_records(path, stats=None):
             prefix = line[:2]
             if prefix == b"1 ":
                 if held is not None:
-                    yield Orphan(
+                    yield _orphan(
                         held[0],
                         held[1],
-                        RejectCategory.ORPHAN_LINE,
+                        RuleID.ORPHAN_LINE,
                         "orphan line 1: followed by another line 1",
                     )
                 held = (line, lineno)
@@ -72,33 +79,33 @@ def iter_records(path, stats=None):
                     yield RecordCandidate(held[0], line, held[1], lineno)
                     held = None
                 else:
-                    yield Orphan(
+                    yield _orphan(
                         line,
                         lineno,
-                        RejectCategory.ORPHAN_LINE,
+                        RuleID.ORPHAN_LINE,
                         "orphan line 2: no preceding line 1",
                     )
             else:
                 if held is not None:
-                    yield Orphan(
+                    yield _orphan(
                         held[0],
                         held[1],
-                        RejectCategory.ORPHAN_LINE,
+                        RuleID.ORPHAN_LINE,
                         "orphan line 1: followed by a non-TLE line",
                     )
                     held = None
-                yield Orphan(
+                yield _orphan(
                     line,
                     lineno,
-                    RejectCategory.BAD_PREFIX,
+                    RuleID.BAD_PREFIX,
                     "line does not start with '1 ' or '2 '",
                 )
 
     if held is not None:
-        yield Orphan(
+        yield _orphan(
             held[0],
             held[1],
-            RejectCategory.ORPHAN_LINE,
+            RuleID.ORPHAN_LINE,
             "orphan line 1 at end of file",
         )
 
@@ -189,8 +196,8 @@ def _run(src_path, out_dir, mode, stats, progress_queue, progress_every):
                 _record_reject(
                     stats,
                     broken_writer,
-                    candidate.category,
-                    candidate.reason,
+                    candidate.diagnostic,
+                    (),
                     [candidate.raw_line],
                     [candidate.src],
                 )
@@ -209,8 +216,12 @@ def _run(src_path, out_dir, mode, stats, progress_queue, progress_every):
                 _record_reject(
                     stats,
                     broken_writer,
-                    RejectCategory.INTERNAL_ERROR,
-                    f"internal-error: {exc!r}",
+                    diagnostic(
+                        RuleID.INTERNAL_ERROR,
+                        source_line_nos=(candidate.src1, candidate.src2),
+                        note=repr(exc),
+                    ),
+                    (),
                     [candidate.raw_line1, candidate.raw_line2],
                     [candidate.src1, candidate.src2],
                 )
@@ -227,8 +238,8 @@ def _run(src_path, out_dir, mode, stats, progress_queue, progress_every):
                 _record_reject(
                     stats,
                     broken_writer,
-                    result.category,
-                    result.reason,
+                    result.primary,
+                    result.related,
                     result.raw_lines,
                     result.source_lines,
                 )
@@ -259,8 +270,13 @@ def _run(src_path, out_dir, mode, stats, progress_queue, progress_every):
     return stats
 
 
-def _record_reject(stats, broken_writer, category, reason, raw_lines, source_lines):
+def _record_reject(stats, broken_writer, primary, related, raw_lines, source_lines):
     """Tally one quarantined record; stream its bytes to the broken sidecar.
+
+    ``primary`` is the headline :class:`Diagnostic`; its ``rule_id`` (string
+    value, e.g. ``"TLE-CHK-001"``) is the aggregation key written to
+    ``stats.reject_counts``. ``related`` carries supporting diagnostics, if
+    any, and is rendered as indented continuation lines in ``.broken.txt``.
 
     The in-memory ``reject_exemplars`` list is capped at ``_EXEMPLAR_BOUND``
     — it only feeds the ``validate`` summary display, never the
@@ -268,8 +284,13 @@ def _record_reject(stats, broken_writer, category, reason, raw_lines, source_lin
     ``BrokenFileWriter`` when one is open (``clean`` mode).
     """
     stats.quarantined_count += 1
-    stats.reject_categories[category] = stats.reject_categories.get(category, 0) + 1
-    entry = report.RejectEntry(raw_lines, source_lines, reason)
+    # primary.rule_id is a StrEnum — equal to and hashable as its string
+    # value, so the dict key is the stable wire token ("TLE-CHK-001") and
+    # downstream JSON / sort orders are deterministic.
+    stats.reject_counts[primary.rule_id] = (
+        stats.reject_counts.get(primary.rule_id, 0) + 1
+    )
+    entry = report.RejectEntry(raw_lines, source_lines, primary, related)
     if len(stats.reject_exemplars) < _EXEMPLAR_BOUND:
         stats.reject_exemplars.append(entry)
     if broken_writer is not None:

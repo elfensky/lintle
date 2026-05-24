@@ -8,6 +8,7 @@ import os
 import shutil
 
 from lintle import __version__, stem
+from lintle.diagnostics import RULES, Diagnostic, RepairTier
 
 
 @dataclasses.dataclass
@@ -15,12 +16,16 @@ class RejectEntry:
     """One quarantined record, rendered into ``.broken.txt``.
 
     ``raw_lines`` are original bytes (1 line for an orphan, 2 for a record)
-    and are written verbatim so the sidecar is byte-faithful.
+    and are written verbatim so the sidecar is byte-faithful. ``primary``
+    is the headline :class:`Diagnostic` shown on the entry's first line;
+    ``related`` carries any secondary diagnostics, rendered on indented
+    continuation lines.
     """
 
     raw_lines: list
     source_lines: list
-    reason: str
+    primary: Diagnostic
+    related: tuple[Diagnostic, ...] = ()
 
 
 @dataclasses.dataclass
@@ -34,7 +39,10 @@ class FileStats:
     including blanks the pairing loop drops. The invariant
     ``paired_records + orphan_entries == clean_count + quarantined_count``
     holds — orphans still flow through ``_record_reject`` so they are tallied
-    in ``quarantined_count`` and ``reject_categories['orphan-line']``.
+    in ``quarantined_count`` and ``reject_counts['TLE-PAIR-001']``.
+
+    ``reject_counts`` is keyed by :class:`diagnostics.RuleID` string values
+    (e.g. ``"TLE-CHK-001"``) so reports cite stable, citable rule IDs.
 
     ``reject_exemplars`` is a *bounded* sample of quarantined records used
     only by the human-facing ``validate`` summary; the byte-faithful full
@@ -50,7 +58,7 @@ class FileStats:
     clean_count: int = 0
     quarantined_count: int = 0
     fix_counts: dict = dataclasses.field(default_factory=dict)
-    reject_categories: dict = dataclasses.field(default_factory=dict)
+    reject_counts: dict = dataclasses.field(default_factory=dict)
     reject_exemplars: list = dataclasses.field(default_factory=list)
     # NORAD IDs of records quarantined in this file, decoded once at
     # reject time from line-1 columns 3-7. Bounded by the satellite
@@ -59,17 +67,49 @@ class FileStats:
     quarantined_norad_ids: set = dataclasses.field(default_factory=set)
 
 
+def _format_diagnostic(diag):
+    """Render one :class:`Diagnostic` as a single-line string fragment.
+
+    Format: ``rule: <id>[ (<tier>)][ - col(s) <range>][ observed=...][
+    expected=...][ - <note>]``. The bracketed pieces are emitted only when
+    their underlying field is set.
+    """
+    parts = [f"rule: {diag.rule_id.value}"]
+    if diag.tier_attempted != RepairTier.NONE:
+        parts[0] += f" ({diag.tier_attempted.value})"
+    if diag.column_range is not None:
+        start, end = diag.column_range
+        if start == end:
+            parts.append(f"col {start}")
+        else:
+            parts.append(f"cols {start}-{end}")
+    if diag.observed is not None:
+        parts.append(f"observed={diag.observed!r}")
+    if diag.expected is not None:
+        parts.append(f"expected={diag.expected!r}")
+    head = " ".join(parts)
+    if diag.note:
+        return f"{head} - {diag.note}"
+    return head
+
+
 def _render_entry(index, entry):
-    """Render one ``RejectEntry`` as the bytes it occupies in ``.broken.txt``."""
+    """Render one :class:`RejectEntry` as the bytes it occupies in ``.broken.txt``.
+
+    Header line cites the primary diagnostic; any related diagnostics fold
+    onto indented continuation lines (``    and: ...``). The original raw
+    lines follow verbatim — byte-faithful quarantine.
+    """
     if len(entry.source_lines) == 2:
         location = f"source lines {entry.source_lines[0]}-{entry.source_lines[1]}"
     else:
         location = f"source line {entry.source_lines[0]}"
-    chunks = [
-        f"[{index}] {location} - reason: {entry.reason}\n".encode(
-            "ascii", errors="replace"
+    head = f"[{index}] {location} - {_format_diagnostic(entry.primary)}\n"
+    chunks = [head.encode("ascii", errors="replace")]
+    for extra in entry.related:
+        chunks.append(
+            f"    and: {_format_diagnostic(extra)}\n".encode("ascii", errors="replace")
         )
-    ]
     for raw in entry.raw_lines:
         chunks.append(raw)
         chunks.append(b"\n")
@@ -182,13 +222,18 @@ def format_summary(stats):
     ]
     if stats.fix_counts:
         lines.append(f"  fixes:   {_join_counts(stats.fix_counts)}")
-    if stats.reject_categories:
-        lines.append(f"  rejects: {_join_counts(stats.reject_categories)}")
+    if stats.reject_counts:
+        lines.append(f"  rejects: {_join_counts(stats.reject_counts)}")
     return "\n".join(lines)
 
 
 def summary_dict(stats):
-    """Return a JSON-serialisable summary of one file's stats."""
+    """Return a JSON-serialisable summary of one file's stats.
+
+    The ``reject_counts`` map is keyed by stable rule IDs (e.g.
+    ``"TLE-CHK-001"``) — the same handles cited in ``report.md`` and the
+    ``.broken.txt`` sidecar.
+    """
     return {
         "src_name": stats.src_name,
         "paired_records": stats.paired_records,
@@ -197,7 +242,7 @@ def summary_dict(stats):
         "clean_count": stats.clean_count,
         "quarantined_count": stats.quarantined_count,
         "fix_counts": dict(stats.fix_counts),
-        "reject_categories": dict(stats.reject_categories),
+        "reject_counts": dict(stats.reject_counts),
     }
 
 
@@ -214,7 +259,7 @@ def format_reject_lines(stats, limit=100):
             location = f"{entry.source_lines[0]}-{entry.source_lines[1]}"
         else:
             location = str(entry.source_lines[0])
-        lines.append(f"  line {location}: {entry.reason}")
+        lines.append(f"  line {location}: {_format_diagnostic(entry.primary)}")
     remaining = stats.quarantined_count - min(len(stats.reject_exemplars), limit)
     if remaining > 0:
         lines.append(f"  ...and {remaining} more")
@@ -233,7 +278,7 @@ def _aggregate(all_stats):
     for stats in all_stats:
         for key, value in stats.fix_counts.items():
             fixes[key] = fixes.get(key, 0) + value
-        for key, value in stats.reject_categories.items():
+        for key, value in stats.reject_counts.items():
             rejects[key] = rejects.get(key, 0) + value
     return paired, orphans, lines_seen, clean, quarantined, fixes, rejects
 
@@ -243,10 +288,12 @@ def format_run_report(all_stats):
 
     Written to ``<out-dir>/report.md`` after a ``clean`` run: corpus
     totals, the percentage cleaned/quarantined, the corpus-wide fix and
-    defect-category counts, and a per-file breakdown table. Percentages
-    use ``paired_records + orphan_entries`` as the denominator — equal to
-    ``clean + quarantined`` by the FileStats invariant, so the cleaned and
-    quarantined shares sum to 100 % even when orphans are present.
+    rule-ID counts, a per-file breakdown table, and a rule reference
+    section auto-generated from ``diagnostics.RULES`` for every rule that
+    fired in this run. Percentages use ``paired_records + orphan_entries``
+    as the denominator — equal to ``clean + quarantined`` by the FileStats
+    invariant, so the cleaned and quarantined shares sum to 100 % even
+    when orphans are present.
     """
     timestamp = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     paired, orphans, lines_seen, clean, quarantined, fixes, rejects = _aggregate(
@@ -283,10 +330,10 @@ def format_run_report(all_stats):
     else:
         lines.append("_None._")
 
-    lines += ["", "## Records quarantined (by defect category)", ""]
+    lines += ["", "## Records quarantined (by rule)", ""]
     if rejects:
-        lines.append("| Defect category | Count |")
-        lines.append("|-----------------|------:|")
+        lines.append("| Rule | Count |")
+        lines.append("|------|------:|")
         for key, value in sorted(rejects.items(), key=lambda kv: -kv[1]):
             lines.append(f"| {key} | {value:,} |")
     else:
@@ -305,8 +352,26 @@ def format_run_report(all_stats):
             f"{stats.orphan_entries:,} | "
             f"{stats.clean_count:,} | {stats.quarantined_count:,} |"
         )
+
+    if rejects:
+        lines += ["", "## Rule reference", ""]
+        for key in sorted(rejects):
+            spec = _spec_for_key(key)
+            if spec is None:
+                lines.append(f"- `{key}` — (unknown rule)")
+            else:
+                lines.append(f"- `{key}` — {spec.short_title}")
+
     lines.append("")
     return "\n".join(lines)
+
+
+def _spec_for_key(key):
+    """Return the :class:`diagnostics.RuleSpec` for a rule-ID string, or ``None``."""
+    for rule_id, spec in RULES.items():
+        if rule_id.value == key:
+            return spec
+    return None
 
 
 def write_run_report(path, all_stats):

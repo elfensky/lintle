@@ -395,8 +395,8 @@ class TestMain:
         rc = cli.main(["validate", str(src), "--jobs", "1"])
 
         assert rc == 1
-        # validate mode lists each quarantined record's location and reason.
-        assert "checksum" in capsys.readouterr().out
+        # validate mode lists each quarantined record's location and rule ID.
+        assert "TLE-CHK-001" in capsys.readouterr().out
 
     def test_main_returns_130_on_keyboard_interrupt(
         self, tmp_path, line1, line2, monkeypatch

@@ -3,7 +3,13 @@
 import json
 
 from lintle import report
-from lintle.categories import FixClass, RejectCategory
+from lintle.categories import FixClass
+from lintle.diagnostics import RepairTier, RuleID, diagnostic
+
+
+def _diag(rule_id, src=1, **kwargs):
+    """Build a Diagnostic with sane defaults for tests."""
+    return diagnostic(rule_id, source_line_nos=(src,), **kwargs)
 
 
 def _stats_with_counts():
@@ -17,7 +23,7 @@ def _stats_with_counts():
         FixClass.TRAILING_BACKSLASH: 50,
         FixClass.RECONSTRUCTED_CHECKSUM: 7,
     }
-    stats.reject_categories = {RejectCategory.CHECKSUM_MISMATCH: 2}
+    stats.reject_counts = {RuleID.CHECKSUM_MISMATCH: 2}
     return stats
 
 
@@ -29,7 +35,7 @@ def _two_file_stats():
     a.clean_count = 990
     a.quarantined_count = 10
     a.fix_counts = {FixClass.TRAILING_BACKSLASH: 990}
-    a.reject_categories = {RejectCategory.CHECKSUM_MISMATCH: 10}
+    a.reject_counts = {RuleID.CHECKSUM_MISMATCH: 10}
     b = report.FileStats(src_name="tle2005.txt")
     b.paired_records = 3000
     b.orphan_entries = 0
@@ -52,7 +58,11 @@ class TestWriteBrokenFile:
             report.RejectEntry(
                 raw_lines=[b"1 garbage"],
                 source_lines=[42],
-                reason="bad-prefix: line does not start with '1 ' or '2 '",
+                primary=_diag(
+                    RuleID.BAD_PREFIX,
+                    src=42,
+                    note="line does not start with '1 ' or '2 '",
+                ),
             )
         )
         out = tmp_path / "tle2099.broken.txt"
@@ -66,6 +76,7 @@ class TestWriteBrokenFile:
         # equals paired_records (5).
         assert b"1 quarantined of 5 entries" in text
         assert b"source line 42" in text
+        assert b"rule: TLE-PAIR-002" in text  # BAD_PREFIX
         assert b"1 garbage" in text
 
     def test_broken_file_is_byte_faithful(self, tmp_path):
@@ -76,7 +87,7 @@ class TestWriteBrokenFile:
             report.RejectEntry(
                 raw_lines=[b"1 \xff\xfe non-ascii"],
                 source_lines=[7],
-                reason="non-ascii",
+                primary=_diag(RuleID.NON_ASCII_BYTE, src=7),
             )
         )
         out = tmp_path / "x.broken.txt"
@@ -92,14 +103,57 @@ class TestWriteBrokenFile:
             report.RejectEntry(
                 raw_lines=[b"1 aaa", b"2 bbb"],
                 source_lines=[14820, 14821],
-                reason="line 2: checksum mismatch",
+                primary=diagnostic(
+                    RuleID.CHECKSUM_MISMATCH,
+                    source_line_nos=(14820, 14821),
+                    tier_attempted=RepairTier.NORMALIZATION,
+                    column_range=(69, 69),
+                    observed="7",
+                    expected="3",
+                ),
             )
         )
         out = tmp_path / "x.broken.txt"
 
         report.write_broken_file(str(out), "x.txt", stats)
 
-        assert b"source lines 14820-14821" in out.read_bytes()
+        text = out.read_bytes()
+        assert b"source lines 14820-14821" in text
+        # New format surfaces structured fields:
+        assert b"rule: TLE-CHK-001 (tier-1)" in text
+        assert b"col 69" in text
+        assert b"observed='7'" in text
+        assert b"expected='3'" in text
+
+    def test_related_diagnostics_render_as_continuation_lines(self, tmp_path):
+        # When a record has both a primary and a related diagnostic (e.g. both
+        # lines failed), the related ones fold onto indented "and: ..." lines.
+        stats = report.FileStats(src_name="x.txt")
+        stats.quarantined_count = 1
+        stats.reject_exemplars.append(
+            report.RejectEntry(
+                raw_lines=[b"1 aaa", b"2 bbb"],
+                source_lines=[5, 6],
+                primary=diagnostic(
+                    RuleID.CHECKSUM_MISMATCH,
+                    source_line_nos=(5,),
+                    column_range=(69, 69),
+                ),
+                related=(
+                    diagnostic(
+                        RuleID.LINE_LENGTH,
+                        source_line_nos=(6,),
+                        observed="68",
+                        expected="68 or 69",
+                    ),
+                ),
+            )
+        )
+        out = tmp_path / "x.broken.txt"
+        report.write_broken_file(str(out), "x.txt", stats)
+        text = out.read_bytes()
+        assert b"rule: TLE-CHK-001" in text
+        assert b"    and: rule: TLE-COL-001" in text
 
 
 class TestSummaries:
@@ -110,7 +164,7 @@ class TestSummaries:
         assert "98" in out
         assert "trailing-backslash 50" in out
         assert "reconstructed-checksum 7" in out
-        assert "checksum-mismatch 2" in out
+        assert "TLE-CHK-001 2" in out
 
     def test_format_summary_distinguishes_paired_from_orphan(self):
         stats = report.FileStats(src_name="tle2099.txt")
@@ -132,7 +186,9 @@ class TestSummaries:
         assert data["orphan_entries"] == 0
         assert data["input_lines_seen"] == 200
         assert data["fix_counts"]["trailing-backslash"] == 50
-        assert data["reject_categories"]["checksum-mismatch"] == 2
+        # reject_counts is keyed by stable rule IDs — TLE-CHK-001, not the
+        # old free-form "checksum-mismatch" string.
+        assert data["reject_counts"]["TLE-CHK-001"] == 2
         json.dumps(data)  # must not raise — cli.py serialises this in json mode
 
 
@@ -143,11 +199,15 @@ class TestFormatRejectLines:
             report.RejectEntry(
                 raw_lines=[b"1 a", b"2 b"],
                 source_lines=[10, 11],
-                reason="line 2: checksum mismatch",
+                primary=diagnostic(
+                    RuleID.CHECKSUM_MISMATCH,
+                    source_line_nos=(10, 11),
+                    column_range=(69, 69),
+                ),
             )
         )
         out = report.format_reject_lines(stats)
-        assert "10-11" in out and "checksum mismatch" in out
+        assert "10-11" in out and "TLE-CHK-001" in out
 
     def test_format_reject_lines_caps_long_lists(self):
         stats = report.FileStats(src_name="x.txt")
@@ -155,7 +215,9 @@ class TestFormatRejectLines:
         for i in range(250):
             stats.reject_exemplars.append(
                 report.RejectEntry(
-                    raw_lines=[b"1 a"], source_lines=[i], reason="bad-prefix"
+                    raw_lines=[b"1 a"],
+                    source_lines=[i],
+                    primary=_diag(RuleID.BAD_PREFIX, src=i),
                 )
             )
         out = report.format_reject_lines(stats, limit=100)
@@ -175,9 +237,16 @@ class TestRunReport:
         assert "99.7500%" in out  # 3990 / 4000
         assert "trailing-backslash | 1,990" in out  # 990 + 1000, summed
         assert "reconstructed-checksum | 500" in out
-        assert "checksum-mismatch | 10" in out
+        assert "TLE-CHK-001 | 10" in out
         # Per-file rows present.
         assert "tle2004.txt" in out and "tle2005.txt" in out
+
+    def test_format_run_report_includes_rule_reference_section(self):
+        # Every rule ID that fired in the run gets a Rule reference entry
+        # so report.md is self-explanatory without a separate docs page.
+        out = report.format_run_report(_two_file_stats())
+        assert "## Rule reference" in out
+        assert "`TLE-CHK-001`" in out
 
     def test_format_run_report_surfaces_orphans_per_file(self):
         # Two files: one with orphans, one without. The per-file breakdown
@@ -189,9 +258,9 @@ class TestRunReport:
         a.input_lines_seen = 210
         a.clean_count = 99
         a.quarantined_count = 6  # 1 paired-failure + 5 orphans
-        a.reject_categories = {
-            RejectCategory.ORPHAN_LINE: 5,
-            RejectCategory.CHECKSUM_MISMATCH: 1,
+        a.reject_counts = {
+            RuleID.ORPHAN_LINE: 5,
+            RuleID.CHECKSUM_MISMATCH: 1,
         }
         b = report.FileStats(src_name="clean.txt")
         b.paired_records = 50
