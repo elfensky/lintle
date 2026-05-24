@@ -981,6 +981,90 @@ class TestBrokenNoradIdsNdjson:
         assert report.aggregate_broken_norad_ids([a, b]) == [1, 2, 3]
 
 
+class TestConcatFindingsShards:
+    """End-of-run concatenation of per-worker findings shards into the
+    corpus-wide ``report.jsonl`` (issue #9, spec §4.6).
+    """
+
+    def _make_shard(self, shard_dir, stem_name, payload_lines):
+        path = shard_dir / f"{stem_name}.findings.jsonl"
+        path.write_text("".join(line + "\n" for line in payload_lines), encoding="utf-8")
+        return path
+
+    def test_concat_orders_alphabetically_by_src_name(self, tmp_path):
+        shard_dir = tmp_path / ".shards"
+        shard_dir.mkdir()
+        # Write shards out of alphabetical order — concat must still emit
+        # them in alphabetical src_name order.
+        self._make_shard(shard_dir, "tle2022", ['{"file":"tle2022.txt"}'])
+        self._make_shard(shard_dir, "tle2004", ['{"file":"tle2004.txt"}'])
+        self._make_shard(shard_dir, "tle2013", ['{"file":"tle2013.txt"}'])
+        # all_stats is already sorted by src_name in cli.py:510 before this
+        # function is called; we mimic that here.
+        all_stats = [
+            report.FileStats(src_name="tle2004.txt"),
+            report.FileStats(src_name="tle2013.txt"),
+            report.FileStats(src_name="tle2022.txt"),
+        ]
+        dest = tmp_path / "report.jsonl"
+        report.concat_findings_shards(str(tmp_path), str(dest), all_stats)
+        lines = dest.read_text(encoding="utf-8").splitlines()
+        files = [json.loads(line)["file"] for line in lines]
+        assert files == ["tle2004.txt", "tle2013.txt", "tle2022.txt"]
+
+    def test_concat_creates_empty_file_when_no_shards(self, tmp_path):
+        # Empty .shards/ and empty all_stats -> empty report.jsonl
+        # (matches broken-noradids.ndjson's zero-quarantine contract).
+        (tmp_path / ".shards").mkdir()
+        dest = tmp_path / "report.jsonl"
+        report.concat_findings_shards(str(tmp_path), str(dest), [])
+        assert dest.exists()
+        assert dest.read_text(encoding="utf-8") == ""
+
+    def test_concat_handles_missing_shard_gracefully(self, tmp_path):
+        # all_stats references a file with no shard (validate-mode worker
+        # or worker-crash before finalize) — concat skips it silently.
+        shard_dir = tmp_path / ".shards"
+        shard_dir.mkdir()
+        self._make_shard(shard_dir, "tle2022", ['{"file":"tle2022.txt"}'])
+        all_stats = [
+            report.FileStats(src_name="tle2022.txt"),
+            report.FileStats(src_name="tle2099.txt"),  # no shard for this one
+        ]
+        dest = tmp_path / "report.jsonl"
+        report.concat_findings_shards(str(tmp_path), str(dest), all_stats)
+        lines = dest.read_text(encoding="utf-8").splitlines()
+        assert len(lines) == 1
+        assert json.loads(lines[0])["file"] == "tle2022.txt"
+
+    def test_concat_removes_shard_directory(self, tmp_path):
+        # After successful concat, .shards/ is gone.
+        shard_dir = tmp_path / ".shards"
+        shard_dir.mkdir()
+        self._make_shard(shard_dir, "tle2022", ['{"file":"tle2022.txt"}'])
+        report.concat_findings_shards(
+            str(tmp_path),
+            str(tmp_path / "report.jsonl"),
+            [report.FileStats(src_name="tle2022.txt")],
+        )
+        assert not shard_dir.exists()
+
+    def test_concat_atomic_rename(self, tmp_path):
+        # The destination is written via .partial + os.replace, so no
+        # .partial is left after success.
+        shard_dir = tmp_path / ".shards"
+        shard_dir.mkdir()
+        self._make_shard(shard_dir, "tle2022", ['{"file":"tle2022.txt"}'])
+        dest = tmp_path / "report.jsonl"
+        report.concat_findings_shards(
+            str(tmp_path),
+            str(dest),
+            [report.FileStats(src_name="tle2022.txt")],
+        )
+        assert dest.exists()
+        assert not (tmp_path / "report.jsonl.partial").exists()
+
+
 class TestPerNoradBreakdown:
     """The ``## Per-NORAD breakdown`` section appended to ``report.md``.
 
