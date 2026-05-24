@@ -961,6 +961,48 @@ class TestFileSample:
         with pytest.raises(dataclasses.FrozenInstanceError):
             sample.cap = 99
 
+    def test_empty_default_dropped_count_is_zero(self):
+        # No rejects → no drops. The sentinel must initialise the per-rule
+        # drop counter cleanly so renderers and aggregators do not need to
+        # special-case the empty case.
+        sample = report.FileSample.empty(cap=5)
+        assert sample.dropped_count == {}
+
+    def test_from_bounded_default_dropped_count_is_empty(self):
+        # When the caller does not pass dropped_count, the field defaults
+        # to an empty dict — matches how existing TestWriteBrokenFile and
+        # TestFormatRejectLines fixtures invoke from_bounded (issue #46
+        # backwards compat).
+        sample = report.FileSample.from_bounded(
+            cap=5,
+            entries_by_rule={RuleID.CHECKSUM_MISMATCH: self._stub_entries(2)},
+        )
+        assert sample.dropped_count == {}
+
+    def test_from_bounded_round_trips_dropped_count(self):
+        # The drop counter passes through and is keyed by RuleID so
+        # programmatic consumers can join it against reject_counts /
+        # buckets without translation.
+        sample = report.FileSample.from_bounded(
+            cap=5,
+            entries_by_rule={RuleID.CHECKSUM_MISMATCH: self._stub_entries(5)},
+            dropped_count={RuleID.CHECKSUM_MISMATCH: 995},
+        )
+        assert sample.dropped_count[RuleID.CHECKSUM_MISMATCH] == 995
+
+    def test_from_bounded_clones_dropped_count(self):
+        # Caller mutations to the source dict must not leak into the frozen
+        # sample — protects the invariant against accidental aliasing
+        # (mirrors the tuple-clone done for buckets).
+        source = {RuleID.CHECKSUM_MISMATCH: 10}
+        sample = report.FileSample.from_bounded(
+            cap=5,
+            entries_by_rule={},
+            dropped_count=source,
+        )
+        source[RuleID.CHECKSUM_MISMATCH] = 9999
+        assert sample.dropped_count[RuleID.CHECKSUM_MISMATCH] == 10
+
 
 class TestRejectSink:
     """The single-mutation entry point that enforces the per-rule cap
