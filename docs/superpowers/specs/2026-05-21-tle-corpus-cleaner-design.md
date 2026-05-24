@@ -461,23 +461,31 @@ Per source file, formatted to be detailed enough to file a report with space-tra
 
 ```
 # tle2022.broken.txt — quarantined records
-# source: tle2022.txt | generated: 2026-05-21T14:03:00Z | lintle 0.1.0
+# source: tle2022.txt | generated: 2026-05-24T14:03:00Z | lintle 0.3.0
 # 3 quarantined of 8,412,067 entries
 
-[1] source lines 14820-14821 — reason: Line 2 checksum mismatch (col 69 is '3', computed '7')
+[1] source lines 14820-14821 - rule: TLE-CHK-001 (tier-1) col 69 observed='3' expected='7'
 1 43210U 18014A   22045.12345678  .00001234  00000-0  12345-4 0  9991
 2 43210  53.0123 211.4567 0001234  90.1234 270.9876 15.12345678123453
 
-[2] source line 99102 — reason: orphan Line 1 (no following Line 2)
+[2] source line 99102 - rule: TLE-PAIR-001 - orphan line 1 at end of file
 1 51234U 21001A   22045.12345678  .00001234  00000-0  12345-4 0  9991
 
-[3] source line 250011 — reason: line length 68; columns 1–68 fail layout checks — missing
-    character is interior, not the checksum, so not reconstructible (Section 6.2)
+[3] source line 250011 - rule: TLE-COL-002 - 68-char line where columns 1-68 fail layout —
+    missing character is interior, not the checksum, so not reconstructible (Section 6.2)
 1 27497U 01055E   0415 .01279831  .00005767  00000-0  41216-3 0 7230
 ```
 
-Each entry: index, source filename + line number(s), human-readable reason, then the raw line(s)
-verbatim. The header carries totals, an ISO-8601 timestamp, and the tool version.
+Each entry: index, source filename + line number(s), structured diagnostic
+(stable `RuleID` token, optional `(tier-N)` repair attempt, optional `col`/`cols`
+range, optional `observed=` / `expected=` fields, optional free-text note),
+then the raw line(s) verbatim. When both lines of a record failed, related
+diagnostics fold onto indented `    and: rule: TLE-XXX-NNN ...` continuation
+lines. The header carries totals, an ISO-8601 timestamp, and the tool version
+— pinning the sidecar's line format to a release so downstream parsers can
+dispatch on `lintle 0.3.0`. See companion spec
+[`2026-05-24-stable-rule-id-registry-design.md`](2026-05-24-stable-rule-id-registry-design.md)
+for the full rule registry.
 
 ### 9.3 Run summary
 
@@ -486,15 +494,18 @@ Printed to stdout (and as JSON with `--report json`):
 ```
 tle2022.txt   8,412,066 records   8,412,064 clean   3 quarantined   (1 orphan, 16,824,135 lines)
   fixes:   trailing-backslash 8,412,064 | reconstructed-checksum 195,293 | crlf 0 | trailing-ws 0
-  rejects: checksum-mismatch 1 | orphan-line 1 | wrong-length 1
+  rejects: TLE-CHK-001 1 | TLE-PAIR-001 1 | TLE-COL-001 1
 ```
 
-The header counters are independent (issue #5): `paired_records` is the count
-of true 2-line TLEs (here 8,412,066), `orphan_entries` is the count of
-unpaired single lines surfaced as findings (here 1, also visible in the
-`orphan-line` reject category), and `input_lines_seen` is every physical
-line read from the file. `clean + quarantined == paired + orphan` (the
-invariant), so the percentages stay coherent.
+Reject counts key by the stable `RuleID` registry (`TLE-CHK-001` for checksum
+mismatch, `TLE-PAIR-001` for orphan lines, `TLE-COL-001` for wrong length,
+etc.) so a defect surfaces under one identifier across the per-file summary,
+`report.md`, and `.broken.txt`. The header counters are independent (issue
+#5): `paired_records` is the count of true 2-line TLEs (here 8,412,066),
+`orphan_entries` is the count of unpaired single lines surfaced as findings
+(here 1, also visible under `TLE-PAIR-001`), and `input_lines_seen` is every
+physical line read from the file. `clean + quarantined == paired + orphan`
+(the invariant), so the percentages stay coherent.
 
 `reconstructed-checksum` is reported as its own line item, separate from content-preserving
 fixes: those records are format-conformant but their checksums are computed, not verified

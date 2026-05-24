@@ -156,7 +156,13 @@ A `clean` run lays `--out-dir` out like this:
 
 - **`report.md`** — a Markdown run report aggregating the whole run: corpus
   totals, the percentage cleaned and quarantined, corpus-wide fix counts, the
-  defect-category breakdown, and a per-file table.
+  defect-rule breakdown (keyed by stable `RuleID` tokens like `TLE-CHK-001`),
+  a per-file table, a "Rule reference" section auto-generated from the
+  `diagnostics.RULES` registry naming every rule that fired, and a per-NORAD
+  breakdown table listing each satellite whose records were quarantined with
+  its per-rule counts and the source files it appeared in (sorted by
+  quarantined-record count descending, capped at the top 100 with a remainder
+  footer pointing at `broken-noradids.ndjson` for the long tail).
 
 A run summary is also printed per file to stdout (and as JSON with
 `--report json`):
@@ -164,12 +170,16 @@ A run summary is also printed per file to stdout (and as JSON with
 ```
 tle2022.txt   8,412,067 records   8,412,064 clean   3 quarantined
   fixes:   trailing-backslash 8,412,064 | reconstructed-checksum 195,293
-  rejects: checksum-mismatch 1 | orphan-line 1 | wrong-length 1
+  rejects: TLE-CHK-001 1 | TLE-PAIR-001 1 | TLE-COL-001 1
 ```
 
-`reconstructed-checksum` is reported separately from content-preserving fixes:
-those records are format-conformant, but their checksums are *computed*, not
-independently verified.
+Reject counts key by the stable `RuleID` registry (e.g. `TLE-CHK-001` for
+checksum mismatch, `TLE-PAIR-001` for orphan lines, `TLE-COL-001` for wrong
+length) — the same handles cited in `report.md` and the `.broken.txt`
+sidecar so a defect surfaces under one identifier across every artifact a
+run emits. `reconstructed-checksum` is reported separately from
+content-preserving fixes: those records are format-conformant, but their
+checksums are *computed*, not independently verified.
 
 `validate` writes nothing — it only prints the per-file summary and the
 locations of defective records to stdout.
@@ -219,17 +229,24 @@ with `pytest-cov`.
 
 ```
 src/lintle/
-  tle.py        # core: defines a "perfect" TLE record (pure, no I/O)
-  repair.py     # speculative, validated repairs
-  pipeline.py   # streaming reader, prefix-driven pairing, per-file routing
-  report.py     # quarantine sidecar + run-summary rendering
-  cli.py        # argument parsing, parallelism, exit codes
-tests/          # pytest suite
+  tle.py          # core: defines a "perfect" TLE record (pure, no I/O)
+  diagnostics.py  # stable RuleID registry + structured Diagnostic dataclass
+  categories.py   # FixClass enum — the successful-repair taxonomy
+  repair.py       # speculative, validated repairs
+  pipeline.py     # streaming reader, prefix-driven pairing, per-file routing
+  report.py       # quarantine sidecar + run-summary rendering
+  cli.py          # argument parsing, parallelism, exit codes
+tests/            # pytest suite
 docs/superpowers/
-  specs/        # the design specification
-  plans/        # the implementation plan
-  runs/         # corpus-run summaries
+  specs/          # the design specification
+  plans/          # the implementation plan
+  runs/           # corpus-run summaries
 ```
+
+`diagnostics.py` and `categories.py` are pure-data leaves of the dependency
+graph — they hold enums and frozen dataclasses, no logic. `repair`,
+`pipeline`, and `report` all depend on them; `tle.py` remains the single
+source of truth for what counts as a valid TLE record.
 
 ## Further reading
 

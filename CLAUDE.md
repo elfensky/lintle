@@ -68,10 +68,15 @@ src/lintle/
 ├── pipeline.py    # streams a file in binary, pairs 1/2 lines into records, routes them
 ├── repair.py      # speculative fixes, each confirmed by tle.py before commit
 ├── report.py      # FileStats, the .broken.txt sidecar writer, the run report
-└── tle.py         # the validator — column layout, checksum, semantic ranges, pairing
+├── tle.py         # the validator — column layout, checksum, semantic ranges, pairing
+├── diagnostics.py # stable RuleID registry + structured Diagnostic dataclass (pure data)
+└── categories.py  # FixClass enum — the successful-repair taxonomy (pure data)
 ```
 
-Module dependencies point one way only: `cli.py → pipeline.py → repair.py → tle.py`.
+Module dependencies flow one way: `cli.py → pipeline.py → repair.py → tle.py`,
+with `diagnostics.py` and `categories.py` as pure-data leaves depended on by
+`repair`, `pipeline`, and `report`. `tle.py` and the two data modules carry
+no I/O and no logic respectively, so cycles are structurally impossible.
 
 → See [`README.md`](README.md) for the architecture, usage, and data flow.
 → See [`CONTRIBUTING.md`](CONTRIBUTING.md) for setup, testing, and the git workflow.
