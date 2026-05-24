@@ -68,6 +68,23 @@ All notable changes to this project are documented in this file. The format is b
   user-visible byte format changes (`.broken.txt`, JSON output, and
   `report.md` are byte-identical to the pre-refactor baseline). Closes
   #19.
+- Internal: encapsulated `FileStats.quarantined_norad_ids` behind a
+  `NoradTracker` type with a single `record(norad_id, rule_id)` mutation
+  entry point. `pipeline._record_reject` no longer hand-rolls the
+  `setdefault`/`get`/`+1` dance — future writers will find `.record(...)`
+  by name instead of reinventing the pattern. Field name unchanged
+  (`quarantined_norad_ids` preserved so the `summary_dict` JSON-key
+  contract and `git log -S` history stay intact); only the type changed
+  from `dict` to `NoradTracker`. Renderers (`summary_dict`,
+  `_aggregate_per_norad`, `aggregate_broken_norad_ids`) read via
+  `tracker.counts`. Sibling refactor to issue #19's `RejectSink`
+  extraction, deliberately simpler — no cap, no file resource, no
+  context-manager, no `merge`, no freeze boundary (half-encapsulation
+  by deliberate choice so the per-NORAD data shape stays free to evolve
+  toward per-satellite timestamps or provenance without breaking a
+  monoid contract). No user-visible byte format changes
+  (`broken-noradids.ndjson`, JSON output, and `report.md` are
+  byte-identical to the pre-refactor baseline). Closes #47.
 - Free-form short tags used across `repair.py`, `pipeline.py`, and tests
   are now defined in `lintle.categories` (for `FixClass`, the successful-repair
   taxonomy) and `lintle.diagnostics` (for `RuleID`, the rejection taxonomy)
