@@ -180,6 +180,33 @@ class TestProcessFile:
         pipeline.process_file(str(src), str(out), "validate")
         assert not out.exists()  # no .shards/, no nothing
 
+    def test_jsonl_write_failure_after_counters_advance(
+        self, tmp_path, line1, line2, monkeypatch
+    ):
+        # Issue #9 spec §8.7: if the JSONL writer raises mid-stream,
+        # (a) the exception propagates, (b) the .partial is unlinked by
+        # __exit__'s abnormal-exit branch, (c) no broken sidecar is
+        # finalized — sink.finalize never runs because an exception
+        # interrupted the record loop. The cleaned tmp is unlinked too.
+        bad_line2 = line2[:-1] + ("9" if line2[-1] != "9" else "0")
+        src = tmp_path / "tle2099.txt"
+        src.write_bytes((line1 + "\n" + bad_line2 + "\n").encode("ascii"))
+        out = tmp_path / "out"
+
+        def boom(self, entry):
+            raise OSError("simulated jsonl write failure")
+
+        monkeypatch.setattr(report.JsonlFindingsWriter, "write_entry", boom)
+
+        with pytest.raises(OSError, match="simulated jsonl write failure"):
+            pipeline.process_file(str(src), str(out), "clean")
+
+        # No partials linger after the abnormal-exit cleanup runs.
+        assert not list(out.rglob("*.partial"))
+        # No published cleaned file (the os.replace happens after the
+        # record loop, which we never reached).
+        assert not list(out.rglob("*.cleaned.txt"))
+
     def test_internal_error_is_quarantined_not_raised(
         self, tmp_path, line1, line2, monkeypatch
     ):

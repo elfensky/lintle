@@ -527,6 +527,26 @@ class TestSummaries:
         data["dropped_counts"].pop(RuleID.CHECKSUM_MISMATCH)
         assert RuleID.CHECKSUM_MISMATCH in stats.reject_sample.dropped_count
 
+    def test_summary_dict_keys_unchanged_after_jsonl_feature(self):
+        # Issue #9 spec §8.9: defensive test against per-finding fields
+        # leaking into the --report json stdout output. The exact set of
+        # keys returned by summary_dict is the contract for downstream
+        # tooling consuming `lintle ... --report json`.
+        data = report.summary_dict(_stats_with_counts())
+        expected = {
+            "src_name",
+            "paired_records",
+            "orphan_entries",
+            "input_lines_seen",
+            "clean_count",
+            "quarantined_count",
+            "fix_counts",
+            "reject_counts",
+            "dropped_counts",
+            "quarantined_norad_ids",
+        }
+        assert set(data.keys()) == expected
+
 
 class TestFormatRejectLines:
     def test_format_reject_lines_groups_by_rule(self):
@@ -1064,6 +1084,31 @@ class TestConcatFindingsShards:
         assert dest.exists()
         assert not (tmp_path / "report.jsonl.partial").exists()
 
+    def test_concat_failure_preserves_prior_report_jsonl(
+        self, tmp_path, monkeypatch
+    ):
+        # If os.replace raises during concat, the destination from a
+        # prior run (if any) stays unchanged and the partial is left
+        # behind — next run's pre-run scrub purges. Spec §8.7.
+        shard_dir = tmp_path / ".shards"
+        shard_dir.mkdir()
+        self._make_shard(shard_dir, "tle2022", ['{"file":"tle2022.txt"}'])
+        dest = tmp_path / "report.jsonl"
+        dest.write_text("from-prior-run\n", encoding="utf-8")
+
+        def boom(*args, **kwargs):
+            raise OSError("simulated concat rename failure")
+
+        monkeypatch.setattr("os.replace", boom)
+        with pytest.raises(OSError, match="simulated concat rename failure"):
+            report.concat_findings_shards(
+                str(tmp_path),
+                str(dest),
+                [report.FileStats(src_name="tle2022.txt")],
+            )
+        # Prior content is untouched.
+        assert dest.read_text(encoding="utf-8") == "from-prior-run\n"
+
 
 class TestPerNoradBreakdown:
     """The ``## Per-NORAD breakdown`` section appended to ``report.md``.
@@ -1518,6 +1563,26 @@ class TestJsonlFindingsWriter:
                 writer.finalize()
         with open(path_a, "rb") as a, open(path_b, "rb") as b:
             assert a.read() == b.read()
+
+    def test_finalize_failure_leaves_partial(self, tmp_path, monkeypatch):
+        # If os.replace raises during finalize, the partial is left behind
+        # so the next run's pre-run scrub can purge it. Mirrors the
+        # BrokenFileWriter contract; spec §8.7.
+        path = str(tmp_path / "x.findings.jsonl")
+
+        def boom(*args, **kwargs):
+            raise OSError("simulated rename failure")
+
+        with report.JsonlFindingsWriter(path, src_name="x.txt") as writer:
+            writer.write_entry(self._entry())
+            monkeypatch.setattr("os.replace", boom)
+            with pytest.raises(OSError, match="simulated rename failure"):
+                writer.finalize()
+        assert not os.path.exists(path)
+        # The .partial does NOT survive the context-manager exit because
+        # _completed was never set to True (finalize raised before the
+        # line that sets it) so __exit__ unlinks it.
+        assert not os.path.exists(path + ".partial")
 
 
 class TestRejectSink:
