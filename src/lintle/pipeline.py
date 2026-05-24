@@ -302,10 +302,10 @@ def _record_reject(stats, sink, primary, related, raw_lines, source_lines):
     # and bad-prefix rejects expose no line-1 catalog field and are
     # silently skipped per the issue contract (line 1 unreadable -> omit).
     # The per-NORAD bucket records which rules the satellite hit, feeding
-    # the human-facing per-NORAD breakdown section in report.md; the +1
-    # per call accrues to that satellite's per-rule total across all of
-    # its rejects in this file.
+    # the human-facing per-NORAD breakdown section in report.md; ``record``
+    # accrues a +1 to that satellite's per-rule total across all rejects
+    # in this file. Single typed mutation entry point per issue #47 — any
+    # future writer that wants to populate the tracker must go through it.
     norad_id = tle.extract_norad_id(raw_lines[0])
     if norad_id is not None:
-        per_rule = stats.quarantined_norad_ids.setdefault(norad_id, {})
-        per_rule[primary.rule_id] = per_rule.get(primary.rule_id, 0) + 1
+        stats.quarantined_norad_ids.record(norad_id, primary.rule_id)
