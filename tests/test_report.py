@@ -1,6 +1,9 @@
 """Tests for lintle.report — statistics, the quarantine sidecar, and summaries."""
 
+import dataclasses
 import json
+
+import pytest
 
 from lintle import report
 from lintle.categories import FixClass
@@ -840,3 +843,60 @@ class TestPerNoradBreakdown:
         a = report.FileStats(src_name="x.txt", quarantined_norad_ids={25544: {}})
         out = report.format_run_report([a])
         assert "_None — no records quarantined._" in out
+
+
+class TestFileSample:
+    """The immutable per-file bounded sample (issue #19 refactor)."""
+
+    def _stub_entries(self, count, rule=RuleID.CHECKSUM_MISMATCH):
+        """Build N minimal RejectEntry stubs for cap-bound tests."""
+        return [
+            report.RejectEntry(
+                raw_lines=[b"1 stub"],
+                source_lines=[i],
+                primary=_diag(rule, src=i),
+            )
+            for i in range(count)
+        ]
+
+    def test_from_bounded_clones_into_tuples(self):
+        # Lists in -> tuples out, so the immutable invariant is structural,
+        # not just a docstring promise.
+        entries = self._stub_entries(2)
+        sample = report.FileSample.from_bounded(
+            cap=5, entries_by_rule={RuleID.CHECKSUM_MISMATCH: entries}
+        )
+        assert isinstance(sample.buckets[RuleID.CHECKSUM_MISMATCH], tuple)
+
+    def test_from_bounded_rejects_over_cap(self):
+        # Strict by design: an over-cap input surfaces immediately as a
+        # ValueError naming the rule and the counts, so test fixtures that
+        # accidentally exceed the bound fail loudly.
+        with pytest.raises(ValueError, match=r"CHECKSUM_MISMATCH.*6 entries.*cap is 5"):
+            report.FileSample.from_bounded(
+                cap=5,
+                entries_by_rule={RuleID.CHECKSUM_MISMATCH: self._stub_entries(6)},
+            )
+
+    def test_from_bounded_accepts_exactly_cap(self):
+        # The boundary is inclusive — N entries at cap=N must succeed.
+        sample = report.FileSample.from_bounded(
+            cap=5,
+            entries_by_rule={RuleID.CHECKSUM_MISMATCH: self._stub_entries(5)},
+        )
+        assert len(sample.buckets[RuleID.CHECKSUM_MISMATCH]) == 5
+
+    def test_empty_default_has_zero_buckets(self):
+        # The sentinel for files with no rejects — no None-checks needed
+        # in renderers, and the cap survives so renderers can show
+        # truncation against it.
+        sample = report.FileSample.empty(cap=5)
+        assert sample.buckets == {}
+        assert sample.cap == 5
+
+    def test_frozen(self):
+        # Frozen dataclass: post-finalize mutation is structurally
+        # impossible, so consumers cannot accidentally invalidate the cap.
+        sample = report.FileSample.empty(cap=5)
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            sample.cap = 99
