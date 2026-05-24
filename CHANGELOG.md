@@ -6,6 +6,8 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-05-24
+
 ### Fixed
 
 - `pipeline.process_file` no longer conflates unpaired orphan lines with
