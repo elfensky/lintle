@@ -269,14 +269,15 @@ class TestProcessFile:
 
 
 class TestStreamingRejects:
-    """The constant-memory invariant: reject_exemplars stays bounded even on
-    reject-heavy files, while the on-disk ``.broken.txt`` catalog is complete.
+    """The constant-memory invariant: each ``RuleID`` bucket in
+    ``reject_exemplars`` stays bounded even on reject-heavy files, while the
+    on-disk ``.broken.txt`` catalog is complete.
     """
 
-    def test_exemplars_bounded_but_broken_catalog_is_complete(self, tmp_path):
-        # Far more bad-prefix orphans than the in-memory exemplar bound — the
-        # full catalog must reach disk; only the in-memory sample is capped.
-        n = pipeline._EXEMPLAR_BOUND + 1500
+    def test_exemplars_bucketed_per_rule_with_complete_broken_catalog(self, tmp_path):
+        # Far more bad-prefix orphans than the per-rule exemplar bound —
+        # the full catalog must reach disk; only the in-memory bucket caps.
+        n = pipeline._PER_RULE_EXEMPLAR_BOUND + 1500
         src = tmp_path / "tle2099.txt"
         src.write_bytes(b"\n".join(f"junk {i:08d}".encode("ascii") for i in range(n)))
         out = tmp_path / "out"
@@ -286,29 +287,91 @@ class TestStreamingRejects:
         # Full counters reflect every reject…
         assert stats.quarantined_count == n
         assert stats.reject_counts.get(RuleID.BAD_PREFIX) == n
-        # …but the in-memory exemplar buffer is capped at the bound.
-        assert len(stats.reject_exemplars) == pipeline._EXEMPLAR_BOUND
+        # …but the in-memory bucket for that rule is capped at the bound.
+        assert (
+            len(stats.reject_exemplars[RuleID.BAD_PREFIX])
+            == pipeline._PER_RULE_EXEMPLAR_BOUND
+        )
         # The on-disk catalog header and trailing entry both reflect every
         # quarantined record — none were dropped due to the in-memory cap.
         broken = (out / "broken" / "tle2099.broken.txt").read_bytes()
-        # Every yielded entry here is an orphan ("bad-prefix") — so the
-        # paired/orphan split puts all `n` into orphan_entries, and the
-        # denominator on the sidecar header is paired+orphan = n.
         assert f"# {n} quarantined of {n} entries".encode("ascii") in broken
         last = f"junk {n - 1:08d}".encode("ascii")
         assert last in broken
 
-    def test_validate_mode_bounds_memory_too(self, tmp_path):
-        # In validate mode no sidecar is written, but the in-memory exemplars
-        # still cap so peak memory does not grow with reject count.
-        n = pipeline._EXEMPLAR_BOUND + 500
+    def test_validate_mode_bucket_caps_per_rule(self, tmp_path):
+        # In validate mode no sidecar is written, but each per-rule bucket
+        # still caps so peak memory does not grow with reject count.
+        n = pipeline._PER_RULE_EXEMPLAR_BOUND + 500
         src = tmp_path / "tle2099.txt"
         src.write_bytes(b"\n".join(f"junk {i:08d}".encode("ascii") for i in range(n)))
 
         stats = pipeline.process_file(str(src), str(tmp_path / "out"), "validate")
 
         assert stats.quarantined_count == n
-        assert len(stats.reject_exemplars) == pipeline._EXEMPLAR_BOUND
+        assert (
+            len(stats.reject_exemplars[RuleID.BAD_PREFIX])
+            == pipeline._PER_RULE_EXEMPLAR_BOUND
+        )
+
+    def test_rare_rules_preserved_under_skew(self, tmp_path):
+        # Feed 1000 bad-prefix rejects then a smaller batch of a different
+        # rule. With per-rule buckets, both appear in stats.reject_exemplars.
+        many = 1000
+        few = 3
+        lines = [f"junk {i:08d}".encode("ascii") for i in range(many)]
+        # Append a few orphan line-1 records (no following line-2): these
+        # land in RuleID.ORPHAN_LINE, distinct from BAD_PREFIX.
+        tle_line1 = (
+            "1 {i:05d}U 24001A   24001.00000000  .00000000  00000-0  00000-0 0  0001"
+        )
+        lines.extend(tle_line1.format(i=i).encode("ascii") for i in range(few))
+        src = tmp_path / "tle2099.txt"
+        src.write_bytes(b"\n".join(lines))
+
+        stats = pipeline.process_file(str(src), str(tmp_path / "out"), "validate")
+
+        # Both rules appear in the sample dict — the old flat buffer's
+        # failure mode is gone.
+        assert RuleID.BAD_PREFIX in stats.reject_exemplars
+        assert RuleID.ORPHAN_LINE in stats.reject_exemplars
+        # The rare rule has all its occurrences (well under the cap).
+        assert len(stats.reject_exemplars[RuleID.ORPHAN_LINE]) == few
+
+    def test_internal_error_rule_bucketed_like_data_defects(
+        self, tmp_path, monkeypatch
+    ):
+        # Force ``repair.process_record`` to raise so every paired record
+        # lands in RuleID.INTERNAL_ERROR. With many more rejects than the
+        # cap, the bucket caps just like a data-defect rule.
+        n = pipeline._PER_RULE_EXEMPLAR_BOUND + 5
+        line1_tmpl = (
+            "1 {i:05d}U 24001A   24001.00000000  .00000000  00000-0  00000-0 0  0001"
+        )
+        line2_tmpl = (
+            "2 {i:05d}  51.6000 000.0000 0001000   0.0000   0.0000 15.50000000000001"
+        )
+        lines = []
+        for i in range(n):
+            lines.append(line1_tmpl.format(i=i).encode("ascii"))
+            lines.append(line2_tmpl.format(i=i).encode("ascii"))
+        src = tmp_path / "tle2099.txt"
+        src.write_bytes(b"\n".join(lines))
+
+        from lintle import repair
+
+        def _boom(*_args, **_kwargs):
+            raise RuntimeError("synthetic per-record failure")
+
+        monkeypatch.setattr(repair, "process_record", _boom)
+
+        stats = pipeline.process_file(str(src), str(tmp_path / "out"), "validate")
+
+        assert stats.reject_counts.get(RuleID.INTERNAL_ERROR) == n
+        assert (
+            len(stats.reject_exemplars[RuleID.INTERNAL_ERROR])
+            == pipeline._PER_RULE_EXEMPLAR_BOUND
+        )
 
 
 class TestQuarantinedNoradIds:

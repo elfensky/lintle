@@ -7,12 +7,13 @@ import os
 from lintle import repair, report, stem, tle
 from lintle.diagnostics import Diagnostic, RuleID, diagnostic
 
-# How many quarantined records to retain in memory as exemplars for the
-# ``validate`` summary. The full byte-faithful catalog goes straight to the
-# ``.broken.txt`` sidecar via ``BrokenFileWriter`` — this bound only caps the
-# in-memory display sample, so peak memory stays constant even on files
-# where every record is corrupt.
-_EXEMPLAR_BOUND = 1000
+# How many quarantined records to retain in memory as exemplars per
+# ``RuleID`` for the ``validate`` summary. The full byte-faithful catalog
+# goes straight to the ``.broken.txt`` sidecar via ``BrokenFileWriter`` —
+# this bound only caps the per-rule in-memory display sample, so peak
+# memory stays constant even on files where every record is corrupt.
+# Total ceiling per file is ``|RuleID| × _PER_RULE_EXEMPLAR_BOUND``.
+_PER_RULE_EXEMPLAR_BOUND = 5
 
 
 @dataclasses.dataclass
@@ -278,10 +279,11 @@ def _record_reject(stats, broken_writer, primary, related, raw_lines, source_lin
     ``stats.reject_counts``. ``related`` carries supporting diagnostics, if
     any, and is rendered as indented continuation lines in ``.broken.txt``.
 
-    The in-memory ``reject_exemplars`` list is capped at ``_EXEMPLAR_BOUND``
-    — it only feeds the ``validate`` summary display, never the
-    byte-faithful catalog. The full record stream goes straight to the
-    ``BrokenFileWriter`` when one is open (``clean`` mode).
+    The in-memory ``reject_exemplars`` dict holds up to
+    ``_PER_RULE_EXEMPLAR_BOUND`` entries per ``RuleID`` so the ``validate``
+    summary surfaces every observed rule (issue #21). The full
+    byte-faithful catalog streams to the sidecar via ``BrokenFileWriter``
+    when one is open (``clean`` mode).
     """
     stats.quarantined_count += 1
     # primary.rule_id is a StrEnum — equal to and hashable as its string
@@ -291,8 +293,15 @@ def _record_reject(stats, broken_writer, primary, related, raw_lines, source_lin
         stats.reject_counts.get(primary.rule_id, 0) + 1
     )
     entry = report.RejectEntry(raw_lines, source_lines, primary, related)
-    if len(stats.reject_exemplars) < _EXEMPLAR_BOUND:
-        stats.reject_exemplars.append(entry)
+    # Get-or-create avoids the per-call empty-list allocation that
+    # ``setdefault(primary.rule_id, [])`` would incur on the hot path —
+    # CPython evaluates the default argument before checking key membership.
+    bucket = stats.reject_exemplars.get(primary.rule_id)
+    if bucket is None:
+        bucket = []
+        stats.reject_exemplars[primary.rule_id] = bucket
+    if len(bucket) < _PER_RULE_EXEMPLAR_BOUND:
+        bucket.append(entry)
     if broken_writer is not None:
         broken_writer.write_entry(entry)
     # Recover a NORAD ID from line 1 when one is readable; orphan-line-2
