@@ -398,6 +398,29 @@ class TestMain:
         # validate mode lists each quarantined record's location and rule ID.
         assert "TLE-CHK-001" in capsys.readouterr().out
 
+    def test_main_validate_renders_grouped_exemplars(
+        self, tmp_path, line1, line2, capsys
+    ):
+        # Two distinct defect rules in one file: a checksum mismatch
+        # (TLE-CHK-001) and a stray line that isn't a TLE (TLE-PAIR-002).
+        src = tmp_path / "src"
+        src.mkdir()
+        bad_line1 = line1[:68] + "9"  # wrong checksum
+        (src / "tle2099.txt").write_bytes(
+            (bad_line1 + "\n" + line2 + "\n" + "garbage\n").encode("ascii")
+        )
+
+        rc = cli.main(["validate", str(src), "--jobs", "1"])
+
+        out = capsys.readouterr().out
+        assert rc == 1
+        # The grouped rule heading (2-space indent, count parenthesized).
+        assert "  TLE-CHK-001 (" in out
+        # The 4-space-indented exemplar line under it.
+        assert "    line " in out
+        # The other rule is grouped under its own heading.
+        assert "  TLE-PAIR-002 (" in out
+
     def test_main_returns_130_on_keyboard_interrupt(
         self, tmp_path, line1, line2, monkeypatch
     ):
