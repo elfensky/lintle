@@ -498,6 +498,81 @@ class TestMain:
         assert not list(out.rglob("*.partial"))
 
 
+class TestReportJsonl:
+    """Issue #9 spec §8.5: ``clean`` mode emits ``<out_dir>/report.jsonl``
+    after every successful run; validate mode does not.
+    """
+
+    def test_clean_emits_report_jsonl(self, tmp_path, line1, line2, capsys):
+        # A wrong-checksum record produces a quarantine + a JSONL line.
+        src = tmp_path / "src"
+        src.mkdir()
+        bad_line2 = line2[:-1] + ("9" if line2[-1] != "9" else "0")
+        (src / "tle2099.txt").write_bytes(
+            (line1 + "\n" + bad_line2 + "\n").encode("ascii")
+        )
+        out = tmp_path / "out"
+
+        cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
+
+        jsonl_path = out / "report.jsonl"
+        assert jsonl_path.exists()
+        lines = jsonl_path.read_text(encoding="utf-8").splitlines()
+        assert len(lines) == 1
+        parsed = json.loads(lines[0])
+        assert parsed["schema_version"] == "1"
+        assert parsed["outcome"] == "quarantined"
+        assert parsed["file"] == "tle2099.txt"
+        assert parsed["rule_id"] == "TLE-CHK-001"
+        # .shards/ is cleaned up by concat.
+        assert not (out / ".shards").exists()
+
+    def test_clean_jsonl_empty_when_zero_quarantines(
+        self, tmp_path, line1, line2
+    ):
+        # An all-clean run still produces report.jsonl, just empty —
+        # matches broken-noradids.ndjson's contract that the artifact
+        # is always present after a successful clean.
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "tle2099.txt").write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
+        out = tmp_path / "out"
+
+        cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
+
+        jsonl_path = out / "report.jsonl"
+        assert jsonl_path.exists()
+        assert jsonl_path.read_text(encoding="utf-8") == ""
+
+    def test_clean_summary_announces_findings_path(
+        self, tmp_path, line1, line2, capsys
+    ):
+        # The post-run summary block includes a "findings: <path>" line
+        # so operators see the artifact location alongside report.md.
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "tle2099.txt").write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
+        out = tmp_path / "out"
+
+        cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
+        stdout = capsys.readouterr().out
+        assert "findings: " in stdout
+        assert "report.jsonl" in stdout
+
+    def test_validate_does_not_emit_jsonl(self, tmp_path, line1, line2):
+        # Validate mode owns no --out-dir artifacts; no report.jsonl.
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "tle2099.txt").write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
+        out = tmp_path / "out"
+
+        cli.main(["validate", str(src), "--out-dir", str(out), "--jobs", "1"])
+
+        assert not (out / "report.jsonl").exists()
+        # Validate mode never even creates the out_dir.
+        assert not out.exists() or not list(out.iterdir())
+
+
 class TestPreRunShardScrub:
     """Issue #9 spec §4.6 / §8.10: the pre-run shard-dir scrub removes
     any leftover ``.shards/`` from a prior aborted run so this run's
