@@ -916,3 +916,35 @@ def write_broken_noradids_ndjson(path, all_stats):
     """
     with open(path, "w", encoding="ascii", newline="\n") as handle:
         handle.write(format_broken_noradids_ndjson(all_stats))
+
+
+def concat_findings_shards(out_dir, dest_path, all_stats):
+    """Concatenate per-file findings shards into the corpus ``report.jsonl``.
+
+    Per-worker shards live in ``<out_dir>/.shards/<stem>.findings.jsonl``,
+    written by each worker's ``RejectSink`` (issue #9). We walk
+    ``all_stats`` (already sorted by ``src_name`` in ``cli.py`` before this
+    call) so the concatenated order is alphabetical by source filename —
+    deterministic and matching ``report.md``'s per-file table. The
+    destination is written via tmp + ``os.replace`` for atomicity; after
+    success the entire shard directory is removed. Always creates the
+    destination even when every shard is empty or missing, matching
+    ``broken-noradids.ndjson``'s "artifact always present after successful
+    clean" contract. Spec §4.6.
+    """
+    shard_dir = os.path.join(out_dir, ".shards")
+    tmp_path = dest_path + ".partial"
+    with open(tmp_path, "wb") as out:
+        for stats in all_stats:
+            shard = os.path.join(
+                shard_dir, stem(stats.src_name) + ".findings.jsonl"
+            )
+            if not os.path.exists(shard):
+                # Worker crashed before finalize, validate-mode worker, or
+                # an out-of-band cleanup removed it — skip silently.
+                continue
+            with open(shard, "rb") as src:
+                shutil.copyfileobj(src, out, length=65536)
+    os.replace(tmp_path, dest_path)
+    with contextlib.suppress(OSError):
+        shutil.rmtree(shard_dir)
