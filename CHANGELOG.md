@@ -37,6 +37,20 @@ All notable changes to this project are documented in this file. The format is b
   The richer per-NORAD data is the human-facing counterpart to
   `broken-noradids.ndjson`, whose `{"noradId":N}` contract stays minimal.
   Closes #40.
+- Per-rule drop visibility everywhere `lintle` surfaces reject totals.
+  `FileSample` gains a `dropped_count: dict[RuleID, int]` field, populated
+  by `RejectSink.add` when the per-rule bucket is at cap (the bound that
+  in-memory exemplars are capped at — full byte-faithful catalog reaches
+  `.broken.txt` regardless). The new data threads through three surfaces:
+  the `lintle validate` summary's per-rule heading switches from `(M):`
+  to `(N of M hits, K dropped):` when `K > 0`; the JSON output
+  (`lintle validate --report json`) gains a `dropped_counts` field
+  parallel to `reject_counts`, keyed by stable rule IDs; and
+  `report.md`'s "Records quarantined (by rule)" table gains a `Dropped`
+  column summed across files. The trailing `...and X more` under each
+  rule block in the validate summary stays, so the existing
+  truncation-indicator stays visually anchored to the exemplars it
+  applies to. Closes #46.
 
 ### Changed
 
