@@ -11,20 +11,21 @@ from lintle.categories import FixClass
 from lintle.diagnostics import Diagnostic, RepairTier, RuleID, diagnostic
 
 
-def repair_line(raw, lineno, source_line_no=None):
+def repair_line(raw, lineno, source_line_no):
     """Attempt to repair one raw line into a valid 69-character TLE line.
 
     ``raw`` is the bytes of a single line WITHOUT its ``\\n`` terminator
     (a trailing ``\\r`` may remain). ``lineno`` is 1 or 2 (the TLE position
     within a record). ``source_line_no`` is the 1-indexed file line that
-    populates a failure's :class:`Diagnostic`; ``None`` falls back to ``0``.
+    populates a failure's :class:`Diagnostic` — required so provenance is
+    never silently invented (no sentinel-line-0 in published output).
 
     Returns ``(clean_line, fixes, diagnostic_or_None)``:
       * success -> ``(str, list[FixClass], None)``
       * failure -> ``(None, list[FixClass], Diagnostic)``
     """
     fixes = []
-    src = (source_line_no if source_line_no is not None else 0,)
+    src = (source_line_no,)
 
     try:
         line = raw.decode("ascii")
@@ -170,13 +171,22 @@ def process_record(raw_line1, src1, raw_line2, src2):
 
     record_errors = tle.validate_record(line1, line2)
     if record_errors:
+        # Tier reflects the strongest repair attempted on EITHER line. A
+        # CATALOG_MISMATCH after both lines survived checksum reconstruction
+        # is a stronger corruption signal than one caught at first read; the
+        # consumer should see tier-2 in that case, not tier-1.
+        tier = (
+            RepairTier.CHECKSUM_RECONSTRUCT
+            if FixClass.RECONSTRUCTED_CHECKSUM in fixes1 + fixes2
+            else RepairTier.NORMALIZATION
+        )
         return Rejected(
             [raw_line1, raw_line2],
             [src1, src2],
             diagnostic(
                 RuleID.CATALOG_MISMATCH,
                 source_line_nos=(src1, src2),
-                tier_attempted=RepairTier.NORMALIZATION,
+                tier_attempted=tier,
                 note="; ".join(record_errors),
             ),
         )
