@@ -228,6 +228,69 @@ class TestEntryToJsonlDict:
         assert out["norad_id"] is None
 
 
+class TestReportJsonlSchemaLock:
+    """The schema contract for ``report.jsonl`` (issue #9 spec §8.6 / §5).
+    Failures here force a spec revision: removing or renaming pinned
+    fields requires bumping ``schema_version``. Adding new optional
+    fields is non-breaking and should NOT fail these tests.
+    """
+
+    def _entry(self, src=10, norad_id=None):
+        return report.RejectEntry(
+            raw_lines=[b"1 x"],
+            source_lines=[src],
+            primary=diagnostic(RuleID.CHECKSUM_MISMATCH, source_line_nos=(src,)),
+            norad_id=norad_id,
+        )
+
+    def test_schema_version_is_pinned(self, tmp_path):
+        # Every line of a synthesized report.jsonl carries schema_version="1".
+        path = str(tmp_path / "x.findings.jsonl")
+        with report.JsonlFindingsWriter(path, src_name="x.txt") as writer:
+            for src in (10, 20, 30):
+                writer.write_entry(self._entry(src=src))
+            writer.finalize()
+        with open(path, encoding="utf-8") as handle:
+            for line in handle:
+                parsed = json.loads(line)
+                assert parsed["schema_version"] == "1"
+
+    def test_outcome_field_pinned(self, tmp_path):
+        # Every line of v1 report.jsonl carries outcome="quarantined".
+        # Future additions of "fixed" outcomes will require updating
+        # this test along with the spec.
+        path = str(tmp_path / "x.findings.jsonl")
+        with report.JsonlFindingsWriter(path, src_name="x.txt") as writer:
+            writer.write_entry(self._entry())
+            writer.finalize()
+        with open(path, encoding="utf-8") as handle:
+            parsed = json.loads(handle.readline())
+            assert parsed["outcome"] == "quarantined"
+
+    def test_envelope_field_set_is_locked(self):
+        # The exact set of top-level keys is the spec contract; both
+        # accidental additions and accidental removals fail here.
+        entry = self._entry()
+        out = report.entry_to_jsonl_dict(
+            entry, file="x.txt", norad_id=entry.norad_id
+        )
+        expected = {
+            "schema_version",
+            "outcome",
+            "file",
+            "rule_id",
+            "source_lines",
+            "tier_attempted",
+            "norad_id",
+            "column_range",
+            "observed",
+            "expected",
+            "note",
+            "related",
+        }
+        assert set(out.keys()) == expected
+
+
 class TestWriteBrokenFile:
     def test_write_broken_file(self, tmp_path):
         stats = report.FileStats(src_name="tle2099.txt")
