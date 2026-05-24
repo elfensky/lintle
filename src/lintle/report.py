@@ -28,6 +28,48 @@ class RejectEntry:
     related: tuple[Diagnostic, ...] = ()
 
 
+@dataclasses.dataclass(frozen=True)
+class FileSample:
+    """Immutable, per-file bounded sample of quarantined records (issue #19).
+
+    Produced by :meth:`RejectSink.finalize`; consumed by renderers
+    (:func:`format_reject_lines`, :func:`write_broken_file`). Frozen so
+    post-finalize consumers cannot accidentally mutate the sample — the
+    per-rule cap invariant is locked in at construction time. ``cap``
+    travels with the sample so renderers can surface truncation against
+    the bound that was in force when the sample was built.
+    """
+
+    buckets: dict
+    cap: int
+
+    @classmethod
+    def from_bounded(cls, cap, entries_by_rule):
+        """Build a FileSample, asserting every bucket honours ``cap``.
+
+        Test-friendly constructor: clones each bucket into a ``tuple`` so
+        the result is structurally immutable, and raises ``ValueError``
+        (naming the rule and counts) if any bucket exceeds ``cap``.
+        Strict by design — silent over-cap inputs would mask test fixture
+        mistakes that the sink's cap-enforcement is meant to prevent in
+        production.
+        """
+        for rule_id, entries in entries_by_rule.items():
+            if len(entries) > cap:
+                raise ValueError(
+                    f"bucket {rule_id.name} has {len(entries)} entries; cap is {cap}"
+                )
+        return cls(
+            buckets={rid: tuple(entries) for rid, entries in entries_by_rule.items()},
+            cap=cap,
+        )
+
+    @classmethod
+    def empty(cls, cap):
+        """Empty sentinel — saves renderer consumers a None-check per file."""
+        return cls(buckets={}, cap=cap)
+
+
 @dataclasses.dataclass
 class FileStats:
     """Accumulated results for one processed source file.
