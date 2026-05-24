@@ -43,7 +43,7 @@ class TestEndToEnd:
             line1 + "\n" + line2 + "\n" + line1 + "\n" + line2 + "\n"
         ).encode("ascii")
         broken = (out / "broken" / "tle2099.broken.txt").read_bytes()
-        assert b"checksum" in broken
+        assert b"TLE-CHK-001" in broken
         assert bad_line1.encode("ascii") in broken
 
     def test_clean_is_idempotent(self, tmp_path, line1, line2):

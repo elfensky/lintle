@@ -1,10 +1,13 @@
-"""Canonical taxonomies for cleaner outcomes — fix classes and reject categories.
+"""Canonical taxonomy for successful repairs — the :class:`FixClass` enum.
 
-Each enum is the single source of truth for the short tags that appear in
-``stats.fix_counts`` / ``stats.reject_categories``, the ``.broken.txt``
-sidecar header, and ``report.md``. Members are :class:`enum.StrEnum` so
-they compare equal to and serialize as their hyphenated string values —
-existing on-disk output stays byte-identical.
+``FixClass`` is the single source of truth for the short tags that appear in
+``Accepted.fixes``, ``stats.fix_counts``, and the ``report.md`` "Fixes
+applied" table. Members are :class:`enum.StrEnum` so they compare equal to
+and serialize as their hyphenated string values.
+
+Rejection taxonomy lives in :mod:`lintle.diagnostics` as the stable
+:class:`~lintle.diagnostics.RuleID` enum (``TLE-COL-001``, ``TLE-CHK-001``,
+…) — replacing the former ``RejectCategory`` enum removed in v0.3.0.
 """
 
 import enum
@@ -23,22 +26,3 @@ class FixClass(enum.StrEnum):
     TRAILING_WS = "trailing-ws"
     TRAILING_BACKSLASH = "trailing-backslash"
     RECONSTRUCTED_CHECKSUM = "reconstructed-checksum"
-
-
-class RejectCategory(enum.StrEnum):
-    """Tags for records or lines routed to quarantine instead of cleaned output.
-
-    Each member names one reason a record could not be safely repaired.
-    They are stored on ``Rejected.category`` / ``Orphan.category`` and
-    tallied in ``FileStats.reject_categories``.
-    """
-
-    NON_ASCII = "non-ascii"
-    INTERIOR_CHAR_MISSING = "interior-char-missing"
-    WRONG_LENGTH = "wrong-length"
-    CHECKSUM_MISMATCH = "checksum-mismatch"
-    INVALID_COLUMNS = "invalid-columns"
-    CATALOG_MISMATCH = "catalog-mismatch"
-    ORPHAN_LINE = "orphan-line"
-    BAD_PREFIX = "bad-prefix"
-    INTERNAL_ERROR = "internal-error"
