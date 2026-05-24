@@ -35,6 +35,17 @@
   manifest write semantics, and `--no-skip` / `--force` CLI overrides.
   Designed, not yet implemented; codifies the contract for issue #12. The
   prior §13 (Open considerations) renumbers to §14.
+  **2026-05-25:** §4.3 / §8 / §11 / §13 — folded the reject-sink refactor
+  (issue #19) into the design. §4.3 names `RejectSink` and `FileSample` in
+  `report.py`'s responsibilities. §8 routes rejects through `RejectSink`
+  (which owns `BrokenFileWriter`) and refreshes the `iter_records` /
+  `repair.process_record` references. §11 gains a structural-invariant test
+  bullet for the cap-by-construction guarantee. §13.1 clarifies the
+  `FileStats` snapshot excludes the bytes-bearing `reject_sample`; §13.3
+  line references shift for the refactored pipeline (`os.replace` at
+  `pipeline.py:263` followed by `sink.finalize`, both inside `with sink:`)
+  and disclose the narrow crash-between-replace-and-finalize partial-outcome
+  window the refactor introduced.
 - **Topic:** A tool to validate and clean a multi-gigabyte corpus of Two-Line Element (TLE) files exported from space-track.org
 
 ## 1. Problem statement
@@ -194,7 +205,7 @@ TLEs/
 | `tle.py` | Defines validity: checksum, column layout, record pairing. Pure functions. Single source of truth. | nothing |
 | `repair.py` | Conservative transformations. Each applied speculatively, confirmed by `tle.py`; committed only if valid. | `tle.py` |
 | `pipeline.py` | Streams a file in **binary**, pairs `1 `/`2 ` lines into record candidates, routes each to cleaned/broken, tallies stats. | `tle.py`, `repair.py` |
-| `report.py` | Renders the `.broken.txt` reject file and the run summary. | nothing |
+| `report.py` | Renders the `.broken.txt` reject file and the run summary. Owns the `RejectSink` (single mutation entry point, per-rule cap enforced by construction, streaming sidecar lifecycle) and the immutable `FileSample` value object handed back to `FileStats` (issue #19). | nothing |
 | `cli.py` | Globs paths, dispatches `validate` vs `clean`, drives parallelism, prints summary. | all of the above |
 
 Dependencies point one way (`cli → pipeline → repair → tle`); each layer is testable without the
@@ -409,15 +420,18 @@ read bytes ─▶ line state-machine ─▶ pair into record candidates ─▶ r
                                                    <name>.cleaned.txt          <name>.broken.txt
 ```
 
-1. `pipeline.read_records(path)` opens the file in **binary** mode (to observe `\r`, `\`, and
+1. `pipeline.iter_records(path)` opens the file in **binary** mode (to observe `\r`, `\`, and
    encoding precisely) and iterates lines. A small state machine consumes raw lines, drops blank
    lines, and yields record candidates: `(raw_line1, raw_line2, source_line_numbers)`. Lines that
    cannot be paired (orphans) are yielded as orphan candidates.
-2. `repair.process(candidate)` decodes, applies cosmetic strips speculatively, runs
-   `tle.validate_record`, and returns either `Accepted(line1, line2, fixes_applied)` or
-   `Rejected(raw, reason, source_lines)`.
-3. `pipeline` routes Accepted records to `<name>.cleaned.txt` and Rejected records to
-   `<name>.broken.txt` (via `report`), accumulating statistics.
+2. `repair.process_record(line1, src1, line2, src2)` decodes, applies cosmetic strips
+   speculatively, runs `tle.validate_record`, and returns either `Accepted(line1, line2,
+   fixes_applied)` or a `Rejected` value carrying a primary `Diagnostic` (issue #8).
+3. `pipeline` routes Accepted records to `<name>.cleaned.txt` and Rejected records into a
+   per-file `report.RejectSink`. The sink owns the byte-faithful `BrokenFileWriter` (in
+   `clean` mode) and the bounded in-memory sample used by the `validate` summary; its per-rule
+   cap is enforced by construction so over-cap entries cannot be inserted (issue #19). On
+   finalize, the sink yields an immutable `FileSample` attached to the file's `FileStats`.
 4. After each file, a summary is emitted.
 
 The pairing state machine is **prefix-driven**: it expects a `1 ` line, then a `2 ` line. A `1 `
@@ -568,6 +582,12 @@ Test-driven, dev dependencies `pytest` and `sgp4` (optionally `tletools`).
   the layout and semantic checks, and quarantined otherwise (interior character missing); and the
   speculative-reject path — a `\`-terminated line whose columns 1–69 still fail the checksum must
   be quarantined, not "fixed."
+- **`report.py` structural invariants:** `RejectSink.add` honours the per-rule cap by
+  construction — verified under adversarial input order, a deterministic randomized sequence,
+  and a finalize-then-add `RuntimeError` lock; `FileSample.from_bounded` raises on over-cap
+  input; context-manager exit without `finalize` discards `.broken.txt` partials. These tests
+  lock the cap as a structural property of the sink rather than a convention enforced by a
+  single caller (issue #19).
 - **Golden / integration tests:** a fixture file in `tests/fixtures/` (one per defect class) fed
   through `pipeline`; assert the exact bytes of `.cleaned.txt` and `.broken.txt`.
 - **Idempotence test:** `clean(clean(x)) == clean(x)`; `validate` of a cleaned file reports perfect.
@@ -623,9 +643,13 @@ Written to `<out-dir>/manifest.json`, alongside `report.md` and `broken-noradids
 
 Entry keys are the input paths as passed to `discover_paths()` — not their realpaths — so a
 manifest generated against a symlinked source tree (as used in the worktree workflow) keeps
-matching while the symlink stays valid. Each entry's `stats` is a JSON-serialised snapshot of
-the `FileStats` (§9) for that file, so the run report (§9.4) can include reused files in
-corpus totals without re-reading them.
+matching while the symlink stays valid. Each entry's `stats` is the JSON-serialisable subset
+of the `FileStats` (§9) for that file — every counter, the fix and reject tallies, and the
+per-NORAD breakdown — sufficient for the run report (§9.4) to include reused files in corpus
+totals without re-reading them. The `reject_sample` field (a `FileSample` of `RejectEntry`
+objects carrying raw bytes, §11) is **not** serialised: it feeds only `validate`'s grouped
+exemplar output, and `validate` does not consult the manifest. On reuse, the file's
+`reject_sample` reconstructs as `FileSample.empty(...)`.
 
 ### 13.2 Skip predicate
 
@@ -664,14 +688,16 @@ consumer reading a manifest with an unknown `schema_version` treats it as a full
 ### 13.3 Atomicity
 
 A manifest entry MUST only exist for a file whose `cleaned/` and `broken/` outputs are fully
-committed to disk. The relevant hooks in the current pipeline:
+committed to disk. The relevant hooks in the current pipeline (post issue #19 refactor):
 
-- **Per-file commit point** — `pipeline.py:267`: `os.replace(cleaned_tmp, cleaned_path)`
-  followed by `broken_writer.finalize()`. After this returns, the file's outputs are durably
-  published.
-- **Per-file aggregation** — `cli.py:495`: the parent receives the worker's `FileStats` from
-  `future.result()`. This is where the manifest entry is *assembled*, not where the manifest
-  is *written*.
+- **Per-file commit window** — `pipeline._run` lines 263-266: `os.replace(cleaned_tmp,
+  cleaned_path)` publishes the cleaned file, then `sink.finalize(...)` stitches the
+  `.broken.txt` sidecar via its owned `BrokenFileWriter`. Both calls run inside the active
+  `with sink:` block; both must succeed before the file's outputs are durably published. The
+  manifest entry must be assembled only after this window completes, not within it.
+- **Per-file aggregation** — `cli.py:489`: the parent receives the worker's `FileStats` from
+  `future.result()`. This is where the manifest entry is *assembled* by the parent process,
+  not where the manifest is *written*.
 - **End-of-run manifest write** — the parent writes the full `manifest.json` once, after
   every worker has reported back, by writing `manifest.json.partial` and atomically renaming
   it. Workers never touch the manifest, side-stepping cross-process locking on a shared JSON
@@ -679,9 +705,17 @@ committed to disk. The relevant hooks in the current pipeline:
 
 Interruption semantics fall out cleanly:
 
-- A worker crashes mid-file → the `finally` block at `pipeline.py:258-264` discards the
-  partial outputs, no `FileStats` returns, no manifest entry is assembled. Next run
-  reprocesses naturally.
+- A worker crashes mid-file (before `os.replace`) → the `finally` block at
+  `pipeline._run:247-256` discards the cleaned-file partial; the sink's `__exit__` (fired
+  when the `with sink:` block unwinds) discards the `.broken.txt` partials. No `FileStats`
+  returns, no manifest entry is assembled. Next run reprocesses naturally.
+- A worker crashes between `os.replace` and `sink.finalize` → the cleaned file is committed
+  but the `.broken.txt` is not. The sink's `__exit__` discards the broken-file partials. The
+  worker's exception propagates, no `FileStats` returns, no manifest entry is assembled.
+  Next run reprocesses and harmlessly overwrites the orphaned cleaned file. This window is
+  narrow (one syscall plus a stitched-rename) but a new partial-outcome surface introduced
+  when the refactor moved `finalize` inside `with sink:` — the manifest's all-or-nothing
+  worker-return discipline papers over it cleanly.
 - `Ctrl-C` mid-run → workers that finished contributed `FileStats`, but the parent's
   manifest write happens only at end-of-run. An interrupted run writes *no* manifest. Next
   run reprocesses everything. This is the safe default: redoing work is cheaper than
