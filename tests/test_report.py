@@ -2,6 +2,7 @@
 
 import dataclasses
 import json
+import os
 
 import pytest
 
@@ -1349,6 +1350,90 @@ class TestFileSample:
         )
         source[RuleID.CHECKSUM_MISMATCH] = 9999
         assert sample.dropped_count[RuleID.CHECKSUM_MISMATCH] == 10
+
+
+class TestJsonlFindingsWriter:
+    """The streaming writer for one file's findings shard (issue #9,
+    spec §4.3). Mirrors ``BrokenFileWriter``'s lifecycle pattern but
+    emits one JSON object per line with explicit UTF-8 / LF / sort_keys
+    discipline.
+    """
+
+    def _entry(self, src=10, rule=RuleID.CHECKSUM_MISMATCH, norad_id=None):
+        return report.RejectEntry(
+            raw_lines=[b"1 x"],
+            source_lines=[src],
+            primary=diagnostic(rule, source_line_nos=(src,)),
+            norad_id=norad_id,
+        )
+
+    def test_writes_one_line_per_entry(self, tmp_path):
+        path = str(tmp_path / "tle2022.findings.jsonl")
+        with report.JsonlFindingsWriter(path, src_name="tle2022.txt") as writer:
+            writer.write_entry(self._entry(src=10))
+            writer.write_entry(self._entry(src=20))
+            writer.write_entry(self._entry(src=30))
+            writer.finalize()
+        with open(path, encoding="utf-8") as handle:
+            lines = handle.readlines()
+        assert len(lines) == 3
+        for line in lines:
+            parsed = json.loads(line)
+            assert parsed["schema_version"] == "1"
+            assert parsed["outcome"] == "quarantined"
+            assert parsed["file"] == "tle2022.txt"
+
+    def test_compact_json_no_whitespace(self, tmp_path):
+        # No spaces around JSON separators — grep can count lines, byte
+        # count is minimal, downstream tooling can rely on one record per line.
+        path = str(tmp_path / "x.findings.jsonl")
+        with report.JsonlFindingsWriter(path, src_name="x.txt") as writer:
+            writer.write_entry(self._entry())
+            writer.finalize()
+        with open(path, encoding="utf-8") as handle:
+            content = handle.read()
+        assert ", " not in content  # no whitespace after array commas
+        assert ": " not in content  # no whitespace after key colons
+        # And the file ends in a single LF, not CRLF.
+        assert content.endswith("\n")
+        assert "\r" not in content
+
+    def test_finalize_atomic_rename(self, tmp_path):
+        path = str(tmp_path / "x.findings.jsonl")
+        with report.JsonlFindingsWriter(path, src_name="x.txt") as writer:
+            writer.write_entry(self._entry())
+            writer.finalize()
+        assert os.path.exists(path)
+        assert not os.path.exists(path + ".partial")
+
+    def test_interrupted_run_leaves_no_partial(self, tmp_path):
+        # Context-manager exit without finalize unlinks the .partial.
+        path = str(tmp_path / "x.findings.jsonl")
+        with report.JsonlFindingsWriter(path, src_name="x.txt") as writer:
+            writer.write_entry(self._entry())
+            # exit without finalize
+        assert not os.path.exists(path)
+        assert not os.path.exists(path + ".partial")
+
+    def test_empty_finalize_creates_empty_file(self, tmp_path):
+        path = str(tmp_path / "x.findings.jsonl")
+        with report.JsonlFindingsWriter(path, src_name="x.txt") as writer:
+            writer.finalize()
+        assert os.path.exists(path)
+        with open(path, encoding="utf-8") as handle:
+            assert handle.read() == ""
+
+    def test_sort_keys_byte_determinism(self, tmp_path):
+        # Two writers running on the same logical entry produce
+        # byte-identical files — key order is sorted, not dict-insertion.
+        path_a = str(tmp_path / "a.findings.jsonl")
+        path_b = str(tmp_path / "b.findings.jsonl")
+        for path in (path_a, path_b):
+            with report.JsonlFindingsWriter(path, src_name="x.txt") as writer:
+                writer.write_entry(self._entry())
+                writer.finalize()
+        with open(path_a, "rb") as a, open(path_b, "rb") as b:
+            assert a.read() == b.read()
 
 
 class TestRejectSink:

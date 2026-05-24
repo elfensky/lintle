@@ -350,6 +350,64 @@ class BrokenFileWriter:
         return False
 
 
+class JsonlFindingsWriter:
+    """Streaming writer for one file's structured-findings shard (issue #9).
+
+    Each :meth:`write_entry` call emits one line:
+    ``json.dumps(payload, separators=(",", ":"), sort_keys=True,
+    ensure_ascii=False) + "\\n"`` — compact (no whitespace), key-sorted
+    (so byte output is deterministic across Python dict-iteration changes
+    and future refactors), and UTF-8. The underlying file is opened with
+    ``encoding="utf-8"`` and ``newline="\\n"`` so the artifact is
+    byte-deterministic across platforms (Windows would otherwise
+    translate ``\\n`` → ``\\r\\n``). Writes go to a ``.partial`` next to
+    the destination; :meth:`finalize` atomically renames it into place.
+    Use as a context manager so an interrupted run leaves no debris.
+    """
+
+    def __init__(self, path, src_name):
+        self.path = path
+        self.src_name = src_name
+        self._partial = path + ".partial"
+        self._handle = None
+        self._completed = False
+
+    def __enter__(self):
+        self._handle = open(self._partial, "w", encoding="utf-8", newline="\n")
+        return self
+
+    def write_entry(self, entry):
+        """Append one ``RejectEntry`` to the shard as a JSON line."""
+        payload = entry_to_jsonl_dict(
+            entry, file=self.src_name, norad_id=entry.norad_id
+        )
+        line = json.dumps(
+            payload,
+            separators=(",", ":"),
+            sort_keys=True,
+            ensure_ascii=False,
+        )
+        self._handle.write(line)
+        self._handle.write("\n")
+
+    def finalize(self):
+        """Close the partial and atomically rename into place."""
+        if self._handle is not None and not self._handle.closed:
+            self._handle.close()
+        os.replace(self._partial, self.path)
+        self._completed = True
+
+    def __exit__(self, exc_type, exc, tb):
+        if self._handle is not None and not self._handle.closed:
+            self._handle.close()
+        # On any non-finalized exit, discard the partial so an interrupted
+        # run leaves no debris.
+        if not self._completed:
+            with contextlib.suppress(OSError):
+                os.unlink(self._partial)
+        return False
+
+
 class RejectSink:
     """File-scoped reject sink: bounded sample + optional streaming sidecar.
 
