@@ -57,16 +57,21 @@ class TestWriteBrokenFile:
         stats = report.FileStats(src_name="tle2099.txt")
         stats.paired_records = 5
         stats.quarantined_count = 1
-        stats.reject_exemplars.setdefault(RuleID.BAD_PREFIX, []).append(
-            report.RejectEntry(
-                raw_lines=[b"1 garbage"],
-                source_lines=[42],
-                primary=_diag(
-                    RuleID.BAD_PREFIX,
-                    src=42,
-                    note="line does not start with '1 ' or '2 '",
-                ),
-            )
+        stats.reject_sample = report.FileSample.from_bounded(
+            cap=5,
+            entries_by_rule={
+                RuleID.BAD_PREFIX: [
+                    report.RejectEntry(
+                        raw_lines=[b"1 garbage"],
+                        source_lines=[42],
+                        primary=_diag(
+                            RuleID.BAD_PREFIX,
+                            src=42,
+                            note="line does not start with '1 ' or '2 '",
+                        ),
+                    )
+                ]
+            },
         )
         out = tmp_path / "tle2099.broken.txt"
 
@@ -86,12 +91,17 @@ class TestWriteBrokenFile:
         # A line quarantined for a non-ASCII byte must appear verbatim.
         stats = report.FileStats(src_name="x.txt")
         stats.quarantined_count = 1
-        stats.reject_exemplars.setdefault(RuleID.NON_ASCII_BYTE, []).append(
-            report.RejectEntry(
-                raw_lines=[b"1 \xff\xfe non-ascii"],
-                source_lines=[7],
-                primary=_diag(RuleID.NON_ASCII_BYTE, src=7),
-            )
+        stats.reject_sample = report.FileSample.from_bounded(
+            cap=5,
+            entries_by_rule={
+                RuleID.NON_ASCII_BYTE: [
+                    report.RejectEntry(
+                        raw_lines=[b"1 \xff\xfe non-ascii"],
+                        source_lines=[7],
+                        primary=_diag(RuleID.NON_ASCII_BYTE, src=7),
+                    )
+                ]
+            },
         )
         out = tmp_path / "x.broken.txt"
 
@@ -102,19 +112,24 @@ class TestWriteBrokenFile:
     def test_two_line_record_location(self, tmp_path):
         stats = report.FileStats(src_name="x.txt")
         stats.quarantined_count = 1
-        stats.reject_exemplars.setdefault(RuleID.CHECKSUM_MISMATCH, []).append(
-            report.RejectEntry(
-                raw_lines=[b"1 aaa", b"2 bbb"],
-                source_lines=[14820, 14821],
-                primary=diagnostic(
-                    RuleID.CHECKSUM_MISMATCH,
-                    source_line_nos=(14820, 14821),
-                    tier_attempted=RepairTier.NORMALIZATION,
-                    column_range=(69, 69),
-                    observed="7",
-                    expected="3",
-                ),
-            )
+        stats.reject_sample = report.FileSample.from_bounded(
+            cap=5,
+            entries_by_rule={
+                RuleID.CHECKSUM_MISMATCH: [
+                    report.RejectEntry(
+                        raw_lines=[b"1 aaa", b"2 bbb"],
+                        source_lines=[14820, 14821],
+                        primary=diagnostic(
+                            RuleID.CHECKSUM_MISMATCH,
+                            source_line_nos=(14820, 14821),
+                            tier_attempted=RepairTier.NORMALIZATION,
+                            column_range=(69, 69),
+                            observed="7",
+                            expected="3",
+                        ),
+                    )
+                ]
+            },
         )
         out = tmp_path / "x.broken.txt"
 
@@ -133,24 +148,29 @@ class TestWriteBrokenFile:
         # lines failed), the related ones fold onto indented "and: ..." lines.
         stats = report.FileStats(src_name="x.txt")
         stats.quarantined_count = 1
-        stats.reject_exemplars.setdefault(RuleID.CHECKSUM_MISMATCH, []).append(
-            report.RejectEntry(
-                raw_lines=[b"1 aaa", b"2 bbb"],
-                source_lines=[5, 6],
-                primary=diagnostic(
-                    RuleID.CHECKSUM_MISMATCH,
-                    source_line_nos=(5,),
-                    column_range=(69, 69),
-                ),
-                related=(
-                    diagnostic(
-                        RuleID.LINE_LENGTH,
-                        source_line_nos=(6,),
-                        observed="68",
-                        expected="68 or 69",
-                    ),
-                ),
-            )
+        stats.reject_sample = report.FileSample.from_bounded(
+            cap=5,
+            entries_by_rule={
+                RuleID.CHECKSUM_MISMATCH: [
+                    report.RejectEntry(
+                        raw_lines=[b"1 aaa", b"2 bbb"],
+                        source_lines=[5, 6],
+                        primary=diagnostic(
+                            RuleID.CHECKSUM_MISMATCH,
+                            source_line_nos=(5,),
+                            column_range=(69, 69),
+                        ),
+                        related=(
+                            diagnostic(
+                                RuleID.LINE_LENGTH,
+                                source_line_nos=(6,),
+                                observed="68",
+                                expected="68 or 69",
+                            ),
+                        ),
+                    )
+                ]
+            },
         )
         out = tmp_path / "x.broken.txt"
         report.write_broken_file(str(out), "x.txt", stats)
@@ -165,19 +185,23 @@ class TestWriteBrokenFile:
         # Three rules, two entries each, source lines interleaved
         # (10/40, 20/50, 30/60) so a correct sort by source_lines[0] yields
         # the order 10, 20, 30, 40, 50, 60.
+        buckets = {}
         for rule, srcs in (
             (RuleID.CHECKSUM_MISMATCH, [10, 40]),
             (RuleID.BAD_PREFIX, [20, 50]),
             (RuleID.NON_ASCII_BYTE, [30, 60]),
         ):
-            for s in srcs:
-                stats.reject_exemplars.setdefault(rule, []).append(
-                    report.RejectEntry(
-                        raw_lines=[f"row-{s}".encode("ascii")],
-                        source_lines=[s],
-                        primary=_diag(rule, src=s),
-                    )
+            buckets[rule] = [
+                report.RejectEntry(
+                    raw_lines=[f"row-{s}".encode("ascii")],
+                    source_lines=[s],
+                    primary=_diag(rule, src=s),
                 )
+                for s in srcs
+            ]
+        stats.reject_sample = report.FileSample.from_bounded(
+            cap=5, entries_by_rule=buckets
+        )
 
         out = tmp_path / "x.broken.txt"
         report.write_broken_file(str(out), "x.txt", stats)
@@ -192,19 +216,23 @@ class TestWriteBrokenFile:
         stats = report.FileStats(src_name="x.txt")
         stats.paired_records = 6
         stats.quarantined_count = 6
+        buckets = {}
         for rule, srcs in (
             (RuleID.CHECKSUM_MISMATCH, [10, 40]),
             (RuleID.BAD_PREFIX, [20, 50]),
             (RuleID.NON_ASCII_BYTE, [30, 60]),
         ):
-            for s in srcs:
-                stats.reject_exemplars.setdefault(rule, []).append(
-                    report.RejectEntry(
-                        raw_lines=[f"row-{s}".encode("ascii")],
-                        source_lines=[s],
-                        primary=_diag(rule, src=s),
-                    )
+            buckets[rule] = [
+                report.RejectEntry(
+                    raw_lines=[f"row-{s}".encode("ascii")],
+                    source_lines=[s],
+                    primary=_diag(rule, src=s),
                 )
+                for s in srcs
+            ]
+        stats.reject_sample = report.FileSample.from_bounded(
+            cap=5, entries_by_rule=buckets
+        )
 
         out = tmp_path / "x.broken.txt"
         report.write_broken_file(str(out), "x.txt", stats)
@@ -294,23 +322,30 @@ class TestFormatRejectLines:
             RuleID.CHECKSUM_MISMATCH: 2,
             RuleID.BAD_PREFIX: 2,
         }
-        stats.reject_exemplars.setdefault(RuleID.CHECKSUM_MISMATCH, []).append(
-            report.RejectEntry(
-                raw_lines=[b"1 a", b"2 b"],
-                source_lines=[10, 11],
-                primary=diagnostic(
-                    RuleID.CHECKSUM_MISMATCH,
-                    source_line_nos=(10, 11),
-                    column_range=(69, 69),
-                ),
-            )
-        )
-        stats.reject_exemplars.setdefault(RuleID.BAD_PREFIX, []).append(
-            report.RejectEntry(
-                raw_lines=[b"x"],
-                source_lines=[20],
-                primary=_diag(RuleID.BAD_PREFIX, src=20, note="line does not start"),
-            )
+        stats.reject_sample = report.FileSample.from_bounded(
+            cap=5,
+            entries_by_rule={
+                RuleID.CHECKSUM_MISMATCH: [
+                    report.RejectEntry(
+                        raw_lines=[b"1 a", b"2 b"],
+                        source_lines=[10, 11],
+                        primary=diagnostic(
+                            RuleID.CHECKSUM_MISMATCH,
+                            source_line_nos=(10, 11),
+                            column_range=(69, 69),
+                        ),
+                    )
+                ],
+                RuleID.BAD_PREFIX: [
+                    report.RejectEntry(
+                        raw_lines=[b"x"],
+                        source_lines=[20],
+                        primary=_diag(
+                            RuleID.BAD_PREFIX, src=20, note="line does not start"
+                        ),
+                    )
+                ],
+            },
         )
 
         out = report.format_reject_lines(stats)
@@ -331,18 +366,23 @@ class TestFormatRejectLines:
             RuleID.CHECKSUM_MISMATCH: 100,
             RuleID.BAD_PREFIX: 10,
         }
-        for rule in (
-            RuleID.NON_ASCII_BYTE,
-            RuleID.CHECKSUM_MISMATCH,
-            RuleID.BAD_PREFIX,
-        ):
-            stats.reject_exemplars.setdefault(rule, []).append(
-                report.RejectEntry(
-                    raw_lines=[b"x"],
-                    source_lines=[1],
-                    primary=_diag(rule, src=1),
+        stats.reject_sample = report.FileSample.from_bounded(
+            cap=5,
+            entries_by_rule={
+                rule: [
+                    report.RejectEntry(
+                        raw_lines=[b"x"],
+                        source_lines=[1],
+                        primary=_diag(rule, src=1),
+                    )
+                ]
+                for rule in (
+                    RuleID.NON_ASCII_BYTE,
+                    RuleID.CHECKSUM_MISMATCH,
+                    RuleID.BAD_PREFIX,
                 )
-            )
+            },
+        )
 
         out = report.format_reject_lines(stats)
 
@@ -362,14 +402,19 @@ class TestFormatRejectLines:
             RuleID.BAD_PREFIX: 7,  # "TLE-PAIR-002"
             RuleID.CHECKSUM_MISMATCH: 7,  # "TLE-CHK-001"
         }
-        for rule in (RuleID.BAD_PREFIX, RuleID.CHECKSUM_MISMATCH):
-            stats.reject_exemplars.setdefault(rule, []).append(
-                report.RejectEntry(
-                    raw_lines=[b"x"],
-                    source_lines=[1],
-                    primary=_diag(rule, src=1),
-                )
-            )
+        stats.reject_sample = report.FileSample.from_bounded(
+            cap=5,
+            entries_by_rule={
+                rule: [
+                    report.RejectEntry(
+                        raw_lines=[b"x"],
+                        source_lines=[1],
+                        primary=_diag(rule, src=1),
+                    )
+                ]
+                for rule in (RuleID.BAD_PREFIX, RuleID.CHECKSUM_MISMATCH)
+            },
+        )
 
         out = report.format_reject_lines(stats)
 
@@ -382,24 +427,29 @@ class TestFormatRejectLines:
             RuleID.CHECKSUM_MISMATCH: 1000,
             RuleID.BAD_PREFIX: 3,
         }
-        # Full bucket of 5 for the noisy rule.
-        for i in range(5):
-            stats.reject_exemplars.setdefault(RuleID.CHECKSUM_MISMATCH, []).append(
-                report.RejectEntry(
-                    raw_lines=[b"x"],
-                    source_lines=[i],
-                    primary=_diag(RuleID.CHECKSUM_MISMATCH, src=i),
-                )
-            )
-        # Bucket equal to the rule's total count — no remainder.
-        for i in range(3):
-            stats.reject_exemplars.setdefault(RuleID.BAD_PREFIX, []).append(
-                report.RejectEntry(
-                    raw_lines=[b"x"],
-                    source_lines=[100 + i],
-                    primary=_diag(RuleID.BAD_PREFIX, src=100 + i),
-                )
-            )
+        stats.reject_sample = report.FileSample.from_bounded(
+            cap=5,
+            entries_by_rule={
+                # Full bucket of 5 for the noisy rule.
+                RuleID.CHECKSUM_MISMATCH: [
+                    report.RejectEntry(
+                        raw_lines=[b"x"],
+                        source_lines=[i],
+                        primary=_diag(RuleID.CHECKSUM_MISMATCH, src=i),
+                    )
+                    for i in range(5)
+                ],
+                # Bucket equal to the rule's total count — no remainder.
+                RuleID.BAD_PREFIX: [
+                    report.RejectEntry(
+                        raw_lines=[b"x"],
+                        source_lines=[100 + i],
+                        primary=_diag(RuleID.BAD_PREFIX, src=100 + i),
+                    )
+                    for i in range(3)
+                ],
+            },
+        )
 
         out = report.format_reject_lines(stats)
 
@@ -415,23 +465,28 @@ class TestFormatRejectLines:
         stats = report.FileStats(src_name="x.txt")
         stats.quarantined_count = 1
         stats.reject_counts = {RuleID.CHECKSUM_MISMATCH: 1}
-        stats.reject_exemplars.setdefault(RuleID.CHECKSUM_MISMATCH, []).append(
-            report.RejectEntry(
-                raw_lines=[b"x"],
-                source_lines=[10, 11],
-                primary=diagnostic(
-                    RuleID.CHECKSUM_MISMATCH,
-                    source_line_nos=(10,),
-                    column_range=(69, 69),
-                ),
-                related=(
-                    diagnostic(
-                        RuleID.NON_ASCII_BYTE,
-                        source_line_nos=(11,),
-                        note="line 2: non-ascii",
-                    ),
-                ),
-            )
+        stats.reject_sample = report.FileSample.from_bounded(
+            cap=5,
+            entries_by_rule={
+                RuleID.CHECKSUM_MISMATCH: [
+                    report.RejectEntry(
+                        raw_lines=[b"x"],
+                        source_lines=[10, 11],
+                        primary=diagnostic(
+                            RuleID.CHECKSUM_MISMATCH,
+                            source_line_nos=(10,),
+                            column_range=(69, 69),
+                        ),
+                        related=(
+                            diagnostic(
+                                RuleID.NON_ASCII_BYTE,
+                                source_line_nos=(11,),
+                                note="line 2: non-ascii",
+                            ),
+                        ),
+                    )
+                ]
+            },
         )
 
         out = report.format_reject_lines(stats)
@@ -452,23 +507,28 @@ class TestFormatRejectLines:
         stats = report.FileStats(src_name="x.txt")
         stats.quarantined_count = 1
         stats.reject_counts = {RuleID.CHECKSUM_MISMATCH: 1}
-        stats.reject_exemplars.setdefault(RuleID.CHECKSUM_MISMATCH, []).append(
-            report.RejectEntry(
-                raw_lines=[b"1 a", b"2 b"],
-                source_lines=[10, 11],
-                primary=diagnostic(
-                    RuleID.CHECKSUM_MISMATCH,
-                    source_line_nos=(10,),
-                    column_range=(69, 69),
-                ),
-                related=(
-                    diagnostic(
-                        RuleID.NON_ASCII_BYTE,
-                        source_line_nos=(11,),
-                        note="line 2: non-ascii byte",
-                    ),
-                ),
-            )
+        stats.reject_sample = report.FileSample.from_bounded(
+            cap=5,
+            entries_by_rule={
+                RuleID.CHECKSUM_MISMATCH: [
+                    report.RejectEntry(
+                        raw_lines=[b"1 a", b"2 b"],
+                        source_lines=[10, 11],
+                        primary=diagnostic(
+                            RuleID.CHECKSUM_MISMATCH,
+                            source_line_nos=(10,),
+                            column_range=(69, 69),
+                        ),
+                        related=(
+                            diagnostic(
+                                RuleID.NON_ASCII_BYTE,
+                                source_line_nos=(11,),
+                                note="line 2: non-ascii byte",
+                            ),
+                        ),
+                    )
+                ]
+            },
         )
         out = report.format_reject_lines(stats)
         assert "TLE-CHK-001" in out

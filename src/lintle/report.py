@@ -341,15 +341,17 @@ class RejectSink:
 def write_broken_file(path, src_name, stats):
     """Write the ``.broken.txt`` sidecar from a populated ``FileStats``.
 
-    Thin wrapper that flattens ``stats.reject_exemplars`` (a per-rule dict)
-    and sorts by ``source_lines[0]`` so the rendered sidecar matches
-    production encounter order. Suitable for tests and small-corpus paths
-    where the sampled set fits in memory; production cleaning streams
-    entries through ``BrokenFileWriter`` directly so memory stays bounded.
+    Thin wrapper that flattens ``stats.reject_sample.buckets`` (a per-rule
+    immutable mapping built by :class:`RejectSink`) and sorts by
+    ``source_lines[0]`` so the rendered sidecar matches production
+    encounter order. Suitable for tests and small-corpus paths where the
+    sampled set fits in memory; production cleaning streams entries
+    through :class:`RejectSink` (and its owned :class:`BrokenFileWriter`)
+    directly so memory stays bounded.
     """
     with BrokenFileWriter(path, src_name) as writer:
         flattened = [
-            entry for bucket in stats.reject_exemplars.values() for entry in bucket
+            entry for bucket in stats.reject_sample.buckets.values() for entry in bucket
         ]
         flattened.sort(key=lambda e: e.source_lines[0])
         for entry in flattened:
@@ -412,18 +414,19 @@ def format_reject_lines(stats):
 
     Walks rule IDs in descending order of total occurrences from
     ``stats.reject_counts`` and emits up to N exemplars per rule from
-    ``stats.reject_exemplars``, each rendered via :func:`_format_diagnostic`
-    so column ranges / observed / expected / tier survive into the
-    operator view. Related diagnostics fold onto indented continuation
-    lines, identical to ``.broken.txt``. A trailing ``...and X more``
-    appears under a rule when its bucket is shorter than the rule total.
-    A single noisy rule cannot hide rarer defects (issue #21).
+    ``stats.reject_sample.buckets``, each rendered via
+    :func:`_format_diagnostic` so column ranges / observed / expected /
+    tier survive into the operator view. Related diagnostics fold onto
+    indented continuation lines, identical to ``.broken.txt``. A
+    trailing ``...and X more`` appears under a rule when its bucket is
+    shorter than the rule total. A single noisy rule cannot hide rarer
+    defects (issue #21).
     """
     blocks = []
     for rule_id, total in sorted(
         stats.reject_counts.items(), key=lambda kv: (-kv[1], kv[0])
     ):
-        bucket = stats.reject_exemplars.get(rule_id, [])
+        bucket = stats.reject_sample.buckets.get(rule_id, ())
         lines = [f"  {rule_id} ({total:,}):"]
         for entry in bucket:
             if len(entry.source_lines) == 2:
