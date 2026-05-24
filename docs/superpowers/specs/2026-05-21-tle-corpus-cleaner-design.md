@@ -29,6 +29,12 @@
   `FileStats.quarantined_norad_ids` changes type from `set[int]` to
   `dict[int, dict[RuleID, int]]` to carry the per-rule context; the
   `broken-noradids.ndjson` sidecar contract is unchanged (issue #40).
+  **2026-05-24:** §13 added — "Resumable runs" specifies a `manifest.json`
+  artifact in `--out-dir` with a version-pinned skip predicate, per-file
+  atomicity tied to the existing `os.replace` commit point, end-of-run
+  manifest write semantics, and `--no-skip` / `--force` CLI overrides.
+  Designed, not yet implemented; codifies the contract for issue #12. The
+  prior §13 (Open considerations) renumbers to §14.
 - **Topic:** A tool to validate and clean a multi-gigabyte corpus of Two-Line Element (TLE) files exported from space-track.org
 
 ## 1. Problem statement
@@ -579,7 +585,161 @@ Test-driven, dev dependencies `pytest` and `sgp4` (optionally `tletools`).
    the discovery tool for the rest). Confirm the repair rules cover every safe-to-fix defect found.
 7. Run `clean` across the corpus; review `.broken.txt` sidecars; report findings to space-track.
 
-## 13. Open considerations
+## 13. Resumable runs
+
+**Status:** designed, not implemented (issue #12).
+
+A `clean` run reprocesses every input file from scratch. For the 30 GB corpus, the dominant
+multiplier on iteration time is "redo work already done." A `manifest.json` written to
+`--out-dir` captures enough per-file state to **skip** a file whose inputs and current code
+are unchanged from the previous run, reusing that file's cached `cleaned/` and `broken/`
+outputs along with its `FileStats` summary. Typical case (one file changed in a 29-file
+corpus): the next run touches ~3.5% of the I/O, not 100%.
+
+The mechanism is opt-in by *presence*. A fresh `--out-dir` has no manifest, so nothing is
+skipped; once a run completes, subsequent runs against that same `--out-dir` consult the
+manifest it wrote.
+
+### 13.1 Manifest format — `manifest.json`
+
+Written to `<out-dir>/manifest.json`, alongside `report.md` and `broken-noradids.ndjson`:
+
+```json
+{
+  "lintle_version": "0.3.0",
+  "schema_version": 1,
+  "generated": "2026-05-24T14:03:00Z",
+  "entries": {
+    "data/source/tle2022.txt": {
+      "size": 3221225472,
+      "mtime": 1700000000.0,
+      "head_sha256": "<sha256 of first 65536 bytes>",
+      "tail_sha256": "<sha256 of last 65536 bytes>",
+      "stats": { "...": "JSON-serialised FileStats snapshot for this file" }
+    }
+  }
+}
+```
+
+Entry keys are the input paths as passed to `discover_paths()` — not their realpaths — so a
+manifest generated against a symlinked source tree (as used in the worktree workflow) keeps
+matching while the symlink stays valid. Each entry's `stats` is a JSON-serialised snapshot of
+the `FileStats` (§9) for that file, so the run report (§9.4) can include reused files in
+corpus totals without re-reading them.
+
+### 13.2 Skip predicate
+
+A file is skipped **iff every one** of the following holds:
+
+1. The manifest's `lintle_version` equals the current `__version__`.
+2. The manifest's `schema_version` equals the current code's schema version.
+3. The file's current `os.stat().st_size` equals the recorded `size`.
+4. The file's current `os.stat().st_mtime` equals the recorded `mtime`.
+5. SHA-256 of the file's first 65,536 bytes equals `head_sha256`.
+6. SHA-256 of the file's last 65,536 bytes equals `tail_sha256`.
+
+Failure on *any* check reprocesses the whole file; there are no partial reuses.
+
+The head+tail hash is **probabilistic identity, not a content hash.** A modification that
+preserves size, mtime, and both 64 KB windows but changes the interior would be silently
+skipped. This is acceptable for the corpus's actual usage — TLE files from space-track are
+replaced wholesale or appended to, not edited in place — and avoids the I/O of hashing a 3 GB
+file, which would defeat the purpose of skipping. The 65,536-byte window is small enough to
+read in one disk seek and large enough that any append (the tail changes) or any truncation
+(size changes) is caught.
+
+The `lintle_version` check is **load-bearing.** The dominant `clean` use case for this
+project is iterating on the cleaner itself — every release of `repair.py` or `tle.py` can
+change a file's `cleaned/` or `broken/` outputs, and reusing the previous version's outputs
+would silently ship stale data downstream. Any version mismatch therefore invalidates the
+*entire* manifest, not just per-file: proving that a given patch release "could not have
+changed output" is harder than redoing the work, so the invariant is pessimistic by design.
+This is the same principle as §4.1 (validated transformation), turned inward: a skip is
+provisionally valid *only against the exact code that produced it*.
+
+`schema_version` is a separate integer that increments when `manifest.json` itself changes
+shape (added fields, removed fields, renamed keys), independent of `lintle_version`. A
+consumer reading a manifest with an unknown `schema_version` treats it as a full invalidation.
+
+### 13.3 Atomicity
+
+A manifest entry MUST only exist for a file whose `cleaned/` and `broken/` outputs are fully
+committed to disk. The relevant hooks in the current pipeline:
+
+- **Per-file commit point** — `pipeline.py:267`: `os.replace(cleaned_tmp, cleaned_path)`
+  followed by `broken_writer.finalize()`. After this returns, the file's outputs are durably
+  published.
+- **Per-file aggregation** — `cli.py:495`: the parent receives the worker's `FileStats` from
+  `future.result()`. This is where the manifest entry is *assembled*, not where the manifest
+  is *written*.
+- **End-of-run manifest write** — the parent writes the full `manifest.json` once, after
+  every worker has reported back, by writing `manifest.json.partial` and atomically renaming
+  it. Workers never touch the manifest, side-stepping cross-process locking on a shared JSON
+  file.
+
+Interruption semantics fall out cleanly:
+
+- A worker crashes mid-file → the `finally` block at `pipeline.py:258-264` discards the
+  partial outputs, no `FileStats` returns, no manifest entry is assembled. Next run
+  reprocesses naturally.
+- `Ctrl-C` mid-run → workers that finished contributed `FileStats`, but the parent's
+  manifest write happens only at end-of-run. An interrupted run writes *no* manifest. Next
+  run reprocesses everything. This is the safe default: redoing work is cheaper than
+  committing partial state.
+
+The non-incremental write means a 29-file run that completes writes one manifest at the end;
+a run that completes 28 files and dies on file 29 writes no manifest and the next run redoes
+all 29. A checkpointed manifest written every N files completed is out of scope for v1 but
+compatible with this design.
+
+### 13.4 CLI
+
+```
+lintle clean [paths...] --no-skip      # ignore the manifest entirely; reprocess every file
+lintle clean [paths...] --force        # synonym for --no-skip
+```
+
+`validate` is read-only and writes no outputs, so it has no manifest concept; a caller
+wanting "what changed since last `clean`" reads the manifest directly.
+
+The run summary distinguishes reused from processed:
+
+```
+processing 29 file(s) with 8 worker(s): 1 to process, 28 reused from manifest
+...
+tle2022.txt    8,412,066 records  8,412,064 clean  3 quarantined  (1 orphan, 16,824,135 lines)
+(reused) tle2021.txt   8,398,712 records  8,398,710 clean  2 quarantined
+```
+
+`report.md` (§9.4) includes every file — reused or processed — and flags reused rows so the
+operator can see at a glance what this run actually did versus what was carried over.
+
+### 13.5 Tests
+
+- **Round-trip skip:** a fixture run writes a manifest; a second run on the same inputs
+  skips every file and the corpus totals match the first run's exactly.
+- **Per-field invalidation:** between runs, one of `mtime`, `lintle_version`, or
+  `schema_version` is mutated; the appropriate set of files is reprocessed (one, all, all
+  respectively).
+- **Crash-mid-run safety:** an injected exception between `os.replace` and the parent's
+  `FileStats` collection leaves no manifest entry for that file and no partial output.
+- **Documented limit:** a stealth interior modification (preserving size, mtime, head, tail)
+  IS silently skipped. The test asserts the skip — it is the contract, not a bug.
+
+### 13.6 Risks and limits
+
+- **Stealth interior modification → silent skip** (§13.2). Acceptable for the intended
+  corpus (append-only space-track exports), documented for users with different workflows.
+- **Manifest write is non-incremental.** Interrupted runs write no manifest; next run redoes
+  everything. The worst case is "redo work," never "skip something that should have been
+  redone."
+- **Per-`--out-dir` scope.** Each `--out-dir` has its own manifest; the parallel worktree
+  workflow (CLAUDE.md) intentionally does not share skip state across out-dirs — different
+  output trees ARE different runs.
+- **Operator-edited manifest.** A user who hand-edits the manifest to skip the version check
+  bypasses the version-pin invariant and bears the consequences.
+
+## 14. Open considerations
 
 - If the `validate` discovery pass surfaces a defect type that is genuinely safe and unambiguous
   to repair (not yet anticipated), it is added to the appropriate fix class (Sections 6.1–6.3) in
