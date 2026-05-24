@@ -440,13 +440,27 @@ def format_reject_lines(stats):
     trailing ``...and X more`` appears under a rule when its bucket is
     shorter than the rule total. A single noisy rule cannot hide rarer
     defects (issue #21).
+
+    When the sink dropped entries for a rule (issue #46), the heading
+    switches from the simple ``(M):`` form to ``(N of M hits, K
+    dropped):`` so an operator sees the truncation at a glance, not
+    just through the trailing ``...and X more`` hint. Rules that fit
+    under cap keep the simple heading — the verbose form is reserved
+    for the case where it actually carries new information.
     """
     blocks = []
     for rule_id, total in sorted(
         stats.reject_counts.items(), key=lambda kv: (-kv[1], kv[0])
     ):
         bucket = stats.reject_sample.buckets.get(rule_id, ())
-        lines = [f"  {rule_id} ({total:,}):"]
+        dropped = stats.reject_sample.dropped_count.get(rule_id, 0)
+        if dropped > 0:
+            heading = (
+                f"  {rule_id} ({len(bucket):,} of {total:,} hits, {dropped:,} dropped):"
+            )
+        else:
+            heading = f"  {rule_id} ({total:,}):"
+        lines = [heading]
         for entry in bucket:
             if len(entry.source_lines) == 2:
                 location = f"{entry.source_lines[0]}-{entry.source_lines[1]}"
@@ -463,7 +477,13 @@ def format_reject_lines(stats):
 
 
 def _aggregate(all_stats):
-    """Sum every file's stats into corpus-wide totals and count dicts."""
+    """Sum every file's stats into corpus-wide totals and count dicts.
+
+    Returns ``(paired, orphans, lines_seen, clean, quarantined, fixes,
+    rejects, dropped)`` — the trailing ``dropped`` map (issue #46) sums
+    each file's ``reject_sample.dropped_count`` so ``report.md`` can show
+    a corpus-wide Dropped column alongside the per-rule reject totals.
+    """
     paired = sum(s.paired_records for s in all_stats)
     orphans = sum(s.orphan_entries for s in all_stats)
     lines_seen = sum(s.input_lines_seen for s in all_stats)
@@ -471,12 +491,15 @@ def _aggregate(all_stats):
     quarantined = sum(s.quarantined_count for s in all_stats)
     fixes = {}
     rejects = {}
+    dropped = {}
     for stats in all_stats:
         for key, value in stats.fix_counts.items():
             fixes[key] = fixes.get(key, 0) + value
         for key, value in stats.reject_counts.items():
             rejects[key] = rejects.get(key, 0) + value
-    return paired, orphans, lines_seen, clean, quarantined, fixes, rejects
+        for key, value in stats.reject_sample.dropped_count.items():
+            dropped[key] = dropped.get(key, 0) + value
+    return paired, orphans, lines_seen, clean, quarantined, fixes, rejects, dropped
 
 
 # How many filenames to enumerate before collapsing the trailing tail into
@@ -598,8 +621,8 @@ def format_run_report(all_stats, top_n=100):
     present.
     """
     timestamp = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    paired, orphans, lines_seen, clean, quarantined, fixes, rejects = _aggregate(
-        all_stats
+    paired, orphans, lines_seen, clean, quarantined, fixes, rejects, dropped = (
+        _aggregate(all_stats)
     )
     denominator = paired + orphans
 
@@ -634,10 +657,15 @@ def format_run_report(all_stats, top_n=100):
 
     lines += ["", "## Records quarantined (by rule)", ""]
     if rejects:
-        lines.append("| Rule | Count |")
-        lines.append("|------|------:|")
+        # ``Dropped`` (issue #46): per-rule corpus-wide count of entries
+        # the sink had to drop because the in-memory bucket was at cap.
+        # Most rules read 0 here on healthy runs; non-zero values mean
+        # the sample under-represents that rule's true scale — operator
+        # should consult the ``.broken.txt`` sidecar for the full catalog.
+        lines.append("| Rule | Count | Dropped |")
+        lines.append("|------|------:|--------:|")
         for key, value in sorted(rejects.items(), key=lambda kv: -kv[1]):
-            lines.append(f"| {key} | {value:,} |")
+            lines.append(f"| {key} | {value:,} | {dropped.get(key, 0):,} |")
     else:
         lines.append("_None — every record was clean._")
 
