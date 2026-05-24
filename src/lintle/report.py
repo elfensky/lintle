@@ -415,10 +415,12 @@ class RejectSink:
     construction — there is no other path into the sample. In ``clean``
     mode the sink owns a :class:`BrokenFileWriter` and streams every
     entry byte-faithfully to ``.broken.txt`` as it arrives; in ``validate``
-    mode the writer is absent and the sink is purely in-memory. On
-    :meth:`finalize` the sink produces an immutable :class:`FileSample`
-    and is sealed — any subsequent :meth:`add` raises ``RuntimeError``
-    so misuse surfaces loudly.
+    mode the writer is absent and the sink is purely in-memory. When
+    ``jsonl_path`` is set (issue #9, clean mode) the sink also owns a
+    :class:`JsonlFindingsWriter` and emits one structured-findings line
+    per entry to a per-file shard. On :meth:`finalize` the sink produces
+    an immutable :class:`FileSample` and is sealed — any subsequent
+    :meth:`add` raises ``RuntimeError`` so misuse surfaces loudly.
     """
 
     def __init__(
@@ -427,6 +429,7 @@ class RejectSink:
         cap=_PER_RULE_EXEMPLAR_BOUND,
         broken_path=None,
         src_name=None,
+        jsonl_path=None,
     ):
         self._cap = cap
         self._buckets = {}
@@ -435,21 +438,30 @@ class RejectSink:
         # so consumers can show "5 of 1,000" without recomputing (issue #46).
         self._dropped = {}
         self._writer = None
+        self._jsonl_writer = None
         self._finalized = False
         self._sample = None
         if broken_path is not None:
             if src_name is None:
                 raise ValueError("src_name is required when broken_path is set")
             self._writer = BrokenFileWriter(broken_path, src_name)
+        if jsonl_path is not None:
+            if src_name is None:
+                raise ValueError("src_name is required when jsonl_path is set")
+            self._jsonl_writer = JsonlFindingsWriter(jsonl_path, src_name)
 
     def __enter__(self):
         if self._writer is not None:
             self._writer.__enter__()
+        if self._jsonl_writer is not None:
+            self._jsonl_writer.__enter__()
         return self
 
     def __exit__(self, exc_type, exc, tb):
         if self._writer is not None:
             self._writer.__exit__(exc_type, exc, tb)
+        if self._jsonl_writer is not None:
+            self._jsonl_writer.__exit__(exc_type, exc, tb)
         return False
 
     def add(self, entry):
@@ -458,8 +470,10 @@ class RejectSink:
         Drops are not data loss: the operator-visible totals live in
         ``stats.reject_counts`` (incremented in the pipeline before this
         call), and the byte-faithful catalog reaches disk via the writer
-        regardless of the in-memory cap. Raises ``RuntimeError`` if the
-        sink has already been finalized.
+        regardless of the in-memory cap. Likewise the structured JSONL
+        shard receives every entry — the cap governs only the in-memory
+        sample. Raises ``RuntimeError`` if the sink has already been
+        finalized.
         """
         if self._finalized:
             raise RuntimeError("sink already finalized; cannot add new entries")
@@ -477,6 +491,8 @@ class RejectSink:
             self._dropped[rule_id] = self._dropped.get(rule_id, 0) + 1
         if self._writer is not None:
             self._writer.write_entry(entry)
+        if self._jsonl_writer is not None:
+            self._jsonl_writer.write_entry(entry)
 
     def finalize(self, *, entries):
         """Seal the sink and return the immutable :class:`FileSample`.
@@ -494,6 +510,8 @@ class RejectSink:
             return self._sample
         if self._writer is not None:
             self._writer.finalize(entries)
+        if self._jsonl_writer is not None:
+            self._jsonl_writer.finalize()
         self._sample = FileSample(
             buckets={rid: tuple(items) for rid, items in self._buckets.items()},
             cap=self._cap,
