@@ -6,6 +6,20 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Changed
+
+- The free-form short tags used for fix classes (e.g. `"reconstructed-checksum"`,
+  `"trailing-backslash"`) and reject categories (e.g. `"orphan-line"`,
+  `"checksum-mismatch"`) are now defined once in a new `lintle.categories`
+  module as two `enum.StrEnum` classes: `FixClass` and `RejectCategory`. The
+  old free-form string literals are gone from `repair.py`, `pipeline.py`, and
+  the test suite, replaced by enum members so typos and renames are caught
+  rather than silently drifting across call sites. Because `StrEnum` members
+  *are* strings, on-disk output (`report.md`, `.broken.txt` sidecar, JSON
+  via `--report json`) and dict-keyed access (e.g.
+  `stats.reject_categories['orphan-line']`) are byte-identical to before.
+  Closes #18.
+
 ## [0.2.0] - 2026-05-24
 
 ### Fixed

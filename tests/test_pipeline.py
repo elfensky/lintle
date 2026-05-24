@@ -6,6 +6,7 @@ import queue
 import pytest
 
 from lintle import pipeline
+from lintle.categories import RejectCategory
 
 
 class TestIterRecords:
@@ -48,7 +49,7 @@ class TestIterRecords:
         src.write_bytes((line1 + "\n" + line1 + "\n").encode("ascii"))
         records = list(pipeline.iter_records(str(src)))
         assert all(isinstance(r, pipeline.Orphan) for r in records)
-        assert records[0].category == "orphan-line"
+        assert records[0].category == RejectCategory.ORPHAN_LINE
 
     def test_orphan_line2(self, tmp_path, line2):
         src = tmp_path / "in.txt"
@@ -61,7 +62,7 @@ class TestIterRecords:
         src.write_bytes(("garbage\n" + line1 + "\n" + line2 + "\n").encode("ascii"))
         records = list(pipeline.iter_records(str(src)))
         orphans = [r for r in records if isinstance(r, pipeline.Orphan)]
-        assert any(o.category == "bad-prefix" for o in orphans)
+        assert any(o.category == RejectCategory.BAD_PREFIX for o in orphans)
         # The valid record after the garbage line still pairs.
         assert any(isinstance(r, pipeline.RecordCandidate) for r in records)
 
@@ -104,7 +105,7 @@ class TestProcessFile:
         assert stats.input_lines_seen == 3
         assert stats.clean_count == 1
         assert stats.quarantined_count == 1
-        assert stats.reject_categories.get("orphan-line") == 1
+        assert stats.reject_categories.get(RejectCategory.ORPHAN_LINE) == 1
 
     def test_input_lines_seen_counts_blank_lines(self, tmp_path, line1, line2):
         # ``input_lines_seen`` is the count of physical lines read — including
@@ -133,7 +134,7 @@ class TestProcessFile:
         stats = pipeline.process_file(str(src), str(out), "clean")
 
         assert stats.quarantined_count == 1
-        assert stats.reject_categories.get("checksum-mismatch") == 1
+        assert stats.reject_categories.get(RejectCategory.CHECKSUM_MISMATCH) == 1
         assert b"checksum" in (out / "broken" / "tle2099.broken.txt").read_bytes()
 
     def test_validate_mode_writes_nothing(self, tmp_path, line1, line2):
@@ -159,7 +160,7 @@ class TestProcessFile:
         stats = pipeline.process_file(str(src), str(tmp_path / "out"), "clean")
 
         assert stats.quarantined_count == 1
-        assert stats.reject_categories.get("internal-error") == 1
+        assert stats.reject_categories.get(RejectCategory.INTERNAL_ERROR) == 1
 
     def test_clean_run_leaves_no_temp_file(self, tmp_path, line1, line2):
         src = tmp_path / "tle2099.txt"
@@ -282,7 +283,7 @@ class TestStreamingRejects:
 
         # Full counters reflect every reject…
         assert stats.quarantined_count == n
-        assert stats.reject_categories.get("bad-prefix") == n
+        assert stats.reject_categories.get(RejectCategory.BAD_PREFIX) == n
         # …but the in-memory exemplar buffer is capped at the bound.
         assert len(stats.reject_exemplars) == pipeline._EXEMPLAR_BOUND
         # The on-disk catalog header and trailing entry both reflect every

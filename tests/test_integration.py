@@ -1,6 +1,7 @@
 """End-to-end pipeline tests: golden output, idempotence, re-validation."""
 
 from lintle import pipeline, tle
+from lintle.categories import FixClass
 
 
 class TestEndToEnd:
@@ -34,8 +35,8 @@ class TestEndToEnd:
         assert stats.input_lines_seen == 6
         assert stats.clean_count == 2
         assert stats.quarantined_count == 1
-        assert stats.fix_counts.get("reconstructed-checksum") == 2
-        assert stats.fix_counts.get("trailing-backslash") == 1
+        assert stats.fix_counts.get(FixClass.RECONSTRUCTED_CHECKSUM) == 2
+        assert stats.fix_counts.get(FixClass.TRAILING_BACKSLASH) == 1
 
         cleaned = (out / "cleaned" / "tle2099.cleaned.txt").read_bytes()
         assert cleaned == (
