@@ -1,6 +1,7 @@
 """Tests for lintle.pipeline — streaming I/O, line pairing, file processing."""
 
 import contextlib
+import json
 import queue
 
 import pytest
@@ -148,6 +149,36 @@ class TestProcessFile:
 
         assert stats.clean_count == 1
         assert not out.exists()  # validate mode never creates the output dir
+
+    def test_clean_mode_writes_jsonl_shard(self, tmp_path, line1, line2):
+        # Issue #9: clean mode writes a per-file findings shard to
+        # ``<out_dir>/.shards/<stem>.findings.jsonl`` alongside the
+        # cleaned and broken outputs.
+        bad_line2 = line2[:-1] + ("9" if line2[-1] != "9" else "0")
+        src = tmp_path / "tle2099.txt"
+        src.write_bytes((line1 + "\n" + bad_line2 + "\n").encode("ascii"))
+        out = tmp_path / "out"
+
+        pipeline.process_file(str(src), str(out), "clean")
+
+        shard = out / ".shards" / "tle2099.findings.jsonl"
+        assert shard.exists()
+        with open(shard, encoding="utf-8") as handle:
+            lines = handle.readlines()
+        assert len(lines) == 1
+        parsed = json.loads(lines[0])
+        assert parsed["schema_version"] == "1"
+        assert parsed["outcome"] == "quarantined"
+        assert parsed["file"] == "tle2099.txt"
+
+    def test_validate_mode_skips_jsonl_shard(self, tmp_path, line1, line2):
+        # Issue #9: validate mode emits no JSONL shard.
+        src = tmp_path / "tle2099.txt"
+        src.write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
+        out = tmp_path / "out"
+
+        pipeline.process_file(str(src), str(out), "validate")
+        assert not out.exists()  # no .shards/, no nothing
 
     def test_internal_error_is_quarantined_not_raised(
         self, tmp_path, line1, line2, monkeypatch
