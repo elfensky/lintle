@@ -1605,6 +1605,56 @@ class TestRejectSink:
             dropped = sample.dropped_count.get(rule, 0)
             assert bucket_size + dropped == total, rule
 
+    # --- JSONL streaming integration (issue #9, spec §4.3) ---
+
+    def test_sink_streams_to_jsonl_when_path_given(self, tmp_path):
+        # When jsonl_path is set, every add() call appends a well-formed
+        # JSON line to the shard.
+        jsonl_path = str(tmp_path / "tle.findings.jsonl")
+        with report.RejectSink(
+            cap=5, jsonl_path=jsonl_path, src_name="tle.txt"
+        ) as sink:
+            sink.add(self._stub(10))
+            sink.add(self._stub(20))
+            sink.add(self._stub(30))
+            sink.finalize(entries=3)
+        with open(jsonl_path, encoding="utf-8") as handle:
+            lines = handle.readlines()
+        assert len(lines) == 3
+        for line in lines:
+            parsed = json.loads(line)
+            assert parsed["rule_id"] == "TLE-CHK-001"
+            assert parsed["file"] == "tle.txt"
+
+    def test_sink_skips_jsonl_when_no_path(self, tmp_path):
+        # No jsonl_path -> no shard artifact. Validate-mode contract.
+        with report.RejectSink(cap=5) as sink:
+            sink.add(self._stub(1))
+            sink.finalize(entries=1)
+        assert os.listdir(tmp_path) == []
+
+    def test_jsonl_path_requires_src_name(self, tmp_path):
+        # Mirrors broken_path's contract: src_name is required because
+        # the JSONL writer needs the per-file ``file`` field value.
+        jsonl_path = str(tmp_path / "x.findings.jsonl")
+        with pytest.raises(ValueError, match="src_name"):
+            report.RejectSink(cap=5, jsonl_path=jsonl_path)
+
+    def test_dropped_from_sample_still_in_jsonl(self, tmp_path):
+        # Cap governs the in-memory sample, NOT the on-disk JSONL.
+        # 10 entries with cap 3 -> sample has 3, JSONL has all 10.
+        jsonl_path = str(tmp_path / "tle.findings.jsonl")
+        with report.RejectSink(
+            cap=3, jsonl_path=jsonl_path, src_name="tle.txt"
+        ) as sink:
+            for i in range(10):
+                sink.add(self._stub(i))
+            sample = sink.finalize(entries=10)
+        assert len(sample.buckets[RuleID.CHECKSUM_MISMATCH]) == 3
+        with open(jsonl_path, encoding="utf-8") as handle:
+            lines = handle.readlines()
+        assert len(lines) == 10
+
 
 class TestNoradTracker:
     """Per-NORAD per-rule quarantine tracker (issue #47 refactor)."""
