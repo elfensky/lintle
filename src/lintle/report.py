@@ -3,6 +3,7 @@
 import contextlib
 import dataclasses
 import datetime
+import json
 import os
 import shutil
 
@@ -51,6 +52,11 @@ class FileStats:
     fix_counts: dict = dataclasses.field(default_factory=dict)
     reject_categories: dict = dataclasses.field(default_factory=dict)
     reject_exemplars: list = dataclasses.field(default_factory=list)
+    # NORAD IDs of records quarantined in this file, decoded once at
+    # reject time from line-1 columns 3-7. Bounded by the satellite
+    # catalog (~tens of thousands of IDs corpus-wide), so the in-memory
+    # set is independent of reject count and keeps memory constant.
+    quarantined_norad_ids: set = dataclasses.field(default_factory=set)
 
 
 def _render_entry(index, entry):
@@ -307,3 +313,38 @@ def write_run_report(path, all_stats):
     """Write the Markdown run report (``format_run_report``) to ``path``."""
     with open(path, "w", encoding="utf-8") as handle:
         handle.write(format_run_report(all_stats))
+
+
+def aggregate_broken_norad_ids(all_stats):
+    """Return the sorted, deduplicated NORAD IDs quarantined corpus-wide."""
+    ids = set()
+    for stats in all_stats:
+        ids |= stats.quarantined_norad_ids
+    return sorted(ids)
+
+
+def format_broken_noradids_ndjson(all_stats):
+    """Render the corpus-wide quarantined-NORAD-ID NDJSON as a string.
+
+    One ``{"noradId": N}`` object per line, deduplicated across every
+    processed file and sorted ascending so diffs across runs are
+    deterministic. NDJSON has no header; an empty string is returned
+    when no records were quarantined. The minimal one-field shape is
+    deliberately additive — downstream consumers ignore unknown fields,
+    so later releases can extend each record without breaking compat.
+    """
+    lines = [
+        json.dumps({"noradId": nid}, separators=(",", ":"))
+        for nid in aggregate_broken_norad_ids(all_stats)
+    ]
+    return "".join(line + "\n" for line in lines)
+
+
+def write_broken_noradids_ndjson(path, all_stats):
+    """Write the corpus-wide ``broken-noradids.ndjson`` to ``path``.
+
+    Thin wrapper around ``format_broken_noradids_ndjson`` that pins LF
+    line endings so the artifact is byte-deterministic across platforms.
+    """
+    with open(path, "w", encoding="ascii", newline="\n") as handle:
+        handle.write(format_broken_noradids_ndjson(all_stats))

@@ -99,3 +99,50 @@ class TestValidateRecord:
         other_body = "2 09999" + line2[7:68]
         other = other_body + str(tle.compute_checksum(other_body))
         assert any("catalog" in e for e in tle.validate_record(line1, other))
+
+
+class TestExtractNoradId:
+    def test_extracts_from_canonical_line1(self, line1):
+        assert tle.extract_norad_id(line1) == 5
+
+    def test_extracts_from_canonical_line1_bytes(self, line1):
+        assert tle.extract_norad_id(line1.encode("ascii")) == 5
+
+    def test_extracts_from_line1_orphan_without_checksum(self, line1):
+        # A truncated line 1 (68 chars, no checksum) is still readable for
+        # the catalog-number field — extraction is independent of the rest
+        # of the line, including the checksum at column 69.
+        assert tle.extract_norad_id(line1[:68]) == 5
+
+    def test_returns_none_for_line2_prefix(self, line2):
+        # A line 2 starts "2 " — the issue is explicit that only line 1's
+        # catalog field counts as a decodable NORAD ID. Line 2 may carry a
+        # matching number but is rejected by prefix to keep the rule simple.
+        assert tle.extract_norad_id(line2) is None
+
+    def test_returns_none_for_bad_prefix(self):
+        assert tle.extract_norad_id("garbage line not a tle") is None
+
+    def test_returns_none_for_short_line(self):
+        # A truncated "1 " line with fewer than 7 characters has no catalog
+        # field to read at all — must not raise.
+        assert tle.extract_norad_id("1 12") is None
+
+    def test_returns_none_for_non_digit_field(self, line1):
+        # Modern Alpha-5 NORAD encoding allows letters (e.g. "B1234"),
+        # but the issue's contract is "5-digit integer" — letters are
+        # treated as undecodable so downstream sees only pure-int IDs.
+        body = "1 B0005" + line1[7:]
+        assert tle.extract_norad_id(body) is None
+
+    def test_returns_none_for_non_ascii_bytes(self):
+        # A line with a non-ASCII byte in the prefix region is unreadable
+        # via the canonical extractor — must not raise on decode failure.
+        assert tle.extract_norad_id(b"1 \xff0005U more") is None
+
+    def test_leading_zeros_normalize_to_int(self):
+        # NORAD 5 is the canonical satellite (Vanguard 1) and renders as
+        # "00005" on the wire — the extractor returns the integer, not the
+        # zero-padded string, so dedup across "  005" and "00005" collapses.
+        body = "1 00005U junk"
+        assert tle.extract_norad_id(body) == 5

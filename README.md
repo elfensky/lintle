@@ -127,9 +127,10 @@ A `clean` run lays `--out-dir` out like this:
 
 ```
 <out-dir>/
-├── cleaned/   tleYYYY.cleaned.txt   — one per input file
-├── broken/    tleYYYY.broken.txt    — one per input file
-└── report.md  — corpus-wide run report
+├── cleaned/                tleYYYY.cleaned.txt   — one per input file
+├── broken/                 tleYYYY.broken.txt    — one per input file
+├── broken-noradids.ndjson  — corpus-wide list of quarantined NORAD IDs
+└── report.md               — corpus-wide run report
 ```
 
 - **`cleaned/tleYYYY.cleaned.txt`** — standard 2-line TLE text, every record
@@ -141,6 +142,17 @@ A `clean` run lays `--out-dir` out like this:
   the source line number(s), a human-readable reason, and the offending line(s)
   copied **byte-faithfully**. The header carries totals, a timestamp, and the
   tool version — formatted to paste into a space-track defect report.
+
+- **`broken-noradids.ndjson`** — newline-delimited JSON, one
+  `{"noradId":N}` object per line, listing every NORAD catalog number whose
+  records were quarantined anywhere in the run, deduplicated and sorted
+  ascending. Records whose line 1 is itself unreadable are omitted —
+  there's no catalog number to recover. Intended for programmatic
+  downstream consumers (e.g. a satellite catalog flagging archive gaps)
+  that want the affected IDs without parsing `broken/*.txt`. The schema
+  is deliberately minimal; future releases may extend each record with
+  additional fields, which consumers can ignore safely. Empty file when
+  nothing was quarantined.
 
 - **`report.md`** — a Markdown run report aggregating the whole run: corpus
   totals, the percentage cleaned and quarantined, corpus-wide fix counts, the

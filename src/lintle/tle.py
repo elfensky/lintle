@@ -202,6 +202,30 @@ def validate_line(line, lineno):
     return [err] if err else []
 
 
+def extract_norad_id(line):
+    """Return the 5-digit NORAD catalog ID from a TLE line 1, or ``None``.
+
+    Reads columns 3-7 (the satellite catalog number) and parses them as a
+    decimal integer. Used to recover a programmatic ID from quarantined
+    records whose other fields may be corrupt. Returns ``None`` when the
+    line does not start with the ``"1 "`` line-1 prefix, is too short to
+    contain the field, contains a non-ASCII byte, or the field is not
+    five decimal digits — Alpha-5 letter-prefixed IDs are deliberately
+    rejected to keep the downstream contract a plain integer.
+    """
+    if isinstance(line, bytes):
+        try:
+            line = line.decode("ascii")
+        except UnicodeDecodeError:
+            return None
+    if len(line) < 7 or not line.startswith("1 "):
+        return None
+    field = line[2:7]
+    if not field.isdigit():
+        return None
+    return int(field)
+
+
 def validate_record(line1, line2):
     """Validate a paired TLE record: each line valid, and the satellite
     catalog numbers (columns 3-7) match. Returns a list of error strings.

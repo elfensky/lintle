@@ -22,6 +22,21 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Added
 
+- `lintle clean` now emits a corpus-wide `broken-noradids.ndjson` at the
+  `--out-dir` root, alongside `cleaned/`, `broken/`, and `report.md`. One
+  `{"noradId":N}` object per line, deduplicated and sorted ascending,
+  listing every NORAD catalog number whose records were quarantined
+  anywhere in the run. Records whose line 1 is itself unreadable are
+  omitted (no catalog number to recover). Intended for downstream
+  consumers (e.g. descent-app) that need to flag affected satellites
+  without parsing the human-readable `broken/*.txt` defect reports. The
+  file is always written in `clean` mode — empty when nothing was
+  quarantined — so the artifact is always present. Schema is deliberately
+  minimal (one field); future releases can extend each record additively
+  without breaking compat. Closes #2.
+- `tle.extract_norad_id()` — recovers the 5-digit catalog number from a
+  TLE line 1, used by the new NDJSON emitter.
+
 - The live progress line on a TTY now reports throughput (`records/sec`) and
   the longest-running file currently in flight (with `+N more` when other
   files are also being processed). With `--jobs N` the oldest active file
@@ -31,6 +46,7 @@ All notable changes to this project are documented in this file. The format is b
   existing integer record-count deltas; `process_file` always emits
   `("end", name)` from a `finally`, so a failed file is correctly cleared
   from the display's active set. Closes #24.
+
 - `tests/test_pipeline_throughput.py` — an opt-in end-to-end throughput
   regression test for `pipeline.process_file()` that streams synthetic TLE
   records and fails on a severe slowdown. Gated by the new `slow` pytest
