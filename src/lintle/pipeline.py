@@ -298,6 +298,11 @@ def _record_reject(stats, broken_writer, primary, related, raw_lines, source_lin
     # Recover a NORAD ID from line 1 when one is readable; orphan-line-2
     # and bad-prefix rejects expose no line-1 catalog field and are
     # silently skipped per the issue contract (line 1 unreadable -> omit).
+    # The per-NORAD bucket records which rules the satellite hit, feeding
+    # the human-facing per-NORAD breakdown section in report.md; the +1
+    # per call accrues to that satellite's per-rule total across all of
+    # its rejects in this file.
     norad_id = tle.extract_norad_id(raw_lines[0])
     if norad_id is not None:
-        stats.quarantined_norad_ids.add(norad_id)
+        per_rule = stats.quarantined_norad_ids.setdefault(norad_id, {})
+        per_rule[primary.rule_id] = per_rule.get(primary.rule_id, 0) + 1
