@@ -248,6 +248,90 @@ class BrokenFileWriter:
         return False
 
 
+class RejectSink:
+    """File-scoped reject sink: bounded sample + optional streaming sidecar.
+
+    Single mutation entry point :meth:`add` enforces the per-rule cap by
+    construction — there is no other path into the sample. In ``clean``
+    mode the sink owns a :class:`BrokenFileWriter` and streams every
+    entry byte-faithfully to ``.broken.txt`` as it arrives; in ``validate``
+    mode the writer is absent and the sink is purely in-memory. On
+    :meth:`finalize` the sink produces an immutable :class:`FileSample`
+    and is sealed — any subsequent :meth:`add` raises ``RuntimeError``
+    so misuse surfaces loudly.
+    """
+
+    def __init__(
+        self,
+        *,
+        cap=_PER_RULE_EXEMPLAR_BOUND,
+        broken_path=None,
+        src_name=None,
+    ):
+        self._cap = cap
+        self._buckets = {}
+        self._writer = None
+        self._finalized = False
+        self._sample = None
+        if broken_path is not None:
+            if src_name is None:
+                raise ValueError("src_name is required when broken_path is set")
+            self._writer = BrokenFileWriter(broken_path, src_name)
+
+    def __enter__(self):
+        if self._writer is not None:
+            self._writer.__enter__()
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if self._writer is not None:
+            self._writer.__exit__(exc_type, exc, tb)
+        return False
+
+    def add(self, entry):
+        """Record one quarantined entry. Silently drops past cap.
+
+        Drops are not data loss: the operator-visible totals live in
+        ``stats.reject_counts`` (incremented in the pipeline before this
+        call), and the byte-faithful catalog reaches disk via the writer
+        regardless of the in-memory cap. Raises ``RuntimeError`` if the
+        sink has already been finalized.
+        """
+        if self._finalized:
+            raise RuntimeError("sink already finalized; cannot add new entries")
+        bucket = self._buckets.get(entry.primary.rule_id)
+        if bucket is None:
+            bucket = []
+            self._buckets[entry.primary.rule_id] = bucket
+        if len(bucket) < self._cap:
+            bucket.append(entry)
+        if self._writer is not None:
+            self._writer.write_entry(entry)
+
+    def finalize(self, *, entries):
+        """Seal the sink and return the immutable :class:`FileSample`.
+
+        ``entries`` is the denominator shown in the sidecar header
+        (``paired_records + orphan_entries``). The sink builds the
+        ``FileSample`` directly rather than going through
+        ``FileSample.from_bounded`` because the sink IS the invariant
+        boundary — every bucket here is already capped by construction,
+        so re-validation would be busy-work. ``from_bounded`` stays
+        strict for test fixtures and any future external construction.
+        Idempotent: a second call returns the cached sample.
+        """
+        if self._finalized:
+            return self._sample
+        if self._writer is not None:
+            self._writer.finalize(entries)
+        self._sample = FileSample(
+            buckets={rid: tuple(items) for rid, items in self._buckets.items()},
+            cap=self._cap,
+        )
+        self._finalized = True
+        return self._sample
+
+
 def write_broken_file(path, src_name, stats):
     """Write the ``.broken.txt`` sidecar from a populated ``FileStats``.
 

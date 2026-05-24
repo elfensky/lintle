@@ -900,3 +900,121 @@ class TestFileSample:
         sample = report.FileSample.empty(cap=5)
         with pytest.raises(dataclasses.FrozenInstanceError):
             sample.cap = 99
+
+
+class TestRejectSink:
+    """The single-mutation entry point that enforces the per-rule cap
+    by construction (issue #19). Owns ``BrokenFileWriter`` in clean mode;
+    skips it in validate mode; on ``finalize`` hands out an immutable
+    :class:`FileSample`.
+    """
+
+    def _stub(self, src, rule=RuleID.CHECKSUM_MISMATCH):
+        """One minimal RejectEntry for cap-bound tests."""
+        return report.RejectEntry(
+            raw_lines=[f"1 stub-{src}".encode("ascii")],
+            source_lines=[src],
+            primary=_diag(rule, src=src),
+        )
+
+    def test_add_under_cap_accepts(self):
+        # Three entries, one rule — all three survive to the sample.
+        sink = report.RejectSink(cap=5)
+        for i in range(3):
+            sink.add(self._stub(i))
+        sample = sink.finalize(entries=3)
+        assert len(sample.buckets[RuleID.CHECKSUM_MISMATCH]) == 3
+
+    def test_add_over_cap_silently_drops(self):
+        # Six entries, cap of 5 — the 6th drops silently. Matches today's
+        # pipeline._record_reject behaviour; reject_counts retains the truth
+        # so no information is lost at the operator level.
+        sink = report.RejectSink(cap=5)
+        for i in range(6):
+            sink.add(self._stub(i))  # must not raise
+        sample = sink.finalize(entries=6)
+        assert len(sample.buckets[RuleID.CHECKSUM_MISMATCH]) == 5
+
+    def test_cap_holds_under_skew(self):
+        # 1000 of one rule, then 1 of another. With per-rule buckets, the
+        # noisy rule cannot crowd the rare rule out of the sample.
+        sink = report.RejectSink(cap=5)
+        for i in range(1000):
+            sink.add(self._stub(i, RuleID.CHECKSUM_MISMATCH))
+        sink.add(self._stub(9999, RuleID.BAD_PREFIX))
+        sample = sink.finalize(entries=1001)
+        assert len(sample.buckets[RuleID.CHECKSUM_MISMATCH]) == 5
+        assert len(sample.buckets[RuleID.BAD_PREFIX]) == 1
+
+    def test_cap_holds_under_random_input(self):
+        # Deterministic seed: a 1000-element stream of random (rule, entry)
+        # pairs across every RuleID member must produce a sample whose every
+        # bucket honours the cap. Catches off-by-ones the targeted tests miss.
+        import random
+
+        rng = random.Random(42)
+        rules = list(RuleID)
+        sink = report.RejectSink(cap=5)
+        for i in range(1000):
+            sink.add(self._stub(i, rng.choice(rules)))
+        sample = sink.finalize(entries=1000)
+        for bucket in sample.buckets.values():
+            assert len(bucket) <= 5
+
+    def test_finalize_returns_filesample_with_matching_cap(self):
+        # The cap travels with the sample so renderers can show truncation.
+        sink = report.RejectSink(cap=5)
+        sample = sink.finalize(entries=0)
+        assert sample.cap == 5
+
+    def test_validate_mode_skips_writer(self, tmp_path):
+        # No broken_path -> sink is purely in-memory; no temp file leakage.
+        sink = report.RejectSink(cap=5)  # no broken_path
+        with sink:
+            sink.add(self._stub(1))
+            sink.finalize(entries=1)
+        # The parent dir should have no partials touched by the sink.
+        assert list(tmp_path.iterdir()) == []
+
+    def test_clean_mode_writes_byte_faithful_sidecar(self, tmp_path):
+        # Each added entry's _render_entry bytes appear verbatim in the
+        # finalized file; the header preamble names the source and the
+        # quarantine count. Matches the existing TestStreamingRejects
+        # assertion pattern (substring checks; the header timestamp is
+        # volatile so we don't compare full bytes).
+        path = tmp_path / "x.broken.txt"
+        entries = [self._stub(i) for i in range(3)]
+        sink = report.RejectSink(broken_path=str(path), src_name="x.txt", cap=5)
+        with sink:
+            for entry in entries:
+                sink.add(entry)
+            sink.finalize(entries=3)
+        body = path.read_bytes()
+        assert b"# source: x.txt" in body
+        assert b"# 3 quarantined of 3 entries" in body
+        for idx, entry in enumerate(entries, start=1):
+            assert report._render_entry(idx, entry) in body
+
+    def test_exit_without_finalize_cleans_partials(self, tmp_path):
+        # An exception inside the `with` block leaves no debris. The
+        # writer's __exit__ discards body + final partials when finalize
+        # was not reached.
+        path = tmp_path / "x.broken.txt"
+        with (
+            pytest.raises(RuntimeError, match="simulated"),
+            report.RejectSink(broken_path=str(path), src_name="x.txt", cap=5) as sink,
+        ):
+            sink.add(self._stub(1))
+            raise RuntimeError("simulated mid-file failure")
+        assert list(tmp_path.glob("*.partial")) == []
+        assert not path.exists()  # final file never published
+
+    def test_add_after_finalize_raises(self):
+        # Sink is single-use — post-finalize mutation has no defined
+        # semantics. RuntimeError surfaces the misuse loudly. Locks the
+        # spec §4.5 contract so future contributors don't accidentally
+        # turn the sink into a reusable container.
+        sink = report.RejectSink(cap=5)
+        sink.finalize(entries=0)
+        with pytest.raises(RuntimeError, match="already finalized"):
+            sink.add(self._stub(1))
