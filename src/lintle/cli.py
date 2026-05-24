@@ -42,8 +42,19 @@ def discover_paths(paths):
     ``tle*.txt`` files (excluding ``*.cleaned.txt`` / ``*.broken.txt`` tool
     output); a file is passed through unchanged. Nonexistent entries are
     dropped — callers should validate inputs with :func:`check_paths` first.
+    Duplicates (same canonical path via ``os.path.realpath``) are collapsed,
+    so e.g. ``lintle clean dirA dirA/foo.txt`` processes ``foo.txt`` once.
     """
     result = []
+    seen = set()
+
+    def _add(candidate):
+        canonical = os.path.realpath(candidate)
+        if canonical in seen:
+            return
+        seen.add(canonical)
+        result.append(candidate)
+
     for path in paths:
         if os.path.isdir(path):
             for name in sorted(os.listdir(path)):
@@ -53,17 +64,48 @@ def discover_paths(paths):
                     and not name.endswith(".cleaned.txt")
                     and not name.endswith(".broken.txt")
                 ):
-                    result.append(os.path.join(path, name))
+                    _add(os.path.join(path, name))
         elif os.path.isfile(path):
-            result.append(path)
+            _add(path)
     return result
 
 
+def _detect_basename_collisions(files):
+    """Return a user-facing error string if any two ``files`` share a
+    basename, else ``None``. Cleaned and broken outputs are keyed by
+    basename, so colliding inputs would silently overwrite each other —
+    safer to refuse the run than to publish a wrong-but-valid-looking
+    output (spec §1, "correctness over recovery").
+    """
+    groups = {}
+    for path in files:
+        groups.setdefault(os.path.basename(path), []).append(path)
+    collisions = {name: ps for name, ps in groups.items() if len(ps) > 1}
+    if not collisions:
+        return None
+    lines = [
+        "output collision: inputs share a basename and would overwrite each other:"
+    ]
+    for name in sorted(collisions):
+        lines.append(f"  '{name}':")
+        for path in collisions[name]:
+            lines.append(f"    - {path}")
+    lines.append("  rename the inputs or process them in separate runs (--out-dir).")
+    return "\n".join(lines)
+
+
 def check_paths(paths, using_default):
-    """Return a user-facing error string if any ``paths`` entry is missing
-    or unreadable, else ``None``. ``using_default`` tailors the message for
-    the case where the user passed no paths at all and the default
-    (``data/source``) is what's missing.
+    """Return a user-facing error string if any ``paths`` entry is missing,
+    else ``None``. ``using_default`` tailors the message for the case where
+    the user passed no paths at all and the default (``data/source``) is
+    what's missing.
+
+    Readability is *not* checked here — :func:`os.access` consults the
+    POSIX mode bits only and is a false-negative on filesystems that grant
+    read through ACLs (NFSv4, SMB, FUSE). The authoritative answer is
+    whatever the worker's :func:`open` returns; a genuine permission error
+    surfaces through the per-file failure path in :func:`main` with the
+    same exit code 2.
     """
     missing = [p for p in paths if not os.path.exists(p)]
     if missing:
@@ -78,10 +120,6 @@ def check_paths(paths, using_default):
             return f"no such file or directory: {missing[0]!r}"
         joined = ", ".join(repr(p) for p in missing)
         return f"no such files or directories: {joined}"
-    unreadable = [p for p in paths if not os.access(p, os.R_OK)]
-    if unreadable:
-        joined = ", ".join(repr(p) for p in unreadable)
-        return f"permission denied: {joined}"
     return None
 
 
@@ -367,6 +405,11 @@ def main(argv=None):
             )
         else:
             print("error: no input files found", file=sys.stderr)
+        return 2
+
+    collision_error = _detect_basename_collisions(files)
+    if collision_error:
+        print(f"error: {collision_error}", file=sys.stderr)
         return 2
 
     if args.command == "clean":

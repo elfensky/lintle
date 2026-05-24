@@ -92,12 +92,88 @@ class TestCheckPaths:
         f.write_text("x")
         assert cli.check_paths([str(f), str(tmp_path)], using_default=False) is None
 
+    def test_os_access_false_negative_does_not_refuse_run(self, tmp_path, monkeypatch):
+        # os.access() consults POSIX mode bits and is a false-negative on
+        # filesystems that grant read via ACLs (NFSv4, SMB, FUSE). The
+        # preflight must not refuse a run on os.access() alone — the
+        # authoritative answer is whatever the worker's open() returns.
+        f = tmp_path / "readable.txt"
+        f.write_text("x")
+        monkeypatch.setattr(cli.os, "access", lambda _p, _m: False)
+        assert cli.check_paths([str(f)], using_default=False) is None
+
 
 class TestDiscoverPathsEdgeCases:
     def test_nonexistent_path_is_dropped(self, tmp_path):
         # main() validates first, but discover_paths must be robust on its own:
         # a missing entry no longer silently masquerades as a file.
         assert cli.discover_paths([str(tmp_path / "missing")]) == []
+
+    def test_duplicate_explicit_paths_are_deduped(self, tmp_path):
+        # Passing the same file twice on the CLI is harmless; discover_paths
+        # collapses duplicates so process_file isn't invoked on the same path
+        # twice (its outputs would otherwise overwrite themselves).
+        f = tmp_path / "tle2099.txt"
+        f.write_text("x")
+        assert cli.discover_paths([str(f), str(f)]) == [str(f)]
+
+    def test_dir_and_explicit_file_inside_it_are_deduped(self, tmp_path):
+        # `lintle clean dirA dirA/tle2099.txt` should process the file once,
+        # not twice. Dedup is by canonical realpath so this works for plain
+        # paths and symlinks alike.
+        f = tmp_path / "tle2099.txt"
+        f.write_text("x")
+        found = cli.discover_paths([str(tmp_path), str(f)])
+        # One canonical entry, regardless of which spelling won the race.
+        canonical = {os.path.realpath(p) for p in found}
+        assert canonical == {os.path.realpath(f)}
+        assert len(found) == 1
+
+    def test_symlinked_path_is_deduped(self, tmp_path):
+        real = tmp_path / "tle2099.txt"
+        real.write_text("x")
+        link = tmp_path / "tle2099-link.txt"
+        link.symlink_to(real)
+        found = cli.discover_paths([str(real), str(link)])
+        # The link and its target are the same file; only one survives.
+        assert len(found) == 1
+
+
+class TestDetectBasenameCollisions:
+    def test_no_collisions_returns_none(self, tmp_path):
+        a = tmp_path / "tle2001.txt"
+        b = tmp_path / "tle2002.txt"
+        assert cli._detect_basename_collisions([str(a), str(b)]) is None
+
+    def test_returns_error_with_each_colliding_path(self, tmp_path):
+        # Two inputs with the same basename would write to the same
+        # cleaned/broken sidecar — silently overwriting each other.
+        dir_a = tmp_path / "a"
+        dir_a.mkdir()
+        dir_b = tmp_path / "b"
+        dir_b.mkdir()
+        a = dir_a / "tle2022.txt"
+        b = dir_b / "tle2022.txt"
+        err = cli._detect_basename_collisions([str(a), str(b)])
+        assert err is not None
+        assert "tle2022.txt" in err
+        assert str(a) in err and str(b) in err
+
+    def test_lists_all_collision_groups(self, tmp_path):
+        # Multiple distinct basename collisions all surface in one message.
+        dir_a = tmp_path / "a"
+        dir_a.mkdir()
+        dir_b = tmp_path / "b"
+        dir_b.mkdir()
+        files = [
+            str(dir_a / "tle2001.txt"),
+            str(dir_b / "tle2001.txt"),
+            str(dir_a / "tle2002.txt"),
+            str(dir_b / "tle2002.txt"),
+        ]
+        err = cli._detect_basename_collisions(files)
+        assert err is not None
+        assert "tle2001.txt" in err and "tle2002.txt" in err
 
 
 class TestMain:
@@ -189,6 +265,49 @@ class TestMain:
         rc = cli.main(["validate", str(src), "--jobs", "0"])
         assert rc == 2
         assert "--jobs must be >= 1" in capsys.readouterr().err
+
+    def test_main_returns_two_on_basename_collision(self, tmp_path, capsys):
+        # Two input dirs each contain a file named tle2022.txt — their cleaned
+        # and broken outputs would silently overwrite each other under
+        # data/output/. main() must catch this upfront and refuse the run.
+        dir_a = tmp_path / "a"
+        dir_a.mkdir()
+        dir_b = tmp_path / "b"
+        dir_b.mkdir()
+        (dir_a / "tle2022.txt").write_text("x")
+        (dir_b / "tle2022.txt").write_text("x")
+
+        rc = cli.main(["validate", str(dir_a), str(dir_b), "--jobs", "1"])
+
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "tle2022.txt" in err
+        assert "collision" in err.lower() or "overwrite" in err.lower()
+        assert "Traceback" not in err
+
+    def test_main_does_not_collide_when_same_file_listed_twice(
+        self, tmp_path, line1, line2
+    ):
+        # `lintle clean dirA dirA/tle.txt` resolves to one file via
+        # discover_paths' realpath dedup — there's no collision to report.
+        src = tmp_path / "src"
+        src.mkdir()
+        f = src / "tle2099.txt"
+        f.write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
+
+        rc = cli.main(
+            [
+                "clean",
+                str(src),
+                str(f),
+                "--out-dir",
+                str(tmp_path / "out"),
+                "--jobs",
+                "1",
+            ]
+        )
+
+        assert rc == 0
 
     def test_main_returns_two_on_disk_shortfall(
         self, tmp_path, line1, line2, monkeypatch
