@@ -296,16 +296,23 @@ def _record_reject(stats, sink, primary, related, raw_lines, source_lines):
     stats.reject_counts[primary.rule_id] = (
         stats.reject_counts.get(primary.rule_id, 0) + 1
     )
-    entry = report.RejectEntry(raw_lines, source_lines, primary, related)
+    # Decode the NORAD ID once, before constructing RejectEntry, so the
+    # structured ``report.jsonl`` emitter sees the same value the per-NORAD
+    # breakdown does (issue #9). Orphan-line-2 and bad-prefix rejects
+    # expose no line-1 catalog field and yield ``None``.
+    norad_id = tle.extract_norad_id(raw_lines[0])
+    # Pass norad_id as a kwarg — RejectEntry's positional contract is
+    # (raw_lines, source_lines, primary, related), and norad_id is the
+    # trailing optional. The kwarg makes the intent explicit at the only
+    # production construction site (spec §4.5).
+    entry = report.RejectEntry(
+        raw_lines, source_lines, primary, related, norad_id=norad_id
+    )
     sink.add(entry)  # cap-checked, streamed if writer is open (issue #19)
-    # Recover a NORAD ID from line 1 when one is readable; orphan-line-2
-    # and bad-prefix rejects expose no line-1 catalog field and are
-    # silently skipped per the issue contract (line 1 unreadable -> omit).
     # The per-NORAD bucket records which rules the satellite hit, feeding
     # the human-facing per-NORAD breakdown section in report.md; ``record``
     # accrues a +1 to that satellite's per-rule total across all rejects
     # in this file. Single typed mutation entry point per issue #47 — any
     # future writer that wants to populate the tracker must go through it.
-    norad_id = tle.extract_norad_id(raw_lines[0])
     if norad_id is not None:
         stats.quarantined_norad_ids.record(norad_id, primary.rule_id)
