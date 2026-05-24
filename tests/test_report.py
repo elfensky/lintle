@@ -1120,3 +1120,55 @@ class TestRejectSink:
         sink.finalize(entries=0)
         with pytest.raises(RuntimeError, match="already finalized"):
             sink.add(self._stub(1))
+
+    def test_dropped_count_zero_when_under_cap(self):
+        # Three entries under a cap of 5 — no drops, dropped_count stays
+        # empty so renderers (issue #46) can omit the "K dropped" hint.
+        sink = report.RejectSink(cap=5)
+        for i in range(3):
+            sink.add(self._stub(i))
+        sample = sink.finalize(entries=3)
+        assert sample.dropped_count == {}
+
+    def test_dropped_count_increments_per_drop(self):
+        # Seven entries one rule, cap of 5 — two drops accrue to that
+        # rule's slot in the finalized sample.
+        sink = report.RejectSink(cap=5)
+        for i in range(7):
+            sink.add(self._stub(i))
+        sample = sink.finalize(entries=7)
+        assert sample.dropped_count[RuleID.CHECKSUM_MISMATCH] == 2
+
+    def test_dropped_count_per_rule_independent(self):
+        # Mixed traffic: one rule overflows, another stays under cap.
+        # Drops are accounted per-rule so the operator can tell which
+        # rule lost evidence and which did not.
+        sink = report.RejectSink(cap=5)
+        for i in range(8):  # 3 drops
+            sink.add(self._stub(i, RuleID.CHECKSUM_MISMATCH))
+        for i in range(2):  # no drops
+            sink.add(self._stub(i + 100, RuleID.BAD_PREFIX))
+        sample = sink.finalize(entries=10)
+        assert sample.dropped_count[RuleID.CHECKSUM_MISMATCH] == 3
+        assert RuleID.BAD_PREFIX not in sample.dropped_count
+
+    def test_dropped_count_under_random_input(self):
+        # Deterministic seed: across a 1000-entry mixed-rule stream, the
+        # invariant ``buckets[rule] + dropped_count[rule] == total
+        # seen`` must hold for every rule the sink saw.
+        import collections
+        import random
+
+        rng = random.Random(42)
+        rules = list(RuleID)
+        seen = collections.Counter()
+        sink = report.RejectSink(cap=5)
+        for i in range(1000):
+            rule = rng.choice(rules)
+            seen[rule] += 1
+            sink.add(self._stub(i, rule))
+        sample = sink.finalize(entries=1000)
+        for rule, total in seen.items():
+            bucket_size = len(sample.buckets.get(rule, ()))
+            dropped = sample.dropped_count.get(rule, 0)
+            assert bucket_size + dropped == total, rule

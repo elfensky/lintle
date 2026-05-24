@@ -278,6 +278,10 @@ class RejectSink:
     ):
         self._cap = cap
         self._buckets = {}
+        # Per-rule running count of entries dropped because the bucket was
+        # at cap. Surfaced on the finalized FileSample as ``dropped_count``
+        # so consumers can show "5 of 1,000" without recomputing (issue #46).
+        self._dropped = {}
         self._writer = None
         self._finalized = False
         self._sample = None
@@ -307,12 +311,18 @@ class RejectSink:
         """
         if self._finalized:
             raise RuntimeError("sink already finalized; cannot add new entries")
-        bucket = self._buckets.get(entry.primary.rule_id)
+        rule_id = entry.primary.rule_id
+        bucket = self._buckets.get(rule_id)
         if bucket is None:
             bucket = []
-            self._buckets[entry.primary.rule_id] = bucket
+            self._buckets[rule_id] = bucket
         if len(bucket) < self._cap:
             bucket.append(entry)
+        else:
+            # Cap reached for this rule — track the drop (issue #46) so
+            # the finalized sample can surface "K dropped" alongside the
+            # bounded examples without consumers recomputing it.
+            self._dropped[rule_id] = self._dropped.get(rule_id, 0) + 1
         if self._writer is not None:
             self._writer.write_entry(entry)
 
@@ -335,6 +345,7 @@ class RejectSink:
         self._sample = FileSample(
             buckets={rid: tuple(items) for rid, items in self._buckets.items()},
             cap=self._cap,
+            dropped_count=dict(self._dropped),
         )
         self._finalized = True
         return self._sample
