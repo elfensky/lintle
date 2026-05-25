@@ -46,6 +46,14 @@
   `pipeline.py:263` followed by `sink.finalize`, both inside `with sink:`)
   and disclose the narrow crash-between-replace-and-finalize partial-outcome
   window the refactor introduced.
+  **2026-05-25:** §9 — `--report json` output replaced (breaking) by a versioned
+  envelope object (`{schema_version, run, environment, summary, files}`) with
+  per-file timing (`elapsed_seconds`, `bytes`, `records_per_sec`), tool/Python
+  version, and corpus-wide aggregates. See companion spec
+  [`2026-05-25-report-json-envelope.md`](2026-05-25-report-json-envelope.md)
+  (issue #20). `FileStats` gains `elapsed_seconds: float` and `bytes: int`;
+  `pipeline.process_file` captures both. The prior flat-array output is
+  removed; no legacy flag.
 - **Topic:** A tool to validate and clean a multi-gigabyte corpus of Two-Line Element (TLE) files exported from space-track.org
 
 ## 1. Problem statement
