@@ -96,6 +96,7 @@ uv run lintle clean [paths...]
 | `--out-dir DIR` | `data/output` | Where `clean` writes its output. Created if absent. |
 | `--jobs N` | CPU count | Number of files processed in parallel. Lower it if a slow disk causes I/O contention. |
 | `--report text\|json` | `text` | Summary format. |
+| `--max-quarantined N` | `0` | Exit non-zero only if MORE than N records were quarantined. Default `0` ≡ "any quarantine fails". |
 
 **Examples:**
 
@@ -108,18 +109,23 @@ uv run lintle clean data/source/tle2022.txt --out-dir data/output
 
 # Clean the corpus, capture a machine-readable summary
 uv run lintle clean data/source --report json > run-summary.json
+
+# CI gate: tolerate up to 100 quarantined records before failing the job
+uv run lintle clean data/source --max-quarantined 100 --report json > run-summary.json
 ```
 
 **Exit codes:**
 
 | Code | Meaning |
 |------|---------|
-| `0` | No records quarantined — clean (or every defect repaired). |
-| `1` | At least one record was quarantined. |
+| `0` | Total quarantined is at or below `--max-quarantined` (default `0`). |
+| `1` | More than `--max-quarantined` records were quarantined. |
 | `2` | Operational error — no input files, disk shortfall, or a file that failed to process. |
 
 Repairable defects (including the near-universal trailing `\`) do **not** raise
-the exit code above 0 — almost every raw file contains them.
+the exit code above 0 — almost every raw file contains them. `--max-quarantined`
+preserves the meaningful `2` (operational error) and `130` (Ctrl-C) signals that
+a `lintle ... || true` pipe would swallow.
 
 ## Output
 
