@@ -6,6 +6,7 @@ import datetime
 import json
 import os
 import shutil
+import sys
 
 from lintle import __version__, stem
 from lintle.diagnostics import RULES, Diagnostic, RepairTier
@@ -649,8 +650,6 @@ def build_run_envelope(all_stats, *, command, started_at, elapsed_seconds):
     ``all_stats``, preserving order so consumers see deterministic file
     ordering matching ``report.md``.
     """
-    import sys
-
     paired, orphans, lines_seen, clean, quarantined, fixes, rejects, _ = _aggregate(
         all_stats
     )
