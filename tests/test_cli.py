@@ -517,6 +517,111 @@ class TestMain:
         assert not list(out.rglob("*.partial"))
 
 
+class TestMaxQuarantinedThreshold:
+    """Issue #13: ``--max-quarantined N`` allows CI to tolerate up to N
+    quarantined records before the exit code flips to non-zero. Default
+    ``N=0`` preserves the legacy "any quarantine fails" behaviour.
+    """
+
+    def _write_one_bad_record(self, tmp_path, line1, line2):
+        src = tmp_path / "src"
+        src.mkdir()
+        bad_line1 = line1[:68] + "9"
+        (src / "tle2099.txt").write_bytes(
+            (bad_line1 + "\n" + line2 + "\n").encode("ascii")
+        )
+        return src
+
+    def test_max_quarantined_one_allows_single_quarantined_record(
+        self, tmp_path, line1, line2
+    ):
+        src = self._write_one_bad_record(tmp_path, line1, line2)
+        out = tmp_path / "out"
+
+        rc = cli.main(
+            [
+                "clean",
+                str(src),
+                "--out-dir",
+                str(out),
+                "--jobs",
+                "1",
+                "--max-quarantined",
+                "1",
+            ]
+        )
+
+        assert rc == 0
+
+    def test_max_quarantined_uses_strictly_greater_than_semantics(
+        self, tmp_path, line1, line2
+    ):
+        # Two quarantined records, --max-quarantined 1 — count is > 1 so fail.
+        src = tmp_path / "src"
+        src.mkdir()
+        bad_line1 = line1[:68] + "9"
+        (src / "tle2099.txt").write_bytes(
+            (bad_line1 + "\n" + line2 + "\n" + bad_line1 + "\n" + line2 + "\n").encode(
+                "ascii"
+            )
+        )
+        out = tmp_path / "out"
+
+        rc = cli.main(
+            [
+                "clean",
+                str(src),
+                "--out-dir",
+                str(out),
+                "--jobs",
+                "1",
+                "--max-quarantined",
+                "1",
+            ]
+        )
+
+        assert rc == 1
+
+    def test_max_quarantined_default_is_zero_legacy_behavior(
+        self, tmp_path, line1, line2
+    ):
+        # No --max-quarantined flag: a single quarantined record must still
+        # flip the exit code to 1. The new flag's default is 0, matching the
+        # historical "any quarantine fails" contract.
+        src = self._write_one_bad_record(tmp_path, line1, line2)
+        out = tmp_path / "out"
+
+        rc = cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
+
+        assert rc == 1
+
+    def test_max_quarantined_applies_to_validate_too(self, tmp_path, line1, line2):
+        src = self._write_one_bad_record(tmp_path, line1, line2)
+
+        rc = cli.main(["validate", str(src), "--jobs", "1", "--max-quarantined", "1"])
+
+        assert rc == 0
+
+    def test_max_quarantined_rejects_negative_value(
+        self, tmp_path, line1, line2, capsys
+    ):
+        src = self._write_one_bad_record(tmp_path, line1, line2)
+
+        rc = cli.main(
+            [
+                "validate",
+                str(src),
+                "--jobs",
+                "1",
+                "--max-quarantined",
+                "-1",
+            ]
+        )
+
+        assert rc == 2
+        assert "--max-quarantined must be >= 0" in capsys.readouterr().err
+
+
 class TestReportJsonl:
     """Issue #9 spec §8.5: ``clean`` mode emits ``<out_dir>/report.jsonl``
     after every successful run; validate mode does not.
