@@ -8,6 +8,28 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Added
 
+- `lintle validate --report json` (and `lintle clean --report json`) now
+  emits a top-level versioned envelope object instead of the prior flat
+  array of per-file summaries. The shape is
+  `{schema_version, run, environment, summary, files}` —
+  `run` carries the subcommand name, the ISO 8601 UTC start timestamp,
+  and the parent-process wall-clock `elapsed_seconds`; `environment`
+  carries `tool_version` and `python_version` (no env vars, paths, or
+  hostnames); `summary` carries corpus-wide aggregates
+  (`files_processed`, `paired_records`, `clean_count`,
+  `quarantined_count`, `fix_counts`, `reject_counts`); `files` is the
+  per-file array, where each entry is the existing `summary_dict()`
+  shape extended with `elapsed_seconds`, `bytes`, and
+  `records_per_sec`. The throughput field is always a stable float
+  (denominator clamped to 1 ms) — never `null` — so statically-typed
+  consumers can declare a single type without sentinel handling. Per-
+  file timing is captured by each worker via `time.monotonic()`;
+  `summary` aggregates are NOT summed worker durations (`--jobs N`
+  parallelism would inflate that), so `run.elapsed_seconds` is the
+  authoritative end-to-end duration. The contract is locked by
+  `docs/superpowers/specs/2026-05-25-report-json-envelope.md` and the
+  golden fixture at `tests/fixtures/report-envelope-v1.golden.json`.
+  Closes #20.
 - New `lintle.diagnostics` module defines a stable, citable rule-ID registry
   (`TLE-COL-001`, `TLE-CHK-001`, `TLE-PAIR-001`, …) and a structured
   `Diagnostic` dataclass with `rule_id`, `source_line_nos`, `tier_attempted`,
@@ -75,6 +97,16 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Changed
 
+- **Breaking — `--report json` output shape.** The flat array of
+  per-file `summary_dict()` entries previously emitted by
+  `lintle ... --report json` is replaced by the top-level envelope
+  described under Added above. Consumers that did `payload[0]` to read
+  the first file's stats now do `payload["files"][0]`; the per-file
+  keys (`src_name`, `paired_records`, …) are unchanged but join three
+  new ones (`elapsed_seconds`, `bytes`, `records_per_sec`). No legacy
+  flag is provided; the schema is pinned by `schema_version: "1"` so
+  future minor revisions stay additive within `"1"` and any breaking
+  rename bumps to `"2"`.
 - Internal: extracted `RejectSink` and `FileSample` from `FileStats` so
   the 5-per-rule exemplar cap is enforced by construction rather than by
   convention in a single caller. `pipeline.process_file` no longer
