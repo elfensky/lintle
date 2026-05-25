@@ -1,7 +1,7 @@
 # `--report json` versioned envelope — Design
 
 - **Date:** 2026-05-25
-- **Status:** Proposed (issue #20)
+- **Status:** Implemented (issue #20, PR #52)
 - **Revision:** initial
 - **Topic:** Replace the flat-array `--report json` output with a versioned envelope
   carrying run metadata, environment, corpus summary, and per-file timing.
