@@ -140,11 +140,12 @@ def process_file(src_path, out_dir, mode, progress_queue=None, progress_every=25
     try:
         return _run(src_path, out_dir, mode, stats, progress_queue, progress_every)
     finally:
-        # Set elapsed even on exception so a quarantined-by-error file
-        # still surfaces non-zero timing in the envelope when callers
-        # choose to retain the stats. The worker returns from the
-        # try-block in the success path before reaching this finally,
-        # but the assignment lands either way.
+        # ``finally`` always runs before the return value reaches the
+        # caller; ``stats`` is the same object ``_run`` returns, so the
+        # assignment lands in the returned instance on the success path
+        # and on the exception path alike. Setting elapsed even on
+        # exception means a quarantined-by-error file still surfaces a
+        # non-zero duration in the envelope when callers retain stats.
         stats.elapsed_seconds = time.monotonic() - started_monotonic
         if progress_enabled:
             progress_queue.put(("end", src_name))
