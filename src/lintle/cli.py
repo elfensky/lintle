@@ -3,6 +3,7 @@
 import argparse
 import concurrent.futures
 import contextlib
+import datetime
 import json
 import multiprocessing
 import os
@@ -468,6 +469,16 @@ def main(argv=None):
         file=sys.stderr,
         flush=True,
     )
+    # Run-level timing for the v1 envelope (issue #20). The wall-clock
+    # start captures NOW (just before worker dispatch); the corresponding
+    # stop happens after the executor drains. Two separate measurements:
+    # ``run_started_iso`` is an ISO 8601 UTC string for human-readable
+    # ``run.timestamp``; ``run_monotonic_start`` feeds the elapsed_seconds
+    # subtraction using a monotonic clock so NTP jitter mid-run cannot
+    # produce a negative duration. Per spec §4, this aggregate is
+    # intentionally NOT the sum of per-file worker durations.
+    run_started_iso = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    run_monotonic_start = time.monotonic()
     all_stats = []
     failed_files = []
     interrupted = False
@@ -538,7 +549,19 @@ def main(argv=None):
         report.concat_findings_shards(args.out_dir, findings_path, all_stats)
 
     if args.report == "json":
-        print(json.dumps([report.summary_dict(s) for s in all_stats], indent=2))
+        # Issue #20: top-level versioned envelope; replaces the prior
+        # flat-array output. Run wall-clock is the parent process's
+        # monotonic delta, NOT the sum of per-file worker durations
+        # (those are reported per-file under ``files[i].elapsed_seconds``
+        # and exceed parent wall-clock under ``--jobs N``).
+        run_elapsed = time.monotonic() - run_monotonic_start
+        envelope = report.build_run_envelope(
+            all_stats,
+            command=args.command,
+            started_at=run_started_iso,
+            elapsed_seconds=run_elapsed,
+        )
+        print(json.dumps(envelope, indent=2))
     else:
         for stats in all_stats:
             print(report.format_summary(stats))

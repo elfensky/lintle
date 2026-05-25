@@ -3,6 +3,7 @@
 import contextlib
 import dataclasses
 import os
+import time
 
 from lintle import repair, report, stem, tle
 from lintle.diagnostics import Diagnostic, RuleID, diagnostic
@@ -122,6 +123,16 @@ def process_file(src_path, out_dir, mode, progress_queue=None, progress_every=25
     """
     src_name = os.path.basename(src_path)
     stats = report.FileStats(src_name=src_name)
+    # Wall-clock start for the v1 envelope (issue #20). Captured up front
+    # so even a file that fails early during open still surfaces a
+    # non-zero elapsed_seconds. ``time.monotonic()`` (not ``time.time()``)
+    # so NTP jitter mid-run cannot produce a negative duration. The
+    # corresponding stop happens in the finally below — covers both
+    # success and exception paths. ``stats.bytes`` is captured inside
+    # ``_run`` once the file has been successfully opened, so a missing
+    # source file raises the original ``OSError`` from ``iter_records``
+    # rather than from a separate ``getsize`` probe.
+    started_monotonic = time.monotonic()
     progress_enabled = progress_queue is not None and bool(progress_every)
     if progress_enabled:
         progress_queue.put(("start", src_name))
@@ -129,6 +140,12 @@ def process_file(src_path, out_dir, mode, progress_queue=None, progress_every=25
     try:
         return _run(src_path, out_dir, mode, stats, progress_queue, progress_every)
     finally:
+        # Set elapsed even on exception so a quarantined-by-error file
+        # still surfaces non-zero timing in the envelope when callers
+        # choose to retain the stats. The worker returns from the
+        # try-block in the success path before reaching this finally,
+        # but the assignment lands either way.
+        stats.elapsed_seconds = time.monotonic() - started_monotonic
         if progress_enabled:
             progress_queue.put(("end", src_name))
 
@@ -188,6 +205,14 @@ def _run(src_path, out_dir, mode, stats, progress_queue, progress_every):
     entries_processed = 0
     with sink:
         try:
+            # Input size for the v1 envelope (issue #20). Captured inside
+            # the ``with sink:`` try-block so a missing-source ``OSError``
+            # routes through the same cleanup paths as one raised by
+            # ``iter_records`` itself — the cleaned-temp file is unlinked
+            # by the inner finally and the sink's ``__exit__`` discards
+            # the ``.broken.txt`` partials. The parent's ``finally`` still
+            # emits the lifecycle ``end`` event.
+            stats.bytes = os.path.getsize(src_path)
             for candidate in iter_records(src_path, stats):
                 entries_processed += 1
 

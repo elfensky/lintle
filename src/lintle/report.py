@@ -156,6 +156,16 @@ class FileStats:
     """
 
     src_name: str
+    # Per-file timing + size for the v1 run envelope (issue #20). Defaults
+    # keep validate-mode fixtures and unit tests that build a bare
+    # FileStats() valid; production captures are set by
+    # ``pipeline.process_file`` from ``time.monotonic()`` and
+    # ``os.path.getsize()`` respectively. ``elapsed_seconds`` is the
+    # worker's wall-clock duration on this file — NEVER summed across
+    # workers to derive a corpus total (use the parent's wall-clock
+    # captured in ``cli.main`` for that).
+    elapsed_seconds: float = 0.0
+    bytes: int = 0
     paired_records: int = 0
     orphan_entries: int = 0
     input_lines_seen: int = 0
@@ -566,6 +576,16 @@ def format_summary(stats):
     return "\n".join(lines)
 
 
+# Lower bound on the ``elapsed_seconds`` denominator when computing the
+# per-file ``records_per_sec`` field (issue #20, gate R2). Clamping keeps
+# the field a stable ``float`` for sub-millisecond runs — typed downstream
+# consumers (Go unmarshalers, strict TypeScript) never see ``null``. Files
+# faster than this floor report an upper-bound rate; the value is
+# documented in ``docs/superpowers/specs/2026-05-25-report-json-envelope.md``
+# §5 so consumers can recognise the saturation case.
+_RECORDS_PER_SEC_FLOOR = 0.001
+
+
 def summary_dict(stats):
     """Return a JSON-serialisable summary of one file's stats.
 
@@ -575,10 +595,19 @@ def summary_dict(stats):
     ID so caller mutations do not leak back into the live ``FileStats``;
     integer NORAD IDs and ``RuleID`` (``StrEnum``) members both serialise
     natively under ``json.dumps`` — int keys auto-stringify and StrEnum
-    keys coerce to their stable wire token.
+    keys coerce to their stable wire token. ``elapsed_seconds`` and
+    ``bytes`` (issue #20) surface the worker's wall-clock duration and
+    the input file size; ``records_per_sec`` is the clamped throughput
+    (``paired_records / max(elapsed_seconds, 0.001)``) and is always a
+    float — never ``null`` — so the rigid envelope contract holds for
+    typed consumers.
     """
+    elapsed = max(stats.elapsed_seconds, _RECORDS_PER_SEC_FLOOR)
     return {
         "src_name": stats.src_name,
+        "elapsed_seconds": stats.elapsed_seconds,
+        "bytes": stats.bytes,
+        "records_per_sec": stats.paired_records / elapsed,
         "paired_records": stats.paired_records,
         "orphan_entries": stats.orphan_entries,
         "input_lines_seen": stats.input_lines_seen,
@@ -595,6 +624,61 @@ def summary_dict(stats):
         "quarantined_norad_ids": {
             nid: dict(cats) for nid, cats in stats.quarantined_norad_ids.counts.items()
         },
+    }
+
+
+# Pinned schema version for the ``--report json`` envelope (issue #20).
+# Stored as a string so future additive minor revisions can use tags like
+# ``"1.1"`` without changing the field's JSON type — adding optional
+# fields stays under ``"1"``, renaming or removing fields bumps to ``"2"``.
+_ENVELOPE_SCHEMA_VERSION = "1"
+
+
+def build_run_envelope(all_stats, *, command, started_at, elapsed_seconds):
+    """Return the top-level versioned ``--report json`` envelope (issue #20).
+
+    The shape is locked in
+    ``docs/superpowers/specs/2026-05-25-report-json-envelope.md``: a single
+    object with ``schema_version``, ``run``, ``environment``, ``summary``,
+    and ``files``. ``run.elapsed_seconds`` is the parent-process wall-clock
+    duration captured by ``cli.main`` — independent of per-file worker
+    durations in ``files[i].elapsed_seconds``, which the consumer must NOT
+    sum to derive a corpus total. ``environment`` is a strict allowlist
+    (tool + Python version only); no env vars, paths, or hostnames leak.
+    The per-file shape is exactly ``summary_dict(s)`` for each ``s`` in
+    ``all_stats``, preserving order so consumers see deterministic file
+    ordering matching ``report.md``.
+    """
+    import sys
+
+    paired, orphans, lines_seen, clean, quarantined, fixes, rejects, _ = _aggregate(
+        all_stats
+    )
+    return {
+        "schema_version": _ENVELOPE_SCHEMA_VERSION,
+        "run": {
+            "command": command,
+            "timestamp": started_at,
+            "elapsed_seconds": float(elapsed_seconds),
+        },
+        "environment": {
+            "tool_version": __version__,
+            "python_version": (
+                f"{sys.version_info.major}.{sys.version_info.minor}."
+                f"{sys.version_info.micro}"
+            ),
+        },
+        "summary": {
+            "files_processed": len(all_stats),
+            "paired_records": paired,
+            "orphan_entries": orphans,
+            "input_lines_seen": lines_seen,
+            "clean_count": clean,
+            "quarantined_count": quarantined,
+            "fix_counts": dict(fixes),
+            "reject_counts": dict(rejects),
+        },
+        "files": [summary_dict(s) for s in all_stats],
     }
 
 
