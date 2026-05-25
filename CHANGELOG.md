@@ -8,6 +8,21 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Added
 
+- New `--max-quarantined N` flag on both `validate` and `clean` (issue #13).
+  Exit code stays `0` when the total quarantined record count is at or below
+  `N`; flips to `1` only when *more than* `N` records were quarantined. The
+  default `N=0` preserves the historical "any quarantine fails" contract, so
+  the flag is purely opt-in for CI/DataOps callers that need a tolerance
+  budget. Unlike `lintle ... || true; jq -e '.summary.quarantined_count <= N'`,
+  the flag preserves the meaningful `2` (operational error) and `130` (Ctrl-C)
+  exit codes that a swallow-and-parse wrapper would mask. The two other
+  thresholds floated in the original issue (`--threshold RATIO` and
+  `--fail-on RULE-ID=N`) were intentionally NOT shipped: `--threshold` is
+  redundant with `--max-quarantined` and adds denominator ambiguity, and
+  `--fail-on` would promote `RuleID` strings from "report artifact" to
+  "CI YAML public-forever contract" — a meaningfully bigger compatibility
+  promise that should wait on real user demand. Decision recorded in
+  `debates/013-fail-on-threshold-flags/`.
 - `lintle validate --report json` (and `lintle clean --report json`) now
   emits a top-level versioned envelope object instead of the prior flat
   array of per-file summaries. The shape is

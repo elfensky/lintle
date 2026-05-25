@@ -29,8 +29,8 @@ Examples:
   lintle validate --report json           emit a machine-readable summary
 
 Exit codes:
-  0    no records quarantined — every defect repaired
-  1    at least one record was quarantined
+  0    no records quarantined — every defect repaired (or under --max-quarantined)
+  1    more than --max-quarantined records were quarantined (default threshold: 0)
   2    operational error (missing input, disk shortfall, file failure)
   130  interrupted (Ctrl-C)
 
@@ -198,6 +198,16 @@ def build_parser():
             choices=["text", "json"],
             default="text",
             help="summary output format (default: text)",
+        )
+        sub.add_argument(
+            "--max-quarantined",
+            type=int,
+            default=0,
+            metavar="N",
+            help=(
+                "exit non-zero only if MORE than N records were quarantined "
+                "(default: 0 — any quarantine fails)"
+            ),
         )
     return parser
 
@@ -404,10 +414,11 @@ class _ProgressDisplay:
 def main(argv=None):
     """Entry point for the ``lintle`` console script.
 
-    Returns the process exit code: ``0`` = no records quarantined;
-    ``1`` = at least one record quarantined; ``2`` = operational error
-    (no input files, disk shortfall, or a file that failed to process);
-    ``130`` = interrupted with Ctrl-C.
+    Returns the process exit code: ``0`` = total quarantined is at or below
+    ``--max-quarantined`` (default 0); ``1`` = more than ``--max-quarantined``
+    records quarantined; ``2`` = operational error (no input files, disk
+    shortfall, or a file that failed to process); ``130`` = interrupted with
+    Ctrl-C.
     """
     args = build_parser().parse_args(argv)
 
@@ -419,6 +430,13 @@ def main(argv=None):
 
     if args.jobs < 1:
         print(f"error: --jobs must be >= 1 (got {args.jobs})", file=sys.stderr)
+        return 2
+
+    if args.max_quarantined < 0:
+        print(
+            f"error: --max-quarantined must be >= 0 (got {args.max_quarantined})",
+            file=sys.stderr,
+        )
         return 2
 
     path_error = check_paths(paths, using_default=using_default)
@@ -579,4 +597,4 @@ def main(argv=None):
     if failed_files:
         return 2
     total_quarantined = sum(s.quarantined_count for s in all_stats)
-    return 1 if total_quarantined else 0
+    return 1 if total_quarantined > args.max_quarantined else 0
