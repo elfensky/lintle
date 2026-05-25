@@ -372,7 +372,10 @@ class TestMain:
         # the progress display logs one plain line per completed file instead.
         assert "[1/1]" in err
 
-    def test_main_json_report_prints_json(self, tmp_path, line1, line2, capsys):
+    def test_main_json_report_prints_envelope(self, tmp_path, line1, line2, capsys):
+        # Issue #20: --report json is now a top-level envelope object,
+        # not a flat array. The per-file entries live under ``files``;
+        # the run, environment, and corpus summary live alongside.
         src = tmp_path / "src"
         src.mkdir()
         (src / "tle2099.txt").write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
@@ -381,8 +384,24 @@ class TestMain:
 
         assert rc == 0
         data = json.loads(capsys.readouterr().out)
-        assert data[0]["src_name"] == "tle2099.txt"
-        assert data[0]["clean_count"] == 1
+        # Top-level envelope shape (issue #20 spec §3).
+        assert isinstance(data, dict)
+        assert data["schema_version"] == "1"
+        assert data["run"]["command"] == "validate"
+        assert data["run"]["timestamp"].endswith("Z")
+        assert isinstance(data["run"]["elapsed_seconds"], float)
+        assert "tool_version" in data["environment"]
+        assert "python_version" in data["environment"]
+        assert data["summary"]["files_processed"] == 1
+        assert data["summary"]["paired_records"] == 1
+        assert data["summary"]["clean_count"] == 1
+        # Per-file entries preserve summary_dict shape under ``files``.
+        assert data["files"][0]["src_name"] == "tle2099.txt"
+        assert data["files"][0]["clean_count"] == 1
+        # Timing fields are real floats — gate R2 (never null).
+        assert isinstance(data["files"][0]["elapsed_seconds"], float)
+        assert isinstance(data["files"][0]["records_per_sec"], float)
+        assert data["files"][0]["bytes"] > 0
 
     def test_main_validate_lists_reject_locations(self, tmp_path, line1, line2, capsys):
         src = tmp_path / "src"

@@ -586,14 +586,19 @@ class TestSummaries:
         data["dropped_counts"].pop(RuleID.CHECKSUM_MISMATCH)
         assert RuleID.CHECKSUM_MISMATCH in stats.reject_sample.dropped_count
 
-    def test_summary_dict_keys_unchanged_after_jsonl_feature(self):
-        # Issue #9 spec §8.9: defensive test against per-finding fields
-        # leaking into the --report json stdout output. The exact set of
-        # keys returned by summary_dict is the contract for downstream
-        # tooling consuming `lintle ... --report json`.
+    def test_summary_dict_key_set_pins_envelope_per_file_contract(self):
+        # Issue #20 spec: the exact set of keys returned by summary_dict
+        # is the per-file portion of the v1 envelope contract — both
+        # `lintle ... --report json`'s `files[i]` payload and any
+        # programmatic consumer pin against this key set. Issue #9's
+        # defensive bound (no per-finding fields leak in) still holds:
+        # nothing from the per-record .jsonl stream appears here.
         data = report.summary_dict(_stats_with_counts())
         expected = {
             "src_name",
+            "elapsed_seconds",
+            "bytes",
+            "records_per_sec",
             "paired_records",
             "orphan_entries",
             "input_lines_seen",
@@ -1902,3 +1907,300 @@ class TestNoradTracker:
             25544: {RuleID.CHECKSUM_MISMATCH: 1},
             42: {RuleID.CHECKSUM_MISMATCH: 1},
         }
+
+
+class TestFileStatsTimingFields:
+    """Issue #20: FileStats carries per-file timing for the JSON envelope."""
+
+    def test_timing_fields_default_to_zero(self):
+        # Defaults keep validate-mode runs (no timing capture before the
+        # pipeline change lands) from raising — they emit 0.0 / 0 and
+        # consumers see the rigid type contract, not a missing key.
+        stats = report.FileStats(src_name="x.txt")
+        assert stats.elapsed_seconds == 0.0
+        assert isinstance(stats.elapsed_seconds, float)
+        assert stats.bytes == 0
+        assert isinstance(stats.bytes, int)
+
+    def test_timing_fields_accept_assignment(self):
+        # The pipeline writes these after process_file completes; this
+        # locks the assignment shape so a future field rename forces a
+        # pipeline.py update too.
+        stats = report.FileStats(src_name="tle2022.txt")
+        stats.elapsed_seconds = 1.5
+        stats.bytes = 12_345
+        assert stats.elapsed_seconds == 1.5
+        assert stats.bytes == 12_345
+
+
+class TestSummaryDictTimingFields:
+    """Issue #20: summary_dict surfaces timing + throughput per file."""
+
+    def test_summary_dict_carries_timing(self):
+        stats = _stats_with_counts()
+        stats.elapsed_seconds = 2.0
+        stats.bytes = 1_000_000
+        data = report.summary_dict(stats)
+        assert data["elapsed_seconds"] == 2.0
+        assert data["bytes"] == 1_000_000
+
+    def test_records_per_sec_basic(self):
+        # 100 paired records over 2s = 50 r/s.
+        stats = _stats_with_counts()
+        stats.elapsed_seconds = 2.0
+        data = report.summary_dict(stats)
+        assert data["records_per_sec"] == 50.0
+
+    def test_records_per_sec_clamp_floors_denominator(self):
+        # Gate R2 (blocking): records_per_sec MUST be float, never null.
+        # Sub-millisecond elapsed time clamps to 0.001 so the rate stays
+        # a stable upper-bound float — typed consumers never see None.
+        stats = _stats_with_counts()
+        stats.elapsed_seconds = 0.0
+        data = report.summary_dict(stats)
+        assert isinstance(data["records_per_sec"], float)
+        assert data["records_per_sec"] == 100 / 0.001  # 100_000.0
+
+    def test_records_per_sec_zero_records_returns_zero(self):
+        # Zero paired_records over any duration is 0.0 r/s — a real
+        # number, not a null. Empty corpora are valid.
+        stats = report.FileStats(src_name="x.txt")
+        stats.elapsed_seconds = 1.0
+        data = report.summary_dict(stats)
+        assert data["records_per_sec"] == 0.0
+        assert isinstance(data["records_per_sec"], float)
+
+    def test_records_per_sec_never_null(self):
+        # Scan every plausible degenerate combo; none should produce
+        # JSON null. The contract is a single, stable float.
+        for elapsed in (0.0, 1e-9, 0.0005, 0.001, 1.0, 60.0):
+            for paired in (0, 1, 1_000_000):
+                stats = report.FileStats(src_name="x.txt")
+                stats.paired_records = paired
+                stats.elapsed_seconds = elapsed
+                data = report.summary_dict(stats)
+                assert data["records_per_sec"] is not None
+                assert isinstance(data["records_per_sec"], float)
+
+
+class TestBuildRunEnvelope:
+    """Issue #20: the top-level versioned envelope wraps run + summary + files.
+
+    These tests lock the schema contract a consumer pins against — adding,
+    removing, or renaming any envelope key without updating the spec doc
+    must trip one of these tests.
+    """
+
+    def _envelope(self, **overrides):
+        defaults = {
+            "all_stats": _two_file_stats(),
+            "command": "validate",
+            "started_at": "2026-05-25T13:00:00Z",
+            "elapsed_seconds": 1.25,
+        }
+        defaults.update(overrides)
+        return report.build_run_envelope(**defaults)
+
+    def test_top_level_keys_pinned(self):
+        env = self._envelope()
+        assert set(env.keys()) == {
+            "schema_version",
+            "run",
+            "environment",
+            "summary",
+            "files",
+        }
+
+    def test_schema_version_is_string_one(self):
+        # String, not int — leaves room for "1.1" tags in additive
+        # minor revisions without changing the field's JSON type.
+        env = self._envelope()
+        assert env["schema_version"] == "1"
+        assert isinstance(env["schema_version"], str)
+
+    def test_run_block_shape(self):
+        env = self._envelope()
+        run = env["run"]
+        assert set(run.keys()) == {"command", "timestamp", "elapsed_seconds"}
+        assert run["command"] == "validate"
+        assert run["timestamp"] == "2026-05-25T13:00:00Z"
+        assert run["elapsed_seconds"] == 1.25
+        assert isinstance(run["elapsed_seconds"], float)
+
+    def test_environment_block_strict_allowlist(self):
+        # Privacy: the environment block carries ONLY tool + Python
+        # version. No env vars, no paths, no hostnames. Locking the
+        # key set is how we keep a future contributor from sneaking
+        # in a `cwd` or `user` field.
+        env = self._envelope()
+        envblock = env["environment"]
+        assert set(envblock.keys()) == {"tool_version", "python_version"}
+        # tool_version is whatever lintle reports — just type-check.
+        assert isinstance(envblock["tool_version"], str)
+        assert envblock["tool_version"]
+        # python_version is the running interpreter, dotted major.minor.micro.
+        import sys
+
+        expected = (
+            f"{sys.version_info.major}.{sys.version_info.minor}."
+            f"{sys.version_info.micro}"
+        )
+        assert envblock["python_version"] == expected
+
+    def test_summary_block_shape(self):
+        env = self._envelope()
+        summary = env["summary"]
+        assert set(summary.keys()) == {
+            "files_processed",
+            "paired_records",
+            "orphan_entries",
+            "input_lines_seen",
+            "clean_count",
+            "quarantined_count",
+            "fix_counts",
+            "reject_counts",
+        }
+        # _two_file_stats: 1000 + 3000 paired = 4000 records, 10 quarantined.
+        assert summary["files_processed"] == 2
+        assert summary["paired_records"] == 4000
+        assert summary["clean_count"] == 3990
+        assert summary["quarantined_count"] == 10
+
+    def test_summary_aggregates_match_aggregate_helper(self):
+        # The summary block IS the corpus-wide aggregate; if these
+        # diverge from _aggregate() then two surfaces of the same data
+        # have drifted, which the issue explicitly warns against.
+        stats_list = _two_file_stats()
+        env = self._envelope(all_stats=stats_list)
+        paired, orphans, lines_seen, clean, quarantined, fixes, rejects, _ = (
+            report._aggregate(stats_list)
+        )
+        assert env["summary"]["paired_records"] == paired
+        assert env["summary"]["orphan_entries"] == orphans
+        assert env["summary"]["input_lines_seen"] == lines_seen
+        assert env["summary"]["clean_count"] == clean
+        assert env["summary"]["quarantined_count"] == quarantined
+        # fix_counts / reject_counts use StrEnum keys that serialize to
+        # their stable wire tokens once JSON-encoded.
+        assert (
+            env["summary"]["fix_counts"]["trailing-backslash"]
+            == fixes[FixClass.TRAILING_BACKSLASH]
+        )
+
+    def test_files_array_preserves_summary_dict_shape(self):
+        # The per-file entries in the envelope are exactly summary_dict
+        # output, in the order of `all_stats`. Reusing summary_dict
+        # keeps one canonical per-file shape — drift between the
+        # envelope's `files[i]` and stand-alone `summary_dict()` would
+        # break consumers that already pin against either.
+        stats_list = _two_file_stats()
+        env = self._envelope(all_stats=stats_list)
+        assert env["files"] == [report.summary_dict(s) for s in stats_list]
+
+    def test_empty_corpus_renders_zero_summary(self):
+        env = self._envelope(all_stats=[])
+        assert env["files"] == []
+        assert env["summary"]["files_processed"] == 0
+        assert env["summary"]["paired_records"] == 0
+        assert env["summary"]["fix_counts"] == {}
+        assert env["summary"]["reject_counts"] == {}
+
+    def test_full_envelope_is_json_serialisable(self):
+        # The whole envelope must round-trip through json.dumps without
+        # raising and without losing structure — this is what cli.py
+        # actually prints. Locks the StrEnum-key serialisation contract
+        # at the envelope boundary, not just the inner per-file shape.
+        env = self._envelope()
+        encoded = json.dumps(env)
+        decoded = json.loads(encoded)
+        assert decoded["schema_version"] == "1"
+        assert decoded["run"]["command"] == "validate"
+        assert decoded["summary"]["paired_records"] == 4000
+        # StrEnum keys serialise as their stable wire tokens.
+        assert decoded["summary"]["fix_counts"]["trailing-backslash"] == 1990
+
+    def test_envelope_uses_basename_only_for_src_name(self):
+        # Privacy: no absolute paths leak through. FileStats.src_name
+        # is already a basename — this test pins that the envelope
+        # builder does not regress by accidentally substituting a path.
+        stats = report.FileStats(src_name="tle2022.txt")
+        env = self._envelope(all_stats=[stats])
+        assert env["files"][0]["src_name"] == "tle2022.txt"
+        assert "/" not in env["files"][0]["src_name"]
+
+
+class TestEnvelopeGoldenFixture:
+    """Gate R7: a checked-in JSON fixture locks the wire format.
+
+    The fixture (``tests/fixtures/report-envelope-v1.golden.json``) is
+    the contract a downstream consumer can copy verbatim and parse —
+    any accidental drift in field names, types, or ordering shows up
+    as a diff in the test output.
+    """
+
+    def test_envelope_matches_golden_fixture(self):
+        fixture_path = os.path.join(
+            os.path.dirname(__file__), "fixtures", "report-envelope-v1.golden.json"
+        )
+        with open(fixture_path, encoding="utf-8") as handle:
+            golden = json.load(handle)
+
+        # Build an envelope whose inputs are entirely deterministic.
+        stats = report.FileStats(src_name="tle2099.txt")
+        stats.paired_records = 10
+        stats.orphan_entries = 0
+        stats.input_lines_seen = 20
+        stats.clean_count = 9
+        stats.quarantined_count = 1
+        stats.fix_counts = {FixClass.TRAILING_BACKSLASH: 9}
+        stats.reject_counts = {RuleID.CHECKSUM_MISMATCH: 1}
+        stats.elapsed_seconds = 0.5
+        stats.bytes = 2_048
+        env = report.build_run_envelope(
+            [stats],
+            command="validate",
+            started_at="2026-05-25T13:00:00Z",
+            elapsed_seconds=0.75,
+        )
+
+        # The Python version field comes from the running interpreter, so
+        # we patch the golden's expectation to the current value before
+        # comparing — keeps the fixture stable across local Python patches
+        # without weakening the schema lock.
+        import sys
+
+        golden["environment"]["python_version"] = (
+            f"{sys.version_info.major}.{sys.version_info.minor}."
+            f"{sys.version_info.micro}"
+        )
+        golden["environment"]["tool_version"] = env["environment"]["tool_version"]
+
+        # Round-trip through JSON so dict order, StrEnum coercion, and
+        # int-key stringification match what cli.py actually prints.
+        encoded = json.loads(json.dumps(env))
+        assert encoded == golden
+
+
+class TestEnvelopeBreakingChange:
+    """Gate R3: the v1 envelope is a clean break from the legacy flat array.
+
+    This test documents the breaking change in executable form — anyone
+    grepping for the old shape in tests sees the assertion that calls
+    out the migration.
+    """
+
+    def test_envelope_is_object_not_array(self):
+        # Legacy --report json emitted a flat array of summary_dict
+        # entries. v1 emits a top-level object. Consumers that did
+        # `payload[0]` will now fail-fast at the type level, which is
+        # the desired migration signal.
+        env = report.build_run_envelope(
+            _two_file_stats(),
+            command="validate",
+            started_at="2026-05-25T13:00:00Z",
+            elapsed_seconds=0.1,
+        )
+        assert isinstance(env, dict)
+        assert not isinstance(env, list)
+        # And the per-file array lives under the well-known key.
+        assert isinstance(env["files"], list)
