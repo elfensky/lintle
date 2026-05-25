@@ -3,6 +3,7 @@
 import dataclasses
 import json
 import os
+import re
 
 import pytest
 
@@ -2031,13 +2032,24 @@ class TestBuildRunEnvelope:
         # Privacy: the environment block carries ONLY tool + Python
         # version. No env vars, no paths, no hostnames. Locking the
         # key set is how we keep a future contributor from sneaking
-        # in a `cwd` or `user` field.
+        # in a `cwd` or `user` field. ``tool_version`` is also format-
+        # checked here (rather than only type-checked) so a regression
+        # where ``__version__`` resolves to an empty/garbled string
+        # surfaces independently of the golden-fixture test (which
+        # patches ``tool_version`` from the live value and so cannot
+        # catch a self-consistent regression).
         env = self._envelope()
         envblock = env["environment"]
         assert set(envblock.keys()) == {"tool_version", "python_version"}
-        # tool_version is whatever lintle reports — just type-check.
         assert isinstance(envblock["tool_version"], str)
-        assert envblock["tool_version"]
+        # Match the dotted-numeric prefix lintle's __version__ always
+        # carries — guards against ``""`` / ``"unknown"`` / garbled
+        # outputs from importlib.metadata. PEP 440 admits suffixes
+        # like ``.post1`` / ``-rc1`` so the prefix-anchored shape is
+        # the right level of strictness.
+        assert re.match(r"^\d+\.\d+\.\d+", envblock["tool_version"]), envblock[
+            "tool_version"
+        ]
         # python_version is the running interpreter, dotted major.minor.micro.
         import sys
 
