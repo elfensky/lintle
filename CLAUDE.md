@@ -68,15 +68,20 @@ src/lintle/
 ├── pipeline.py    # streams a file in binary, pairs 1/2 lines into records, routes them
 ├── repair.py      # speculative fixes, each confirmed by tle.py before commit
 ├── report.py      # FileStats, the .broken.txt sidecar writer, the run report
+├── diff.py        # read-only: per-rule delta between two runs' report.jsonl (lintle diff)
+├── explain.py     # read-only: renders rule/fix documentation (lintle explain)
 ├── tle.py         # the validator — column layout, checksum, semantic ranges, pairing
 ├── diagnostics.py # stable RuleID registry + structured Diagnostic dataclass (pure data)
-└── categories.py  # FixClass enum — the successful-repair taxonomy (pure data)
+├── categories.py  # FixClass enum + FixSpec registry — the repair taxonomy (pure data)
+└── explain_examples.py # validator-verified examples + citations backing explain (pure data)
 ```
 
 Module dependencies flow one way: `cli.py → pipeline.py → repair.py → tle.py`,
-with `diagnostics.py` and `categories.py` as pure-data leaves depended on by
-`repair`, `pipeline`, and `report`. `tle.py` and the two data modules carry
-no I/O and no logic respectively, so cycles are structurally impossible.
+with the read-only `cli.py → diff.py` and `cli.py → explain.py → explain_examples.py`
+consumers alongside. `diagnostics.py` and `categories.py` are pure-data leaves
+depended on by `repair`, `pipeline`, `report`, and `explain`; `explain_examples.py`
+is also pure data, composing those two leaves into documented examples. `tle.py`
+and the data modules carry no I/O, so cycles are structurally impossible.
 
 → See [`README.md`](README.md) for the architecture, usage, and data flow.
 → See [`CONTRIBUTING.md`](CONTRIBUTING.md) for setup, testing, and the git workflow.

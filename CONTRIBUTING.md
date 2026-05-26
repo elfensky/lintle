@@ -64,10 +64,13 @@ Tests are grouped into `Test*` classes, one per unit or behaviour under test.
 |------|----------------|
 | `test_tle.py` | The validator: checksum, column layout, semantic ranges, record pairing |
 | `test_diagnostics.py` | `RuleID` registry, `Diagnostic` dataclass, `RULES` metadata, the `diagnostic()` constructor |
+| `test_categories.py` | `FixClass`/`FixSpec`/`FIXES` repair-tag registry and its import-time coverage guard |
 | `test_repair.py` | Speculative line/record repair and the rule IDs each repair tier emits |
 | `test_pipeline.py` | Streaming I/O, line pairing, per-file processing, progress, temp-file safety |
 | `test_report.py` | `FileStats`, the `.broken.txt` sidecar, summaries, the run report, per-NORAD breakdown |
 | `test_cli.py` | Argument parsing, path discovery, exit codes, elapsed-time formatting |
+| `test_diff.py` | `lintle diff` — per-rule delta between two runs' `report.jsonl` |
+| `test_explain.py` | `lintle explain` — rule/fix docs, examples validated against the live validator, coverage + disjointness guards |
 | `test_integration.py` | End-to-end: golden output, idempotence, re-validation |
 | `test_oracle.py` | Cross-checks a known-good TLE against the trusted `sgp4` parser |
 | `test_pipeline_throughput.py` | Opt-in records/sec regression guard, gated by `pytest -m slow` (excluded by default) |

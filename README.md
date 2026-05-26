@@ -244,10 +244,13 @@ with `pytest-cov`.
 src/lintle/
   tle.py          # core: defines a "perfect" TLE record (pure, no I/O)
   diagnostics.py  # stable RuleID registry + structured Diagnostic dataclass
-  categories.py   # FixClass enum — the successful-repair taxonomy
+  categories.py   # FixClass enum + FixSpec registry — the repair taxonomy
+  explain_examples.py # validator-verified examples + citations backing `explain`
   repair.py       # speculative, validated repairs
   pipeline.py     # streaming reader, prefix-driven pairing, per-file routing
   report.py       # quarantine sidecar + run-summary rendering
+  diff.py         # read-only: per-rule delta between two runs (`lintle diff`)
+  explain.py      # read-only: renders rule/fix documentation (`lintle explain`)
   cli.py          # argument parsing, parallelism, exit codes
 tests/            # pytest suite
 docs/superpowers/
@@ -257,8 +260,10 @@ docs/superpowers/
 ```
 
 `diagnostics.py` and `categories.py` are pure-data leaves of the dependency
-graph — they hold enums and frozen dataclasses, no logic. `repair`,
-`pipeline`, and `report` all depend on them; `tle.py` remains the single
+graph — they hold enums and frozen dataclasses, no logic; `explain_examples.py`
+is pure data too, composing those leaves into documented examples. `repair`,
+`pipeline`, and `report` depend on them; `diff.py` and `explain.py` are
+read-only consumers reached only through `cli.py`; `tle.py` remains the single
 source of truth for what counts as a valid TLE record.
 
 ## Further reading
