@@ -14,7 +14,7 @@ import sys
 import threading
 import time
 
-from lintle import __version__, diff, pipeline, report
+from lintle import __version__, diff, explain, pipeline, report
 
 _DEFAULT_SOURCE = "data/source"
 _DEFAULT_OUTPUT = "data/output"
@@ -145,7 +145,7 @@ def build_parser():
     subparsers = parser.add_subparsers(
         dest="command",
         required=True,
-        metavar="{validate,clean,diff}",
+        metavar="{validate,clean,diff,explain}",
         title="commands",
     )
     for name, help_text, description in (
@@ -230,6 +230,27 @@ def build_parser():
     )
     diff_parser.add_argument(
         "run_b", metavar="RUN-B", help="second run's output directory"
+    )
+
+    # `explain` is a read-only documentation lookup: one positional TAG (a rule
+    # ID like TLE-CHK-001 or a fix tag like reconstructed-checksum), no shared
+    # validate/clean argument surface. Writes nothing.
+    explain_parser = subparsers.add_parser(
+        "explain",
+        help="print what a rule ID or fix tag means, with examples",
+        description=(
+            "Explain one rejection rule (e.g. TLE-CHK-001) or repair tag (e.g. "
+            "reconstructed-checksum): its definition, a verified good/bad or "
+            "before/after example, the repair tier, and the source of truth in "
+            "the code. Read-only; writes nothing."
+        ),
+        epilog=_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    explain_parser.add_argument(
+        "tag",
+        metavar="TAG",
+        help="a rule ID (TLE-CHK-001) or fix tag (reconstructed-checksum)",
     )
     return parser
 
@@ -449,6 +470,21 @@ def main(argv=None):
     # so dispatch it before any of that logic runs.
     if args.command == "diff":
         return diff.run(args.run_a, args.run_b)
+
+    # `explain` is a read-only documentation lookup — no input files, no output
+    # tree. An unknown tag is an operational error (exit 2) with the valid tags
+    # listed so the operator can correct it.
+    if args.command == "explain":
+        try:
+            print(explain.render(args.tag))
+        except explain.UnknownTag:
+            print(
+                f"error: unknown tag {args.tag!r}.\n"
+                f"  valid tags: {', '.join(explain.known_tags())}",
+                file=sys.stderr,
+            )
+            return 2
+        return 0
 
     # `args.paths` is None when the user passed nothing — fall back to the
     # default source dir, and remember it so we can give a tailored error if
