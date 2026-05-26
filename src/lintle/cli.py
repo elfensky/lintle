@@ -14,7 +14,7 @@ import sys
 import threading
 import time
 
-from lintle import __version__, diff, explain, pipeline, report
+from lintle import __version__, diff, explain, pipeline, report, resume
 
 _DEFAULT_SOURCE = "data/source"
 _DEFAULT_OUTPUT = "data/output"
@@ -210,6 +210,17 @@ def build_parser():
                 "(default: 0 — any quarantine fails)"
             ),
         )
+        if name == "clean":
+            sub.add_argument(
+                "--resume",
+                action="store_true",
+                help=(
+                    "continue an interrupted run in --out-dir: skip files already "
+                    "completed (per its .clean-state.json checkpoint) and process "
+                    "only the rest. Refuses if the lintle version or any input "
+                    "changed since the interrupted run."
+                ),
+            )
 
     # `diff` has a different shape from validate/clean — two positional run
     # directories, no --out-dir / --jobs / --report / --max-quarantined. It is
@@ -528,29 +539,74 @@ def main(argv=None):
         print(f"error: {collision_error}", file=sys.stderr)
         return 2
 
+    # Defaults for the shared dispatch below; ``clean --resume`` narrows them.
+    # ``inputs`` and ``completed`` drive the single-run resume checkpoint
+    # (issue #56) and stay empty for ``validate``.
+    files_to_process = files
+    reused_stats = []
+    inputs = {}
+    completed = {}
+
     if args.command == "clean":
         os.makedirs(args.out_dir, exist_ok=True)
         disk_error = _check_disk_space(args.out_dir, files)
         if disk_error:
             print(f"error: {disk_error}", file=sys.stderr)
             return 2
-        # Pre-run shard-dir scrub (issue #9, spec §4.6). Workers write
-        # per-file findings shards under ``<out_dir>/.shards/`` which the
-        # post-run concat consumes. Leftover shards from a prior aborted
-        # run (SIGINT terminates workers outright, bypassing context-
-        # manager cleanup) would contaminate this run's ``report.jsonl``
-        # if not purged before any new shard is written. The scrub is
-        # required, not best-effort — relying on ``os.makedirs(exist_ok=True)``
-        # alone preserves prior contents.
+        # Per-input identity for the resume checkpoint (issue #56): computed
+        # once, up front, for every discovered file. Cheap and constant-memory
+        # (a head+tail window hash), it is written into the checkpoint as files
+        # complete so an interrupted run can be finished later.
+        inputs = {path: resume.input_fingerprint(path) for path in files}
         shard_dir = os.path.join(args.out_dir, ".shards")
-        if os.path.exists(shard_dir):
-            shutil.rmtree(shard_dir)
+        if args.resume:
+            checkpoint = resume.load_checkpoint(args.out_dir)
+            if checkpoint is None:
+                print(
+                    f"error: no interrupted run to resume in {args.out_dir!r} "
+                    f"(no {resume.CHECKPOINT_NAME} found)",
+                    file=sys.stderr,
+                )
+                return 2
+            reason = resume.validate_resumable(checkpoint, inputs)
+            if reason is not None:
+                print(
+                    f"error: cannot resume: {reason}.\n"
+                    "  re-run without --resume to do a clean full pass.",
+                    file=sys.stderr,
+                )
+                return 2
+            # Reuse files already committed; reconstruct their stats so the
+            # final report covers the whole corpus. Their findings shards
+            # survived the interruption (resume does NOT scrub ``.shards``),
+            # so ``report.jsonl`` stays complete.
+            completed = dict(checkpoint["completed"])
+            reused_stats = [report.stats_from_summary(s) for s in completed.values()]
+            files_to_process = [f for f in files if f not in completed]
+        else:
+            # Fresh run: any leftover checkpoint describes a different attempt
+            # and must not be resumable after this run partially overwrites
+            # outputs; and ``.shards`` from a prior aborted run would
+            # contaminate this run's ``report.jsonl`` (issue #9, spec §4.6).
+            # Clear both before writing anything.
+            resume.delete_checkpoint(args.out_dir)
+            if os.path.exists(shard_dir):
+                shutil.rmtree(shard_dir)
 
-    print(
-        f"processing {len(files)} file(s) with {args.jobs} worker(s)...",
-        file=sys.stderr,
-        flush=True,
-    )
+    reused_n = len(reused_stats)
+    if reused_n:
+        print(
+            f"resuming: {reused_n} file(s) already complete, processing "
+            f"{len(files_to_process)} of {len(files)} with {args.jobs} worker(s)...",
+            file=sys.stderr,
+            flush=True,
+        )
+    else:
+        print(
+            f"processing {len(files_to_process)} file(s) with {args.jobs} worker(s)...",
+            file=sys.stderr,
+            flush=True,
+        )
     # Run-level timing for the v1 envelope (issue #20). The wall-clock
     # start captures NOW (just before worker dispatch); the corresponding
     # stop happens after the executor drains. Two separate measurements:
@@ -561,7 +617,9 @@ def main(argv=None):
     # intentionally NOT the sum of per-file worker durations.
     run_started_iso = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     run_monotonic_start = time.monotonic()
-    all_stats = []
+    # Files reused from a resume checkpoint are already done — seed the report
+    # with their reconstructed stats so corpus totals cover the whole run.
+    all_stats = list(reused_stats)
     failed_files = []
     interrupted = False
 
@@ -584,9 +642,9 @@ def main(argv=None):
                     args.command,
                     progress_queue,
                 ): path
-                for path in files
+                for path in files_to_process
             }
-            with _ProgressDisplay(len(files), progress_queue) as progress:
+            with _ProgressDisplay(len(files_to_process), progress_queue) as progress:
                 for future in concurrent.futures.as_completed(futures):
                     path = futures[future]
                     try:
@@ -597,6 +655,18 @@ def main(argv=None):
                     else:
                         all_stats.append(stats)
                         progress.file_done(stats)
+                        # Record this file as completed in the always-on resume
+                        # checkpoint (issue #56). Written atomically after each
+                        # file commits, so an interruption leaves a checkpoint
+                        # naming exactly the files whose outputs are durable.
+                        if args.command == "clean":
+                            completed[path] = report.summary_dict(stats)
+                            resume.write_checkpoint(
+                                args.out_dir,
+                                resume.build_checkpoint(
+                                    inputs=inputs, completed=completed
+                                ),
+                            )
         except KeyboardInterrupt:
             # Ignore any further Ctrl-C so the shutdown itself cannot be
             # interrupted half-way (which is what left it hung before).
@@ -655,6 +725,12 @@ def main(argv=None):
             print(f"broken NORAD IDs: {noradids_path}")
         if findings_path:
             print(f"findings: {findings_path}")
+
+    # A fully successful clean run leaves no resumable state behind; a run with
+    # failed files keeps the checkpoint so the operator can fix and --resume
+    # (issue #56).
+    if args.command == "clean" and not failed_files:
+        resume.delete_checkpoint(args.out_dir)
 
     # A file that could not be processed is an operational error (spec §10),
     # and that outranks the quarantined-record signal.
