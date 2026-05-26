@@ -45,6 +45,21 @@ def _write_run(run_dir, entries, *, file="tle.txt"):
     return run_dir
 
 
+def _write_run_files(run_dir, file_rules):
+    """Write a report.jsonl with one finding per ``(filename, RuleID)`` pair,
+    so a single run can span multiple files."""
+    run_dir.mkdir(parents=True, exist_ok=True)
+    path = run_dir / "report.jsonl"
+    with path.open("w", encoding="utf-8") as fh:
+        for filename, rule in file_rules:
+            entry = _entry(rule)
+            payload = report.entry_to_jsonl_dict(
+                entry, file=filename, norad_id=entry.norad_id
+            )
+            fh.write(json.dumps(payload, separators=(",", ":"), sort_keys=True) + "\n")
+    return run_dir
+
+
 class TestDiffReader:
     """``iter_primary_rule_ids`` streams the primary rule_id of each finding,
     validates the schema version, and fails loudly on anything it cannot
@@ -395,3 +410,184 @@ class TestDiffSemanticAlignment:
         producer_counts = collections.Counter(e.primary.rule_id.value for e in entries)
         run = _write_run(tmp_path / "run", entries)
         assert diff.aggregate(str(run)) == producer_counts
+
+
+class TestIterFindings:
+    """``iter_findings`` is the core reader — it yields ``(file, rule_id)`` for
+    every finding, the unit per-file aggregation needs."""
+
+    def test_yields_file_and_primary_rule_id(self, tmp_path):
+        run = _write_run_files(
+            tmp_path / "run",
+            [
+                ("tle2024.txt", RuleID.CHECKSUM_MISMATCH),
+                ("tle2025.txt", RuleID.LINE_LENGTH),
+            ],
+        )
+        assert list(diff.iter_findings(str(run))) == [
+            ("tle2024.txt", "TLE-CHK-001"),
+            ("tle2025.txt", "TLE-COL-001"),
+        ]
+
+
+class TestAggregateByFile:
+    """``aggregate_by_file`` returns ``{basename: Counter(rule_id)}``. Because
+    clean refuses colliding basenames, each basename is a unique file within a
+    run, so the grouping is unambiguous."""
+
+    def test_groups_counts_by_file(self, tmp_path):
+        run = _write_run_files(
+            tmp_path / "run",
+            [
+                ("a.txt", RuleID.CHECKSUM_MISMATCH),
+                ("a.txt", RuleID.CHECKSUM_MISMATCH),
+                ("b.txt", RuleID.LINE_LENGTH),
+            ],
+        )
+        by_file = diff.aggregate_by_file(str(run))
+        assert by_file["a.txt"] == collections.Counter({"TLE-CHK-001": 2})
+        assert by_file["b.txt"] == collections.Counter({"TLE-COL-001": 1})
+
+    def test_related_not_counted_per_file(self, tmp_path):
+        entry = _entry(RuleID.CHECKSUM_MISMATCH, related_rules=(RuleID.LINE_LENGTH,))
+        run = tmp_path / "run"
+        run.mkdir()
+        payload = report.entry_to_jsonl_dict(
+            entry, file="a.txt", norad_id=entry.norad_id
+        )
+        (run / "report.jsonl").write_text(json.dumps(payload) + "\n")
+        by_file = diff.aggregate_by_file(str(run))
+        assert by_file["a.txt"] == collections.Counter({"TLE-CHK-001": 1})
+
+    def test_empty_run_is_empty_dict(self, tmp_path):
+        run = _write_run(tmp_path / "run", [])
+        assert diff.aggregate_by_file(str(run)) == {}
+
+
+class TestComputeFileDelta:
+    """``compute_file_delta`` reports, per basename, the rules whose counts
+    changed; identical files are omitted, one-sided files are flagged."""
+
+    def test_file_in_both_with_changed_counts(self):
+        fds = diff.compute_file_delta(
+            {"x.txt": collections.Counter({"TLE-CHK-001": 10})},
+            {"x.txt": collections.Counter({"TLE-CHK-001": 4})},
+        )
+        assert len(fds) == 1
+        assert fds[0].file == "x.txt"
+        assert fds[0].presence == "both"
+        assert [rd.rule_id for rd in fds[0].rules] == ["TLE-CHK-001"]
+        assert fds[0].rules[0].delta == -6
+
+    def test_file_only_in_a(self):
+        fds = diff.compute_file_delta(
+            {"gone.txt": collections.Counter({"TLE-CHK-001": 3})}, {}
+        )
+        assert fds[0].presence == "a_only"
+        assert fds[0].rules[0].count_a == 3
+
+    def test_file_only_in_b(self):
+        fds = diff.compute_file_delta(
+            {}, {"new.txt": collections.Counter({"TLE-PAIR-002": 2})}
+        )
+        assert fds[0].presence == "b_only"
+        assert fds[0].rules[0].count_b == 2
+
+    def test_unchanged_file_is_omitted(self):
+        a = {"same.txt": collections.Counter({"TLE-CHK-001": 5})}
+        b = {"same.txt": collections.Counter({"TLE-CHK-001": 5})}
+        assert diff.compute_file_delta(a, b) == ()
+
+    def test_files_sorted_by_name(self):
+        fds = diff.compute_file_delta(
+            {},
+            {
+                "zeta.txt": collections.Counter({"TLE-CHK-001": 1}),
+                "alpha.txt": collections.Counter({"TLE-CHK-001": 1}),
+            },
+        )
+        assert [fd.file for fd in fds] == ["alpha.txt", "zeta.txt"]
+
+    def test_new_rule_within_a_both_file_shows_only_the_change(self):
+        # File present in both runs; one rule unchanged, one rule new in B.
+        # The unchanged rule is omitted; only the new rule surfaces.
+        fds = diff.compute_file_delta(
+            {"x.txt": collections.Counter({"TLE-CHK-001": 5})},
+            {"x.txt": collections.Counter({"TLE-CHK-001": 5, "TLE-COL-001": 2})},
+        )
+        assert fds[0].presence == "both"
+        rules = {rd.rule_id: rd for rd in fds[0].rules}
+        assert "TLE-CHK-001" not in rules  # unchanged within the file
+        assert rules["TLE-COL-001"].count_a == 0
+        assert rules["TLE-COL-001"].count_b == 2
+
+
+class TestFormatFileDeltas:
+    """``format_file_deltas`` renders the per-file section deterministically,
+    labels one-sided files, and never asserts a false drop-to-zero."""
+
+    def test_renders_both_file_as_delta(self):
+        fds = diff.compute_file_delta(
+            {"x.txt": collections.Counter({"TLE-CHK-001": 10})},
+            {"x.txt": collections.Counter({"TLE-CHK-001": 4})},
+        )
+        text = diff.format_file_deltas(fds)
+        assert "x.txt" in text
+        assert "10 -> 4" in text
+        assert "-6" in text
+
+    def test_a_only_file_labeled_without_false_zero(self):
+        fds = diff.compute_file_delta(
+            {"gone.txt": collections.Counter({"TLE-CHK-001": 3})}, {}
+        )
+        text = diff.format_file_deltas(fds)
+        assert "gone.txt" in text
+        assert "only in run A" in text
+        # A one-sided file must NOT claim it went to zero — it may have been
+        # removed or renamed, not fixed.
+        assert "-> 0" not in text
+        assert "3" in text
+
+    def test_b_only_file_labeled(self):
+        fds = diff.compute_file_delta(
+            {}, {"new.txt": collections.Counter({"TLE-PAIR-002": 2})}
+        )
+        text = diff.format_file_deltas(fds)
+        assert "new.txt" in text
+        assert "only in run B" in text
+
+    def test_empty_says_none(self):
+        assert "(none)" in diff.format_file_deltas(())
+
+    def test_deterministic(self):
+        fds = diff.compute_file_delta(
+            {"x.txt": collections.Counter({"TLE-CHK-001": 10})},
+            {"x.txt": collections.Counter({"TLE-CHK-001": 4})},
+        )
+        assert diff.format_file_deltas(fds) == diff.format_file_deltas(fds)
+
+
+class TestDiffCliPerFile:
+    """End-to-end: the per-file section appears in ``lintle diff`` output."""
+
+    def test_per_file_section_shows_changed_files(self, tmp_path, capsys):
+        run_a = _write_run_files(
+            tmp_path / "a",
+            [
+                ("tle2024.txt", RuleID.CHECKSUM_MISMATCH),
+                ("tle2024.txt", RuleID.CHECKSUM_MISMATCH),
+            ],
+        )
+        run_b = _write_run_files(
+            tmp_path / "b",
+            [
+                ("tle2024.txt", RuleID.CHECKSUM_MISMATCH),
+                ("tle2025.txt", RuleID.BAD_PREFIX),
+            ],
+        )
+        code = cli.main(["diff", str(run_a), str(run_b)])
+        out = capsys.readouterr().out
+        assert code == 0
+        assert "Per-file changes" in out
+        assert "tle2024.txt" in out  # CHK 2 -> 1
+        assert "tle2025.txt" in out  # only in run B
