@@ -988,3 +988,32 @@ class TestProgressDisplay:
         err = capsys.readouterr().err
         assert "\x1b[K" in err  # the live line was painted, then cleared on exit
         assert display._records == 7  # the queued delta was drained
+
+
+class TestExplainCommand:
+    """`lintle explain <TAG>` is a read-only documentation lookup."""
+
+    def test_parser_accepts_explain_with_a_tag(self):
+        args = cli.build_parser().parse_args(["explain", "TLE-CHK-001"])
+        assert args.command == "explain"
+        assert args.tag == "TLE-CHK-001"
+
+    def test_explain_rule_prints_documentation(self, capsys):
+        rc = cli.main(["explain", "TLE-CHK-001"])
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "TLE-CHK-001" in out
+        assert "checksum" in out.lower()
+
+    def test_explain_fix_prints_documentation(self, capsys):
+        rc = cli.main(["explain", "reconstructed-checksum"])
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "reconstructed-checksum" in out
+
+    def test_explain_unknown_tag_errors_with_guidance(self, capsys):
+        rc = cli.main(["explain", "NOT-A-REAL-TAG"])
+        err = capsys.readouterr().err
+        assert rc == 2
+        assert "NOT-A-REAL-TAG" in err
+        assert "TLE-CHK-001" in err  # the error lists valid tags
