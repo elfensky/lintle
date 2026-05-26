@@ -6,7 +6,7 @@ import queue
 import signal
 import time
 
-from lintle import cli, report
+from lintle import cli, pipeline, report, resume
 
 
 class TestDiscoverPaths:
@@ -1017,3 +1017,162 @@ class TestExplainCommand:
         assert rc == 2
         assert "NOT-A-REAL-TAG" in err
         assert "TLE-CHK-001" in err  # the error lists valid tags
+
+
+def _strip_generated(path):
+    """Read a report.md, dropping the nondeterministic `- Generated:` line so
+    two runs can be compared for structural equality."""
+    return "\n".join(
+        line
+        for line in path.read_text().splitlines()
+        if not line.startswith("- Generated:")
+    )
+
+
+def _simulate_interrupted_clean(src_paths, out_dir, *, completed_count):
+    """Leave `out_dir` looking exactly like a clean run interrupted partway:
+    the first `completed_count` files fully processed (their cleaned/broken
+    outputs and findings shards committed, as a worker leaves them — no
+    end-of-run concat), plus a checkpoint that lists them complete with every
+    input fingerprinted. Mirrors the real interrupted state without needing to
+    actually kill a parallel run."""
+    os.makedirs(out_dir, exist_ok=True)
+    inputs = {p: resume.input_fingerprint(p) for p in src_paths}
+    completed = {}
+    for path in src_paths[:completed_count]:
+        stats = pipeline.process_file(path, out_dir, "clean")
+        completed[path] = report.summary_dict(stats)
+    resume.write_checkpoint(
+        out_dir, resume.build_checkpoint(inputs=inputs, completed=completed)
+    )
+
+
+class TestResume:
+    """Single-run resume for `clean --resume` (issue #56): checkpoint lifecycle,
+    refuse-on-change validation, and a golden 'resume finishes the job' run."""
+
+    def _two_file_src(self, tmp_path, line1, line2):
+        # Each file: one clean pair + one wrong-checksum pair (quarantined),
+        # so cleaned/, broken/, report.jsonl, and broken-noradids all exercise.
+        src = tmp_path / "src"
+        src.mkdir()
+        bad1 = line1[:68] + "9"
+        content = (line1 + "\n" + line2 + "\n" + bad1 + "\n" + line2 + "\n").encode(
+            "ascii"
+        )
+        (src / "tle2098.txt").write_bytes(content)
+        (src / "tle2099.txt").write_bytes(content)
+        return src
+
+    def test_completed_run_leaves_no_checkpoint(self, tmp_path, line1, line2):
+        src = self._two_file_src(tmp_path, line1, line2)
+        out = tmp_path / "out"
+        cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
+        assert not (out / resume.CHECKPOINT_NAME).exists()
+
+    def test_resume_without_checkpoint_errors(self, tmp_path, line1, line2, capsys):
+        src = self._two_file_src(tmp_path, line1, line2)
+        out = tmp_path / "out"
+        out.mkdir()
+        rc = cli.main(
+            ["clean", str(src), "--out-dir", str(out), "--resume", "--jobs", "1"]
+        )
+        err = capsys.readouterr().err
+        assert rc == 2
+        assert "no interrupted run" in err.lower()
+
+    def test_resume_finishes_and_matches_full_run(self, tmp_path, line1, line2):
+        src = self._two_file_src(tmp_path, line1, line2)
+        paths = cli.discover_paths([str(src)])
+        out_full = tmp_path / "full"
+        rc_full = cli.main(
+            ["clean", str(src), "--out-dir", str(out_full), "--jobs", "1"]
+        )
+
+        out_partial = tmp_path / "partial"
+        _simulate_interrupted_clean(paths, str(out_partial), completed_count=1)
+        first_cleaned = out_partial / "cleaned" / "tle2098.cleaned.txt"
+        mtime_before = first_cleaned.stat().st_mtime_ns
+
+        rc_resume = cli.main(
+            [
+                "clean",
+                str(src),
+                "--out-dir",
+                str(out_partial),
+                "--resume",
+                "--jobs",
+                "1",
+            ]
+        )
+
+        assert rc_resume == rc_full
+        # report.jsonl and broken-noradids are timing-free — the golden anchors.
+        assert (out_partial / "report.jsonl").read_bytes() == (
+            out_full / "report.jsonl"
+        ).read_bytes()
+        assert (out_partial / "broken-noradids.ndjson").read_bytes() == (
+            out_full / "broken-noradids.ndjson"
+        ).read_bytes()
+        for name in ("tle2098.cleaned.txt", "tle2099.cleaned.txt"):
+            assert (out_partial / "cleaned" / name).read_bytes() == (
+                out_full / "cleaned" / name
+            ).read_bytes()
+        assert _strip_generated(out_partial / "report.md") == _strip_generated(
+            out_full / "report.md"
+        )
+        # The already-completed file was skipped, not reprocessed.
+        assert first_cleaned.stat().st_mtime_ns == mtime_before
+        # A fully successful resumed run leaves no checkpoint behind.
+        assert not (out_partial / resume.CHECKPOINT_NAME).exists()
+
+    def test_fresh_run_clears_stale_checkpoint(self, tmp_path, line1, line2):
+        src = self._two_file_src(tmp_path, line1, line2)
+        out = tmp_path / "out"
+        out.mkdir()
+        resume.write_checkpoint(
+            str(out),
+            resume.build_checkpoint(
+                inputs={
+                    "old.txt": {
+                        "size": 1,
+                        "mtime_ns": 1,
+                        "head_sha256": "x",
+                        "tail_sha256": "y",
+                    }
+                },
+                completed={},
+            ),
+        )
+        rc = cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
+        assert rc == 1  # quarantines present
+        assert not (out / resume.CHECKPOINT_NAME).exists()
+        assert (out / "cleaned" / "tle2098.cleaned.txt").exists()
+        assert (out / "cleaned" / "tle2099.cleaned.txt").exists()
+
+    def test_resume_refuses_when_input_changed(self, tmp_path, line1, line2, capsys):
+        src = self._two_file_src(tmp_path, line1, line2)
+        paths = cli.discover_paths([str(src)])
+        out_partial = tmp_path / "partial"
+        _simulate_interrupted_clean(paths, str(out_partial), completed_count=1)
+        # The not-yet-processed input changes between "office" and "home".
+        with open(src / "tle2099.txt", "ab") as handle:
+            handle.write(b"1 extra junk line\n")
+
+        rc = cli.main(
+            [
+                "clean",
+                str(src),
+                "--out-dir",
+                str(out_partial),
+                "--resume",
+                "--jobs",
+                "1",
+            ]
+        )
+        err = capsys.readouterr().err
+        assert rc == 2
+        assert "input changed" in err.lower()
+        assert "tle2099" in err
+        # A refused resume leaves the checkpoint intact for an explicit restart.
+        assert (out_partial / resume.CHECKPOINT_NAME).exists()
