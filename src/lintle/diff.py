@@ -4,11 +4,18 @@ Reads each run's ``report.jsonl`` and aggregates per-rule counts using only
 the *primary* diagnostic — mirroring ``pipeline._record_reject``, which tallies
 ``stats.reject_counts[primary.rule_id]`` and never the ``related[]`` array. That
 shared counting rule is what keeps ``lintle diff``'s numbers in agreement with
-each run's own ``report.md``. The reader streams line-by-line: memory is bounded
-by the number of distinct RuleIDs, never the number of findings. Output is a
-deterministic plain-text per-rule delta. A new leaf module — it depends only on
-``diagnostics`` and is imported by ``cli``; per-file deltas are deferred to v2
-because ``report.jsonl``'s ``file`` field is only a basename.
+each run's own ``report.md``. Output is a deterministic plain-text report: a
+corpus-level per-rule delta, then a per-file (per-basename) breakdown.
+
+The per-file breakdown is keyed by ``report.jsonl``'s ``file`` field, which is
+a basename (``pipeline.py``: ``os.path.basename``). That key is unambiguous
+because ``clean`` refuses to run on inputs with colliding basenames
+(``cli._detect_basename_collisions``), so within any producible run each
+basename names exactly one file. A basename present in only one run, however,
+may have been fixed, removed, or renamed — so one-sided files are flagged, not
+attributed. Memory is bounded by (distinct files × distinct RuleIDs) — tens of
+files × ≤9 rules for a real corpus — never the number of findings. A new leaf
+module: depends only on ``diagnostics`` and is imported by ``cli``.
 """
 
 import collections
@@ -29,20 +36,20 @@ class DiffError(Exception):
     finding with no primary ``rule_id``."""
 
 
-def iter_primary_rule_ids(run_dir):
-    """Yield the primary ``rule_id`` string of every finding in
-    ``<run_dir>/report.jsonl``, one per line, in file order. A generator that
-    never holds more than a single line in memory. Raises :class:`DiffError`
-    on a missing file, a malformed JSON line, a ``schema_version`` other than
-    ``"1"``, or a line lacking ``rule_id`` — the diff refuses to count what it
-    cannot interpret."""
+def iter_findings(run_dir):
+    """Yield ``(file, rule_id)`` for every finding in ``<run_dir>/report.jsonl``,
+    one per line, in file order. The core reader: a generator that never holds
+    more than a single line in memory. Raises :class:`DiffError` on a missing
+    file, a malformed JSON line, a ``schema_version`` other than ``"1"``, or a
+    line lacking ``rule_id`` — the diff refuses to count what it cannot
+    interpret."""
     path = os.path.join(run_dir, _FINDINGS_NAME)
     try:
         with open(path, encoding="utf-8") as handle:
             for lineno, raw in enumerate(handle, 1):
                 line = raw.strip()
                 if line:
-                    yield _rule_id_from_line(path, lineno, line)
+                    yield _finding_from_line(path, lineno, line)
     except (OSError, UnicodeDecodeError) as exc:
         # OSError: missing file, permission denied, a directory in place of the
         # file. UnicodeDecodeError (a ValueError, not an OSError): foreign bytes
@@ -51,8 +58,15 @@ def iter_primary_rule_ids(run_dir):
         raise DiffError(f"cannot read {path}: {exc}") from exc
 
 
-def _rule_id_from_line(path, lineno, line):
-    """Parse one ``report.jsonl`` line and return its primary ``rule_id``.
+def iter_primary_rule_ids(run_dir):
+    """Yield the primary ``rule_id`` of every finding — the file-agnostic view
+    of :func:`iter_findings`, for corpus-level aggregation."""
+    for _file, rule_id in iter_findings(run_dir):
+        yield rule_id
+
+
+def _finding_from_line(path, lineno, line):
+    """Parse one ``report.jsonl`` line and return its ``(file, rule_id)``.
     Raises :class:`DiffError` (citing ``path:lineno``) on malformed JSON, an
     unsupported ``schema_version``, or a missing ``rule_id``."""
     try:
@@ -68,7 +82,7 @@ def _rule_id_from_line(path, lineno, line):
     rule_id = record.get("rule_id")
     if rule_id is None:
         raise DiffError(f"{path}:{lineno}: finding has no rule_id")
-    return rule_id
+    return record.get("file"), rule_id
 
 
 def aggregate(run_dir):
@@ -76,6 +90,17 @@ def aggregate(run_dir):
     number of findings in ``run_dir``. Counts the primary diagnostic only,
     matching the producer's ``stats.reject_counts`` semantics."""
     return collections.Counter(iter_primary_rule_ids(run_dir))
+
+
+def aggregate_by_file(run_dir):
+    """Return ``{basename: Counter(rule_id → count)}`` for ``run_dir``. Keyed by
+    the ``report.jsonl`` ``file`` basename, which uniquely names one file within
+    a run (``clean`` rejects colliding basenames). Memory is bounded by
+    (distinct files × distinct RuleIDs), not the number of findings."""
+    by_file = collections.defaultdict(collections.Counter)
+    for file, rule_id in iter_findings(run_dir):
+        by_file[file][rule_id] += 1
+    return dict(by_file)
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -105,6 +130,26 @@ class Delta:
     unchanged: tuple[RuleDelta, ...]
 
 
+# How a basename relates to the two runs. ``BOTH`` files get true count deltas;
+# one-sided files (``A_ONLY`` / ``B_ONLY``) are flagged but not attributed,
+# because a basename in only one run may have been fixed, removed, or renamed.
+_BOTH = "both"
+_A_ONLY = "a_only"
+_B_ONLY = "b_only"
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class FileDelta:
+    """One basename's findings change between runs. ``presence`` is one of
+    ``"both"``, ``"a_only"``, ``"b_only"``. ``rules`` holds only the RuleDeltas
+    that changed (rules unchanged within a both-run file are omitted), sorted by
+    ``rule_id`` for deterministic output."""
+
+    file: str
+    presence: str
+    rules: tuple[RuleDelta, ...]
+
+
 def compute_delta(counts_a, counts_b):
     """Categorize every ``rule_id`` seen in either run into new / fixed /
     changed / unchanged. Pure function over two Counters — deterministic and
@@ -123,6 +168,44 @@ def compute_delta(counts_a, counts_b):
         else:
             unchanged.append(rd)
     return Delta(tuple(new), tuple(fixed), tuple(changed), tuple(unchanged))
+
+
+def compute_file_delta(by_file_a, by_file_b):
+    """Return a sorted tuple of :class:`FileDelta`, one per basename whose
+    findings differ between the runs. Files with identical per-rule counts in
+    both runs are omitted — a diff shows what changed. Reuses
+    :func:`compute_delta` per file, so each file's rule-level breakdown follows
+    exactly the same new/fixed/changed semantics as the corpus-level report."""
+    out = []
+    for file in sorted(set(by_file_a) | set(by_file_b)):
+        a = by_file_a.get(file)
+        b = by_file_b.get(file)
+        if a is None:
+            presence = _B_ONLY
+        elif b is None:
+            presence = _A_ONLY
+        else:
+            presence = _BOTH
+        per_rule = compute_delta(a or collections.Counter(), b or collections.Counter())
+        # Everything except unchanged is a change worth showing; re-sort the
+        # union by rule_id so the file's rule lines read in stable order.
+        changed = sorted(
+            per_rule.new + per_rule.fixed + per_rule.changed,
+            key=lambda rd: rd.rule_id,
+        )
+        if changed:
+            out.append(FileDelta(file, presence, tuple(changed)))
+    return tuple(out)
+
+
+def _totals(by_file):
+    """Sum a ``{file: Counter}`` map into one corpus-level Counter. Deriving the
+    corpus totals from the per-file counts guarantees they always agree with the
+    per-file breakdown — they cannot drift, sharing one aggregation pass."""
+    total = collections.Counter()
+    for counter in by_file.values():
+        total.update(counter)
+    return total
 
 
 def _title(rule_id):
@@ -180,16 +263,55 @@ def _section(rule_deltas, count_fragment):
     ]
 
 
+_PRESENCE_LABEL = {
+    _BOTH: "",
+    _A_ONLY: " (only in run A — fixed, removed, or renamed)",
+    _B_ONLY: " (only in run B — new, added, or renamed)",
+}
+
+
+def format_file_deltas(file_deltas):
+    """Render the per-file section as a deterministic string. Both-run files
+    show true ``a -> b`` deltas; one-sided files show the count observed on
+    their single side (never a ``-> 0`` that would falsely imply the file went
+    clean rather than being removed or renamed)."""
+    if not file_deltas:
+        return "Per-file changes (0):\n  (none)"
+    out = [f"Per-file changes ({len(file_deltas)}):"]
+    for fd in file_deltas:
+        out.append(f"  {fd.file}{_PRESENCE_LABEL[fd.presence]}:")
+        for rd in fd.rules:
+            out.append("    " + _file_rule_line(fd.presence, rd))
+    return "\n".join(out)
+
+
+def _file_rule_line(presence, rd):
+    """Render one rule line within a file block. A both-run file gets a signed
+    delta; a one-sided file gets the bare count from the side it appears on."""
+    if presence == _A_ONLY:
+        cell = str(rd.count_a)
+    elif presence == _B_ONLY:
+        cell = str(rd.count_b)
+    else:
+        cell = f"{rd.count_a} -> {rd.count_b} ({_signed(rd.delta)})"
+    return f"{rd.rule_id}  {cell}  {_title(rd.rule_id)}".rstrip()
+
+
 def run(run_a, run_b):
-    """Read both runs' ``report.jsonl``, compute the per-rule delta, print it,
-    and return a process exit code: ``0`` on success, ``2`` if either run could
-    not be read (operational error, matching the rest of the CLI)."""
+    """Read both runs' ``report.jsonl``, compute the corpus and per-file deltas,
+    print them, and return a process exit code: ``0`` on success, ``2`` if
+    either run could not be read (operational error, matching the rest of the
+    CLI). Reads each run once, deriving corpus totals from the per-file counts
+    so the two sections cannot disagree."""
     try:
-        counts_a = aggregate(run_a)
-        counts_b = aggregate(run_b)
+        by_file_a = aggregate_by_file(run_a)
+        by_file_b = aggregate_by_file(run_b)
     except DiffError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
-    delta = compute_delta(counts_a, counts_b)
+    delta = compute_delta(_totals(by_file_a), _totals(by_file_b))
+    file_deltas = compute_file_delta(by_file_a, by_file_b)
     print(format_text(delta, run_a=run_a, run_b=run_b))
+    print()
+    print(format_file_deltas(file_deltas))
     return 0
