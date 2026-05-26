@@ -613,6 +613,49 @@ class TestSummaries:
         assert set(data.keys()) == expected
 
 
+class TestStatsFromSummary:
+    """`stats_from_summary` is the inverse of `summary_dict` — it rebuilds a
+    `FileStats` from a JSON-deserialised summary so a resumed run (#56) can
+    include files completed in an earlier session in the final report without
+    re-reading them. The `reject_sample` exemplars (raw bytes) are not stored,
+    so they reconstruct empty; every counter and tally must round-trip exactly.
+    """
+
+    def test_round_trips_through_summary_dict(self):
+        original = _stats_with_counts()
+        original.elapsed_seconds = 12.5
+        original.bytes = 4096
+        original.quarantined_norad_ids = report.NoradTracker(
+            counts={25544: {RuleID.CHECKSUM_MISMATCH: 2, RuleID.NON_ASCII_BYTE: 1}}
+        )
+        original.reject_sample = report.FileSample.from_bounded(
+            cap=5, entries_by_rule={}, dropped_count={RuleID.CHECKSUM_MISMATCH: 3}
+        )
+        # Through a real JSON round-trip, exactly as the checkpoint persists it.
+        serialised = json.loads(json.dumps(report.summary_dict(original)))
+        restored = report.stats_from_summary(serialised)
+        assert report.summary_dict(restored) == report.summary_dict(original)
+
+    def test_coerces_keys_back_to_their_live_types(self):
+        # JSON stringifies all keys; reconstruction must restore int NORAD ids,
+        # RuleID rule keys, and FixClass fix keys so the rebuilt FileStats is
+        # indistinguishable from a freshly-produced one.
+        serialised = json.loads(json.dumps(report.summary_dict(_stats_with_counts())))
+        restored = report.stats_from_summary(serialised)
+        assert isinstance(restored, report.FileStats)
+        assert FixClass.TRAILING_BACKSLASH in restored.fix_counts
+        assert restored.fix_counts[FixClass.TRAILING_BACKSLASH] == 50
+        assert restored.reject_counts[RuleID.CHECKSUM_MISMATCH] == 2
+
+    def test_reject_sample_reconstructs_without_exemplars(self):
+        restored = report.stats_from_summary(
+            json.loads(json.dumps(report.summary_dict(_stats_with_counts())))
+        )
+        # No raw-byte exemplars are stored; the sample comes back empty of
+        # buckets but is a valid FileSample renderers can consume.
+        assert restored.reject_sample.buckets == {}
+
+
 class TestFormatRejectLines:
     def test_format_reject_lines_groups_by_rule(self):
         stats = report.FileStats(src_name="x.txt")
