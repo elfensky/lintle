@@ -54,6 +54,14 @@
   (issue #20). `FileStats` gains `elapsed_seconds: float` and `bytes: int`;
   `pipeline.process_file` captures both. The prior flat-array output is
   removed; no legacy flag.
+  **2026-05-27:** §13 — the "Resumable runs" `manifest.json` design is **considered
+  and rejected**: issue #12 closed wontfix. A cross-run skip cache trades the project's
+  correctness-over-recovery principle for a rarely-realised payoff, the version-pin
+  guard is defeated by the "no per-merge version bumps" workflow, and a skip-run would
+  silently under-fill `report.jsonl` (breaking `diff`, #10). The section is retained,
+  annotated, for the reasoning. Superseded by **single-run resume** (`--resume`), a
+  durable checkpoint scoped to finishing one interrupted run (issue #56). §13's status
+  line updated; section bodies and numbering otherwise unchanged.
 - **Topic:** A tool to validate and clean a multi-gigabyte corpus of Two-Line Element (TLE) files exported from space-track.org
 
 ## 1. Problem statement
@@ -615,7 +623,16 @@ Test-driven, dev dependencies `pytest` and `sgp4` (optionally `tletools`).
 
 ## 13. Resumable runs
 
-**Status:** designed, not implemented (issue #12).
+**Status:** ❌ Considered and rejected — issue #12 closed wontfix (2026-05-27).
+This `manifest.json` cross-run skip cache is **not** being built; the section is
+retained for its reasoning and as the contrast case for its replacement. A skip is an
+un-validated trust that nothing changed, against the correctness-over-recovery
+principle (§4.1); the `lintle_version` guard (§13.2) is defeated by the project's "no
+per-merge version bumps" workflow; and a skip-run would silently under-fill
+`report.jsonl`, breaking `diff` (#10). **Superseded by single-run resume**
+(`--resume`) — a durable checkpoint scoped to *finishing one interrupted run*, deleted
+on success, validated refuse-on-change — see issue #56. The original design follows
+unchanged.
 
 A `clean` run reprocesses every input file from scratch. For the 30 GB corpus, the dominant
 multiplier on iteration time is "redo work already done." A `manifest.json` written to
