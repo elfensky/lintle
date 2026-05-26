@@ -10,9 +10,11 @@ silently drifting away from validator behaviour.
 
 import importlib
 
-from lintle import pipeline, repair, tle
+import pytest
+
+from lintle import explain, pipeline, repair, tle
 from lintle.categories import FixClass
-from lintle.diagnostics import RepairTier, RuleID
+from lintle.diagnostics import RULES, RepairTier, RuleID
 from lintle.explain_examples import (
     FIX_EXPLAIN,
     RULE_EXPLAIN,
@@ -139,3 +141,58 @@ class TestCitationsResolve:
     def test_fix_citations_resolve(self):
         for entry in FIX_EXPLAIN.values():
             assert self._resolve(entry.citation), entry.citation
+
+
+class TestRenderRule:
+    """``render`` of a rejection rule surfaces every required element."""
+
+    def test_includes_id_definition_examples_and_citation(self):
+        entry = RULE_EXPLAIN[RuleID.CHECKSUM_MISMATCH]
+        out = explain.render("TLE-CHK-001")
+        assert "TLE-CHK-001" in out
+        assert RULES[RuleID.CHECKSUM_MISMATCH].short_title in out
+        assert entry.bad_lines[0] in out
+        assert entry.good_lines[0] in out
+        assert entry.citation in out
+
+    def test_accepts_member_name_alias(self):
+        assert explain.render("CHECKSUM_MISMATCH") == explain.render("TLE-CHK-001")
+
+    def test_marks_the_failing_column(self):
+        assert "^" in explain.render("TLE-CHK-001")
+
+    def test_renders_internal_error_without_examples(self):
+        out = explain.render("TLE-INT-001")
+        assert "TLE-INT-001" in out
+        assert RULES[RuleID.INTERNAL_ERROR].short_title in out
+
+
+class TestRenderFix:
+    """``render`` of a repair tag surfaces examples, tier, and safety note."""
+
+    def test_includes_tag_examples_tier_safety_and_citation(self):
+        entry = FIX_EXPLAIN[FixClass.RECONSTRUCTED_CHECKSUM]
+        out = explain.render("reconstructed-checksum")
+        assert "reconstructed-checksum" in out
+        assert entry.before in out
+        assert entry.after in out
+        assert "tier-2" in out
+        assert entry.citation in out
+        assert "deterministic" in out.lower()
+
+    def test_accepts_member_name_alias(self):
+        assert explain.render("RECONSTRUCTED_CHECKSUM") == explain.render(
+            "reconstructed-checksum"
+        )
+
+
+class TestRenderUnknownTag:
+    def test_unknown_tag_raises(self):
+        with pytest.raises(explain.UnknownTag):
+            explain.render("NOT-A-REAL-TAG")
+
+    def test_known_tags_lists_every_vocabulary_member(self):
+        tags = explain.known_tags()
+        assert "TLE-CHK-001" in tags
+        assert "reconstructed-checksum" in tags
+        assert len(tags) == len(RuleID) + len(FixClass)
