@@ -1,4 +1,4 @@
-"""Command-line interface: ``lintle validate`` and ``lintle clean``."""
+"""Command-line interface: ``lintle validate``, ``lintle clean``, ``lintle diff``."""
 
 import argparse
 import concurrent.futures
@@ -14,7 +14,7 @@ import sys
 import threading
 import time
 
-from lintle import __version__, pipeline, report
+from lintle import __version__, diff, pipeline, report
 
 _DEFAULT_SOURCE = "data/source"
 _DEFAULT_OUTPUT = "data/output"
@@ -27,6 +27,7 @@ Examples:
   lintle clean dir1 dir2 --jobs 4         clean multiple directories
   lintle clean data/raw --out-dir build   write to a custom location
   lintle validate --report json           emit a machine-readable summary
+  lintle diff run-a/ run-b/               compare two runs' findings
 
 Exit codes:
   0    no records quarantined — every defect repaired (or under --max-quarantined)
@@ -144,7 +145,7 @@ def build_parser():
     subparsers = parser.add_subparsers(
         dest="command",
         required=True,
-        metavar="{validate,clean}",
+        metavar="{validate,clean,diff}",
         title="commands",
     )
     for name, help_text, description in (
@@ -209,6 +210,27 @@ def build_parser():
                 "(default: 0 — any quarantine fails)"
             ),
         )
+
+    # `diff` has a different shape from validate/clean — two positional run
+    # directories, no --out-dir / --jobs / --report / --max-quarantined. It is
+    # read-only: it consumes each run's report.jsonl and writes nothing.
+    diff_parser = subparsers.add_parser(
+        "diff",
+        help="compare two run outputs and show per-rule deltas",
+        description=(
+            "Read report.jsonl from two clean-run output directories and print "
+            "the new defect classes (in RUN-B only), fixed classes (in RUN-A "
+            "only), and per-rule count deltas. Read-only; writes nothing."
+        ),
+        epilog=_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    diff_parser.add_argument(
+        "run_a", metavar="RUN-A", help="first run's output directory"
+    )
+    diff_parser.add_argument(
+        "run_b", metavar="RUN-B", help="second run's output directory"
+    )
     return parser
 
 
@@ -421,6 +443,12 @@ def main(argv=None):
     Ctrl-C.
     """
     args = build_parser().parse_args(argv)
+
+    # `diff` is a read-only consumer of two report.jsonl files; it shares none
+    # of the validate/clean argument surface (paths, jobs, out-dir, threshold),
+    # so dispatch it before any of that logic runs.
+    if args.command == "diff":
+        return diff.run(args.run_a, args.run_b)
 
     # `args.paths` is None when the user passed nothing — fall back to the
     # default source dir, and remember it so we can give a tailored error if
