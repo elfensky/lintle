@@ -10,19 +10,25 @@ All notable changes to this project are documented in this file. The format is b
 
 - New `lintle diff RUN-A RUN-B` subcommand compares two clean-run output
   directories by streaming each one's `report.jsonl` and printing the defect
-  classes new in B, the classes fixed (present in A, absent in B), and the
-  per-rule count deltas — turning "eyeball two `report.md` files" into a
-  focused delta of what the upstream export pipeline broke, fixed, or shifted
-  between runs. Read-only; writes nothing. Counts the *primary* `rule_id` of
-  each finding only — never the `related[]` array — mirroring
-  `pipeline._record_reject` so the diff's per-rule totals agree with each
-  run's own `report.md`. Streams line-by-line for constant memory in the
-  number of distinct rule IDs. A mismatched (or missing) `schema_version`,
-  a malformed line, non-UTF-8 bytes, or a missing `report.jsonl` is a hard
-  error (exit `2`); a clean comparison exits `0`. Per-file deltas are
-  deferred to a v2 follow-up because `report.jsonl`'s `file` field is only a
-  basename, which collides across subdirectory inputs. Decision recorded in
-  `debates/010-lintle-diff-implementation/`. Closes #10.
+  classes new in B, the classes fixed (present in A, absent in B), the
+  per-rule count deltas, and a per-file (per-basename) breakdown — turning
+  "eyeball two `report.md` files" into a focused delta of what the upstream
+  export pipeline broke, fixed, or shifted between runs. Read-only; writes
+  nothing. Counts the *primary* `rule_id` of each finding only — never the
+  `related[]` array — mirroring `pipeline._record_reject` so the diff's
+  per-rule totals agree with each run's own `report.md`. The corpus-level
+  totals are derived by summing the per-file counts, so the two sections can
+  never disagree. A mismatched (or missing) `schema_version`, a malformed
+  line, non-UTF-8 bytes, or a missing `report.jsonl` is a hard error (exit
+  `2`); a clean comparison exits `0`. The per-file breakdown is keyed by the
+  `report.jsonl` `file` basename: because `clean` refuses inputs with
+  colliding basenames (`_detect_basename_collisions`), each basename names
+  exactly one file within a run, so the key is unambiguous. A basename present
+  in only one run is *flagged* ("only in run A/B — fixed, removed, or
+  renamed") rather than attributed, and never rendered as a misleading
+  `N -> 0`, since `report.jsonl` lists only files that had findings. Memory is
+  bounded by (distinct files × distinct rule IDs), not the number of findings.
+  Decision recorded in `debates/010-lintle-diff-implementation/`. Closes #10.
 - New `--max-quarantined N` flag on both `validate` and `clean` (issue #13).
   Exit code stays `0` when the total quarantined record count is at or below
   `N`; flips to `1` only when *more than* `N` records were quarantined. The
