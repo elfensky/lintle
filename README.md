@@ -76,7 +76,7 @@ build step is needed to run the tool.
 
 ## Usage
 
-The console script is `lintle`, with two subcommands:
+The console script is `lintle`:
 
 ```bash
 # Audit only — report defects, write nothing
@@ -84,6 +84,9 @@ uv run lintle validate [paths...]
 
 # Produce cleaned output + quarantine sidecars
 uv run lintle clean [paths...]
+
+# Explain a rule ID or fix tag — definition, examples, source citation
+uv run lintle explain <TAG>
 ```
 
 `python -m lintle ...` is equivalent to `uv run lintle ...`.
@@ -112,6 +115,10 @@ uv run lintle clean data/source --report json > run-summary.json
 
 # CI gate: tolerate up to 100 quarantined records before failing the job
 uv run lintle clean data/source --max-quarantined 100 --report json > run-summary.json
+
+# Look up what a rule ID or fix tag means, with a verified example
+uv run lintle explain TLE-CHK-001
+uv run lintle explain reconstructed-checksum
 ```
 
 **Exit codes:**

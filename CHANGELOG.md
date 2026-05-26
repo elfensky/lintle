@@ -8,6 +8,23 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Added
 
+- New `lintle explain <TAG>` subcommand turns the validator into its own
+  reference: it documents **both** public vocabularies lintle stamps on a
+  report — the rejection rules (`RuleID`, e.g. `TLE-CHK-001`) and the repair
+  tags (`FixClass`, e.g. `reconstructed-checksum`). For any tag it prints a
+  plain-English definition (single-sourced from `RuleSpec`/`FixSpec`, never
+  re-described), a good/bad or before/after example with the failing column
+  marked, the repair-tier linkage, and a source-of-truth citation into the
+  code. Read-only; an unknown tag exits `2` listing every valid tag. Every
+  example is the *same object* the test suite validates against the live
+  `tle.py`/`repair.py` across all classification layers (line, pairing,
+  record), so the docs cannot silently drift from validator behaviour;
+  import-time guards make explain-coverage and tag-namespace disjointness
+  structural. A new `FixSpec`/`FIXES` registry gives each repair tag a
+  canonical one-line definition, mirroring `RuleSpec`/`RULES`. The
+  `reconstructed-checksum` entry carries an explicit safety note (the only
+  sanctioned reconstruction: a deterministic recompute, re-validated in full
+  before commit — never a guessed data character). Closes #11.
 - New `lintle diff RUN-A RUN-B` subcommand compares two clean-run output
   directories by streaming each one's `report.jsonl` and printing the defect
   classes new in B, the classes fixed (present in A, absent in B), the
