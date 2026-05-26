@@ -9,7 +9,8 @@ import shutil
 import sys
 
 from lintle import __version__, stem
-from lintle.diagnostics import RULES, Diagnostic, RepairTier
+from lintle.categories import FixClass
+from lintle.diagnostics import RULES, Diagnostic, RepairTier, RuleID
 
 # How many quarantined records to retain in memory as exemplars per
 # ``RuleID`` for the ``validate`` summary. The full byte-faithful catalog
@@ -626,6 +627,45 @@ def summary_dict(stats):
             nid: dict(cats) for nid, cats in stats.quarantined_norad_ids.counts.items()
         },
     }
+
+
+def stats_from_summary(data):
+    """Rebuild a :class:`FileStats` from a JSON-deserialised :func:`summary_dict`.
+
+    The inverse of :func:`summary_dict`, used by a resumed ``clean`` run (issue
+    #56) to fold files completed in an earlier session into the final report
+    without re-reading them. JSON stringifies every dict key, so the rule, fix,
+    and NORAD keys are coerced back to their live types (:class:`RuleID`,
+    :class:`FixClass`, ``int``) — a rebuilt instance is then indistinguishable
+    from a freshly-produced one. The bytes-bearing ``reject_sample`` exemplars
+    are deliberately not persisted (§13.1): the sample reconstructs empty of
+    buckets, carrying only the per-rule ``dropped_count`` so the round-trip is
+    exact. The derived ``records_per_sec`` field is recomputed by
+    :func:`summary_dict`, so it is ignored here.
+    """
+    return FileStats(
+        src_name=data["src_name"],
+        elapsed_seconds=data["elapsed_seconds"],
+        bytes=data["bytes"],
+        paired_records=data["paired_records"],
+        orphan_entries=data["orphan_entries"],
+        input_lines_seen=data["input_lines_seen"],
+        clean_count=data["clean_count"],
+        quarantined_count=data["quarantined_count"],
+        fix_counts={FixClass(k): v for k, v in data["fix_counts"].items()},
+        reject_counts={RuleID(k): v for k, v in data["reject_counts"].items()},
+        reject_sample=FileSample.from_bounded(
+            cap=_PER_RULE_EXEMPLAR_BOUND,
+            entries_by_rule={},
+            dropped_count={RuleID(k): v for k, v in data["dropped_counts"].items()},
+        ),
+        quarantined_norad_ids=NoradTracker(
+            counts={
+                int(nid): {RuleID(rule): count for rule, count in cats.items()}
+                for nid, cats in data["quarantined_norad_ids"].items()
+            }
+        ),
+    )
 
 
 # Pinned schema version for the ``--report json`` envelope (issue #20).
