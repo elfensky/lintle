@@ -562,11 +562,23 @@ def main(argv=None):
         if args.resume:
             checkpoint = resume.load_checkpoint(args.out_dir)
             if checkpoint is None:
-                print(
-                    f"error: no interrupted run to resume in {args.out_dir!r} "
-                    f"(no {resume.CHECKPOINT_NAME} found)",
-                    file=sys.stderr,
-                )
+                # load_checkpoint returns None for both "absent" and "present
+                # but corrupt" — distinguish them so the operator can tell a
+                # nothing-to-resume from a damaged checkpoint.
+                ckpt_file = os.path.join(args.out_dir, resume.CHECKPOINT_NAME)
+                if os.path.exists(ckpt_file):
+                    print(
+                        f"error: cannot resume: {resume.CHECKPOINT_NAME} in "
+                        f"{args.out_dir!r} is unreadable or corrupt.\n"
+                        "  re-run without --resume to do a clean full pass.",
+                        file=sys.stderr,
+                    )
+                else:
+                    print(
+                        f"error: no interrupted run to resume in {args.out_dir!r} "
+                        f"(no {resume.CHECKPOINT_NAME} found)",
+                        file=sys.stderr,
+                    )
                 return 2
             reason = resume.validate_resumable(checkpoint, inputs)
             if reason is not None:
@@ -726,11 +738,18 @@ def main(argv=None):
         if findings_path:
             print(f"findings: {findings_path}")
 
-    # A fully successful clean run leaves no resumable state behind; a run with
-    # failed files keeps the checkpoint so the operator can fix and --resume
-    # (issue #56).
+    # A fully successful clean run leaves no resumable state behind. The
+    # checkpoint and the findings shards (`.shards`) are both in-progress run
+    # state and are torn down together, here, ONLY on success: an interrupted
+    # run already returned 130 above (keeping both), and a failed run keeps both
+    # too, so the operator can fix the cause and `--resume` re-reads the
+    # surviving shards to rebuild a complete `report.jsonl` (issue #56). The
+    # `report.jsonl` was written from those shards by the report block above.
     if args.command == "clean" and not failed_files:
         resume.delete_checkpoint(args.out_dir)
+        shard_dir = os.path.join(args.out_dir, ".shards")
+        if os.path.exists(shard_dir):
+            shutil.rmtree(shard_dir)
 
     # A file that could not be processed is an operational error (spec §10),
     # and that outranks the quarantined-record signal.

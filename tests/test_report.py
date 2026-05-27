@@ -1166,8 +1166,11 @@ class TestConcatFindingsShards:
         assert len(lines) == 1
         assert json.loads(lines[0])["file"] == "tle2022.txt"
 
-    def test_concat_removes_shard_directory(self, tmp_path):
-        # After successful concat, .shards/ is gone.
+    def test_concat_preserves_shard_directory(self, tmp_path):
+        # concat only READS shards — it must NOT remove .shards (issue #56).
+        # Shard cleanup is tied to the resume-checkpoint lifecycle in cli.py so
+        # an interrupted/failed run keeps its shards for a later --resume to
+        # rebuild a complete report.jsonl. The shard survives the concat.
         shard_dir = tmp_path / ".shards"
         shard_dir.mkdir()
         self._make_shard(shard_dir, "tle2022", ['{"file":"tle2022.txt"}'])
@@ -1176,7 +1179,8 @@ class TestConcatFindingsShards:
             str(tmp_path / "report.jsonl"),
             [report.FileStats(src_name="tle2022.txt")],
         )
-        assert not shard_dir.exists()
+        assert shard_dir.exists()
+        assert (shard_dir / "tle2022.findings.jsonl").exists()
 
     def test_concat_atomic_rename(self, tmp_path):
         # The destination is written via .partial + os.replace, so no

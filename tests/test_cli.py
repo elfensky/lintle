@@ -1123,8 +1123,10 @@ class TestResume:
         )
         # The already-completed file was skipped, not reprocessed.
         assert first_cleaned.stat().st_mtime_ns == mtime_before
-        # A fully successful resumed run leaves no checkpoint behind.
+        # A fully successful resumed run tears down BOTH the checkpoint and the
+        # findings shards (they are removed together only on success, #56).
         assert not (out_partial / resume.CHECKPOINT_NAME).exists()
+        assert not (out_partial / ".shards").exists()
 
     def test_fresh_run_clears_stale_checkpoint(self, tmp_path, line1, line2):
         src = self._two_file_src(tmp_path, line1, line2)
@@ -1176,3 +1178,45 @@ class TestResume:
         assert "tle2099" in err
         # A refused resume leaves the checkpoint intact for an explicit restart.
         assert (out_partial / resume.CHECKPOINT_NAME).exists()
+
+    def test_interrupt_preserves_checkpoint_and_shards(
+        self, tmp_path, line1, line2, monkeypatch
+    ):
+        # An interrupted run must stay resumable: BOTH the checkpoint and the
+        # findings shards survive (the shards so a later --resume rebuilds a
+        # complete report.jsonl). Simulate the interrupt by raising
+        # KeyboardInterrupt from the parent's checkpoint write after a file
+        # commits — the same path a real Ctrl-C takes through the collect loop.
+        src = self._two_file_src(tmp_path, line1, line2)
+        out = tmp_path / "out"
+        real_write = resume.write_checkpoint
+
+        def interrupt_after_first(out_dir, checkpoint):
+            real_write(out_dir, checkpoint)  # persist the first file's progress
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(cli.resume, "write_checkpoint", interrupt_after_first)
+        rc = cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
+
+        assert rc == 130
+        # The checkpoint written before the interrupt survives → resumable.
+        assert resume.load_checkpoint(str(out)) is not None
+        # The end-of-run shard scrub never ran (we returned 130 first), so the
+        # completed file's shard is still on disk for --resume to reuse.
+        assert (out / ".shards").exists()
+
+    def test_resume_with_corrupt_checkpoint_reports_corruption(
+        self, tmp_path, line1, line2, capsys
+    ):
+        # A present-but-corrupt checkpoint must not be reported as "not found".
+        src = self._two_file_src(tmp_path, line1, line2)
+        out = tmp_path / "out"
+        out.mkdir()
+        (out / resume.CHECKPOINT_NAME).write_text("{ not valid json", encoding="utf-8")
+        rc = cli.main(
+            ["clean", str(src), "--out-dir", str(out), "--resume", "--jobs", "1"]
+        )
+        err = capsys.readouterr().err
+        assert rc == 2
+        assert "corrupt" in err.lower() or "unreadable" in err.lower()
+        assert "no interrupted run" not in err.lower()
