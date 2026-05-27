@@ -14,7 +14,7 @@ import hashlib
 import json
 import os
 
-from lintle import __version__
+from lintle import __version__, fsutil
 
 CHECKPOINT_NAME = ".clean-state.json"
 SCHEMA_VERSION = 1
@@ -67,15 +67,17 @@ def _checkpoint_path(out_dir):
 
 
 def write_checkpoint(out_dir, checkpoint):
-    """Write ``checkpoint`` to ``<out_dir>/.clean-state.json`` atomically via a
-    ``.partial`` temp + ``os.replace``, so a reader — or a crash mid-write —
-    never sees a half-written file. Returns the destination path.
+    """Write ``checkpoint`` to ``<out_dir>/.clean-state.json`` atomically and
+    durably via a ``.partial`` temp + :func:`fsutil.durable_replace`, so a
+    reader — or a crash mid-write — never sees a half-written file, and the
+    committed checkpoint survives a hard power loss (issue #58). Returns the
+    destination path.
     """
     dest = _checkpoint_path(out_dir)
     tmp = dest + ".partial"
     with open(tmp, "w", encoding="utf-8", newline="\n") as handle:
         json.dump(checkpoint, handle, separators=(",", ":"), sort_keys=True)
-    os.replace(tmp, dest)
+    fsutil.durable_replace(tmp, dest)
     return dest
 
 

@@ -5,7 +5,7 @@ import dataclasses
 import os
 import time
 
-from lintle import repair, report, stem, tle
+from lintle import fsutil, repair, report, stem, tle
 from lintle.diagnostics import Diagnostic, RuleID, diagnostic
 
 
@@ -298,7 +298,7 @@ def _run(src_path, out_dir, mode, stats, progress_queue, progress_every):
         # and deletes the body partial before finalize can stitch it. Two
         # adversarial-review voices caught this bug in the original spec.
         if completed and mode == "clean":
-            os.replace(cleaned_tmp, cleaned_path)
+            fsutil.durable_replace(cleaned_tmp, cleaned_path)
         stats.reject_sample = sink.finalize(
             entries=stats.paired_records + stats.orphan_entries
         )
