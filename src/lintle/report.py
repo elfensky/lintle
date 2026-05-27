@@ -8,7 +8,7 @@ import os
 import shutil
 import sys
 
-from lintle import __version__, stem
+from lintle import __version__, fsutil, stem
 from lintle.categories import FixClass
 from lintle.diagnostics import RULES, Diagnostic, RepairTier, RuleID
 
@@ -347,7 +347,7 @@ class BrokenFileWriter:
             shutil.copyfileobj(src, out, length=65536)
         with contextlib.suppress(OSError):
             os.unlink(self._body_path)
-        os.replace(self._final_partial, self.path)
+        fsutil.durable_replace(self._final_partial, self.path)
         self._completed = True
 
     def __exit__(self, exc_type, exc, tb):
@@ -403,10 +403,10 @@ class JsonlFindingsWriter:
         self._handle.write("\n")
 
     def finalize(self):
-        """Close the partial and atomically rename into place."""
+        """Close the partial and atomically, durably rename into place."""
         if self._handle is not None and not self._handle.closed:
             self._handle.close()
-        os.replace(self._partial, self.path)
+        fsutil.durable_replace(self._partial, self.path)
         self._completed = True
 
     def __exit__(self, exc_type, exc, tb):
@@ -1001,9 +1001,13 @@ def _spec_for_key(key):
 
 
 def write_run_report(path, all_stats):
-    """Write the Markdown run report (``format_run_report``) to ``path``."""
-    with open(path, "w", encoding="utf-8") as handle:
+    """Write the Markdown run report (``format_run_report``) to ``path``,
+    atomically and durably via tmp + :func:`fsutil.durable_replace` (issue #58).
+    """
+    tmp = path + ".partial"
+    with open(tmp, "w", encoding="utf-8") as handle:
         handle.write(format_run_report(all_stats))
+    fsutil.durable_replace(tmp, path)
 
 
 def aggregate_broken_norad_ids(all_stats):
@@ -1036,9 +1040,13 @@ def write_broken_noradids_ndjson(path, all_stats):
 
     Thin wrapper around ``format_broken_noradids_ndjson`` that pins LF
     line endings so the artifact is byte-deterministic across platforms.
+    Written atomically and durably via tmp + :func:`fsutil.durable_replace`
+    (issue #58).
     """
-    with open(path, "w", encoding="ascii", newline="\n") as handle:
+    tmp = path + ".partial"
+    with open(tmp, "w", encoding="ascii", newline="\n") as handle:
         handle.write(format_broken_noradids_ndjson(all_stats))
+    fsutil.durable_replace(tmp, path)
 
 
 def concat_findings_shards(out_dir, dest_path, all_stats):
@@ -1049,7 +1057,8 @@ def concat_findings_shards(out_dir, dest_path, all_stats):
     ``all_stats`` (already sorted by ``src_name`` in ``cli.py`` before this
     call) so the concatenated order is alphabetical by source filename —
     deterministic and matching ``report.md``'s per-file table. The
-    destination is written via tmp + ``os.replace`` for atomicity. Always
+    destination is written via tmp + :func:`fsutil.durable_replace` for
+    atomicity and power-loss durability (issue #58). Always
     creates the destination even when every shard is empty or missing,
     matching ``broken-noradids.ndjson``'s "artifact always present after
     successful clean" contract. Spec §4.6.
@@ -1072,4 +1081,4 @@ def concat_findings_shards(out_dir, dest_path, all_stats):
                 continue
             with open(shard, "rb") as src:
                 shutil.copyfileobj(src, out, length=65536)
-    os.replace(tmp_path, dest_path)
+    fsutil.durable_replace(tmp_path, dest_path)
