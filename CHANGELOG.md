@@ -6,6 +6,8 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-05-27
+
 ### Added
 
 - New `clean --resume` flag for **single-run resume**: continue an interrupted
