@@ -76,7 +76,7 @@ build step is needed to run the tool.
 
 ## Usage
 
-The console script is `lintle`, with two subcommands:
+The console script is `lintle`:
 
 ```bash
 # Audit only — report defects, write nothing
@@ -84,6 +84,9 @@ uv run lintle validate [paths...]
 
 # Produce cleaned output + quarantine sidecars
 uv run lintle clean [paths...]
+
+# Explain a rule ID or fix tag — definition, examples, source citation
+uv run lintle explain <TAG>
 ```
 
 `python -m lintle ...` is equivalent to `uv run lintle ...`.
@@ -96,6 +99,8 @@ uv run lintle clean [paths...]
 | `--out-dir DIR` | `data/output` | Where `clean` writes its output. Created if absent. |
 | `--jobs N` | CPU count | Number of files processed in parallel. Lower it if a slow disk causes I/O contention. |
 | `--report text\|json` | `text` | Summary format. |
+| `--max-quarantined N` | `0` | Exit non-zero only if MORE than N records were quarantined. Default `0` ≡ "any quarantine fails". |
+| `--resume` | off | (`clean` only) Continue an interrupted run in `--out-dir`: skip files already completed and process only the rest. Refuses if the `lintle` version or any input changed since the interrupted run. |
 
 **Examples:**
 
@@ -108,18 +113,45 @@ uv run lintle clean data/source/tle2022.txt --out-dir data/output
 
 # Clean the corpus, capture a machine-readable summary
 uv run lintle clean data/source --report json > run-summary.json
+
+# CI gate: tolerate up to 100 quarantined records before failing the job
+uv run lintle clean data/source --max-quarantined 100 --report json > run-summary.json
+
+# Look up what a rule ID or fix tag means, with a verified example
+uv run lintle explain TLE-CHK-001
+uv run lintle explain reconstructed-checksum
+
+# Resume an interrupted run (e.g. the laptop slept mid-corpus) — finish only what's left
+uv run lintle clean data/source --out-dir data/output --resume
 ```
 
 **Exit codes:**
 
 | Code | Meaning |
 |------|---------|
-| `0` | No records quarantined — clean (or every defect repaired). |
-| `1` | At least one record was quarantined. |
+| `0` | Total quarantined is at or below `--max-quarantined` (default `0`). |
+| `1` | More than `--max-quarantined` records were quarantined. |
 | `2` | Operational error — no input files, disk shortfall, or a file that failed to process. |
 
 Repairable defects (including the near-universal trailing `\`) do **not** raise
-the exit code above 0 — almost every raw file contains them.
+the exit code above 0 — almost every raw file contains them. `--max-quarantined`
+preserves the meaningful `2` (operational error) and `130` (Ctrl-C) signals that
+a `lintle ... || true` pipe would swallow.
+
+## Resuming an interrupted run
+
+A long `clean` over the full corpus can be interrupted — Ctrl-C, a closed
+laptop, a crash. Re-run the **same command with `--resume`** to finish it: files
+already completed are skipped (their `cleaned/`, `broken/`, and report
+contributions reused) and only the remainder is processed.
+
+While a run is in flight it maintains a small `.clean-state.json` checkpoint in
+`--out-dir`, deleted on successful completion — so its presence marks an
+interrupted run, and a finished run leaves none behind. `--resume` **refuses**
+(exit `2`) if the `lintle` version or any input file changed since the
+interruption, rather than silently mixing outputs from two different states;
+re-run without `--resume` for a clean full pass. This is single-run resume, not
+a cross-run cache: each run still re-validates every record it emits.
 
 ## Output
 
@@ -156,7 +188,13 @@ A `clean` run lays `--out-dir` out like this:
 
 - **`report.md`** — a Markdown run report aggregating the whole run: corpus
   totals, the percentage cleaned and quarantined, corpus-wide fix counts, the
-  defect-category breakdown, and a per-file table.
+  defect-rule breakdown (keyed by stable `RuleID` tokens like `TLE-CHK-001`),
+  a per-file table, a "Rule reference" section auto-generated from the
+  `diagnostics.RULES` registry naming every rule that fired, and a per-NORAD
+  breakdown table listing each satellite whose records were quarantined with
+  its per-rule counts and the source files it appeared in (sorted by
+  quarantined-record count descending, capped at the top 100 with a remainder
+  footer pointing at `broken-noradids.ndjson` for the long tail).
 
 A run summary is also printed per file to stdout (and as JSON with
 `--report json`):
@@ -164,12 +202,16 @@ A run summary is also printed per file to stdout (and as JSON with
 ```
 tle2022.txt   8,412,067 records   8,412,064 clean   3 quarantined
   fixes:   trailing-backslash 8,412,064 | reconstructed-checksum 195,293
-  rejects: checksum-mismatch 1 | orphan-line 1 | wrong-length 1
+  rejects: TLE-CHK-001 1 | TLE-PAIR-001 1 | TLE-COL-001 1
 ```
 
-`reconstructed-checksum` is reported separately from content-preserving fixes:
-those records are format-conformant, but their checksums are *computed*, not
-independently verified.
+Reject counts key by the stable `RuleID` registry (e.g. `TLE-CHK-001` for
+checksum mismatch, `TLE-PAIR-001` for orphan lines, `TLE-COL-001` for wrong
+length) — the same handles cited in `report.md` and the `.broken.txt`
+sidecar so a defect surfaces under one identifier across every artifact a
+run emits. `reconstructed-checksum` is reported separately from
+content-preserving fixes: those records are format-conformant, but their
+checksums are *computed*, not independently verified.
 
 `validate` writes nothing — it only prints the per-file summary and the
 locations of defective records to stdout.
@@ -219,17 +261,29 @@ with `pytest-cov`.
 
 ```
 src/lintle/
-  tle.py        # core: defines a "perfect" TLE record (pure, no I/O)
-  repair.py     # speculative, validated repairs
-  pipeline.py   # streaming reader, prefix-driven pairing, per-file routing
-  report.py     # quarantine sidecar + run-summary rendering
-  cli.py        # argument parsing, parallelism, exit codes
-tests/          # pytest suite
+  tle.py          # core: defines a "perfect" TLE record (pure, no I/O)
+  diagnostics.py  # stable RuleID registry + structured Diagnostic dataclass
+  categories.py   # FixClass enum + FixSpec registry — the repair taxonomy
+  explain_examples.py # validator-verified examples + citations backing `explain`
+  repair.py       # speculative, validated repairs
+  pipeline.py     # streaming reader, prefix-driven pairing, per-file routing
+  report.py       # quarantine sidecar + run-summary rendering
+  diff.py         # read-only: per-rule delta between two runs (`lintle diff`)
+  explain.py      # read-only: renders rule/fix documentation (`lintle explain`)
+  cli.py          # argument parsing, parallelism, exit codes
+tests/            # pytest suite
 docs/superpowers/
-  specs/        # the design specification
-  plans/        # the implementation plan
-  runs/         # corpus-run summaries
+  specs/          # the design specification
+  plans/          # the implementation plan
+  runs/           # corpus-run summaries
 ```
+
+`diagnostics.py` and `categories.py` are pure-data leaves of the dependency
+graph — they hold enums and frozen dataclasses, no logic; `explain_examples.py`
+is pure data too, composing those leaves into documented examples. `repair`,
+`pipeline`, and `report` depend on them; `diff.py` and `explain.py` are
+read-only consumers reached only through `cli.py`; `tle.py` remains the single
+source of truth for what counts as a valid TLE record.
 
 ## Further reading
 

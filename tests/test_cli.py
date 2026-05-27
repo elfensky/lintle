@@ -6,7 +6,7 @@ import queue
 import signal
 import time
 
-from lintle import cli, report
+from lintle import cli, pipeline, report, resume
 
 
 class TestDiscoverPaths:
@@ -372,7 +372,10 @@ class TestMain:
         # the progress display logs one plain line per completed file instead.
         assert "[1/1]" in err
 
-    def test_main_json_report_prints_json(self, tmp_path, line1, line2, capsys):
+    def test_main_json_report_prints_envelope(self, tmp_path, line1, line2, capsys):
+        # Issue #20: --report json is now a top-level envelope object,
+        # not a flat array. The per-file entries live under ``files``;
+        # the run, environment, and corpus summary live alongside.
         src = tmp_path / "src"
         src.mkdir()
         (src / "tle2099.txt").write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
@@ -381,8 +384,24 @@ class TestMain:
 
         assert rc == 0
         data = json.loads(capsys.readouterr().out)
-        assert data[0]["src_name"] == "tle2099.txt"
-        assert data[0]["clean_count"] == 1
+        # Top-level envelope shape (issue #20 spec §3).
+        assert isinstance(data, dict)
+        assert data["schema_version"] == "1"
+        assert data["run"]["command"] == "validate"
+        assert data["run"]["timestamp"].endswith("Z")
+        assert isinstance(data["run"]["elapsed_seconds"], float)
+        assert "tool_version" in data["environment"]
+        assert "python_version" in data["environment"]
+        assert data["summary"]["files_processed"] == 1
+        assert data["summary"]["paired_records"] == 1
+        assert data["summary"]["clean_count"] == 1
+        # Per-file entries preserve summary_dict shape under ``files``.
+        assert data["files"][0]["src_name"] == "tle2099.txt"
+        assert data["files"][0]["clean_count"] == 1
+        # Timing fields are real floats — gate R2 (never null).
+        assert isinstance(data["files"][0]["elapsed_seconds"], float)
+        assert isinstance(data["files"][0]["records_per_sec"], float)
+        assert data["files"][0]["bytes"] > 0
 
     def test_main_validate_lists_reject_locations(self, tmp_path, line1, line2, capsys):
         src = tmp_path / "src"
@@ -395,8 +414,31 @@ class TestMain:
         rc = cli.main(["validate", str(src), "--jobs", "1"])
 
         assert rc == 1
-        # validate mode lists each quarantined record's location and reason.
-        assert "checksum" in capsys.readouterr().out
+        # validate mode lists each quarantined record's location and rule ID.
+        assert "TLE-CHK-001" in capsys.readouterr().out
+
+    def test_main_validate_renders_grouped_exemplars(
+        self, tmp_path, line1, line2, capsys
+    ):
+        # Two distinct defect rules in one file: a checksum mismatch
+        # (TLE-CHK-001) and a stray line that isn't a TLE (TLE-PAIR-002).
+        src = tmp_path / "src"
+        src.mkdir()
+        bad_line1 = line1[:68] + "9"  # wrong checksum
+        (src / "tle2099.txt").write_bytes(
+            (bad_line1 + "\n" + line2 + "\n" + "garbage\n").encode("ascii")
+        )
+
+        rc = cli.main(["validate", str(src), "--jobs", "1"])
+
+        out = capsys.readouterr().out
+        assert rc == 1
+        # The grouped rule heading (2-space indent, count parenthesized).
+        assert "  TLE-CHK-001 (" in out
+        # The 4-space-indented exemplar line under it.
+        assert "    line " in out
+        # The other rule is grouped under its own heading.
+        assert "  TLE-PAIR-002 (" in out
 
     def test_main_returns_130_on_keyboard_interrupt(
         self, tmp_path, line1, line2, monkeypatch
@@ -420,6 +462,279 @@ class TestMain:
             signal.signal(signal.SIGINT, original_sigint)
 
         assert rc == 130
+
+    def test_main_interrupt_writes_no_report_or_ndjson(
+        self, tmp_path, line1, line2, monkeypatch
+    ):
+        # An interrupted `clean` run must not publish corpus-wide artifacts:
+        # `report.md` and `broken-noradids.ndjson` are only written after the
+        # results loop completes, so the early `return 130` path must leave
+        # the out-dir free of those files (issue #25). Worker-side `.partial`
+        # cleanup is covered by `test_failed_run_does_not_leak_temp_file` in
+        # test_pipeline.py — here we fake the executor outright so no worker
+        # ever runs, making the parent-side assertion fully deterministic.
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "tle2099.txt").write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
+        out = tmp_path / "out"
+
+        class _NoopFuture:
+            def result(self):  # pragma: no cover — must not be awaited
+                raise AssertionError("fake future must not be awaited")
+
+        class _FakeExecutor:
+            def __init__(self, *_args, **_kwargs):
+                self._processes = {}  # _terminate_workers iterates this
+
+            def submit(self, *_args, **_kwargs):
+                return _NoopFuture()
+
+            def shutdown(self, **_kwargs):
+                pass
+
+        monkeypatch.setattr(
+            cli.concurrent.futures, "ProcessPoolExecutor", _FakeExecutor
+        )
+
+        def _interrupt(_futures):
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(cli.concurrent.futures, "as_completed", _interrupt)
+
+        original_sigint = signal.getsignal(signal.SIGINT)
+        try:
+            rc = cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
+        finally:
+            signal.signal(signal.SIGINT, original_sigint)
+
+        assert rc == 130
+        assert not (out / "report.md").exists()
+        assert not (out / "broken-noradids.ndjson").exists()
+        # No worker ran, so cleaned/ and broken/ must either be absent or empty
+        # — in particular, no published `.cleaned.txt` and no stray `.partial`.
+        assert not list(out.rglob("*.cleaned.txt"))
+        assert not list(out.rglob("*.broken.txt"))
+        assert not list(out.rglob("*.partial"))
+
+
+class TestMaxQuarantinedThreshold:
+    """Issue #13: ``--max-quarantined N`` allows CI to tolerate up to N
+    quarantined records before the exit code flips to non-zero. Default
+    ``N=0`` preserves the legacy "any quarantine fails" behaviour.
+    """
+
+    def _write_one_bad_record(self, tmp_path, line1, line2):
+        src = tmp_path / "src"
+        src.mkdir()
+        bad_line1 = line1[:68] + "9"
+        (src / "tle2099.txt").write_bytes(
+            (bad_line1 + "\n" + line2 + "\n").encode("ascii")
+        )
+        return src
+
+    def test_max_quarantined_one_allows_single_quarantined_record(
+        self, tmp_path, line1, line2
+    ):
+        src = self._write_one_bad_record(tmp_path, line1, line2)
+        out = tmp_path / "out"
+
+        rc = cli.main(
+            [
+                "clean",
+                str(src),
+                "--out-dir",
+                str(out),
+                "--jobs",
+                "1",
+                "--max-quarantined",
+                "1",
+            ]
+        )
+
+        assert rc == 0
+
+    def test_max_quarantined_uses_strictly_greater_than_semantics(
+        self, tmp_path, line1, line2
+    ):
+        # Two quarantined records, --max-quarantined 1 — count is > 1 so fail.
+        src = tmp_path / "src"
+        src.mkdir()
+        bad_line1 = line1[:68] + "9"
+        (src / "tle2099.txt").write_bytes(
+            (bad_line1 + "\n" + line2 + "\n" + bad_line1 + "\n" + line2 + "\n").encode(
+                "ascii"
+            )
+        )
+        out = tmp_path / "out"
+
+        rc = cli.main(
+            [
+                "clean",
+                str(src),
+                "--out-dir",
+                str(out),
+                "--jobs",
+                "1",
+                "--max-quarantined",
+                "1",
+            ]
+        )
+
+        assert rc == 1
+
+    def test_max_quarantined_default_is_zero_legacy_behavior(
+        self, tmp_path, line1, line2
+    ):
+        # No --max-quarantined flag: a single quarantined record must still
+        # flip the exit code to 1. The new flag's default is 0, matching the
+        # historical "any quarantine fails" contract.
+        src = self._write_one_bad_record(tmp_path, line1, line2)
+        out = tmp_path / "out"
+
+        rc = cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
+
+        assert rc == 1
+
+    def test_max_quarantined_applies_to_validate_too(self, tmp_path, line1, line2):
+        src = self._write_one_bad_record(tmp_path, line1, line2)
+
+        rc = cli.main(["validate", str(src), "--jobs", "1", "--max-quarantined", "1"])
+
+        assert rc == 0
+
+    def test_max_quarantined_rejects_negative_value(
+        self, tmp_path, line1, line2, capsys
+    ):
+        src = self._write_one_bad_record(tmp_path, line1, line2)
+
+        rc = cli.main(
+            [
+                "validate",
+                str(src),
+                "--jobs",
+                "1",
+                "--max-quarantined",
+                "-1",
+            ]
+        )
+
+        assert rc == 2
+        assert "--max-quarantined must be >= 0" in capsys.readouterr().err
+
+
+class TestReportJsonl:
+    """Issue #9 spec §8.5: ``clean`` mode emits ``<out_dir>/report.jsonl``
+    after every successful run; validate mode does not.
+    """
+
+    def test_clean_emits_report_jsonl(self, tmp_path, line1, line2, capsys):
+        # A wrong-checksum record produces a quarantine + a JSONL line.
+        src = tmp_path / "src"
+        src.mkdir()
+        bad_line2 = line2[:-1] + ("9" if line2[-1] != "9" else "0")
+        (src / "tle2099.txt").write_bytes(
+            (line1 + "\n" + bad_line2 + "\n").encode("ascii")
+        )
+        out = tmp_path / "out"
+
+        cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
+
+        jsonl_path = out / "report.jsonl"
+        assert jsonl_path.exists()
+        lines = jsonl_path.read_text(encoding="utf-8").splitlines()
+        assert len(lines) == 1
+        parsed = json.loads(lines[0])
+        assert parsed["schema_version"] == "1"
+        assert parsed["outcome"] == "quarantined"
+        assert parsed["file"] == "tle2099.txt"
+        assert parsed["rule_id"] == "TLE-CHK-001"
+        # .shards/ is cleaned up by concat.
+        assert not (out / ".shards").exists()
+
+    def test_clean_jsonl_empty_when_zero_quarantines(self, tmp_path, line1, line2):
+        # An all-clean run still produces report.jsonl, just empty —
+        # matches broken-noradids.ndjson's contract that the artifact
+        # is always present after a successful clean.
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "tle2099.txt").write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
+        out = tmp_path / "out"
+
+        cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
+
+        jsonl_path = out / "report.jsonl"
+        assert jsonl_path.exists()
+        assert jsonl_path.read_text(encoding="utf-8") == ""
+
+    def test_clean_summary_announces_findings_path(
+        self, tmp_path, line1, line2, capsys
+    ):
+        # The post-run summary block includes a "findings: <path>" line
+        # so operators see the artifact location alongside report.md.
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "tle2099.txt").write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
+        out = tmp_path / "out"
+
+        cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
+        stdout = capsys.readouterr().out
+        assert "findings: " in stdout
+        assert "report.jsonl" in stdout
+
+    def test_validate_does_not_emit_jsonl(self, tmp_path, line1, line2):
+        # Validate mode owns no --out-dir artifacts; no report.jsonl.
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "tle2099.txt").write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
+        out = tmp_path / "out"
+
+        cli.main(["validate", str(src), "--out-dir", str(out), "--jobs", "1"])
+
+        assert not (out / "report.jsonl").exists()
+        # Validate mode never even creates the out_dir.
+        assert not out.exists() or not list(out.iterdir())
+
+
+class TestPreRunShardScrub:
+    """Issue #9 spec §4.6 / §8.10: the pre-run shard-dir scrub removes
+    any leftover ``.shards/`` from a prior aborted run so this run's
+    ``report.jsonl`` cannot inherit stale entries.
+    """
+
+    def test_pre_run_scrub_purges_stale_shards(self, tmp_path, line1, line2):
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "tle2099.txt").write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
+        out = tmp_path / "out"
+        out.mkdir()
+        # Preseed a finalized shard from a previous run for a file that
+        # the current run does NOT process.
+        stale_shard_dir = out / ".shards"
+        stale_shard_dir.mkdir()
+        stale = stale_shard_dir / "tle1999.findings.jsonl"
+        stale.write_text('{"bogus": "from-prior-run"}\n', encoding="utf-8")
+
+        cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
+
+        # The scrub removed .shards/ before workers wrote anything;
+        # the concat then runs and either removes the dir again or
+        # leaves no trace either way.
+        assert not stale.exists()
+
+    def test_pre_run_scrub_purges_partials(self, tmp_path, line1, line2):
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "tle2099.txt").write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
+        out = tmp_path / "out"
+        out.mkdir()
+        stale_shard_dir = out / ".shards"
+        stale_shard_dir.mkdir()
+        stale = stale_shard_dir / "tle1999.findings.jsonl.partial"
+        stale.write_text("incomplete-write\n", encoding="utf-8")
+
+        cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
+
+        assert not stale.exists()
 
 
 class TestFormatElapsed:
@@ -673,3 +988,235 @@ class TestProgressDisplay:
         err = capsys.readouterr().err
         assert "\x1b[K" in err  # the live line was painted, then cleared on exit
         assert display._records == 7  # the queued delta was drained
+
+
+class TestExplainCommand:
+    """`lintle explain <TAG>` is a read-only documentation lookup."""
+
+    def test_parser_accepts_explain_with_a_tag(self):
+        args = cli.build_parser().parse_args(["explain", "TLE-CHK-001"])
+        assert args.command == "explain"
+        assert args.tag == "TLE-CHK-001"
+
+    def test_explain_rule_prints_documentation(self, capsys):
+        rc = cli.main(["explain", "TLE-CHK-001"])
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "TLE-CHK-001" in out
+        assert "checksum" in out.lower()
+
+    def test_explain_fix_prints_documentation(self, capsys):
+        rc = cli.main(["explain", "reconstructed-checksum"])
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "reconstructed-checksum" in out
+
+    def test_explain_unknown_tag_errors_with_guidance(self, capsys):
+        rc = cli.main(["explain", "NOT-A-REAL-TAG"])
+        err = capsys.readouterr().err
+        assert rc == 2
+        assert "NOT-A-REAL-TAG" in err
+        assert "TLE-CHK-001" in err  # the error lists valid tags
+
+
+def _strip_generated(path):
+    """Read a report.md, dropping the nondeterministic `- Generated:` line so
+    two runs can be compared for structural equality."""
+    return "\n".join(
+        line
+        for line in path.read_text().splitlines()
+        if not line.startswith("- Generated:")
+    )
+
+
+def _simulate_interrupted_clean(src_paths, out_dir, *, completed_count):
+    """Leave `out_dir` looking exactly like a clean run interrupted partway:
+    the first `completed_count` files fully processed (their cleaned/broken
+    outputs and findings shards committed, as a worker leaves them — no
+    end-of-run concat), plus a checkpoint that lists them complete with every
+    input fingerprinted. Mirrors the real interrupted state without needing to
+    actually kill a parallel run."""
+    os.makedirs(out_dir, exist_ok=True)
+    inputs = {p: resume.input_fingerprint(p) for p in src_paths}
+    completed = {}
+    for path in src_paths[:completed_count]:
+        stats = pipeline.process_file(path, out_dir, "clean")
+        completed[path] = report.summary_dict(stats)
+    resume.write_checkpoint(
+        out_dir, resume.build_checkpoint(inputs=inputs, completed=completed)
+    )
+
+
+class TestResume:
+    """Single-run resume for `clean --resume` (issue #56): checkpoint lifecycle,
+    refuse-on-change validation, and a golden 'resume finishes the job' run."""
+
+    def _two_file_src(self, tmp_path, line1, line2):
+        # Each file: one clean pair + one wrong-checksum pair (quarantined),
+        # so cleaned/, broken/, report.jsonl, and broken-noradids all exercise.
+        src = tmp_path / "src"
+        src.mkdir()
+        bad1 = line1[:68] + "9"
+        content = (line1 + "\n" + line2 + "\n" + bad1 + "\n" + line2 + "\n").encode(
+            "ascii"
+        )
+        (src / "tle2098.txt").write_bytes(content)
+        (src / "tle2099.txt").write_bytes(content)
+        return src
+
+    def test_completed_run_leaves_no_checkpoint(self, tmp_path, line1, line2):
+        src = self._two_file_src(tmp_path, line1, line2)
+        out = tmp_path / "out"
+        cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
+        assert not (out / resume.CHECKPOINT_NAME).exists()
+
+    def test_resume_without_checkpoint_errors(self, tmp_path, line1, line2, capsys):
+        src = self._two_file_src(tmp_path, line1, line2)
+        out = tmp_path / "out"
+        out.mkdir()
+        rc = cli.main(
+            ["clean", str(src), "--out-dir", str(out), "--resume", "--jobs", "1"]
+        )
+        err = capsys.readouterr().err
+        assert rc == 2
+        assert "no interrupted run" in err.lower()
+
+    def test_resume_finishes_and_matches_full_run(self, tmp_path, line1, line2):
+        src = self._two_file_src(tmp_path, line1, line2)
+        paths = cli.discover_paths([str(src)])
+        out_full = tmp_path / "full"
+        rc_full = cli.main(
+            ["clean", str(src), "--out-dir", str(out_full), "--jobs", "1"]
+        )
+
+        out_partial = tmp_path / "partial"
+        _simulate_interrupted_clean(paths, str(out_partial), completed_count=1)
+        first_cleaned = out_partial / "cleaned" / "tle2098.cleaned.txt"
+        mtime_before = first_cleaned.stat().st_mtime_ns
+
+        rc_resume = cli.main(
+            [
+                "clean",
+                str(src),
+                "--out-dir",
+                str(out_partial),
+                "--resume",
+                "--jobs",
+                "1",
+            ]
+        )
+
+        assert rc_resume == rc_full
+        # report.jsonl and broken-noradids are timing-free — the golden anchors.
+        assert (out_partial / "report.jsonl").read_bytes() == (
+            out_full / "report.jsonl"
+        ).read_bytes()
+        assert (out_partial / "broken-noradids.ndjson").read_bytes() == (
+            out_full / "broken-noradids.ndjson"
+        ).read_bytes()
+        for name in ("tle2098.cleaned.txt", "tle2099.cleaned.txt"):
+            assert (out_partial / "cleaned" / name).read_bytes() == (
+                out_full / "cleaned" / name
+            ).read_bytes()
+        assert _strip_generated(out_partial / "report.md") == _strip_generated(
+            out_full / "report.md"
+        )
+        # The already-completed file was skipped, not reprocessed.
+        assert first_cleaned.stat().st_mtime_ns == mtime_before
+        # A fully successful resumed run tears down BOTH the checkpoint and the
+        # findings shards (they are removed together only on success, #56).
+        assert not (out_partial / resume.CHECKPOINT_NAME).exists()
+        assert not (out_partial / ".shards").exists()
+
+    def test_fresh_run_clears_stale_checkpoint(self, tmp_path, line1, line2):
+        src = self._two_file_src(tmp_path, line1, line2)
+        out = tmp_path / "out"
+        out.mkdir()
+        resume.write_checkpoint(
+            str(out),
+            resume.build_checkpoint(
+                inputs={
+                    "old.txt": {
+                        "size": 1,
+                        "mtime_ns": 1,
+                        "head_sha256": "x",
+                        "tail_sha256": "y",
+                    }
+                },
+                completed={},
+            ),
+        )
+        rc = cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
+        assert rc == 1  # quarantines present
+        assert not (out / resume.CHECKPOINT_NAME).exists()
+        assert (out / "cleaned" / "tle2098.cleaned.txt").exists()
+        assert (out / "cleaned" / "tle2099.cleaned.txt").exists()
+
+    def test_resume_refuses_when_input_changed(self, tmp_path, line1, line2, capsys):
+        src = self._two_file_src(tmp_path, line1, line2)
+        paths = cli.discover_paths([str(src)])
+        out_partial = tmp_path / "partial"
+        _simulate_interrupted_clean(paths, str(out_partial), completed_count=1)
+        # The not-yet-processed input changes between "office" and "home".
+        with open(src / "tle2099.txt", "ab") as handle:
+            handle.write(b"1 extra junk line\n")
+
+        rc = cli.main(
+            [
+                "clean",
+                str(src),
+                "--out-dir",
+                str(out_partial),
+                "--resume",
+                "--jobs",
+                "1",
+            ]
+        )
+        err = capsys.readouterr().err
+        assert rc == 2
+        assert "input changed" in err.lower()
+        assert "tle2099" in err
+        # A refused resume leaves the checkpoint intact for an explicit restart.
+        assert (out_partial / resume.CHECKPOINT_NAME).exists()
+
+    def test_interrupt_preserves_checkpoint_and_shards(
+        self, tmp_path, line1, line2, monkeypatch
+    ):
+        # An interrupted run must stay resumable: BOTH the checkpoint and the
+        # findings shards survive (the shards so a later --resume rebuilds a
+        # complete report.jsonl). Simulate the interrupt by raising
+        # KeyboardInterrupt from the parent's checkpoint write after a file
+        # commits — the same path a real Ctrl-C takes through the collect loop.
+        src = self._two_file_src(tmp_path, line1, line2)
+        out = tmp_path / "out"
+        real_write = resume.write_checkpoint
+
+        def interrupt_after_first(out_dir, checkpoint):
+            real_write(out_dir, checkpoint)  # persist the first file's progress
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(cli.resume, "write_checkpoint", interrupt_after_first)
+        rc = cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
+
+        assert rc == 130
+        # The checkpoint written before the interrupt survives → resumable.
+        assert resume.load_checkpoint(str(out)) is not None
+        # The end-of-run shard scrub never ran (we returned 130 first), so the
+        # completed file's shard is still on disk for --resume to reuse.
+        assert (out / ".shards").exists()
+
+    def test_resume_with_corrupt_checkpoint_reports_corruption(
+        self, tmp_path, line1, line2, capsys
+    ):
+        # A present-but-corrupt checkpoint must not be reported as "not found".
+        src = self._two_file_src(tmp_path, line1, line2)
+        out = tmp_path / "out"
+        out.mkdir()
+        (out / resume.CHECKPOINT_NAME).write_text("{ not valid json", encoding="utf-8")
+        rc = cli.main(
+            ["clean", str(src), "--out-dir", str(out), "--resume", "--jobs", "1"]
+        )
+        err = capsys.readouterr().err
+        assert rc == 2
+        assert "corrupt" in err.lower() or "unreadable" in err.lower()
+        assert "no interrupted run" not in err.lower()

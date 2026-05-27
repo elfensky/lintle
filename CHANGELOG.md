@@ -6,6 +6,266 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-05-27
+
+### Added
+
+- New `clean --resume` flag for **single-run resume**: continue an interrupted
+  `clean` (Ctrl-C, a closed laptop, a crash) so it processes only the files not
+  yet completed, rather than restarting the whole corpus. Checkpointing is
+  always-on — the parent fingerprints every input up front and atomically
+  rewrites a `.clean-state.json` in `--out-dir` after each file commits,
+  deleting it on full success, so the checkpoint's presence marks an interrupted
+  run and a finished run leaves none behind. `--resume` validates refuse-on-
+  change: any drift in the `lintle` version or an input's identity (size,
+  `mtime_ns`, head/tail 64 KB hash) aborts with a specific message (exit `2`)
+  rather than mixing outputs from two states. Completed files' findings shards
+  survive the interruption, so a resumed run's `report.jsonl`, `report.md`, and
+  `broken-noradids.ndjson` match a non-interrupted full run. This is *not* a
+  cross-run cache (the rejected design §13, #12) — it is scoped to finishing one
+  run and never skips re-validation of records it emits. New `lintle.resume`
+  module; `report.stats_from_summary` reconstructs a `FileStats` from its JSON
+  summary so reused files appear in the final report. Closes #56.
+- New `lintle explain <TAG>` subcommand turns the validator into its own
+  reference: it documents **both** public vocabularies lintle stamps on a
+  report — the rejection rules (`RuleID`, e.g. `TLE-CHK-001`) and the repair
+  tags (`FixClass`, e.g. `reconstructed-checksum`). For any tag it prints a
+  plain-English definition (single-sourced from `RuleSpec`/`FixSpec`, never
+  re-described), a good/bad or before/after example with the failing column
+  marked, the repair-tier linkage, and a source-of-truth citation into the
+  code. Read-only; an unknown tag exits `2` listing every valid tag. Every
+  example is the *same object* the test suite validates against the live
+  `tle.py`/`repair.py` across all classification layers (line, pairing,
+  record), so the docs cannot silently drift from validator behaviour;
+  import-time guards make explain-coverage and tag-namespace disjointness
+  structural. A new `FixSpec`/`FIXES` registry gives each repair tag a
+  canonical one-line definition, mirroring `RuleSpec`/`RULES`. The
+  `reconstructed-checksum` entry carries an explicit safety note (the only
+  sanctioned reconstruction: a deterministic recompute, re-validated in full
+  before commit — never a guessed data character). Closes #11.
+- New `lintle diff RUN-A RUN-B` subcommand compares two clean-run output
+  directories by streaming each one's `report.jsonl` and printing the defect
+  classes new in B, the classes fixed (present in A, absent in B), the
+  per-rule count deltas, and a per-file (per-basename) breakdown — turning
+  "eyeball two `report.md` files" into a focused delta of what the upstream
+  export pipeline broke, fixed, or shifted between runs. Read-only; writes
+  nothing. Counts the *primary* `rule_id` of each finding only — never the
+  `related[]` array — mirroring `pipeline._record_reject` so the diff's
+  per-rule totals agree with each run's own `report.md`. The corpus-level
+  totals are derived by summing the per-file counts, so the two sections can
+  never disagree. A mismatched (or missing) `schema_version`, a malformed
+  line, non-UTF-8 bytes, or a missing `report.jsonl` is a hard error (exit
+  `2`); a clean comparison exits `0`. The per-file breakdown is keyed by the
+  `report.jsonl` `file` basename: because `clean` refuses inputs with
+  colliding basenames (`_detect_basename_collisions`), each basename names
+  exactly one file within a run, so the key is unambiguous. A basename present
+  in only one run is *flagged* ("only in run A/B — fixed, removed, or
+  renamed") rather than attributed, and never rendered as a misleading
+  `N -> 0`, since `report.jsonl` lists only files that had findings. Memory is
+  bounded by (distinct files × distinct rule IDs), not the number of findings.
+  Decision recorded in `debates/010-lintle-diff-implementation/`. Closes #10.
+- New `--max-quarantined N` flag on both `validate` and `clean` (issue #13).
+  Exit code stays `0` when the total quarantined record count is at or below
+  `N`; flips to `1` only when *more than* `N` records were quarantined. The
+  default `N=0` preserves the historical "any quarantine fails" contract, so
+  the flag is purely opt-in for CI/DataOps callers that need a tolerance
+  budget. Unlike `lintle ... || true; jq -e '.summary.quarantined_count <= N'`,
+  the flag preserves the meaningful `2` (operational error) and `130` (Ctrl-C)
+  exit codes that a swallow-and-parse wrapper would mask. The two other
+  thresholds floated in the original issue (`--threshold RATIO` and
+  `--fail-on RULE-ID=N`) were intentionally NOT shipped: `--threshold` is
+  redundant with `--max-quarantined` and adds denominator ambiguity, and
+  `--fail-on` would promote `RuleID` strings from "report artifact" to
+  "CI YAML public-forever contract" — a meaningfully bigger compatibility
+  promise that should wait on real user demand. Decision recorded in
+  `debates/013-fail-on-threshold-flags/`.
+- `lintle validate --report json` (and `lintle clean --report json`) now
+  emits a top-level versioned envelope object instead of the prior flat
+  array of per-file summaries. The shape is
+  `{schema_version, run, environment, summary, files}` —
+  `run` carries the subcommand name, the ISO 8601 UTC start timestamp,
+  and the parent-process wall-clock `elapsed_seconds`; `environment`
+  carries `tool_version` and `python_version` (no env vars, paths, or
+  hostnames); `summary` carries corpus-wide aggregates
+  (`files_processed`, `paired_records`, `clean_count`,
+  `quarantined_count`, `fix_counts`, `reject_counts`); `files` is the
+  per-file array, where each entry is the existing `summary_dict()`
+  shape extended with `elapsed_seconds`, `bytes`, and
+  `records_per_sec`. The throughput field is always a stable float
+  (denominator clamped to 1 ms) — never `null` — so statically-typed
+  consumers can declare a single type without sentinel handling. Per-
+  file timing is captured by each worker via `time.monotonic()`;
+  `summary` aggregates are NOT summed worker durations (`--jobs N`
+  parallelism would inflate that), so `run.elapsed_seconds` is the
+  authoritative end-to-end duration. The contract is locked by
+  `docs/superpowers/specs/2026-05-25-report-json-envelope.md` and the
+  golden fixture at `tests/fixtures/report-envelope-v1.golden.json`.
+  Closes #20.
+- New `lintle.diagnostics` module defines a stable, citable rule-ID registry
+  (`TLE-COL-001`, `TLE-CHK-001`, `TLE-PAIR-001`, …) and a structured
+  `Diagnostic` dataclass with `rule_id`, `source_line_nos`, `tier_attempted`,
+  `column_range`, `observed`, `expected`, and `note` fields. Reject reasons
+  are no longer free-form prose — they are now structured records keyed by a
+  stable identifier that downstream consumers can pin in `report.md`, the
+  `.broken.txt` sidecar, JSON output, and future tooling. Rule IDs follow
+  the `TLE-<FAMILY>-<NNN>` shape (families: COL, CHK, PAIR, SEM, INT) and
+  are never recycled — retired IDs stay readable forever. Includes a
+  `RuleSpec` registry (`RULES`) with metadata about every rule, queryable
+  for future `lintle explain TLE-XXX-NNN` tooling. Closes #8.
+- The `report.md` run report now includes a "Rule reference" section,
+  auto-generated from the `diagnostics.RULES` registry, listing every rule
+  that fired in the run with its short title so the report is
+  self-explanatory.
+- `report.md` now ends with a `## Per-NORAD breakdown` table: one row per
+  satellite catalog number whose records were quarantined, with the
+  corpus-wide quarantine count, the per-rule defect breakdown, and the
+  source filenames the satellite appeared in. Rows are sorted by
+  quarantined-record count descending (NORAD ID ascending on ties); the
+  Files column shows the first five filenames alphabetically followed by a
+  `+N more` suffix when the satellite spans more files than that, keeping
+  the cell bounded for persistent NORADs. The table caps at
+  `format_run_report(all_stats, top_n=100)` rows by default with an
+  italicised "...and N more — see broken-noradids.ndjson for the full list."
+  footer when truncation activates; pass `top_n=None` to render every row.
+  The richer per-NORAD data is the human-facing counterpart to
+  `broken-noradids.ndjson`, whose `{"noradId":N}` contract stays minimal.
+  Closes #40.
+- Per-rule drop visibility everywhere `lintle` surfaces reject totals.
+  `FileSample` gains a `dropped_count: dict[RuleID, int]` field, populated
+  by `RejectSink.add` when the per-rule bucket is at cap (the bound that
+  in-memory exemplars are capped at — full byte-faithful catalog reaches
+  `.broken.txt` regardless). The new data threads through three surfaces:
+  the `lintle validate` summary's per-rule heading switches from `(M):`
+  to `(N of M hits, K dropped):` when `K > 0`; the JSON output
+  (`lintle validate --report json`) gains a `dropped_counts` field
+  parallel to `reject_counts`, keyed by stable rule IDs; and
+  `report.md`'s "Records quarantined (by rule)" table gains a `Dropped`
+  column summed across files. The trailing `...and X more` under each
+  rule block in the validate summary stays, so the existing
+  truncation-indicator stays visually anchored to the exemplars it
+  applies to. Closes #46.
+- `lintle clean` now emits a corpus-wide `report.jsonl` alongside
+  `report.md` and `broken-noradids.ndjson`: one JSON object per
+  quarantined record, citing the stable `RuleID` (`TLE-CHK-001`,
+  `TLE-COL-003`, …) and carrying the structured fields downstream
+  automation needs — `file`, `source_lines`, `tier_attempted`,
+  `norad_id`, `column_range`, `observed`, `expected`, `note`, and
+  `related` (secondary diagnostics). Every line carries
+  `schema_version: "1"` and `outcome: "quarantined"` (the latter
+  reserves space for future `"fixed"` emission without breaking
+  consumers). The format is compact (`json.dumps(..., separators=(",", ":"))`),
+  key-sorted (`sort_keys=True`), UTF-8, LF-terminated — byte-deterministic
+  across runs on identical input, enabling content-hash caching and the
+  `lintle diff` consumer (issue #10). Streaming is per-worker: each
+  worker writes `<out_dir>/.shards/<stem>.findings.jsonl`; the main
+  process concatenates shards in alphabetical `src_name` order at end
+  of run and removes the shard directory. A pre-run shard-dir scrub
+  prevents contamination from prior aborted runs. The byte-faithful
+  catalog stays in `broken/<stem>.broken.txt`; `report.jsonl` is the
+  structured-findings stream consumers can `jq` against. The
+  `RejectEntry` dataclass gains a trailing optional `norad_id` field
+  decoded once at quarantine time. Closes #9.
+
+### Changed
+
+- **Breaking — `--report json` output shape.** The flat array of
+  per-file `summary_dict()` entries previously emitted by
+  `lintle ... --report json` is replaced by the top-level envelope
+  described under Added above. Consumers that did `payload[0]` to read
+  the first file's stats now do `payload["files"][0]`; the per-file
+  keys (`src_name`, `paired_records`, …) are unchanged but join three
+  new ones (`elapsed_seconds`, `bytes`, `records_per_sec`). No legacy
+  flag is provided; the schema is pinned by `schema_version: "1"` so
+  future minor revisions stay additive within `"1"` and any breaking
+  rename bumps to `"2"`.
+- Internal: extracted `RejectSink` and `FileSample` from `FileStats` so
+  the 5-per-rule exemplar cap is enforced by construction rather than by
+  convention in a single caller. `pipeline.process_file` no longer
+  juggles a separate `broken_writer` and exemplar dict — `RejectSink`
+  owns both responsibilities and the cap is now a structural property of
+  the sink type. `FileStats.reject_exemplars` is replaced by
+  `FileStats.reject_sample: FileSample` (a frozen, per-rule bounded
+  sample). `FileSample.from_bounded(cap=N, entries_by_rule={...})` is
+  the test-fixture entry point; production code writes through
+  `sink.add(entry)`. Renderers (`format_reject_lines`,
+  `write_broken_file`) read from `stats.reject_sample.buckets`. No
+  user-visible byte format changes (`.broken.txt`, JSON output, and
+  `report.md` are byte-identical to the pre-refactor baseline). Closes
+  #19.
+- Internal: encapsulated `FileStats.quarantined_norad_ids` behind a
+  `NoradTracker` type with a single `record(norad_id, rule_id)` mutation
+  entry point. `pipeline._record_reject` no longer hand-rolls the
+  `setdefault`/`get`/`+1` dance — future writers will find `.record(...)`
+  by name instead of reinventing the pattern. Field name unchanged
+  (`quarantined_norad_ids` preserved so the `summary_dict` JSON-key
+  contract and `git log -S` history stay intact); only the type changed
+  from `dict` to `NoradTracker`. Renderers (`summary_dict`,
+  `_aggregate_per_norad`, `aggregate_broken_norad_ids`) read via
+  `tracker.counts`. Sibling refactor to issue #19's `RejectSink`
+  extraction, deliberately simpler — no cap, no file resource, no
+  context-manager, no `merge`, no freeze boundary (half-encapsulation
+  by deliberate choice so the per-NORAD data shape stays free to evolve
+  toward per-satellite timestamps or provenance without breaking a
+  monoid contract). No user-visible byte format changes
+  (`broken-noradids.ndjson`, JSON output, and `report.md` are
+  byte-identical to the pre-refactor baseline). Closes #47.
+- Free-form short tags used across `repair.py`, `pipeline.py`, and tests
+  are now defined in `lintle.categories` (for `FixClass`, the successful-repair
+  taxonomy) and `lintle.diagnostics` (for `RuleID`, the rejection taxonomy)
+  as `enum.StrEnum` classes, so typos and renames are caught rather than
+  silently drifting across call sites. Closes #18.
+- **Breaking — `.broken.txt` sidecar line format.** The per-entry headline
+  now cites the rule ID and structured fields instead of a free-form
+  sentence: `[N] source lines X-Y - rule: TLE-CHK-001 (tier-1) - col 69
+  observed='7' expected='3'`. Related diagnostics on the same record
+  (when both lines of a record fail) render on indented `    and: ...`
+  continuation lines. The sidecar header (`# source: ... | generated:
+  ... | lintle <version>`) is unchanged and already pins the format to
+  a release, so downstream parsers can dispatch on version.
+- **Breaking — JSON output via `lintle validate --report json`.** The
+  per-file `"reject_categories"` field is renamed `"reject_counts"` and its
+  inner keys change from free-form tags (`"checksum-mismatch"`) to stable
+  rule IDs (`"TLE-CHK-001"`). `fix_counts` and its inner keys are
+  unchanged. The per-file payload also gains `"quarantined_norad_ids"`
+  carrying the per-satellite per-rule breakdown that backs the new
+  Markdown per-NORAD section (see Added above), shaped as
+  `{"<noradId>": {"TLE-CHK-001": count, ...}, ...}` — integer NORAD keys
+  auto-stringify, `RuleID` keys serialise as their stable wire token.
+- `FileStats.reject_categories` is renamed `FileStats.reject_counts` to
+  match the new vocabulary; values are keyed by `diagnostics.RuleID`
+  (which compares and hashes as its stable string value).
+- `FileStats.quarantined_norad_ids` is now a `dict[int, dict[RuleID, int]]`
+  instead of a `set[int]`: outer keys are still the satellite catalog
+  numbers, but each value is a per-rule count dict tallying which
+  diagnostics that satellite hit in this file. `pipeline._record_reject`
+  records the rule ID alongside the satellite at quarantine time, feeding
+  the new `## Per-NORAD breakdown` section. The `broken-noradids.ndjson`
+  sidecar still emits one `{"noradId":N}` line per ID —
+  `aggregate_broken_norad_ids` now iterates the dict's keys — so that
+  downstream contract is byte-identical. The per-file map is O(IDs × 9),
+  and the corpus-wide rollup adds an O(IDs × source files) term for the
+  Files column; both are bounded by the satellite catalog and the small
+  fixed number of source files, preserving the constant-memory invariant.
+  Closes #40.
+- `validate` mode now groups reject exemplars by rule ID (up to 5 per
+  rule, sorted by descending occurrence count with alphabetic tiebreak),
+  so a single noisy defect class can no longer hide rarer rules in the
+  operator summary. `FileStats.reject_exemplars` is now
+  `dict[RuleID, list[RejectEntry]]` capped at
+  `_PER_RULE_EXEMPLAR_BOUND = 5` per rule; the per-file memory ceiling
+  drops from 1000 entries to `|RuleID| × 5 = 45`. Each exemplar line
+  reuses `_format_diagnostic` so column ranges, observed/expected, repair
+  tier, and related-diagnostic continuations carry over. The on-disk
+  `.broken.txt` streaming path is untouched — every reject still reaches
+  the byte-faithful catalog. Closes #21.
+
+### Removed
+
+- `lintle.categories.RejectCategory` (replaced by
+  `lintle.diagnostics.RuleID`). Call sites updated; `RejectCategory` was
+  internal — no external API breakage beyond the JSON / `.broken.txt`
+  changes noted above.
+
 ## [0.2.0] - 2026-05-24
 
 ### Fixed
@@ -21,6 +281,21 @@ All notable changes to this project are documented in this file. The format is b
   `quarantined_count` semantics are unchanged: orphans still go to
   `.broken.txt` and remain tallied under `reject_categories['orphan-line']`.
   Closes #5.
+- `cli.main` now refuses to run when two distinct inputs share a basename,
+  because their `cleaned/` and `broken/` sidecars would otherwise silently
+  overwrite each other under `data/output/` — exactly the kind of
+  wrong-but-valid-looking outcome the spec forbids. `discover_paths` also
+  dedupes inputs by `os.path.realpath`, so the same canonical file listed
+  twice (literally, via a parent directory, or through a symlink) is
+  processed once. Closes #4.
+- `cli.check_paths` no longer pre-checks readability via `os.access`. That
+  call consults POSIX mode bits only and false-negatives on filesystems
+  that grant read via ACLs (NFSv4, SMB, FUSE), producing a misleading
+  "unreadable" verdict on inputs the worker can in fact open. The
+  authoritative readability test is the worker's `open()`; a real
+  permission failure surfaces through the per-file processing path with
+  the same exit code 2. Landed alongside the basename-collision fix in
+  commit `a898fb9`. Closes #7.
 
 ### Added
 

@@ -1,10 +1,20 @@
 name: Publish
 
-# Manually triggered. Pick the target from the input dropdown (defaults to
-# the TestPyPI sandbox), and click Run workflow. Trusted Publishing (OIDC)
-# handles authentication for both PyPI and TestPyPI — no API tokens stored.
+# Two triggers, one workflow:
+#   - push to main      -> auto-publish to TestPyPI (every release commit)
+#   - workflow_dispatch -> pick target manually (testpypi or pypi)
+#
+# Pushes to main only ever carry release commits (the develop->main commit-tree
+# merge), so an auto-publish on push is a per-release event, not per-merge
+# spam. Production PyPI stays gated behind manual dispatch — uploads are
+# permanent and `--target pypi` should be a deliberate human action.
+#
+# Trusted Publishing (OIDC) handles authentication for both PyPI and TestPyPI
+# — no API tokens stored.
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       target:
@@ -41,10 +51,14 @@ jobs:
       - name: Build sdist and wheel
         run: uv build
 
+      # `inputs.target` is unset on push events, so a push to main lands here.
+      # workflow_dispatch with target=testpypi also lands here.
       - name: Publish to TestPyPI
-        if: inputs.target == 'testpypi'
+        if: github.event_name == 'push' || inputs.target == 'testpypi'
         run: uv publish --index testpypi --trusted-publishing always
 
+      # PyPI only fires on explicit workflow_dispatch with target=pypi —
+      # never on a push event, so a main push cannot accidentally publish to prod.
       - name: Publish to PyPI
-        if: inputs.target == 'pypi'
+        if: github.event_name == 'workflow_dispatch' && inputs.target == 'pypi'
         run: uv publish --trusted-publishing always

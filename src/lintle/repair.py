@@ -7,43 +7,54 @@ committed only if the result passes. Pure functions — no I/O.
 import dataclasses
 
 from lintle import tle
+from lintle.categories import FixClass
+from lintle.diagnostics import Diagnostic, RepairTier, RuleID, diagnostic
 
-RECONSTRUCTED_CHECKSUM = "reconstructed-checksum"
 
-
-def repair_line(raw, lineno):
+def repair_line(raw, lineno, source_line_no):
     """Attempt to repair one raw line into a valid 69-character TLE line.
 
     ``raw`` is the bytes of a single line WITHOUT its ``\\n`` terminator
-    (a trailing ``\\r`` may remain). ``lineno`` is 1 or 2.
+    (a trailing ``\\r`` may remain). ``lineno`` is 1 or 2 (the TLE position
+    within a record). ``source_line_no`` is the 1-indexed file line that
+    populates a failure's :class:`Diagnostic` — required so provenance is
+    never silently invented (no sentinel-line-0 in published output).
 
-    Returns ``(clean_line, fixes, error, category)``:
-      * success -> ``(str, list[str], None, None)``
-      * failure -> ``(None, list[str], str, str)`` where ``category`` is a
-        short tag for summary aggregation.
+    Returns ``(clean_line, fixes, diagnostic_or_None)``:
+      * success -> ``(str, list[FixClass], None)``
+      * failure -> ``(None, list[FixClass], Diagnostic)``
     """
     fixes = []
+    src = (source_line_no,)
 
     try:
         line = raw.decode("ascii")
     except UnicodeDecodeError:
-        return None, fixes, "line contains a non-ASCII byte", "non-ascii"
+        return (
+            None,
+            fixes,
+            diagnostic(
+                RuleID.NON_ASCII_BYTE,
+                source_line_nos=src,
+                note="line contains a non-ASCII byte",
+            ),
+        )
 
     # Fix order is fixed (spec §6.6).
     if line.endswith("\r"):
         line = line[:-1]
-        fixes.append("crlf")
+        fixes.append(FixClass.CRLF)
     lstripped = line.lstrip(" \t")
     if lstripped != line:
         line = lstripped
-        fixes.append("leading-trim")
+        fixes.append(FixClass.LEADING_TRIM)
     rstripped = line.rstrip(" \t")
     if rstripped != line:
         line = rstripped
-        fixes.append("trailing-ws")
+        fixes.append(FixClass.TRAILING_WS)
     if line.endswith("\\"):
         line = line[:-1]
-        fixes.append("trailing-backslash")
+        fixes.append(FixClass.TRAILING_BACKSLASH)
 
     # Build a 69-character candidate.
     if len(line) == tle.LINE_LENGTH:
@@ -54,55 +65,90 @@ def repair_line(raw, lineno):
             return (
                 None,
                 fixes,
-                "68-char line; columns 1-68 fail layout/semantic checks "
-                "(interior character missing): " + "; ".join(body_errors),
-                "interior-char-missing",
+                diagnostic(
+                    RuleID.INTERIOR_CHAR_MISSING,
+                    source_line_nos=src,
+                    tier_attempted=RepairTier.NORMALIZATION,
+                    note="; ".join(body_errors),
+                ),
             )
         candidate = line + str(tle.compute_checksum(line))
-        fixes.append(RECONSTRUCTED_CHECKSUM)
+        fixes.append(FixClass.RECONSTRUCTED_CHECKSUM)
     else:
         return (
             None,
             fixes,
-            f"line length {len(line)} after normalization, expected 68 or 69",
-            "wrong-length",
+            diagnostic(
+                RuleID.LINE_LENGTH,
+                source_line_nos=src,
+                tier_attempted=RepairTier.NORMALIZATION,
+                observed=str(len(line)),
+                expected="68 or 69",
+            ),
         )
 
     # Single full re-validation of the final candidate (spec §4.1, §6.6).
     errors = tle.validate_line(candidate, lineno)
     if errors:
-        category = (
-            "checksum-mismatch"
-            if any("checksum" in e for e in errors)
-            else "invalid-columns"
+        tier = (
+            RepairTier.CHECKSUM_RECONSTRUCT
+            if FixClass.RECONSTRUCTED_CHECKSUM in fixes
+            else RepairTier.NORMALIZATION
         )
-        return None, fixes, "; ".join(errors), category
+        if any("checksum" in e for e in errors):
+            observed = candidate[68] if len(candidate) > 68 else ""
+            expected = str(tle.compute_checksum(candidate))
+            return (
+                None,
+                fixes,
+                diagnostic(
+                    RuleID.CHECKSUM_MISMATCH,
+                    source_line_nos=src,
+                    tier_attempted=tier,
+                    column_range=(69, 69),
+                    observed=observed,
+                    expected=expected,
+                ),
+            )
+        return (
+            None,
+            fixes,
+            diagnostic(
+                RuleID.INVALID_COLUMN_LAYOUT,
+                source_line_nos=src,
+                tier_attempted=tier,
+                note="; ".join(errors),
+            ),
+        )
 
-    return candidate, fixes, None, None
+    return candidate, fixes, None
 
 
 @dataclasses.dataclass
 class Accepted:
     """A record that is valid after repair. ``fixes`` lists the fix-class
-    names applied across both lines (e.g. ``"trailing-backslash"``).
+    tags applied across both lines (e.g. ``FixClass.TRAILING_BACKSLASH``).
     """
 
     line1: str
     line2: str
-    fixes: list
+    fixes: list[FixClass]
 
 
 @dataclasses.dataclass
 class Rejected:
-    """A record that could not be safely repaired. ``raw_lines`` holds the
-    original bytes for byte-faithful quarantine; ``category`` is a short
-    tag for summary aggregation; ``reason`` is the human-readable detail.
+    """A record routed to quarantine. ``raw_lines`` preserves the original
+    bytes for byte-faithful sidecar output. ``primary`` is the headline
+    :class:`Diagnostic` used for aggregation in ``stats.reject_counts`` and
+    as the visible diagnosis in ``report.md``; ``related`` carries any
+    supporting diagnostics — when both lines of a record fail, the first
+    is primary and the second is related.
     """
 
     raw_lines: list
     source_lines: list
-    category: str
-    reason: str
+    primary: Diagnostic
+    related: tuple[Diagnostic, ...] = ()
 
 
 def process_record(raw_line1, src1, raw_line2, src2):
@@ -112,29 +158,37 @@ def process_record(raw_line1, src1, raw_line2, src2):
     are their 1-indexed source line numbers. Returns ``Accepted`` or
     ``Rejected``.
     """
-    line1, fixes1, err1, cat1 = repair_line(raw_line1, 1)
-    line2, fixes2, err2, cat2 = repair_line(raw_line2, 2)
+    line1, fixes1, diag1 = repair_line(raw_line1, 1, src1)
+    line2, fixes2, diag2 = repair_line(raw_line2, 2, src2)
 
-    if err1 or err2:
-        parts = []
-        if err1:
-            parts.append(f"line 1: {err1}")
-        if err2:
-            parts.append(f"line 2: {err2}")
-        return Rejected(
-            [raw_line1, raw_line2],
-            [src1, src2],
-            cat1 or cat2,
-            "; ".join(parts),
-        )
+    if diag1 or diag2:
+        if diag1 and diag2:
+            primary, related = diag1, (diag2,)
+        else:
+            primary = diag1 if diag1 else diag2
+            related = ()
+        return Rejected([raw_line1, raw_line2], [src1, src2], primary, related)
 
     record_errors = tle.validate_record(line1, line2)
     if record_errors:
+        # Tier reflects the strongest repair attempted on EITHER line. A
+        # CATALOG_MISMATCH after both lines survived checksum reconstruction
+        # is a stronger corruption signal than one caught at first read; the
+        # consumer should see tier-2 in that case, not tier-1.
+        tier = (
+            RepairTier.CHECKSUM_RECONSTRUCT
+            if FixClass.RECONSTRUCTED_CHECKSUM in fixes1 + fixes2
+            else RepairTier.NORMALIZATION
+        )
         return Rejected(
             [raw_line1, raw_line2],
             [src1, src2],
-            "catalog-mismatch",
-            "; ".join(record_errors),
+            diagnostic(
+                RuleID.CATALOG_MISMATCH,
+                source_line_nos=(src1, src2),
+                tier_attempted=tier,
+                note="; ".join(record_errors),
+            ),
         )
 
     return Accepted(line1, line2, fixes1 + fixes2)

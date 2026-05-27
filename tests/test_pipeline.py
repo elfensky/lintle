@@ -1,11 +1,13 @@
 """Tests for lintle.pipeline — streaming I/O, line pairing, file processing."""
 
 import contextlib
+import json
 import queue
 
 import pytest
 
-from lintle import pipeline
+from lintle import pipeline, report
+from lintle.diagnostics import RuleID
 
 
 class TestIterRecords:
@@ -41,14 +43,15 @@ class TestIterRecords:
         records = list(pipeline.iter_records(str(src)))
         assert len(records) == 1
         assert isinstance(records[0], pipeline.Orphan)
-        assert records[0].reason == "orphan line 1 at end of file"
+        assert records[0].diagnostic.rule_id == RuleID.ORPHAN_LINE
+        assert records[0].diagnostic.note == "orphan line 1 at end of file"
 
     def test_two_line1s_orphan_the_first(self, tmp_path, line1):
         src = tmp_path / "in.txt"
         src.write_bytes((line1 + "\n" + line1 + "\n").encode("ascii"))
         records = list(pipeline.iter_records(str(src)))
         assert all(isinstance(r, pipeline.Orphan) for r in records)
-        assert records[0].category == "orphan-line"
+        assert records[0].diagnostic.rule_id == RuleID.ORPHAN_LINE
 
     def test_orphan_line2(self, tmp_path, line2):
         src = tmp_path / "in.txt"
@@ -61,7 +64,7 @@ class TestIterRecords:
         src.write_bytes(("garbage\n" + line1 + "\n" + line2 + "\n").encode("ascii"))
         records = list(pipeline.iter_records(str(src)))
         orphans = [r for r in records if isinstance(r, pipeline.Orphan)]
-        assert any(o.category == "bad-prefix" for o in orphans)
+        assert any(o.diagnostic.rule_id == RuleID.BAD_PREFIX for o in orphans)
         # The valid record after the garbage line still pairs.
         assert any(isinstance(r, pipeline.RecordCandidate) for r in records)
 
@@ -104,7 +107,7 @@ class TestProcessFile:
         assert stats.input_lines_seen == 3
         assert stats.clean_count == 1
         assert stats.quarantined_count == 1
-        assert stats.reject_categories.get("orphan-line") == 1
+        assert stats.reject_counts.get(RuleID.ORPHAN_LINE) == 1
 
     def test_input_lines_seen_counts_blank_lines(self, tmp_path, line1, line2):
         # ``input_lines_seen`` is the count of physical lines read — including
@@ -133,8 +136,9 @@ class TestProcessFile:
         stats = pipeline.process_file(str(src), str(out), "clean")
 
         assert stats.quarantined_count == 1
-        assert stats.reject_categories.get("checksum-mismatch") == 1
-        assert b"checksum" in (out / "broken" / "tle2099.broken.txt").read_bytes()
+        assert stats.reject_counts.get(RuleID.CHECKSUM_MISMATCH) == 1
+        broken_bytes = (out / "broken" / "tle2099.broken.txt").read_bytes()
+        assert b"TLE-CHK-001" in broken_bytes
 
     def test_validate_mode_writes_nothing(self, tmp_path, line1, line2):
         src = tmp_path / "tle2099.txt"
@@ -145,6 +149,63 @@ class TestProcessFile:
 
         assert stats.clean_count == 1
         assert not out.exists()  # validate mode never creates the output dir
+
+    def test_clean_mode_writes_jsonl_shard(self, tmp_path, line1, line2):
+        # Issue #9: clean mode writes a per-file findings shard to
+        # ``<out_dir>/.shards/<stem>.findings.jsonl`` alongside the
+        # cleaned and broken outputs.
+        bad_line2 = line2[:-1] + ("9" if line2[-1] != "9" else "0")
+        src = tmp_path / "tle2099.txt"
+        src.write_bytes((line1 + "\n" + bad_line2 + "\n").encode("ascii"))
+        out = tmp_path / "out"
+
+        pipeline.process_file(str(src), str(out), "clean")
+
+        shard = out / ".shards" / "tle2099.findings.jsonl"
+        assert shard.exists()
+        with open(shard, encoding="utf-8") as handle:
+            lines = handle.readlines()
+        assert len(lines) == 1
+        parsed = json.loads(lines[0])
+        assert parsed["schema_version"] == "1"
+        assert parsed["outcome"] == "quarantined"
+        assert parsed["file"] == "tle2099.txt"
+
+    def test_validate_mode_skips_jsonl_shard(self, tmp_path, line1, line2):
+        # Issue #9: validate mode emits no JSONL shard.
+        src = tmp_path / "tle2099.txt"
+        src.write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
+        out = tmp_path / "out"
+
+        pipeline.process_file(str(src), str(out), "validate")
+        assert not out.exists()  # no .shards/, no nothing
+
+    def test_jsonl_write_failure_after_counters_advance(
+        self, tmp_path, line1, line2, monkeypatch
+    ):
+        # Issue #9 spec §8.7: if the JSONL writer raises mid-stream,
+        # (a) the exception propagates, (b) the .partial is unlinked by
+        # __exit__'s abnormal-exit branch, (c) no broken sidecar is
+        # finalized — sink.finalize never runs because an exception
+        # interrupted the record loop. The cleaned tmp is unlinked too.
+        bad_line2 = line2[:-1] + ("9" if line2[-1] != "9" else "0")
+        src = tmp_path / "tle2099.txt"
+        src.write_bytes((line1 + "\n" + bad_line2 + "\n").encode("ascii"))
+        out = tmp_path / "out"
+
+        def boom(self, entry):
+            raise OSError("simulated jsonl write failure")
+
+        monkeypatch.setattr(report.JsonlFindingsWriter, "write_entry", boom)
+
+        with pytest.raises(OSError, match="simulated jsonl write failure"):
+            pipeline.process_file(str(src), str(out), "clean")
+
+        # No partials linger after the abnormal-exit cleanup runs.
+        assert not list(out.rglob("*.partial"))
+        # No published cleaned file (the os.replace happens after the
+        # record loop, which we never reached).
+        assert not list(out.rglob("*.cleaned.txt"))
 
     def test_internal_error_is_quarantined_not_raised(
         self, tmp_path, line1, line2, monkeypatch
@@ -159,7 +220,7 @@ class TestProcessFile:
         stats = pipeline.process_file(str(src), str(tmp_path / "out"), "clean")
 
         assert stats.quarantined_count == 1
-        assert stats.reject_categories.get("internal-error") == 1
+        assert stats.reject_counts.get(RuleID.INTERNAL_ERROR) == 1
 
     def test_clean_run_leaves_no_temp_file(self, tmp_path, line1, line2):
         src = tmp_path / "tle2099.txt"
@@ -266,14 +327,18 @@ class TestProcessFile:
 
 
 class TestStreamingRejects:
-    """The constant-memory invariant: reject_exemplars stays bounded even on
-    reject-heavy files, while the on-disk ``.broken.txt`` catalog is complete.
+    """The constant-memory invariant: each ``RuleID`` bucket in
+    ``stats.reject_sample.buckets`` stays bounded even on reject-heavy
+    files, while the on-disk ``.broken.txt`` catalog is complete. The
+    bound is now enforced structurally by :class:`report.RejectSink`
+    (issue #19) — these tests exercise the invariant end-to-end through
+    ``process_file``.
     """
 
-    def test_exemplars_bounded_but_broken_catalog_is_complete(self, tmp_path):
-        # Far more bad-prefix orphans than the in-memory exemplar bound — the
-        # full catalog must reach disk; only the in-memory sample is capped.
-        n = pipeline._EXEMPLAR_BOUND + 1500
+    def test_exemplars_bucketed_per_rule_with_complete_broken_catalog(self, tmp_path):
+        # Far more bad-prefix orphans than the per-rule exemplar bound —
+        # the full catalog must reach disk; only the in-memory bucket caps.
+        n = report._PER_RULE_EXEMPLAR_BOUND + 1500
         src = tmp_path / "tle2099.txt"
         src.write_bytes(b"\n".join(f"junk {i:08d}".encode("ascii") for i in range(n)))
         out = tmp_path / "out"
@@ -282,35 +347,98 @@ class TestStreamingRejects:
 
         # Full counters reflect every reject…
         assert stats.quarantined_count == n
-        assert stats.reject_categories.get("bad-prefix") == n
-        # …but the in-memory exemplar buffer is capped at the bound.
-        assert len(stats.reject_exemplars) == pipeline._EXEMPLAR_BOUND
+        assert stats.reject_counts.get(RuleID.BAD_PREFIX) == n
+        # …but the in-memory bucket for that rule is capped at the bound.
+        assert (
+            len(stats.reject_sample.buckets[RuleID.BAD_PREFIX])
+            == report._PER_RULE_EXEMPLAR_BOUND
+        )
         # The on-disk catalog header and trailing entry both reflect every
         # quarantined record — none were dropped due to the in-memory cap.
         broken = (out / "broken" / "tle2099.broken.txt").read_bytes()
-        # Every yielded entry here is an orphan ("bad-prefix") — so the
-        # paired/orphan split puts all `n` into orphan_entries, and the
-        # denominator on the sidecar header is paired+orphan = n.
         assert f"# {n} quarantined of {n} entries".encode("ascii") in broken
         last = f"junk {n - 1:08d}".encode("ascii")
         assert last in broken
 
-    def test_validate_mode_bounds_memory_too(self, tmp_path):
-        # In validate mode no sidecar is written, but the in-memory exemplars
-        # still cap so peak memory does not grow with reject count.
-        n = pipeline._EXEMPLAR_BOUND + 500
+    def test_validate_mode_bucket_caps_per_rule(self, tmp_path):
+        # In validate mode no sidecar is written, but each per-rule bucket
+        # still caps so peak memory does not grow with reject count.
+        n = report._PER_RULE_EXEMPLAR_BOUND + 500
         src = tmp_path / "tle2099.txt"
         src.write_bytes(b"\n".join(f"junk {i:08d}".encode("ascii") for i in range(n)))
 
         stats = pipeline.process_file(str(src), str(tmp_path / "out"), "validate")
 
         assert stats.quarantined_count == n
-        assert len(stats.reject_exemplars) == pipeline._EXEMPLAR_BOUND
+        assert (
+            len(stats.reject_sample.buckets[RuleID.BAD_PREFIX])
+            == report._PER_RULE_EXEMPLAR_BOUND
+        )
+
+    def test_rare_rules_preserved_under_skew(self, tmp_path):
+        # Feed 1000 bad-prefix rejects then a smaller batch of a different
+        # rule. With per-rule buckets, both appear in stats.reject_sample.
+        many = 1000
+        few = 3
+        lines = [f"junk {i:08d}".encode("ascii") for i in range(many)]
+        # Append a few orphan line-1 records (no following line-2): these
+        # land in RuleID.ORPHAN_LINE, distinct from BAD_PREFIX.
+        tle_line1 = (
+            "1 {i:05d}U 24001A   24001.00000000  .00000000  00000-0  00000-0 0  0001"
+        )
+        lines.extend(tle_line1.format(i=i).encode("ascii") for i in range(few))
+        src = tmp_path / "tle2099.txt"
+        src.write_bytes(b"\n".join(lines))
+
+        stats = pipeline.process_file(str(src), str(tmp_path / "out"), "validate")
+
+        # Both rules appear in the sample — the old flat buffer's failure
+        # mode is gone.
+        assert RuleID.BAD_PREFIX in stats.reject_sample.buckets
+        assert RuleID.ORPHAN_LINE in stats.reject_sample.buckets
+        # The rare rule has all its occurrences (well under the cap).
+        assert len(stats.reject_sample.buckets[RuleID.ORPHAN_LINE]) == few
+
+    def test_internal_error_rule_bucketed_like_data_defects(
+        self, tmp_path, monkeypatch
+    ):
+        # Force ``repair.process_record`` to raise so every paired record
+        # lands in RuleID.INTERNAL_ERROR. With many more rejects than the
+        # cap, the bucket caps just like a data-defect rule.
+        n = report._PER_RULE_EXEMPLAR_BOUND + 5
+        line1_tmpl = (
+            "1 {i:05d}U 24001A   24001.00000000  .00000000  00000-0  00000-0 0  0001"
+        )
+        line2_tmpl = (
+            "2 {i:05d}  51.6000 000.0000 0001000   0.0000   0.0000 15.50000000000001"
+        )
+        lines = []
+        for i in range(n):
+            lines.append(line1_tmpl.format(i=i).encode("ascii"))
+            lines.append(line2_tmpl.format(i=i).encode("ascii"))
+        src = tmp_path / "tle2099.txt"
+        src.write_bytes(b"\n".join(lines))
+
+        from lintle import repair
+
+        def _boom(*_args, **_kwargs):
+            raise RuntimeError("synthetic per-record failure")
+
+        monkeypatch.setattr(repair, "process_record", _boom)
+
+        stats = pipeline.process_file(str(src), str(tmp_path / "out"), "validate")
+
+        assert stats.reject_counts.get(RuleID.INTERNAL_ERROR) == n
+        assert (
+            len(stats.reject_sample.buckets[RuleID.INTERNAL_ERROR])
+            == report._PER_RULE_EXEMPLAR_BOUND
+        )
 
 
 class TestQuarantinedNoradIds:
-    """The corpus-wide ``broken-noradids.csv`` feed: extract NORAD IDs from
-    quarantined records' line 1, when that line is readable.
+    """The corpus-wide ``broken-noradids.ndjson`` feed (and the per-NORAD
+    breakdown in ``report.md``): extract NORAD IDs from quarantined records'
+    line 1, when that line is readable, and bucket them by rule ID.
     """
 
     def test_extracts_id_from_record_reject(self, tmp_path, line1, line2):
@@ -322,7 +450,9 @@ class TestQuarantinedNoradIds:
 
         stats = pipeline.process_file(str(src), str(tmp_path / "out"), "clean")
 
-        assert stats.quarantined_norad_ids == {5}  # canonical NORAD 00005
+        # canonical NORAD 00005; the rule is checksum-mismatch since the
+        # only defect was the tampered column-69 digit.
+        assert stats.quarantined_norad_ids.counts == {5: {RuleID.CHECKSUM_MISMATCH: 1}}
 
     def test_extracts_id_from_orphan_line1(self, tmp_path, line1):
         src = tmp_path / "tle2099.txt"
@@ -331,18 +461,18 @@ class TestQuarantinedNoradIds:
         stats = pipeline.process_file(str(src), str(tmp_path / "out"), "clean")
 
         assert stats.quarantined_count == 1
-        assert stats.quarantined_norad_ids == {5}
+        assert stats.quarantined_norad_ids.counts == {5: {RuleID.ORPHAN_LINE: 1}}
 
     def test_orphan_line2_is_skipped(self, tmp_path, line2):
         # An orphan line 2 has no line 1 to read — the issue contract is
-        # explicit: line 1 unrecoverable -> omit from the CSV.
+        # explicit: line 1 unrecoverable -> omit from the map.
         src = tmp_path / "tle2099.txt"
         src.write_bytes((line2 + "\n").encode("ascii"))
 
         stats = pipeline.process_file(str(src), str(tmp_path / "out"), "clean")
 
         assert stats.quarantined_count == 1
-        assert stats.quarantined_norad_ids == set()
+        assert stats.quarantined_norad_ids.counts == {}
 
     def test_bad_prefix_orphan_is_skipped(self, tmp_path):
         # A line that doesn't start with "1 " or "2 " is unparseable as a
@@ -353,15 +483,53 @@ class TestQuarantinedNoradIds:
         stats = pipeline.process_file(str(src), str(tmp_path / "out"), "clean")
 
         assert stats.quarantined_count == 1
-        assert stats.quarantined_norad_ids == set()
+        assert stats.quarantined_norad_ids.counts == {}
 
-    def test_clean_records_do_not_populate_the_set(self, tmp_path, line1, line2):
+    def test_clean_records_do_not_populate_the_map(self, tmp_path, line1, line2):
         # Only quarantined records contribute — a fully clean file
-        # produces an empty NORAD-ID set.
+        # produces an empty per-NORAD map.
         src = tmp_path / "tle2099.txt"
         src.write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
 
         stats = pipeline.process_file(str(src), str(tmp_path / "out"), "clean")
 
         assert stats.clean_count == 1
-        assert stats.quarantined_norad_ids == set()
+        assert stats.quarantined_norad_ids.counts == {}
+
+    def test_multiple_rejects_for_same_id_accrue_per_rule(self, tmp_path, line1, line2):
+        # Two checksum-mismatched records for the same NORAD ID should
+        # surface as one entry with a count of 2 under the same rule,
+        # confirming the per-rule accumulator advances rather than
+        # overwriting on each call.
+        src = tmp_path / "tle2099.txt"
+        bad_line1 = line1[:68] + "9"
+        body = (bad_line1 + "\n" + line2 + "\n") * 2
+        src.write_bytes(body.encode("ascii"))
+
+        stats = pipeline.process_file(str(src), str(tmp_path / "out"), "clean")
+
+        assert stats.quarantined_count == 2
+        assert stats.quarantined_norad_ids.counts == {5: {RuleID.CHECKSUM_MISMATCH: 2}}
+
+    def test_two_distinct_rules_for_same_id_accrue_independently(
+        self, tmp_path, line1, line2
+    ):
+        # Same NORAD ID quarantined under two different rules in the same
+        # file: each per-rule bucket must accumulate independently rather
+        # than the second overwriting the first. Mix a paired record with
+        # a tampered checksum (TLE-CHK-001) and a trailing lone line 1
+        # (TLE-PAIR-001) — both surface NORAD 5.
+        src = tmp_path / "tle2099.txt"
+        bad_line1 = line1[:68] + "9"
+        body = bad_line1 + "\n" + line2 + "\n" + line1 + "\n"
+        src.write_bytes(body.encode("ascii"))
+
+        stats = pipeline.process_file(str(src), str(tmp_path / "out"), "clean")
+
+        assert stats.quarantined_count == 2
+        assert stats.quarantined_norad_ids.counts == {
+            5: {
+                RuleID.CHECKSUM_MISMATCH: 1,
+                RuleID.ORPHAN_LINE: 1,
+            }
+        }

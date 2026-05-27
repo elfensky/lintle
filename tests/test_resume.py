@@ -1,0 +1,150 @@
+"""Tests for lintle.resume — the per-run `clean --resume` checkpoint (issue #56)."""
+
+import os
+
+import pytest
+
+import lintle
+from lintle import resume
+
+
+def _write(path, data: bytes):
+    with open(path, "wb") as handle:
+        handle.write(data)
+
+
+class TestInputFingerprint:
+    def test_reports_size_mtime_ns_and_window_hashes(self, tmp_path):
+        path = tmp_path / "tle.txt"
+        _write(path, b"hello world\n")
+        fp = resume.input_fingerprint(str(path))
+        assert set(fp) == {"size", "mtime_ns", "head_sha256", "tail_sha256"}
+        assert fp["size"] == len(b"hello world\n")
+        assert isinstance(fp["mtime_ns"], int)
+        # Below the window, head and tail hash the same full content.
+        assert fp["head_sha256"] == fp["tail_sha256"]
+
+    def test_distinguishes_files_by_head(self, tmp_path):
+        a, b = tmp_path / "a.txt", tmp_path / "b.txt"
+        _write(a, b"alpha" + b"\x00" * 1000)
+        _write(b, b"omega" + b"\x00" * 1000)
+        assert (
+            resume.input_fingerprint(str(a))["head_sha256"]
+            != resume.input_fingerprint(str(b))["head_sha256"]
+        )
+
+    def test_detects_an_append_via_size_and_tail(self, tmp_path):
+        path = tmp_path / "tle.txt"
+        big = b"x" * (resume._HASH_WINDOW * 2)
+        _write(path, big)
+        before = resume.input_fingerprint(str(path))
+        _write(path, big + b"appended line\n")
+        after = resume.input_fingerprint(str(path))
+        assert after["size"] != before["size"]
+        assert after["tail_sha256"] != before["tail_sha256"]
+        # The head window is unchanged by a pure append.
+        assert after["head_sha256"] == before["head_sha256"]
+
+
+class TestCheckpointRoundTrip:
+    def test_write_then_load_returns_equal_payload(self, tmp_path):
+        ckpt = resume.build_checkpoint(
+            inputs={
+                "data/source/tle.txt": {
+                    "size": 1,
+                    "mtime_ns": 2,
+                    "head_sha256": "a",
+                    "tail_sha256": "b",
+                }
+            },
+            completed={},
+        )
+        resume.write_checkpoint(str(tmp_path), ckpt)
+        assert resume.load_checkpoint(str(tmp_path)) == ckpt
+
+    def test_build_checkpoint_pins_schema_and_version(self, tmp_path):
+        ckpt = resume.build_checkpoint(inputs={}, completed={})
+        assert ckpt["schema_version"] == resume.SCHEMA_VERSION
+        assert ckpt["lintle_version"] == lintle.__version__
+
+    def test_write_is_atomic_no_partial_left_behind(self, tmp_path):
+        resume.write_checkpoint(
+            str(tmp_path), resume.build_checkpoint(inputs={}, completed={})
+        )
+        leftovers = [n for n in os.listdir(tmp_path) if n.endswith(".partial")]
+        assert leftovers == []
+
+    def test_load_missing_returns_none(self, tmp_path):
+        assert resume.load_checkpoint(str(tmp_path)) is None
+
+    def test_load_corrupt_returns_none(self, tmp_path):
+        with open(tmp_path / resume.CHECKPOINT_NAME, "w") as handle:
+            handle.write("{ not valid json")
+        assert resume.load_checkpoint(str(tmp_path)) is None
+
+    def test_delete_removes_checkpoint(self, tmp_path):
+        resume.write_checkpoint(
+            str(tmp_path), resume.build_checkpoint(inputs={}, completed={})
+        )
+        resume.delete_checkpoint(str(tmp_path))
+        assert resume.load_checkpoint(str(tmp_path)) is None
+
+    def test_delete_is_a_noop_when_absent(self, tmp_path):
+        resume.delete_checkpoint(str(tmp_path))  # must not raise
+
+
+def _fp(size=10, mtime_ns=100, head="h", tail="t"):
+    return {
+        "size": size,
+        "mtime_ns": mtime_ns,
+        "head_sha256": head,
+        "tail_sha256": tail,
+    }
+
+
+def _ckpt(inputs):
+    return {
+        "schema_version": resume.SCHEMA_VERSION,
+        "lintle_version": lintle.__version__,
+        "inputs": inputs,
+        "completed": {},
+    }
+
+
+class TestValidateResumable:
+    def test_identical_inputs_pass(self):
+        inputs = {"a.txt": _fp(), "b.txt": _fp(size=20)}
+        assert resume.validate_resumable(_ckpt(inputs), dict(inputs)) is None
+
+    def test_unknown_schema_refused(self):
+        ckpt = _ckpt({"a.txt": _fp()})
+        ckpt["schema_version"] = resume.SCHEMA_VERSION + 99
+        reason = resume.validate_resumable(ckpt, {"a.txt": _fp()})
+        assert reason and "schema" in reason.lower()
+
+    def test_version_mismatch_refused(self):
+        ckpt = _ckpt({"a.txt": _fp()})
+        ckpt["lintle_version"] = "0.0.0-other"
+        reason = resume.validate_resumable(ckpt, {"a.txt": _fp()})
+        assert reason and "version" in reason.lower()
+        assert "0.0.0-other" in reason and lintle.__version__ in reason
+
+    def test_added_file_refused(self):
+        ckpt = _ckpt({"a.txt": _fp()})
+        reason = resume.validate_resumable(ckpt, {"a.txt": _fp(), "new.txt": _fp()})
+        assert reason and "new.txt" in reason
+
+    def test_removed_file_refused(self):
+        ckpt = _ckpt({"a.txt": _fp(), "gone.txt": _fp()})
+        reason = resume.validate_resumable(ckpt, {"a.txt": _fp()})
+        assert reason and "gone.txt" in reason
+
+    @pytest.mark.parametrize(
+        "field", ["size", "mtime_ns", "head_sha256", "tail_sha256"]
+    )
+    def test_changed_identity_refused(self, field):
+        ckpt = _ckpt({"a.txt": _fp()})
+        changed = _fp()
+        changed[field] = 999 if field in ("size", "mtime_ns") else "CHANGED"
+        reason = resume.validate_resumable(ckpt, {"a.txt": changed})
+        assert reason and "a.txt" in reason

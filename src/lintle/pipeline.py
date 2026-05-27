@@ -3,15 +3,10 @@
 import contextlib
 import dataclasses
 import os
+import time
 
 from lintle import repair, report, stem, tle
-
-# How many quarantined records to retain in memory as exemplars for the
-# ``validate`` summary. The full byte-faithful catalog goes straight to the
-# ``.broken.txt`` sidecar via ``BrokenFileWriter`` — this bound only caps the
-# in-memory display sample, so peak memory stays constant even on files
-# where every record is corrupt.
-_EXEMPLAR_BOUND = 1000
+from lintle.diagnostics import Diagnostic, RuleID, diagnostic
 
 
 @dataclasses.dataclass
@@ -26,12 +21,19 @@ class RecordCandidate:
 
 @dataclasses.dataclass
 class Orphan:
-    """A line that could not be paired into a record."""
+    """A line that could not be paired into a record. The diagnostic carries
+    the rule ID and source line; the raw bytes survive verbatim for the
+    quarantine sidecar.
+    """
 
     raw_line: bytes
     src: int
-    category: str
-    reason: str
+    diagnostic: Diagnostic
+
+
+def _orphan(raw_line, src, rule_id, note):
+    """Build an :class:`Orphan` with a pre-constructed :class:`Diagnostic`."""
+    return Orphan(raw_line, src, diagnostic(rule_id, source_line_nos=(src,), note=note))
 
 
 def iter_records(path, stats=None):
@@ -59,10 +61,10 @@ def iter_records(path, stats=None):
             prefix = line[:2]
             if prefix == b"1 ":
                 if held is not None:
-                    yield Orphan(
+                    yield _orphan(
                         held[0],
                         held[1],
-                        "orphan-line",
+                        RuleID.ORPHAN_LINE,
                         "orphan line 1: followed by another line 1",
                     )
                 held = (line, lineno)
@@ -71,30 +73,35 @@ def iter_records(path, stats=None):
                     yield RecordCandidate(held[0], line, held[1], lineno)
                     held = None
                 else:
-                    yield Orphan(
+                    yield _orphan(
                         line,
                         lineno,
-                        "orphan-line",
+                        RuleID.ORPHAN_LINE,
                         "orphan line 2: no preceding line 1",
                     )
             else:
                 if held is not None:
-                    yield Orphan(
+                    yield _orphan(
                         held[0],
                         held[1],
-                        "orphan-line",
+                        RuleID.ORPHAN_LINE,
                         "orphan line 1: followed by a non-TLE line",
                     )
                     held = None
-                yield Orphan(
+                yield _orphan(
                     line,
                     lineno,
-                    "bad-prefix",
+                    RuleID.BAD_PREFIX,
                     "line does not start with '1 ' or '2 '",
                 )
 
     if held is not None:
-        yield Orphan(held[0], held[1], "orphan-line", "orphan line 1 at end of file")
+        yield _orphan(
+            held[0],
+            held[1],
+            RuleID.ORPHAN_LINE,
+            "orphan line 1 at end of file",
+        )
 
 
 def process_file(src_path, out_dir, mode, progress_queue=None, progress_every=25_000):
@@ -116,6 +123,16 @@ def process_file(src_path, out_dir, mode, progress_queue=None, progress_every=25
     """
     src_name = os.path.basename(src_path)
     stats = report.FileStats(src_name=src_name)
+    # Wall-clock start for the v1 envelope (issue #20). Captured up front
+    # so even a file that fails early during open still surfaces a
+    # non-zero elapsed_seconds. ``time.monotonic()`` (not ``time.time()``)
+    # so NTP jitter mid-run cannot produce a negative duration. The
+    # corresponding stop happens in the finally below — covers both
+    # success and exception paths. ``stats.bytes`` is captured inside
+    # ``_run`` once the file has been successfully opened, so a missing
+    # source file raises the original ``OSError`` from ``iter_records``
+    # rather than from a separate ``getsize`` probe.
+    started_monotonic = time.monotonic()
     progress_enabled = progress_queue is not None and bool(progress_every)
     if progress_enabled:
         progress_queue.put(("start", src_name))
@@ -123,6 +140,13 @@ def process_file(src_path, out_dir, mode, progress_queue=None, progress_every=25
     try:
         return _run(src_path, out_dir, mode, stats, progress_queue, progress_every)
     finally:
+        # ``finally`` always runs before the return value reaches the
+        # caller; ``stats`` is the same object ``_run`` returns, so the
+        # assignment lands in the returned instance on the success path
+        # and on the exception path alike. Setting elapsed even on
+        # exception means a quarantined-by-error file still surfaces a
+        # non-zero duration in the envelope when callers retain stats.
+        stats.elapsed_seconds = time.monotonic() - started_monotonic
         if progress_enabled:
             progress_queue.put(("end", src_name))
 
@@ -137,7 +161,8 @@ def _run(src_path, out_dir, mode, stats, progress_queue, progress_every):
     cleaned_handle = None
     cleaned_tmp = None
     cleaned_path = None
-    broken_writer = None
+    broken_path = None
+    jsonl_path = None
     if mode == "clean":
         cleaned_dir = os.path.join(out_dir, "cleaned")
         os.makedirs(cleaned_dir, exist_ok=True)
@@ -155,11 +180,23 @@ def _run(src_path, out_dir, mode, stats, progress_queue, progress_every):
         broken_dir = os.path.join(out_dir, "broken")
         os.makedirs(broken_dir, exist_ok=True)
         broken_path = os.path.join(broken_dir, stem(src_name) + ".broken.txt")
-        # Stream rejects straight to disk so memory stays constant even on
-        # reject-heavy files. The writer's own context-manager exit discards
-        # its partials when finalize() isn't reached.
-        broken_writer = report.BrokenFileWriter(broken_path, src_name)
-        broken_writer.__enter__()
+        # Per-file findings shard for the corpus-wide report.jsonl (issue #9).
+        # Lives in ``.shards/`` so it's clearly an internal staging directory;
+        # the cli concatenates shards into ``report.jsonl`` at end of run and
+        # then ``rmtree``s the whole directory. Spec §4.6.
+        shard_dir = os.path.join(out_dir, ".shards")
+        os.makedirs(shard_dir, exist_ok=True)
+        jsonl_path = os.path.join(shard_dir, stem(src_name) + ".findings.jsonl")
+
+    # The sink owns the BrokenFileWriter lifecycle in clean mode and the
+    # bounded in-memory sample in both modes. Issue #19: cap-enforcement
+    # is now a structural property of the sink, not a convention spread
+    # across pipeline._record_reject. Issue #9: the sink also owns the
+    # optional JsonlFindingsWriter, which streams structured findings to
+    # the per-file shard alongside the .broken.txt byte-faithful catalog.
+    sink = report.RejectSink(
+        broken_path=broken_path, src_name=src_name, jsonl_path=jsonl_path
+    )
 
     completed = False
     # Tracks paired+orphan yields — the "entries processed" count, used to
@@ -167,110 +204,153 @@ def _run(src_path, out_dir, mode, stats, progress_queue, progress_every):
     # split: paired_records and orphan_entries each advance on their own
     # branch below, but progress is an aggregate signal.
     entries_processed = 0
-    try:
-        for candidate in iter_records(src_path, stats):
-            entries_processed += 1
+    with sink:
+        try:
+            # Input size for the v1 envelope (issue #20). Captured inside
+            # the ``with sink:`` try-block so a missing-source ``OSError``
+            # routes through the same cleanup paths as one raised by
+            # ``iter_records`` itself — the cleaned-temp file is unlinked
+            # by the inner finally and the sink's ``__exit__`` discards
+            # the ``.broken.txt`` partials. The parent's ``finally`` still
+            # emits the lifecycle ``end`` event.
+            stats.bytes = os.path.getsize(src_path)
+            for candidate in iter_records(src_path, stats):
+                entries_processed += 1
 
-            if (
-                progress_queue is not None
-                and progress_every
-                and entries_processed % progress_every == 0
-            ):
-                progress_queue.put(progress_every)
+                if (
+                    progress_queue is not None
+                    and progress_every
+                    and entries_processed % progress_every == 0
+                ):
+                    progress_queue.put(progress_every)
 
-            if isinstance(candidate, Orphan):
-                stats.orphan_entries += 1
-                _record_reject(
-                    stats,
-                    broken_writer,
-                    candidate.category,
-                    candidate.reason,
-                    [candidate.raw_line],
-                    [candidate.src],
-                )
-                continue
+                if isinstance(candidate, Orphan):
+                    stats.orphan_entries += 1
+                    _record_reject(
+                        stats,
+                        sink,
+                        candidate.diagnostic,
+                        (),
+                        [candidate.raw_line],
+                        [candidate.src],
+                    )
+                    continue
 
-            stats.paired_records += 1
+                stats.paired_records += 1
 
-            try:
-                result = repair.process_record(
-                    candidate.raw_line1,
-                    candidate.src1,
-                    candidate.raw_line2,
-                    candidate.src2,
-                )
-            except Exception as exc:  # one bad record must not kill the run
-                _record_reject(
-                    stats,
-                    broken_writer,
-                    "internal-error",
-                    f"internal-error: {exc!r}",
-                    [candidate.raw_line1, candidate.raw_line2],
-                    [candidate.src1, candidate.src2],
-                )
-                continue
+                try:
+                    result = repair.process_record(
+                        candidate.raw_line1,
+                        candidate.src1,
+                        candidate.raw_line2,
+                        candidate.src2,
+                    )
+                except Exception as exc:  # one bad record must not kill the run
+                    _record_reject(
+                        stats,
+                        sink,
+                        diagnostic(
+                            RuleID.INTERNAL_ERROR,
+                            source_line_nos=(candidate.src1, candidate.src2),
+                            note=repr(exc),
+                        ),
+                        (),
+                        [candidate.raw_line1, candidate.raw_line2],
+                        [candidate.src1, candidate.src2],
+                    )
+                    continue
 
-            if isinstance(result, repair.Accepted):
-                stats.clean_count += 1
-                for fix in result.fixes:
-                    stats.fix_counts[fix] = stats.fix_counts.get(fix, 0) + 1
-                if cleaned_handle is not None:
-                    cleaned_handle.write(result.line1 + "\n")
-                    cleaned_handle.write(result.line2 + "\n")
-            else:
-                _record_reject(
-                    stats,
-                    broken_writer,
-                    result.category,
-                    result.reason,
-                    result.raw_lines,
-                    result.source_lines,
-                )
-        # Push the trailing partial batch so the caller's tally is exact.
-        if progress_queue is not None and progress_every:
-            remainder = entries_processed % progress_every
-            if remainder:
-                progress_queue.put(remainder)
-        completed = True
-    finally:
-        if cleaned_handle is not None:
-            cleaned_handle.close()
-        # On any failure, discard the partial temp file — never publish a
-        # half-written .cleaned.txt and never leak the .tmp behind.
-        if cleaned_tmp is not None and not completed:
-            with contextlib.suppress(OSError):
-                os.unlink(cleaned_tmp)
-        if broken_writer is not None and not completed:
-            # Discard the broken-file partials — never publish a half-written
-            # sidecar. The context-manager __exit__ does the cleanup.
-            broken_writer.__exit__(None, None, None)
+                if isinstance(result, repair.Accepted):
+                    stats.clean_count += 1
+                    for fix in result.fixes:
+                        stats.fix_counts[fix] = stats.fix_counts.get(fix, 0) + 1
+                    if cleaned_handle is not None:
+                        cleaned_handle.write(result.line1 + "\n")
+                        cleaned_handle.write(result.line2 + "\n")
+                else:
+                    _record_reject(
+                        stats,
+                        sink,
+                        result.primary,
+                        result.related,
+                        result.raw_lines,
+                        result.source_lines,
+                    )
+            # Push the trailing partial batch so the caller's tally is exact.
+            if progress_queue is not None and progress_every:
+                remainder = entries_processed % progress_every
+                if remainder:
+                    progress_queue.put(remainder)
+            completed = True
+        finally:
+            if cleaned_handle is not None:
+                cleaned_handle.close()
+            # On any failure, discard the partial temp file — never publish a
+            # half-written .cleaned.txt and never leak the .tmp behind. The
+            # sink's own __exit__ (fires below when `with sink:` ends)
+            # handles the .broken.txt partials.
+            if cleaned_tmp is not None and not completed:
+                with contextlib.suppress(OSError):
+                    os.unlink(cleaned_tmp)
 
-    if mode == "clean":
-        os.replace(cleaned_tmp, cleaned_path)
-        broken_writer.finalize(stats.paired_records + stats.orphan_entries)
-        broken_writer.__exit__(None, None, None)
+        # Still inside `with sink:` — finalize must happen BEFORE __exit__
+        # fires, otherwise the writer's exit handler sees _completed=False
+        # and deletes the body partial before finalize can stitch it. Two
+        # adversarial-review voices caught this bug in the original spec.
+        if completed and mode == "clean":
+            os.replace(cleaned_tmp, cleaned_path)
+        stats.reject_sample = sink.finalize(
+            entries=stats.paired_records + stats.orphan_entries
+        )
 
     return stats
 
 
-def _record_reject(stats, broken_writer, category, reason, raw_lines, source_lines):
-    """Tally one quarantined record; stream its bytes to the broken sidecar.
+def _record_reject(stats, sink, primary, related, raw_lines, source_lines):
+    """Tally one quarantined record; hand it to the sink for sampling + streaming.
 
-    The in-memory ``reject_exemplars`` list is capped at ``_EXEMPLAR_BOUND``
-    — it only feeds the ``validate`` summary display, never the
-    byte-faithful catalog. The full record stream goes straight to the
-    ``BrokenFileWriter`` when one is open (``clean`` mode).
+    ``primary`` is the headline :class:`Diagnostic`; its ``rule_id`` (string
+    value, e.g. ``"TLE-CHK-001"``) is the aggregation key written to
+    ``stats.reject_counts``. ``related`` carries supporting diagnostics, if
+    any, and is rendered as indented continuation lines in ``.broken.txt``.
+
+    :class:`RejectSink` owns the bounded-sample insert (cap enforced by
+    construction, issue #19) and — in clean mode — the byte-faithful
+    sidecar stream via its owned :class:`BrokenFileWriter`. The sample
+    surfaces on ``stats.reject_sample`` once ``sink.finalize`` runs at
+    end of file in :func:`_run`.
+
+    Note: ``stats.reject_counts`` and ``stats.quarantined_count`` are
+    incremented up front, so on an exception mid-file these counters
+    will reflect every reject encountered while ``stats.reject_sample``
+    stays at its empty default (the ``with sink:`` exit discards the
+    in-flight sample). That counter/sample divergence is observable
+    only on the abnormal-exit path and matches today's behaviour.
     """
     stats.quarantined_count += 1
-    stats.reject_categories[category] = stats.reject_categories.get(category, 0) + 1
-    entry = report.RejectEntry(raw_lines, source_lines, reason)
-    if len(stats.reject_exemplars) < _EXEMPLAR_BOUND:
-        stats.reject_exemplars.append(entry)
-    if broken_writer is not None:
-        broken_writer.write_entry(entry)
-    # Recover a NORAD ID from line 1 when one is readable; orphan-line-2
-    # and bad-prefix rejects expose no line-1 catalog field and are
-    # silently skipped per the issue contract (line 1 unreadable -> omit).
+    # primary.rule_id is a StrEnum — equal to and hashable as its string
+    # value, so the dict key is the stable wire token ("TLE-CHK-001") and
+    # downstream JSON / sort orders are deterministic.
+    stats.reject_counts[primary.rule_id] = (
+        stats.reject_counts.get(primary.rule_id, 0) + 1
+    )
+    # Decode the NORAD ID once, before constructing RejectEntry, so the
+    # structured ``report.jsonl`` emitter sees the same value the per-NORAD
+    # breakdown does (issue #9). Orphan-line-2 and bad-prefix rejects
+    # expose no line-1 catalog field and yield ``None``.
     norad_id = tle.extract_norad_id(raw_lines[0])
+    # Pass norad_id as a kwarg — RejectEntry's positional contract is
+    # (raw_lines, source_lines, primary, related), and norad_id is the
+    # trailing optional. The kwarg makes the intent explicit at the only
+    # production construction site (spec §4.5).
+    entry = report.RejectEntry(
+        raw_lines, source_lines, primary, related, norad_id=norad_id
+    )
+    sink.add(entry)  # cap-checked, streamed if writer is open (issue #19)
+    # The per-NORAD bucket records which rules the satellite hit, feeding
+    # the human-facing per-NORAD breakdown section in report.md; ``record``
+    # accrues a +1 to that satellite's per-rule total across all rejects
+    # in this file. Single typed mutation entry point per issue #47 — any
+    # future writer that wants to populate the tracker must go through it.
     if norad_id is not None:
-        stats.quarantined_norad_ids.add(norad_id)
+        stats.quarantined_norad_ids.record(norad_id, primary.rule_id)

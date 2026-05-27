@@ -15,6 +15,59 @@
   per-file and run-report columns no longer conflate a half-record (a single
   orphan line) with a full 2-line record. Fix counts and reject categories
   are unchanged; report wording adjusted (issue #5).
+  **2026-05-24:** §6 / §9 — the rejection model (`RejectCategory` + free-form
+  `reason: str`) is superseded by a stable `RuleID` registry and a structured
+  `Diagnostic` dataclass; `.broken.txt` line format is rewritten under a 0.3.0
+  minor bump. See companion spec
+  [`2026-05-24-stable-rule-id-registry-design.md`](2026-05-24-stable-rule-id-registry-design.md)
+  (issue #8). Other sections of this design (validator definition, repair tiers,
+  streaming/constant-memory, pairing) remain authoritative.
+  **2026-05-24:** §9.4 — `report.md` gains a `## Per-NORAD breakdown`
+  section at the bottom: per-satellite quarantine count, per-rule defect
+  rollup, and source filenames the satellite appeared in, sorted by count
+  descending and capped at top-N (default 100) with a remainder footer.
+  `FileStats.quarantined_norad_ids` changes type from `set[int]` to
+  `dict[int, dict[RuleID, int]]` to carry the per-rule context; the
+  `broken-noradids.ndjson` sidecar contract is unchanged (issue #40).
+  **2026-05-24:** §13 added — "Resumable runs" specifies a `manifest.json`
+  artifact in `--out-dir` with a version-pinned skip predicate, per-file
+  atomicity tied to the existing `os.replace` commit point, end-of-run
+  manifest write semantics, and `--no-skip` / `--force` CLI overrides.
+  Designed, not yet implemented; codifies the contract for issue #12. The
+  prior §13 (Open considerations) renumbers to §14.
+  **2026-05-25:** §4.3 / §8 / §11 / §13 — folded the reject-sink refactor
+  (issue #19) into the design. §4.3 names `RejectSink` and `FileSample` in
+  `report.py`'s responsibilities. §8 routes rejects through `RejectSink`
+  (which owns `BrokenFileWriter`) and refreshes the `iter_records` /
+  `repair.process_record` references. §11 gains a structural-invariant test
+  bullet for the cap-by-construction guarantee. §13.1 clarifies the
+  `FileStats` snapshot excludes the bytes-bearing `reject_sample`; §13.3
+  line references shift for the refactored pipeline (`os.replace` at
+  `pipeline.py:263` followed by `sink.finalize`, both inside `with sink:`)
+  and disclose the narrow crash-between-replace-and-finalize partial-outcome
+  window the refactor introduced.
+  **2026-05-25:** §9 — `--report json` output replaced (breaking) by a versioned
+  envelope object (`{schema_version, run, environment, summary, files}`) with
+  per-file timing (`elapsed_seconds`, `bytes`, `records_per_sec`), tool/Python
+  version, and corpus-wide aggregates. See companion spec
+  [`2026-05-25-report-json-envelope.md`](2026-05-25-report-json-envelope.md)
+  (issue #20). `FileStats` gains `elapsed_seconds: float` and `bytes: int`;
+  `pipeline.process_file` captures both. The prior flat-array output is
+  removed; no legacy flag.
+  **2026-05-27:** §13 — the "Resumable runs" `manifest.json` design is **considered
+  and rejected**: issue #12 closed wontfix. A cross-run skip cache trades the project's
+  correctness-over-recovery principle for a rarely-realised payoff, the version-pin
+  guard is defeated by the "no per-merge version bumps" workflow, and a skip-run would
+  silently under-fill `report.jsonl` (breaking `diff`, #10). The section is retained,
+  annotated, for the reasoning. Superseded by **single-run resume** (`--resume`), a
+  durable checkpoint scoped to finishing one interrupted run (issue #56). §13's status
+  line updated; section bodies and numbering otherwise unchanged.
+  **2026-05-27:** §15 added — "Single-run resume (`--resume`)" specifies the implemented
+  checkpoint that lets an interrupted `clean` be finished without redoing completed files:
+  an always-on `.clean-state.json` in `--out-dir` (deleted on success), refuse-on-change
+  validation against `lintle_version` + per-input identity, reused-file `FileStats`
+  reconstruction for a complete report, and `.shards` preservation so `report.jsonl` stays
+  complete. The correctness-preserving replacement for the rejected §13 (issue #56).
 - **Topic:** A tool to validate and clean a multi-gigabyte corpus of Two-Line Element (TLE) files exported from space-track.org
 
 ## 1. Problem statement
@@ -174,7 +227,7 @@ TLEs/
 | `tle.py` | Defines validity: checksum, column layout, record pairing. Pure functions. Single source of truth. | nothing |
 | `repair.py` | Conservative transformations. Each applied speculatively, confirmed by `tle.py`; committed only if valid. | `tle.py` |
 | `pipeline.py` | Streams a file in **binary**, pairs `1 `/`2 ` lines into record candidates, routes each to cleaned/broken, tallies stats. | `tle.py`, `repair.py` |
-| `report.py` | Renders the `.broken.txt` reject file and the run summary. | nothing |
+| `report.py` | Renders the `.broken.txt` reject file and the run summary. Owns the `RejectSink` (single mutation entry point, per-rule cap enforced by construction, streaming sidecar lifecycle) and the immutable `FileSample` value object handed back to `FileStats` (issue #19). | nothing |
 | `cli.py` | Globs paths, dispatches `validate` vs `clean`, drives parallelism, prints summary. | all of the above |
 
 Dependencies point one way (`cli → pipeline → repair → tle`); each layer is testable without the
@@ -389,15 +442,18 @@ read bytes ─▶ line state-machine ─▶ pair into record candidates ─▶ r
                                                    <name>.cleaned.txt          <name>.broken.txt
 ```
 
-1. `pipeline.read_records(path)` opens the file in **binary** mode (to observe `\r`, `\`, and
+1. `pipeline.iter_records(path)` opens the file in **binary** mode (to observe `\r`, `\`, and
    encoding precisely) and iterates lines. A small state machine consumes raw lines, drops blank
    lines, and yields record candidates: `(raw_line1, raw_line2, source_line_numbers)`. Lines that
    cannot be paired (orphans) are yielded as orphan candidates.
-2. `repair.process(candidate)` decodes, applies cosmetic strips speculatively, runs
-   `tle.validate_record`, and returns either `Accepted(line1, line2, fixes_applied)` or
-   `Rejected(raw, reason, source_lines)`.
-3. `pipeline` routes Accepted records to `<name>.cleaned.txt` and Rejected records to
-   `<name>.broken.txt` (via `report`), accumulating statistics.
+2. `repair.process_record(line1, src1, line2, src2)` decodes, applies cosmetic strips
+   speculatively, runs `tle.validate_record`, and returns either `Accepted(line1, line2,
+   fixes_applied)` or a `Rejected` value carrying a primary `Diagnostic` (issue #8).
+3. `pipeline` routes Accepted records to `<name>.cleaned.txt` and Rejected records into a
+   per-file `report.RejectSink`. The sink owns the byte-faithful `BrokenFileWriter` (in
+   `clean` mode) and the bounded in-memory sample used by the `validate` summary; its per-rule
+   cap is enforced by construction so over-cap entries cannot be inserted (issue #19). On
+   finalize, the sink yields an immutable `FileSample` attached to the file's `FileStats`.
 4. After each file, a summary is emitted.
 
 The pairing state machine is **prefix-driven**: it expects a `1 ` line, then a `2 ` line. A `1 `
@@ -447,23 +503,31 @@ Per source file, formatted to be detailed enough to file a report with space-tra
 
 ```
 # tle2022.broken.txt — quarantined records
-# source: tle2022.txt | generated: 2026-05-21T14:03:00Z | lintle 0.1.0
+# source: tle2022.txt | generated: 2026-05-24T14:03:00Z | lintle 0.3.0
 # 3 quarantined of 8,412,067 entries
 
-[1] source lines 14820-14821 — reason: Line 2 checksum mismatch (col 69 is '3', computed '7')
+[1] source lines 14820-14821 - rule: TLE-CHK-001 (tier-1) col 69 observed='3' expected='7'
 1 43210U 18014A   22045.12345678  .00001234  00000-0  12345-4 0  9991
 2 43210  53.0123 211.4567 0001234  90.1234 270.9876 15.12345678123453
 
-[2] source line 99102 — reason: orphan Line 1 (no following Line 2)
+[2] source line 99102 - rule: TLE-PAIR-001 - orphan line 1 at end of file
 1 51234U 21001A   22045.12345678  .00001234  00000-0  12345-4 0  9991
 
-[3] source line 250011 — reason: line length 68; columns 1–68 fail layout checks — missing
-    character is interior, not the checksum, so not reconstructible (Section 6.2)
+[3] source line 250011 - rule: TLE-COL-002 - 68-char line where columns 1-68 fail layout —
+    missing character is interior, not the checksum, so not reconstructible (Section 6.2)
 1 27497U 01055E   0415 .01279831  .00005767  00000-0  41216-3 0 7230
 ```
 
-Each entry: index, source filename + line number(s), human-readable reason, then the raw line(s)
-verbatim. The header carries totals, an ISO-8601 timestamp, and the tool version.
+Each entry: index, source filename + line number(s), structured diagnostic
+(stable `RuleID` token, optional `(tier-N)` repair attempt, optional `col`/`cols`
+range, optional `observed=` / `expected=` fields, optional free-text note),
+then the raw line(s) verbatim. When both lines of a record failed, related
+diagnostics fold onto indented `    and: rule: TLE-XXX-NNN ...` continuation
+lines. The header carries totals, an ISO-8601 timestamp, and the tool version
+— pinning the sidecar's line format to a release so downstream parsers can
+dispatch on `lintle 0.3.0`. See companion spec
+[`2026-05-24-stable-rule-id-registry-design.md`](2026-05-24-stable-rule-id-registry-design.md)
+for the full rule registry.
 
 ### 9.3 Run summary
 
@@ -472,15 +536,18 @@ Printed to stdout (and as JSON with `--report json`):
 ```
 tle2022.txt   8,412,066 records   8,412,064 clean   3 quarantined   (1 orphan, 16,824,135 lines)
   fixes:   trailing-backslash 8,412,064 | reconstructed-checksum 195,293 | crlf 0 | trailing-ws 0
-  rejects: checksum-mismatch 1 | orphan-line 1 | wrong-length 1
+  rejects: TLE-CHK-001 1 | TLE-PAIR-001 1 | TLE-COL-001 1
 ```
 
-The header counters are independent (issue #5): `paired_records` is the count
-of true 2-line TLEs (here 8,412,066), `orphan_entries` is the count of
-unpaired single lines surfaced as findings (here 1, also visible in the
-`orphan-line` reject category), and `input_lines_seen` is every physical
-line read from the file. `clean + quarantined == paired + orphan` (the
-invariant), so the percentages stay coherent.
+Reject counts key by the stable `RuleID` registry (`TLE-CHK-001` for checksum
+mismatch, `TLE-PAIR-001` for orphan lines, `TLE-COL-001` for wrong length,
+etc.) so a defect surfaces under one identifier across the per-file summary,
+`report.md`, and `.broken.txt`. The header counters are independent (issue
+#5): `paired_records` is the count of true 2-line TLEs (here 8,412,066),
+`orphan_entries` is the count of unpaired single lines surfaced as findings
+(here 1, also visible under `TLE-PAIR-001`), and `input_lines_seen` is every
+physical line read from the file. `clean + quarantined == paired + orphan`
+(the invariant), so the percentages stay coherent.
 
 `reconstructed-checksum` is reported as its own line item, separate from content-preserving
 fixes: those records are format-conformant but their checksums are computed, not verified
@@ -490,8 +557,12 @@ fixes: those records are format-conformant but their checksums are computed, not
 
 A `clean` run writes a Markdown report to the `--out-dir` root, aggregating every processed
 file: corpus totals (records, percentage cleaned, percentage quarantined), the corpus-wide fix
-counts, the defect-category breakdown, and a per-file table. It is the human-readable companion
-to the per-file `.broken.txt` sidecars — a single at-a-glance picture of what the run did.
+counts, the defect-rule breakdown, a per-file table, and a per-NORAD breakdown table
+listing each satellite whose records were quarantined with its per-rule counts and the
+files it appeared in (sorted descending by quarantined-record count, capped at top-N rows with
+a "...and N more" footer pointing at `broken-noradids.ndjson` for the long tail). It is the
+human-readable companion to the per-file `.broken.txt` sidecars and the minimal
+`broken-noradids.ndjson` feed — a single at-a-glance picture of what the run did.
 
 ## 10. Error handling
 
@@ -533,6 +604,12 @@ Test-driven, dev dependencies `pytest` and `sgp4` (optionally `tletools`).
   the layout and semantic checks, and quarantined otherwise (interior character missing); and the
   speculative-reject path — a `\`-terminated line whose columns 1–69 still fail the checksum must
   be quarantined, not "fixed."
+- **`report.py` structural invariants:** `RejectSink.add` honours the per-rule cap by
+  construction — verified under adversarial input order, a deterministic randomized sequence,
+  and a finalize-then-add `RuntimeError` lock; `FileSample.from_bounded` raises on over-cap
+  input; context-manager exit without `finalize` discards `.broken.txt` partials. These tests
+  lock the cap as a structural property of the sink rather than a convention enforced by a
+  single caller (issue #19).
 - **Golden / integration tests:** a fixture file in `tests/fixtures/` (one per defect class) fed
   through `pipeline`; assert the exact bytes of `.cleaned.txt` and `.broken.txt`.
 - **Idempotence test:** `clean(clean(x)) == clean(x)`; `validate` of a cleaned file reports perfect.
@@ -550,7 +627,184 @@ Test-driven, dev dependencies `pytest` and `sgp4` (optionally `tletools`).
    the discovery tool for the rest). Confirm the repair rules cover every safe-to-fix defect found.
 7. Run `clean` across the corpus; review `.broken.txt` sidecars; report findings to space-track.
 
-## 13. Open considerations
+## 13. Resumable runs
+
+**Status:** ❌ Considered and rejected — issue #12 closed wontfix (2026-05-27).
+This `manifest.json` cross-run skip cache is **not** being built; the section is
+retained for its reasoning and as the contrast case for its replacement. A skip is an
+un-validated trust that nothing changed, against the correctness-over-recovery
+principle (§4.1); the `lintle_version` guard (§13.2) is defeated by the project's "no
+per-merge version bumps" workflow; and a skip-run would silently under-fill
+`report.jsonl`, breaking `diff` (#10). **Superseded by single-run resume**
+(`--resume`) — a durable checkpoint scoped to *finishing one interrupted run*, deleted
+on success, validated refuse-on-change — see issue #56. The original design follows
+unchanged.
+
+A `clean` run reprocesses every input file from scratch. For the 30 GB corpus, the dominant
+multiplier on iteration time is "redo work already done." A `manifest.json` written to
+`--out-dir` captures enough per-file state to **skip** a file whose inputs and current code
+are unchanged from the previous run, reusing that file's cached `cleaned/` and `broken/`
+outputs along with its `FileStats` summary. Typical case (one file changed in a 29-file
+corpus): the next run touches ~3.5% of the I/O, not 100%.
+
+The mechanism is opt-in by *presence*. A fresh `--out-dir` has no manifest, so nothing is
+skipped; once a run completes, subsequent runs against that same `--out-dir` consult the
+manifest it wrote.
+
+### 13.1 Manifest format — `manifest.json`
+
+Written to `<out-dir>/manifest.json`, alongside `report.md` and `broken-noradids.ndjson`:
+
+```json
+{
+  "lintle_version": "0.3.0",
+  "schema_version": 1,
+  "generated": "2026-05-24T14:03:00Z",
+  "entries": {
+    "data/source/tle2022.txt": {
+      "size": 3221225472,
+      "mtime": 1700000000.0,
+      "head_sha256": "<sha256 of first 65536 bytes>",
+      "tail_sha256": "<sha256 of last 65536 bytes>",
+      "stats": { "...": "JSON-serialised FileStats snapshot for this file" }
+    }
+  }
+}
+```
+
+Entry keys are the input paths as passed to `discover_paths()` — not their realpaths — so a
+manifest generated against a symlinked source tree (as used in the worktree workflow) keeps
+matching while the symlink stays valid. Each entry's `stats` is the JSON-serialisable subset
+of the `FileStats` (§9) for that file — every counter, the fix and reject tallies, and the
+per-NORAD breakdown — sufficient for the run report (§9.4) to include reused files in corpus
+totals without re-reading them. The `reject_sample` field (a `FileSample` of `RejectEntry`
+objects carrying raw bytes, §11) is **not** serialised: it feeds only `validate`'s grouped
+exemplar output, and `validate` does not consult the manifest. On reuse, the file's
+`reject_sample` reconstructs as `FileSample.empty(...)`.
+
+### 13.2 Skip predicate
+
+A file is skipped **iff every one** of the following holds:
+
+1. The manifest's `lintle_version` equals the current `__version__`.
+2. The manifest's `schema_version` equals the current code's schema version.
+3. The file's current `os.stat().st_size` equals the recorded `size`.
+4. The file's current `os.stat().st_mtime` equals the recorded `mtime`.
+5. SHA-256 of the file's first 65,536 bytes equals `head_sha256`.
+6. SHA-256 of the file's last 65,536 bytes equals `tail_sha256`.
+
+Failure on *any* check reprocesses the whole file; there are no partial reuses.
+
+The head+tail hash is **probabilistic identity, not a content hash.** A modification that
+preserves size, mtime, and both 64 KB windows but changes the interior would be silently
+skipped. This is acceptable for the corpus's actual usage — TLE files from space-track are
+replaced wholesale or appended to, not edited in place — and avoids the I/O of hashing a 3 GB
+file, which would defeat the purpose of skipping. The 65,536-byte window is small enough to
+read in one disk seek and large enough that any append (the tail changes) or any truncation
+(size changes) is caught.
+
+The `lintle_version` check is **load-bearing.** The dominant `clean` use case for this
+project is iterating on the cleaner itself — every release of `repair.py` or `tle.py` can
+change a file's `cleaned/` or `broken/` outputs, and reusing the previous version's outputs
+would silently ship stale data downstream. Any version mismatch therefore invalidates the
+*entire* manifest, not just per-file: proving that a given patch release "could not have
+changed output" is harder than redoing the work, so the invariant is pessimistic by design.
+This is the same principle as §4.1 (validated transformation), turned inward: a skip is
+provisionally valid *only against the exact code that produced it*.
+
+`schema_version` is a separate integer that increments when `manifest.json` itself changes
+shape (added fields, removed fields, renamed keys), independent of `lintle_version`. A
+consumer reading a manifest with an unknown `schema_version` treats it as a full invalidation.
+
+### 13.3 Atomicity
+
+A manifest entry MUST only exist for a file whose `cleaned/` and `broken/` outputs are fully
+committed to disk. The relevant hooks in the current pipeline (post issue #19 refactor):
+
+- **Per-file commit window** — `pipeline._run` lines 263-266: `os.replace(cleaned_tmp,
+  cleaned_path)` publishes the cleaned file, then `sink.finalize(...)` stitches the
+  `.broken.txt` sidecar via its owned `BrokenFileWriter`. Both calls run inside the active
+  `with sink:` block; both must succeed before the file's outputs are durably published. The
+  manifest entry must be assembled only after this window completes, not within it.
+- **Per-file aggregation** — `cli.py:489`: the parent receives the worker's `FileStats` from
+  `future.result()`. This is where the manifest entry is *assembled* by the parent process,
+  not where the manifest is *written*.
+- **End-of-run manifest write** — the parent writes the full `manifest.json` once, after
+  every worker has reported back, by writing `manifest.json.partial` and atomically renaming
+  it. Workers never touch the manifest, side-stepping cross-process locking on a shared JSON
+  file.
+
+Interruption semantics fall out cleanly:
+
+- A worker crashes mid-file (before `os.replace`) → the `finally` block at
+  `pipeline._run:247-256` discards the cleaned-file partial; the sink's `__exit__` (fired
+  when the `with sink:` block unwinds) discards the `.broken.txt` partials. No `FileStats`
+  returns, no manifest entry is assembled. Next run reprocesses naturally.
+- A worker crashes between `os.replace` and `sink.finalize` → the cleaned file is committed
+  but the `.broken.txt` is not. The sink's `__exit__` discards the broken-file partials. The
+  worker's exception propagates, no `FileStats` returns, no manifest entry is assembled.
+  Next run reprocesses and harmlessly overwrites the orphaned cleaned file. This window is
+  narrow (one syscall plus a stitched-rename) but a new partial-outcome surface introduced
+  when the refactor moved `finalize` inside `with sink:` — the manifest's all-or-nothing
+  worker-return discipline papers over it cleanly.
+- `Ctrl-C` mid-run → workers that finished contributed `FileStats`, but the parent's
+  manifest write happens only at end-of-run. An interrupted run writes *no* manifest. Next
+  run reprocesses everything. This is the safe default: redoing work is cheaper than
+  committing partial state.
+
+The non-incremental write means a 29-file run that completes writes one manifest at the end;
+a run that completes 28 files and dies on file 29 writes no manifest and the next run redoes
+all 29. A checkpointed manifest written every N files completed is out of scope for v1 but
+compatible with this design.
+
+### 13.4 CLI
+
+```
+lintle clean [paths...] --no-skip      # ignore the manifest entirely; reprocess every file
+lintle clean [paths...] --force        # synonym for --no-skip
+```
+
+`validate` is read-only and writes no outputs, so it has no manifest concept; a caller
+wanting "what changed since last `clean`" reads the manifest directly.
+
+The run summary distinguishes reused from processed:
+
+```
+processing 29 file(s) with 8 worker(s): 1 to process, 28 reused from manifest
+...
+tle2022.txt    8,412,066 records  8,412,064 clean  3 quarantined  (1 orphan, 16,824,135 lines)
+(reused) tle2021.txt   8,398,712 records  8,398,710 clean  2 quarantined
+```
+
+`report.md` (§9.4) includes every file — reused or processed — and flags reused rows so the
+operator can see at a glance what this run actually did versus what was carried over.
+
+### 13.5 Tests
+
+- **Round-trip skip:** a fixture run writes a manifest; a second run on the same inputs
+  skips every file and the corpus totals match the first run's exactly.
+- **Per-field invalidation:** between runs, one of `mtime`, `lintle_version`, or
+  `schema_version` is mutated; the appropriate set of files is reprocessed (one, all, all
+  respectively).
+- **Crash-mid-run safety:** an injected exception between `os.replace` and the parent's
+  `FileStats` collection leaves no manifest entry for that file and no partial output.
+- **Documented limit:** a stealth interior modification (preserving size, mtime, head, tail)
+  IS silently skipped. The test asserts the skip — it is the contract, not a bug.
+
+### 13.6 Risks and limits
+
+- **Stealth interior modification → silent skip** (§13.2). Acceptable for the intended
+  corpus (append-only space-track exports), documented for users with different workflows.
+- **Manifest write is non-incremental.** Interrupted runs write no manifest; next run redoes
+  everything. The worst case is "redo work," never "skip something that should have been
+  redone."
+- **Per-`--out-dir` scope.** Each `--out-dir` has its own manifest; the parallel worktree
+  workflow (CLAUDE.md) intentionally does not share skip state across out-dirs — different
+  output trees ARE different runs.
+- **Operator-edited manifest.** A user who hand-edits the manifest to skip the version check
+  bypasses the version-pin invariant and bears the consequences.
+
+## 14. Open considerations
 
 - If the `validate` discovery pass surfaces a defect type that is genuinely safe and unambiguous
   to repair (not yet anticipated), it is added to the appropriate fix class (Sections 6.1–6.3) in
@@ -559,3 +813,76 @@ Test-driven, dev dependencies `pytest` and `sgp4` (optionally `tletools`).
 - Aggressive reconstruction of missing *data* characters remains explicitly out of scope
   (Section 2); reconstructing a missing *checksum* digit from intact columns 1–68 is in scope and
   specified in Section 6.2.
+
+## 15. Single-run resume (`--resume`)
+
+**Status:** implemented (issue #56). Supersedes the rejected §13 manifest.
+
+A `clean` run over the full corpus can take hours; an interruption — Ctrl-C, a closed laptop,
+a crash — should not force redoing the files already finished. `clean --resume` continues an
+interrupted run in the same `--out-dir`, processing only the files not yet completed. Unlike
+the rejected §13 manifest this is **not** a cross-run cache: the checkpoint exists only while a
+run is incomplete and is deleted on success, so a finished run leaves no state behind and no
+run ever skips re-validating a record it emits (§4.1).
+
+### 15.1 Checkpoint — `<out-dir>/.clean-state.json`
+
+Checkpointing is **always on**, independent of `--resume`. At run start the parent computes an
+identity fingerprint for every discovered input; after each file's outputs commit (`os.replace`
+of `cleaned/`, the stitched `broken/` sidecar, and the findings shard) the parent atomically
+rewrites the checkpoint (`.partial` + `os.replace`). On full success it is deleted, so its
+presence marks an interrupted run.
+
+```json
+{
+  "schema_version": 1,
+  "lintle_version": "0.2.0",
+  "inputs":    { "<discover path>": {"size": 0, "mtime_ns": 0, "head_sha256": "", "tail_sha256": ""} },
+  "completed": { "<discover path>": "<report.summary_dict() snapshot>" }
+}
+```
+
+`inputs` carries every file in the intended set; `completed` carries the finished subset with
+each file's serialised `FileStats` (§9), so the final report covers reused files without
+re-reading them. The bytes-bearing `reject_sample` is not stored (as in §13.1); it reconstructs
+empty via `report.stats_from_summary`. Identity uses integer `mtime_ns` (not the float
+`st_mtime`) to avoid JSON precision loss and cross-filesystem granularity skew, plus the SHA-256
+of the first and last 64 KB — constant-memory, never reading the interior.
+
+### 15.2 Resume validation — refuse-on-change
+
+`--resume` loads the checkpoint and refuses (exit 2, with a specific message) unless **all**
+hold: the `schema_version` is known, `lintle_version` equals the current `__version__`, the
+discovered file set equals the checkpoint's `inputs` keys, and every input's current identity
+matches. Any drift means re-running a clean full pass, never silently mixing outputs produced by
+two different code or input states. This is the §13.2 version-pin reasoning applied at the right
+granularity — a one-time gate on resume, not a per-run skip cache. A missing or corrupt
+checkpoint is treated as no checkpoint. The known limit of head+tail hashing (a stealth interior
+edit preserving size, `mtime_ns`, and both windows) is inherited and accepted, the same
+trade-off §13.2 documented.
+
+### 15.3 Report assembly and lifecycle
+
+Reused files contribute their reconstructed `FileStats` to the run, so `report.md`,
+`--report json`, and `broken-noradids.ndjson` cover the whole corpus. `report.jsonl` stays
+complete because completed files' findings shards survive the interruption on disk and the
+end-of-run concat reads them. `.shards/` and `.clean-state.json` are both in-progress run
+state and are torn down **together, only on a fully successful run**: `concat_findings_shards`
+only *reads* the shards, and the success-only cleanup removes both. An interrupted run (exit
+130, returns before the cleanup) or a failed-file run (exit 2, keeps the checkpoint) therefore
+keeps *both*, so a later `--resume` re-reads the surviving shards and rebuilds a complete
+`report.jsonl`. A fresh run (no `--resume`) clears any stale checkpoint and scrubs `.shards/`
+at start as before. The Ctrl-C handler is otherwise unchanged; the on-disk checkpoint already
+reflects the files completed before the interruption.
+
+### 15.4 Durability limit
+
+The checkpoint and the per-file outputs are committed with `os.replace` (namespace
+atomicity) but are **not** `fsync`'d — the same I/O posture as the rest of `lintle`
+(`pipeline._run`, `concat_findings_shards`, the report writers). The ordinary interruptions
+this feature targets — Ctrl-C, a closed/slept laptop, a process crash — preserve the OS page
+cache, so the data is flushed normally and resume is safe. A *hard* power loss or kernel panic
+mid-run could, in principle, leave the checkpoint rename durable while a just-committed
+output's data is not yet flushed, so `--resume` would trust an output whose bytes are
+incomplete on disk. This is an accepted limit, not unique to resume (any `os.replace` in the
+codebase has the same exposure); a project-wide `fsync` durability pass is tracked in #58.

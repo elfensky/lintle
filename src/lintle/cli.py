@@ -1,8 +1,9 @@
-"""Command-line interface: ``lintle validate`` and ``lintle clean``."""
+"""Command-line interface: ``lintle validate``, ``lintle clean``, ``lintle diff``."""
 
 import argparse
 import concurrent.futures
 import contextlib
+import datetime
 import json
 import multiprocessing
 import os
@@ -13,7 +14,7 @@ import sys
 import threading
 import time
 
-from lintle import __version__, pipeline, report
+from lintle import __version__, diff, explain, pipeline, report, resume
 
 _DEFAULT_SOURCE = "data/source"
 _DEFAULT_OUTPUT = "data/output"
@@ -26,10 +27,11 @@ Examples:
   lintle clean dir1 dir2 --jobs 4         clean multiple directories
   lintle clean data/raw --out-dir build   write to a custom location
   lintle validate --report json           emit a machine-readable summary
+  lintle diff run-a/ run-b/               compare two runs' findings
 
 Exit codes:
-  0    no records quarantined — every defect repaired
-  1    at least one record was quarantined
+  0    no records quarantined — every defect repaired (or under --max-quarantined)
+  1    more than --max-quarantined records were quarantined (default threshold: 0)
   2    operational error (missing input, disk shortfall, file failure)
   130  interrupted (Ctrl-C)
 
@@ -143,7 +145,7 @@ def build_parser():
     subparsers = parser.add_subparsers(
         dest="command",
         required=True,
-        metavar="{validate,clean}",
+        metavar="{validate,clean,diff,explain}",
         title="commands",
     )
     for name, help_text, description in (
@@ -198,6 +200,69 @@ def build_parser():
             default="text",
             help="summary output format (default: text)",
         )
+        sub.add_argument(
+            "--max-quarantined",
+            type=int,
+            default=0,
+            metavar="N",
+            help=(
+                "exit non-zero only if MORE than N records were quarantined "
+                "(default: 0 — any quarantine fails)"
+            ),
+        )
+        if name == "clean":
+            sub.add_argument(
+                "--resume",
+                action="store_true",
+                help=(
+                    "continue an interrupted run in --out-dir: skip files already "
+                    "completed (per its .clean-state.json checkpoint) and process "
+                    "only the rest. Refuses if the lintle version or any input "
+                    "changed since the interrupted run."
+                ),
+            )
+
+    # `diff` has a different shape from validate/clean — two positional run
+    # directories, no --out-dir / --jobs / --report / --max-quarantined. It is
+    # read-only: it consumes each run's report.jsonl and writes nothing.
+    diff_parser = subparsers.add_parser(
+        "diff",
+        help="compare two run outputs and show per-rule deltas",
+        description=(
+            "Read report.jsonl from two clean-run output directories and print "
+            "the new defect classes (in RUN-B only), fixed classes (in RUN-A "
+            "only), and per-rule count deltas. Read-only; writes nothing."
+        ),
+        epilog=_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    diff_parser.add_argument(
+        "run_a", metavar="RUN-A", help="first run's output directory"
+    )
+    diff_parser.add_argument(
+        "run_b", metavar="RUN-B", help="second run's output directory"
+    )
+
+    # `explain` is a read-only documentation lookup: one positional TAG (a rule
+    # ID like TLE-CHK-001 or a fix tag like reconstructed-checksum), no shared
+    # validate/clean argument surface. Writes nothing.
+    explain_parser = subparsers.add_parser(
+        "explain",
+        help="print what a rule ID or fix tag means, with examples",
+        description=(
+            "Explain one rejection rule (e.g. TLE-CHK-001) or repair tag (e.g. "
+            "reconstructed-checksum): its definition, a verified good/bad or "
+            "before/after example, the repair tier, and the source of truth in "
+            "the code. Read-only; writes nothing."
+        ),
+        epilog=_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    explain_parser.add_argument(
+        "tag",
+        metavar="TAG",
+        help="a rule ID (TLE-CHK-001) or fix tag (reconstructed-checksum)",
+    )
     return parser
 
 
@@ -403,12 +468,34 @@ class _ProgressDisplay:
 def main(argv=None):
     """Entry point for the ``lintle`` console script.
 
-    Returns the process exit code: ``0`` = no records quarantined;
-    ``1`` = at least one record quarantined; ``2`` = operational error
-    (no input files, disk shortfall, or a file that failed to process);
-    ``130`` = interrupted with Ctrl-C.
+    Returns the process exit code: ``0`` = total quarantined is at or below
+    ``--max-quarantined`` (default 0); ``1`` = more than ``--max-quarantined``
+    records quarantined; ``2`` = operational error (no input files, disk
+    shortfall, or a file that failed to process); ``130`` = interrupted with
+    Ctrl-C.
     """
     args = build_parser().parse_args(argv)
+
+    # `diff` is a read-only consumer of two report.jsonl files; it shares none
+    # of the validate/clean argument surface (paths, jobs, out-dir, threshold),
+    # so dispatch it before any of that logic runs.
+    if args.command == "diff":
+        return diff.run(args.run_a, args.run_b)
+
+    # `explain` is a read-only documentation lookup — no input files, no output
+    # tree. An unknown tag is an operational error (exit 2) with the valid tags
+    # listed so the operator can correct it.
+    if args.command == "explain":
+        try:
+            print(explain.render(args.tag))
+        except explain.UnknownTag:
+            print(
+                f"error: unknown tag {args.tag!r}.\n"
+                f"  valid tags: {', '.join(explain.known_tags())}",
+                file=sys.stderr,
+            )
+            return 2
+        return 0
 
     # `args.paths` is None when the user passed nothing — fall back to the
     # default source dir, and remember it so we can give a tailored error if
@@ -418,6 +505,13 @@ def main(argv=None):
 
     if args.jobs < 1:
         print(f"error: --jobs must be >= 1 (got {args.jobs})", file=sys.stderr)
+        return 2
+
+    if args.max_quarantined < 0:
+        print(
+            f"error: --max-quarantined must be >= 0 (got {args.max_quarantined})",
+            file=sys.stderr,
+        )
         return 2
 
     path_error = check_paths(paths, using_default=using_default)
@@ -445,19 +539,99 @@ def main(argv=None):
         print(f"error: {collision_error}", file=sys.stderr)
         return 2
 
+    # Defaults for the shared dispatch below; ``clean --resume`` narrows them.
+    # ``inputs`` and ``completed`` drive the single-run resume checkpoint
+    # (issue #56) and stay empty for ``validate``.
+    files_to_process = files
+    reused_stats = []
+    inputs = {}
+    completed = {}
+
     if args.command == "clean":
         os.makedirs(args.out_dir, exist_ok=True)
         disk_error = _check_disk_space(args.out_dir, files)
         if disk_error:
             print(f"error: {disk_error}", file=sys.stderr)
             return 2
+        # Per-input identity for the resume checkpoint (issue #56): computed
+        # once, up front, for every discovered file. Cheap and constant-memory
+        # (a head+tail window hash), it is written into the checkpoint as files
+        # complete so an interrupted run can be finished later.
+        inputs = {path: resume.input_fingerprint(path) for path in files}
+        shard_dir = os.path.join(args.out_dir, ".shards")
+        if args.resume:
+            checkpoint = resume.load_checkpoint(args.out_dir)
+            if checkpoint is None:
+                # load_checkpoint returns None for both "absent" and "present
+                # but corrupt" — distinguish them so the operator can tell a
+                # nothing-to-resume from a damaged checkpoint.
+                ckpt_file = os.path.join(args.out_dir, resume.CHECKPOINT_NAME)
+                if os.path.exists(ckpt_file):
+                    print(
+                        f"error: cannot resume: {resume.CHECKPOINT_NAME} in "
+                        f"{args.out_dir!r} is unreadable or corrupt.\n"
+                        "  re-run without --resume to do a clean full pass.",
+                        file=sys.stderr,
+                    )
+                else:
+                    print(
+                        f"error: no interrupted run to resume in {args.out_dir!r} "
+                        f"(no {resume.CHECKPOINT_NAME} found)",
+                        file=sys.stderr,
+                    )
+                return 2
+            reason = resume.validate_resumable(checkpoint, inputs)
+            if reason is not None:
+                print(
+                    f"error: cannot resume: {reason}.\n"
+                    "  re-run without --resume to do a clean full pass.",
+                    file=sys.stderr,
+                )
+                return 2
+            # Reuse files already committed; reconstruct their stats so the
+            # final report covers the whole corpus. Their findings shards
+            # survived the interruption (resume does NOT scrub ``.shards``),
+            # so ``report.jsonl`` stays complete.
+            completed = dict(checkpoint["completed"])
+            reused_stats = [report.stats_from_summary(s) for s in completed.values()]
+            files_to_process = [f for f in files if f not in completed]
+        else:
+            # Fresh run: any leftover checkpoint describes a different attempt
+            # and must not be resumable after this run partially overwrites
+            # outputs; and ``.shards`` from a prior aborted run would
+            # contaminate this run's ``report.jsonl`` (issue #9, spec §4.6).
+            # Clear both before writing anything.
+            resume.delete_checkpoint(args.out_dir)
+            if os.path.exists(shard_dir):
+                shutil.rmtree(shard_dir)
 
-    print(
-        f"processing {len(files)} file(s) with {args.jobs} worker(s)...",
-        file=sys.stderr,
-        flush=True,
-    )
-    all_stats = []
+    reused_n = len(reused_stats)
+    if reused_n:
+        print(
+            f"resuming: {reused_n} file(s) already complete, processing "
+            f"{len(files_to_process)} of {len(files)} with {args.jobs} worker(s)...",
+            file=sys.stderr,
+            flush=True,
+        )
+    else:
+        print(
+            f"processing {len(files_to_process)} file(s) with {args.jobs} worker(s)...",
+            file=sys.stderr,
+            flush=True,
+        )
+    # Run-level timing for the v1 envelope (issue #20). The wall-clock
+    # start captures NOW (just before worker dispatch); the corresponding
+    # stop happens after the executor drains. Two separate measurements:
+    # ``run_started_iso`` is an ISO 8601 UTC string for human-readable
+    # ``run.timestamp``; ``run_monotonic_start`` feeds the elapsed_seconds
+    # subtraction using a monotonic clock so NTP jitter mid-run cannot
+    # produce a negative duration. Per spec §4, this aggregate is
+    # intentionally NOT the sum of per-file worker durations.
+    run_started_iso = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    run_monotonic_start = time.monotonic()
+    # Files reused from a resume checkpoint are already done — seed the report
+    # with their reconstructed stats so corpus totals cover the whole run.
+    all_stats = list(reused_stats)
     failed_files = []
     interrupted = False
 
@@ -480,9 +654,9 @@ def main(argv=None):
                     args.command,
                     progress_queue,
                 ): path
-                for path in files
+                for path in files_to_process
             }
-            with _ProgressDisplay(len(files), progress_queue) as progress:
+            with _ProgressDisplay(len(files_to_process), progress_queue) as progress:
                 for future in concurrent.futures.as_completed(futures):
                     path = futures[future]
                     try:
@@ -493,6 +667,18 @@ def main(argv=None):
                     else:
                         all_stats.append(stats)
                         progress.file_done(stats)
+                        # Record this file as completed in the always-on resume
+                        # checkpoint (issue #56). Written atomically after each
+                        # file commits, so an interruption leaves a checkpoint
+                        # naming exactly the files whose outputs are durable.
+                        if args.command == "clean":
+                            completed[path] = report.summary_dict(stats)
+                            resume.write_checkpoint(
+                                args.out_dir,
+                                resume.build_checkpoint(
+                                    inputs=inputs, completed=completed
+                                ),
+                            )
         except KeyboardInterrupt:
             # Ignore any further Ctrl-C so the shutdown itself cannot be
             # interrupted half-way (which is what left it hung before).
@@ -509,33 +695,65 @@ def main(argv=None):
 
     all_stats.sort(key=lambda stats: stats.src_name)
 
-    # A `clean` run writes a Markdown run report and a corpus-wide NDJSON
-    # of NORAD IDs whose records were quarantined anywhere — the NDJSON is
-    # always written (empty file when nothing was quarantined) so the
-    # downstream consumer always sees the same artifact present.
+    # A `clean` run writes a Markdown run report, a corpus-wide NDJSON of
+    # NORAD IDs whose records were quarantined anywhere, and (issue #9) a
+    # corpus-wide ``report.jsonl`` of structured findings concatenated
+    # from the per-worker shards. All three are always written on a
+    # successful clean run — empty when nothing was quarantined — so
+    # downstream consumers see a stable artifact set.
     report_path = None
     noradids_path = None
+    findings_path = None
     if args.command == "clean" and all_stats:
         report_path = os.path.join(args.out_dir, "report.md")
         report.write_run_report(report_path, all_stats)
         noradids_path = os.path.join(args.out_dir, "broken-noradids.ndjson")
         report.write_broken_noradids_ndjson(noradids_path, all_stats)
+        findings_path = os.path.join(args.out_dir, "report.jsonl")
+        report.concat_findings_shards(args.out_dir, findings_path, all_stats)
 
     if args.report == "json":
-        print(json.dumps([report.summary_dict(s) for s in all_stats], indent=2))
+        # Issue #20: top-level versioned envelope; replaces the prior
+        # flat-array output. Run wall-clock is the parent process's
+        # monotonic delta, NOT the sum of per-file worker durations
+        # (those are reported per-file under ``files[i].elapsed_seconds``
+        # and exceed parent wall-clock under ``--jobs N``).
+        run_elapsed = time.monotonic() - run_monotonic_start
+        envelope = report.build_run_envelope(
+            all_stats,
+            command=args.command,
+            started_at=run_started_iso,
+            elapsed_seconds=run_elapsed,
+        )
+        print(json.dumps(envelope, indent=2))
     else:
         for stats in all_stats:
             print(report.format_summary(stats))
-            if args.command == "validate" and stats.reject_exemplars:
+            if args.command == "validate" and stats.reject_sample.buckets:
                 print(report.format_reject_lines(stats))
         if report_path:
             print(f"\nrun report: {report_path}")
         if noradids_path:
             print(f"broken NORAD IDs: {noradids_path}")
+        if findings_path:
+            print(f"findings: {findings_path}")
+
+    # A fully successful clean run leaves no resumable state behind. The
+    # checkpoint and the findings shards (`.shards`) are both in-progress run
+    # state and are torn down together, here, ONLY on success: an interrupted
+    # run already returned 130 above (keeping both), and a failed run keeps both
+    # too, so the operator can fix the cause and `--resume` re-reads the
+    # surviving shards to rebuild a complete `report.jsonl` (issue #56). The
+    # `report.jsonl` was written from those shards by the report block above.
+    if args.command == "clean" and not failed_files:
+        resume.delete_checkpoint(args.out_dir)
+        shard_dir = os.path.join(args.out_dir, ".shards")
+        if os.path.exists(shard_dir):
+            shutil.rmtree(shard_dir)
 
     # A file that could not be processed is an operational error (spec §10),
     # and that outranks the quarantined-record signal.
     if failed_files:
         return 2
     total_quarantined = sum(s.quarantined_count for s in all_stats)
-    return 1 if total_quarantined else 0
+    return 1 if total_quarantined > args.max_quarantined else 0
