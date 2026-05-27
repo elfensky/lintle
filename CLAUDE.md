@@ -69,6 +69,7 @@ src/lintle/
 ├── repair.py      # speculative fixes, each confirmed by tle.py before commit
 ├── report.py      # FileStats, the .broken.txt sidecar writer, the run report
 ├── resume.py      # single-run checkpoint for `clean --resume` (issue #56)
+├── fsutil.py      # durable_replace — the one atomic+fsync commit path (issue #58)
 ├── diff.py        # read-only: per-rule delta between two runs' report.jsonl (lintle diff)
 ├── explain.py     # read-only: renders rule/fix documentation (lintle explain)
 ├── tle.py         # the validator — column layout, checksum, semantic ranges, pairing
@@ -82,8 +83,10 @@ with the read-only `cli.py → diff.py` and `cli.py → explain.py → explain_e
 consumers and the `cli.py → resume.py` single-run checkpoint (`resume.py` depends only
 on `__version__`) alongside. `diagnostics.py` and `categories.py` are pure-data leaves
 depended on by `repair`, `pipeline`, `report`, and `explain`; `explain_examples.py`
-is also pure data, composing those two leaves into documented examples. `tle.py`
-and the data modules carry no I/O, so cycles are structurally impossible.
+is also pure data, composing those two leaves into documented examples. `fsutil.py`
+is a stdlib-only I/O leaf (the durable-commit helper) depended on by `pipeline`,
+`report`, and `resume`. `tle.py` and the data modules carry no I/O, so cycles are
+structurally impossible.
 
 → See [`README.md`](README.md) for the architecture, usage, and data flow.
 → See [`CONTRIBUTING.md`](CONTRIBUTING.md) for setup, testing, and the git workflow.

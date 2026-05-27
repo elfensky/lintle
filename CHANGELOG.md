@@ -6,6 +6,24 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Changed
+
+- Every output file `clean` commits — the `cleaned/` files, `.broken.txt`
+  sidecars, findings shards, `report.jsonl`/`report.md`/`broken-noradids.ndjson`,
+  and the `--resume` checkpoint — is now committed **durably**, not just
+  atomically: a new `lintle.fsutil.durable_replace` helper `fsync`s the file's
+  data, `os.replace`s it into place, then `fsync`s the containing directory, so
+  a committed file survives a hard power loss or kernel panic rather than only a
+  clean Ctrl-C / sleep / crash. On macOS the true power-loss barrier is
+  `F_FULLFSYNC` (plain `fsync` does not flush the drive's write cache); `fsutil`
+  uses it there and plain `os.fsync` on Linux/other platforms. This closes the
+  gap that mattered most for `clean --resume` (#56), which trusts a
+  previously-committed output without reprocessing it: the worker now makes its
+  outputs durable before the parent records the file `completed`, so the
+  checkpoint can never name a file whose bytes are not yet on disk. Durability
+  is always-on (no flag) — measured at roughly 1 second of overhead across a
+  full ~120-commit run on the 30 GB corpus. Closes #58.
+
 ## [0.3.0] - 2026-05-27
 
 ### Added
