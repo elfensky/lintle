@@ -1049,11 +1049,17 @@ def concat_findings_shards(out_dir, dest_path, all_stats):
     ``all_stats`` (already sorted by ``src_name`` in ``cli.py`` before this
     call) so the concatenated order is alphabetical by source filename —
     deterministic and matching ``report.md``'s per-file table. The
-    destination is written via tmp + ``os.replace`` for atomicity; after
-    success the entire shard directory is removed. Always creates the
-    destination even when every shard is empty or missing, matching
-    ``broken-noradids.ndjson``'s "artifact always present after successful
-    clean" contract. Spec §4.6.
+    destination is written via tmp + ``os.replace`` for atomicity. Always
+    creates the destination even when every shard is empty or missing,
+    matching ``broken-noradids.ndjson``'s "artifact always present after
+    successful clean" contract. Spec §4.6.
+
+    This function only **reads** the shards — it does not remove ``.shards``.
+    Shard cleanup is the caller's responsibility, tied to the resume-checkpoint
+    lifecycle (issue #56): ``.shards`` and ``.clean-state.json`` are both
+    in-progress run state and must be removed together, only on a fully
+    successful run, so an interrupted or failed run keeps its shards and a
+    later ``--resume`` can re-read them to rebuild a complete ``report.jsonl``.
     """
     shard_dir = os.path.join(out_dir, ".shards")
     tmp_path = dest_path + ".partial"
@@ -1067,5 +1073,3 @@ def concat_findings_shards(out_dir, dest_path, all_stats):
             with open(shard, "rb") as src:
                 shutil.copyfileobj(src, out, length=65536)
     os.replace(tmp_path, dest_path)
-    with contextlib.suppress(OSError):
-        shutil.rmtree(shard_dir)
