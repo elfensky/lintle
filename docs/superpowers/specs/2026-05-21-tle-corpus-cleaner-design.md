@@ -865,9 +865,24 @@ trade-off §13.2 documented.
 
 Reused files contribute their reconstructed `FileStats` to the run, so `report.md`,
 `--report json`, and `broken-noradids.ndjson` cover the whole corpus. `report.jsonl` stays
-complete because a resumed run does **not** scrub `.shards/` — completed files' findings shards
-survive the interruption on disk and the end-of-run concat picks them up. A fresh run (no
-`--resume`) clears any stale checkpoint and scrubs `.shards/` as before. A run with a failed
-file keeps the checkpoint (exit 2) so the operator can fix the cause and resume; only a fully
-successful run deletes it. The Ctrl-C handler is unchanged (exit 130); the on-disk checkpoint
-already reflects the files completed before the interruption.
+complete because completed files' findings shards survive the interruption on disk and the
+end-of-run concat reads them. `.shards/` and `.clean-state.json` are both in-progress run
+state and are torn down **together, only on a fully successful run**: `concat_findings_shards`
+only *reads* the shards, and the success-only cleanup removes both. An interrupted run (exit
+130, returns before the cleanup) or a failed-file run (exit 2, keeps the checkpoint) therefore
+keeps *both*, so a later `--resume` re-reads the surviving shards and rebuilds a complete
+`report.jsonl`. A fresh run (no `--resume`) clears any stale checkpoint and scrubs `.shards/`
+at start as before. The Ctrl-C handler is otherwise unchanged; the on-disk checkpoint already
+reflects the files completed before the interruption.
+
+### 15.4 Durability limit
+
+The checkpoint and the per-file outputs are committed with `os.replace` (namespace
+atomicity) but are **not** `fsync`'d — the same I/O posture as the rest of `lintle`
+(`pipeline._run`, `concat_findings_shards`, the report writers). The ordinary interruptions
+this feature targets — Ctrl-C, a closed/slept laptop, a process crash — preserve the OS page
+cache, so the data is flushed normally and resume is safe. A *hard* power loss or kernel panic
+mid-run could, in principle, leave the checkpoint rename durable while a just-committed
+output's data is not yet flushed, so `--resume` would trust an output whose bytes are
+incomplete on disk. This is an accepted limit, not unique to resume (any `os.replace` in the
+codebase has the same exposure); a project-wide `fsync` durability pass is tracked in #58.
