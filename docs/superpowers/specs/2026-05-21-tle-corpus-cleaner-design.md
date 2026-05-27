@@ -68,6 +68,13 @@
   validation against `lintle_version` + per-input identity, reused-file `FileStats`
   reconstruction for a complete report, and `.shards` preservation so `report.jsonl` stays
   complete. The correctness-preserving replacement for the rejected §13 (issue #56).
+  **2026-05-27:** §15.4 — the durability *limit* is resolved (issue #58): every committed
+  file routes through `fsutil.durable_replace` (fsync data → `os.replace` → fsync directory),
+  with `F_FULLFSYNC` as the macOS power-loss barrier and `os.fsync` elsewhere. Durability is
+  always-on (no flag) — measured at ~1 s over a ~120-commit, multi-minute run on the 30 GB
+  corpus — and the worker fsyncs its outputs before the parent records `completed`, so
+  `--resume` can never trust a non-durable output. §15.4 retitled "Durability limit" →
+  "Durability".
 - **Topic:** A tool to validate and clean a multi-gigabyte corpus of Two-Line Element (TLE) files exported from space-track.org
 
 ## 1. Problem statement
@@ -875,14 +882,34 @@ keeps *both*, so a later `--resume` re-reads the surviving shards and rebuilds a
 at start as before. The Ctrl-C handler is otherwise unchanged; the on-disk checkpoint already
 reflects the files completed before the interruption.
 
-### 15.4 Durability limit
+### 15.4 Durability
 
-The checkpoint and the per-file outputs are committed with `os.replace` (namespace
-atomicity) but are **not** `fsync`'d — the same I/O posture as the rest of `lintle`
-(`pipeline._run`, `concat_findings_shards`, the report writers). The ordinary interruptions
-this feature targets — Ctrl-C, a closed/slept laptop, a process crash — preserve the OS page
-cache, so the data is flushed normally and resume is safe. A *hard* power loss or kernel panic
-mid-run could, in principle, leave the checkpoint rename durable while a just-committed
-output's data is not yet flushed, so `--resume` would trust an output whose bytes are
-incomplete on disk. This is an accepted limit, not unique to resume (any `os.replace` in the
-codebase has the same exposure); a project-wide `fsync` durability pass is tracked in #58.
+Every committed file — the checkpoint, the per-file `cleaned/` output, the `.broken.txt`
+sidecar, each findings shard, and the end-of-run `report.jsonl` / `report.md` /
+`broken-noradids.ndjson` — is committed through one helper, `fsutil.durable_replace`
+(issue #58). It `fsync`s the temp file's data, `os.replace`s it onto the destination, then
+`fsync`s the containing directory so the rename itself is durable. `os.replace` alone gives
+*atomicity* (a reader sees the old name or the new one, never a half-written file); the added
+`fsync`s give *durability* — the committed bytes survive a hard power loss or kernel panic,
+not just the ordinary Ctrl-C / sleep / crash that the page cache already covers.
+
+**Platform barrier.** On macOS `os.fsync` flushes to the drive but not the drive's own write
+cache, so it is *not* a true power-loss barrier; `fcntl(fd, F_FULLFSYNC)` is. On Linux and
+other platforms `os.fsync` is the real barrier. `fsutil` selects the correct one per platform.
+
+**`--resume` ordering invariant.** Because a worker routes all of its outputs through
+`durable_replace`, those bytes are durable before the worker returns its stats — and only
+*then* does the parent record the file `completed` in the checkpoint (also via
+`durable_replace`). So the checkpoint can never name a file whose data is not yet on disk,
+which is what `--resume`'s "trust a committed output without reprocessing" guarantee requires
+(Critical Rule #2).
+
+**Always-on, no flag.** Measured on the 30 GB corpus's APFS/SSD: a full run commits ~120
+files (≈4 per input + 3 final reports — bounded by *file* count, not record count), and the
+`F_FULLFSYNC` barrier costs ~9 ms/call (~1 s/run total); the data-flush portion is dominated
+by writes that must reach disk anyway and overlaps the CPU-bound parsing. The overhead is far
+under 1 % of a multi-minute run, so durability is unconditional — a flag would only add a
+foot-gun (disable it and `--resume` silently loses its guarantee) for no measurable benefit.
+
+**Out of scope:** cross-filesystem / network-FS durability beyond what `fsync` + directory
+`fsync` provide on local disks.
