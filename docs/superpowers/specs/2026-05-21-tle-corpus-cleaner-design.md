@@ -62,6 +62,12 @@
   annotated, for the reasoning. Superseded by **single-run resume** (`--resume`), a
   durable checkpoint scoped to finishing one interrupted run (issue #56). §13's status
   line updated; section bodies and numbering otherwise unchanged.
+  **2026-05-27:** §15 added — "Single-run resume (`--resume`)" specifies the implemented
+  checkpoint that lets an interrupted `clean` be finished without redoing completed files:
+  an always-on `.clean-state.json` in `--out-dir` (deleted on success), refuse-on-change
+  validation against `lintle_version` + per-input identity, reused-file `FileStats`
+  reconstruction for a complete report, and `.shards` preservation so `report.jsonl` stays
+  complete. The correctness-preserving replacement for the rejected §13 (issue #56).
 - **Topic:** A tool to validate and clean a multi-gigabyte corpus of Two-Line Element (TLE) files exported from space-track.org
 
 ## 1. Problem statement
@@ -807,3 +813,61 @@ operator can see at a glance what this run actually did versus what was carried 
 - Aggressive reconstruction of missing *data* characters remains explicitly out of scope
   (Section 2); reconstructing a missing *checksum* digit from intact columns 1–68 is in scope and
   specified in Section 6.2.
+
+## 15. Single-run resume (`--resume`)
+
+**Status:** implemented (issue #56). Supersedes the rejected §13 manifest.
+
+A `clean` run over the full corpus can take hours; an interruption — Ctrl-C, a closed laptop,
+a crash — should not force redoing the files already finished. `clean --resume` continues an
+interrupted run in the same `--out-dir`, processing only the files not yet completed. Unlike
+the rejected §13 manifest this is **not** a cross-run cache: the checkpoint exists only while a
+run is incomplete and is deleted on success, so a finished run leaves no state behind and no
+run ever skips re-validating a record it emits (§4.1).
+
+### 15.1 Checkpoint — `<out-dir>/.clean-state.json`
+
+Checkpointing is **always on**, independent of `--resume`. At run start the parent computes an
+identity fingerprint for every discovered input; after each file's outputs commit (`os.replace`
+of `cleaned/`, the stitched `broken/` sidecar, and the findings shard) the parent atomically
+rewrites the checkpoint (`.partial` + `os.replace`). On full success it is deleted, so its
+presence marks an interrupted run.
+
+```json
+{
+  "schema_version": 1,
+  "lintle_version": "0.2.0",
+  "inputs":    { "<discover path>": {"size": 0, "mtime_ns": 0, "head_sha256": "", "tail_sha256": ""} },
+  "completed": { "<discover path>": "<report.summary_dict() snapshot>" }
+}
+```
+
+`inputs` carries every file in the intended set; `completed` carries the finished subset with
+each file's serialised `FileStats` (§9), so the final report covers reused files without
+re-reading them. The bytes-bearing `reject_sample` is not stored (as in §13.1); it reconstructs
+empty via `report.stats_from_summary`. Identity uses integer `mtime_ns` (not the float
+`st_mtime`) to avoid JSON precision loss and cross-filesystem granularity skew, plus the SHA-256
+of the first and last 64 KB — constant-memory, never reading the interior.
+
+### 15.2 Resume validation — refuse-on-change
+
+`--resume` loads the checkpoint and refuses (exit 2, with a specific message) unless **all**
+hold: the `schema_version` is known, `lintle_version` equals the current `__version__`, the
+discovered file set equals the checkpoint's `inputs` keys, and every input's current identity
+matches. Any drift means re-running a clean full pass, never silently mixing outputs produced by
+two different code or input states. This is the §13.2 version-pin reasoning applied at the right
+granularity — a one-time gate on resume, not a per-run skip cache. A missing or corrupt
+checkpoint is treated as no checkpoint. The known limit of head+tail hashing (a stealth interior
+edit preserving size, `mtime_ns`, and both windows) is inherited and accepted, the same
+trade-off §13.2 documented.
+
+### 15.3 Report assembly and lifecycle
+
+Reused files contribute their reconstructed `FileStats` to the run, so `report.md`,
+`--report json`, and `broken-noradids.ndjson` cover the whole corpus. `report.jsonl` stays
+complete because a resumed run does **not** scrub `.shards/` — completed files' findings shards
+survive the interruption on disk and the end-of-run concat picks them up. A fresh run (no
+`--resume`) clears any stale checkpoint and scrubs `.shards/` as before. A run with a failed
+file keeps the checkpoint (exit 2) so the operator can fix the cause and resume; only a fully
+successful run deletes it. The Ctrl-C handler is unchanged (exit 130); the on-disk checkpoint
+already reflects the files completed before the interruption.

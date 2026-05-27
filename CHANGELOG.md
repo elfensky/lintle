@@ -8,6 +8,22 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Added
 
+- New `clean --resume` flag for **single-run resume**: continue an interrupted
+  `clean` (Ctrl-C, a closed laptop, a crash) so it processes only the files not
+  yet completed, rather than restarting the whole corpus. Checkpointing is
+  always-on — the parent fingerprints every input up front and atomically
+  rewrites a `.clean-state.json` in `--out-dir` after each file commits,
+  deleting it on full success, so the checkpoint's presence marks an interrupted
+  run and a finished run leaves none behind. `--resume` validates refuse-on-
+  change: any drift in the `lintle` version or an input's identity (size,
+  `mtime_ns`, head/tail 64 KB hash) aborts with a specific message (exit `2`)
+  rather than mixing outputs from two states. Completed files' findings shards
+  survive the interruption, so a resumed run's `report.jsonl`, `report.md`, and
+  `broken-noradids.ndjson` match a non-interrupted full run. This is *not* a
+  cross-run cache (the rejected design §13, #12) — it is scoped to finishing one
+  run and never skips re-validation of records it emits. New `lintle.resume`
+  module; `report.stats_from_summary` reconstructs a `FileStats` from its JSON
+  summary so reused files appear in the final report. Closes #56.
 - New `lintle explain <TAG>` subcommand turns the validator into its own
   reference: it documents **both** public vocabularies lintle stamps on a
   report — the rejection rules (`RuleID`, e.g. `TLE-CHK-001`) and the repair

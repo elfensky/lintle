@@ -100,6 +100,7 @@ uv run lintle explain <TAG>
 | `--jobs N` | CPU count | Number of files processed in parallel. Lower it if a slow disk causes I/O contention. |
 | `--report text\|json` | `text` | Summary format. |
 | `--max-quarantined N` | `0` | Exit non-zero only if MORE than N records were quarantined. Default `0` ≡ "any quarantine fails". |
+| `--resume` | off | (`clean` only) Continue an interrupted run in `--out-dir`: skip files already completed and process only the rest. Refuses if the `lintle` version or any input changed since the interrupted run. |
 
 **Examples:**
 
@@ -119,6 +120,9 @@ uv run lintle clean data/source --max-quarantined 100 --report json > run-summar
 # Look up what a rule ID or fix tag means, with a verified example
 uv run lintle explain TLE-CHK-001
 uv run lintle explain reconstructed-checksum
+
+# Resume an interrupted run (e.g. the laptop slept mid-corpus) — finish only what's left
+uv run lintle clean data/source --out-dir data/output --resume
 ```
 
 **Exit codes:**
@@ -133,6 +137,21 @@ Repairable defects (including the near-universal trailing `\`) do **not** raise
 the exit code above 0 — almost every raw file contains them. `--max-quarantined`
 preserves the meaningful `2` (operational error) and `130` (Ctrl-C) signals that
 a `lintle ... || true` pipe would swallow.
+
+## Resuming an interrupted run
+
+A long `clean` over the full corpus can be interrupted — Ctrl-C, a closed
+laptop, a crash. Re-run the **same command with `--resume`** to finish it: files
+already completed are skipped (their `cleaned/`, `broken/`, and report
+contributions reused) and only the remainder is processed.
+
+While a run is in flight it maintains a small `.clean-state.json` checkpoint in
+`--out-dir`, deleted on successful completion — so its presence marks an
+interrupted run, and a finished run leaves none behind. `--resume` **refuses**
+(exit `2`) if the `lintle` version or any input file changed since the
+interruption, rather than silently mixing outputs from two different states;
+re-run without `--resume` for a clean full pass. This is single-run resume, not
+a cross-run cache: each run still re-validates every record it emits.
 
 ## Output
 
