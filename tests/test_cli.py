@@ -534,6 +534,19 @@ class TestMaxQuarantinedThreshold:
         )
         return src
 
+    def _write_n_good_and_one_bad(self, tmp_path, line1, line2, n_good):
+        # n_good copies of a valid 2-line record + one wrong-checksum pair.
+        # The bad pair is quarantined under TLE-CHK-001; the n_good pairs
+        # route to clean. Total routed = n_good + 1; quarantined = 1; rate
+        # = 1 / (n_good + 1).
+        src = tmp_path / "src"
+        src.mkdir()
+        bad_line1 = line1[:68] + "9"
+        body = (line1 + "\n" + line2 + "\n") * n_good
+        body += bad_line1 + "\n" + line2 + "\n"
+        (src / "tle2099.txt").write_bytes(body.encode("ascii"))
+        return src
+
     def test_max_quarantined_one_allows_single_quarantined_record(
         self, tmp_path, line1, line2
     ):
@@ -622,6 +635,27 @@ class TestMaxQuarantinedThreshold:
 
         assert rc == 2
         assert "--max-quarantined must be >= 0" in capsys.readouterr().err
+
+    def test_pct_under_threshold_passes(self, tmp_path, line1, line2):
+        # 1 bad of 100 routed records = 1.0%. `--max-quarantined 5%` is
+        # well above that, so the run exits 0.
+        src = self._write_n_good_and_one_bad(tmp_path, line1, line2, n_good=99)
+        out = tmp_path / "out"
+
+        rc = cli.main(
+            [
+                "clean",
+                str(src),
+                "--out-dir",
+                str(out),
+                "--jobs",
+                "1",
+                "--max-quarantined",
+                "5%",
+            ]
+        )
+
+        assert rc == 0
 
 
 class TestReportJsonl:

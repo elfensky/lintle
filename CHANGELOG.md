@@ -6,6 +6,21 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Added
+
+- `--max-quarantined` (on both `validate` and `clean`) now accepts a trailing
+  `%` to express the exit-code threshold as a **rate** rather than an absolute
+  count. `--max-quarantined 1%` exits non-zero if more than 1% of routed
+  records (`clean_count + quarantined_count`) were quarantined; the integer
+  form (`--max-quarantined 100`) is unchanged and the default `0` still means
+  "any quarantine fails". The two modes are mutually exclusive by construction
+  — a single value is either a count or a rate, never both — which sidesteps
+  the combination semantics that a separate `--max-quarantined-pct` flag would
+  have forced. Comparison is strictly greater (`100*q > p*r`,
+  cross-multiplied to avoid divide-by-zero on an empty corpus and float drift
+  at the boundary); `0%` ≡ `0` and `100%` effectively never trips. Design at
+  `docs/superpowers/specs/2026-05-27-max-quarantined-percentage-design.md`.
+
 ### Changed
 
 - Every output file `clean` commits — the `cleaned/` files, `.broken.txt`
