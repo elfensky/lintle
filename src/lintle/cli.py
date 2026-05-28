@@ -543,7 +543,7 @@ def main(argv=None):
         return 2
 
     try:
-        quarantine_mode, quarantine_threshold = parse_quarantine_threshold(
+        threshold_mode, quarantine_threshold = parse_quarantine_threshold(
             args.max_quarantined
         )
     except ValueError as exc:
@@ -794,7 +794,7 @@ def main(argv=None):
     if failed_files:
         return 2
     total_quarantined = sum(s.quarantined_count for s in all_stats)
-    if quarantine_mode == "count":
+    if threshold_mode == "count":
         return 1 if total_quarantined > quarantine_threshold else 0
     # Rate mode: cross-multiplied (`100*q > p*r`) to avoid divide-by-zero on
     # an empty corpus and float drift at the boundary. See design §3.

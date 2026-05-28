@@ -522,7 +522,9 @@ class TestMain:
 class TestMaxQuarantinedThreshold:
     """Issue #13: ``--max-quarantined N`` allows CI to tolerate up to N
     quarantined records before the exit code flips to non-zero. Default
-    ``N=0`` preserves the legacy "any quarantine fails" behaviour.
+    ``N=0`` preserves the legacy "any quarantine fails" behaviour. Also
+    covers the trailing-``%`` rate form: ``--max-quarantined 1%`` fails the
+    run when more than 1% of routed records were quarantined.
     """
 
     def _write_one_bad_record(self, tmp_path, line1, line2):
