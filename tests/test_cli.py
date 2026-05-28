@@ -19,15 +19,15 @@ class TestDiscoverPaths:
         (tmp_path / "tle2001.broken.txt").write_text("x")  # tool output — excluded
         (tmp_path / "notes.md").write_text("x")  # not a TLE file
 
-        found = cli.discover_paths([str(tmp_path)])
+        found = cli.discover_paths(str(tmp_path))
 
         names = sorted(os.path.basename(p) for p in found)
         assert names == ["tle2001.txt", "tle2002.txt"]
 
-    def test_discover_passes_through_explicit_files(self, tmp_path):
+    def test_discover_passes_through_explicit_file(self, tmp_path):
         explicit = tmp_path / "tle2001.txt"
         explicit.write_text("x")
-        assert cli.discover_paths([str(explicit)]) == [str(explicit)]
+        assert cli.discover_paths(str(explicit)) == [str(explicit)]
 
 
 class TestBuildParser:
@@ -114,39 +114,9 @@ class TestCheckPaths:
 
 
 class TestDiscoverPathsEdgeCases:
-    def test_nonexistent_path_is_dropped(self, tmp_path):
-        # main() validates first, but discover_paths must be robust on its own:
-        # a missing entry no longer silently masquerades as a file.
-        assert cli.discover_paths([str(tmp_path / "missing")]) == []
-
-    def test_duplicate_explicit_paths_are_deduped(self, tmp_path):
-        # Passing the same file twice on the CLI is harmless; discover_paths
-        # collapses duplicates so process_file isn't invoked on the same path
-        # twice (its outputs would otherwise overwrite themselves).
-        f = tmp_path / "tle2099.txt"
-        f.write_text("x")
-        assert cli.discover_paths([str(f), str(f)]) == [str(f)]
-
-    def test_dir_and_explicit_file_inside_it_are_deduped(self, tmp_path):
-        # `lintle clean dirA dirA/tle2099.txt` should process the file once,
-        # not twice. Dedup is by canonical realpath so this works for plain
-        # paths and symlinks alike.
-        f = tmp_path / "tle2099.txt"
-        f.write_text("x")
-        found = cli.discover_paths([str(tmp_path), str(f)])
-        # One canonical entry, regardless of which spelling won the race.
-        canonical = {os.path.realpath(p) for p in found}
-        assert canonical == {os.path.realpath(f)}
-        assert len(found) == 1
-
-    def test_symlinked_path_is_deduped(self, tmp_path):
-        real = tmp_path / "tle2099.txt"
-        real.write_text("x")
-        link = tmp_path / "tle2099-link.txt"
-        link.symlink_to(real)
-        found = cli.discover_paths([str(real), str(link)])
-        # The link and its target are the same file; only one survives.
-        assert len(found) == 1
+    def test_nonexistent_path_yields_empty(self, tmp_path):
+        # main() validates first, but discover_paths must be robust on its own.
+        assert cli.discover_paths(str(tmp_path / "missing")) == []
 
 
 class TestDetectBasenameCollisions:
@@ -1178,7 +1148,7 @@ class TestResume:
 
     def test_resume_finishes_and_matches_full_run(self, tmp_path, line1, line2):
         src = self._two_file_src(tmp_path, line1, line2)
-        paths = cli.discover_paths([str(src)])
+        paths = cli.discover_paths(str(src))
         out_full = tmp_path / "full"
         rc_full = cli.main(
             ["clean", str(src), "--out-dir", str(out_full), "--jobs", "1"]
@@ -1249,7 +1219,7 @@ class TestResume:
 
     def test_resume_refuses_when_input_changed(self, tmp_path, line1, line2, capsys):
         src = self._two_file_src(tmp_path, line1, line2)
-        paths = cli.discover_paths([str(src)])
+        paths = cli.discover_paths(str(src))
         out_partial = tmp_path / "partial"
         _simulate_interrupted_clean(paths, str(out_partial), completed_count=1)
         # The not-yet-processed input changes between "office" and "home".
