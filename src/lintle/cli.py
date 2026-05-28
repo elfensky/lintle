@@ -94,30 +94,6 @@ def parse_quarantine_threshold(raw):
     return ("count", count)
 
 
-def _detect_basename_collisions(files):
-    """Return a user-facing error string if any two ``files`` share a
-    basename, else ``None``. Cleaned and broken outputs are keyed by
-    basename, so colliding inputs would silently overwrite each other —
-    safer to refuse the run than to publish a wrong-but-valid-looking
-    output (spec §1, "correctness over recovery").
-    """
-    groups = {}
-    for path in files:
-        groups.setdefault(os.path.basename(path), []).append(path)
-    collisions = {name: ps for name, ps in groups.items() if len(ps) > 1}
-    if not collisions:
-        return None
-    lines = [
-        "output collision: inputs share a basename and would overwrite each other:"
-    ]
-    for name in sorted(collisions):
-        lines.append(f"  '{name}':")
-        for path in collisions[name]:
-            lines.append(f"    - {path}")
-    lines.append("  rename the inputs or process them in separate runs (--out-dir).")
-    return "\n".join(lines)
-
-
 def check_paths(path, using_default):
     """Return a user-facing error string if ``path`` does not exist, else
     ``None``. ``using_default`` tailors the message for the case where the
@@ -550,11 +526,6 @@ def main(argv=None):
             )
         else:
             print("error: no input files found", file=sys.stderr)
-        return 2
-
-    collision_error = _detect_basename_collisions(files)
-    if collision_error:
-        print(f"error: {collision_error}", file=sys.stderr)
         return 2
 
     # Defaults for the shared dispatch below; ``clean --resume`` narrows them.
