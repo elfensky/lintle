@@ -72,6 +72,38 @@ def discover_paths(paths):
     return result
 
 
+def parse_quarantine_threshold(raw):
+    """Parse a ``--max-quarantined`` value into ``(mode, threshold)``.
+
+    A bare integer (e.g. ``"100"``) is an absolute record count and returns
+    ``("count", int)``. A value with a trailing ``%`` (e.g. ``"1%"`` or
+    ``"1.5%"``) is a percentage of routed records and returns
+    ``("pct", float)``; the percentage must lie in ``0..100``. Surrounding
+    whitespace is tolerated. Raises :class:`ValueError` on malformed input
+    or out-of-range values; the message for a negative count preserves the
+    exact substring asserted by the legacy issue-#13 integration test.
+    """
+    raw = raw.strip()
+    if raw.endswith("%"):
+        body = raw[:-1].strip()
+        try:
+            pct = float(body)
+        except ValueError:
+            raise ValueError(f"--max-quarantined: invalid percentage {raw!r}") from None
+        if not (0.0 <= pct <= 100.0):
+            raise ValueError(
+                f"--max-quarantined percentage must be in 0..100 (got {raw!r})"
+            )
+        return ("pct", pct)
+    try:
+        count = int(raw)
+    except ValueError:
+        raise ValueError(f"--max-quarantined: invalid value {raw!r}") from None
+    if count < 0:
+        raise ValueError(f"--max-quarantined must be >= 0 (got {count})")
+    return ("count", count)
+
+
 def _detect_basename_collisions(files):
     """Return a user-facing error string if any two ``files`` share a
     basename, else ``None``. Cleaned and broken outputs are keyed by
