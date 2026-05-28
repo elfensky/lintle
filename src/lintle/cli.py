@@ -118,11 +118,10 @@ def _detect_basename_collisions(files):
     return "\n".join(lines)
 
 
-def check_paths(paths, using_default):
-    """Return a user-facing error string if any ``paths`` entry is missing,
-    else ``None``. ``using_default`` tailors the message for the case where
-    the user passed no paths at all and the default (``data/source``) is
-    what's missing.
+def check_paths(path, using_default):
+    """Return a user-facing error string if ``path`` does not exist, else
+    ``None``. ``using_default`` tailors the message for the case where the
+    user passed nothing and the default (``data/source``) is what's missing.
 
     Readability is *not* checked here — :func:`os.access` consults the
     POSIX mode bits only and is a false-negative on filesystems that grant
@@ -131,20 +130,16 @@ def check_paths(paths, using_default):
     surfaces through the per-file failure path in :func:`main` with the
     same exit code 2.
     """
-    missing = [p for p in paths if not os.path.exists(p)]
-    if missing:
-        if using_default:
-            return (
-                f"default input directory {_DEFAULT_SOURCE!r} does not exist.\n"
-                f"  pass one or more files or directories on the command line,\n"
-                f"  or create {_DEFAULT_SOURCE}/ and put your tle*.txt files there.\n"
-                f"  run 'lintle --help' for usage and examples."
-            )
-        if len(missing) == 1:
-            return f"no such file or directory: {missing[0]!r}"
-        joined = ", ".join(repr(p) for p in missing)
-        return f"no such files or directories: {joined}"
-    return None
+    if os.path.exists(path):
+        return None
+    if using_default:
+        return (
+            f"default input directory {_DEFAULT_SOURCE!r} does not exist.\n"
+            f"  pass a file or directory on the command line,\n"
+            f"  or create {_DEFAULT_SOURCE}/ and put your tle*.txt files there.\n"
+            f"  run 'lintle --help' for usage and examples."
+        )
+    return f"no such file or directory: {path!r}"
 
 
 def build_parser():
@@ -539,7 +534,7 @@ def main(argv=None):
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
-    path_error = check_paths([path], using_default=using_default)
+    path_error = check_paths(path, using_default=using_default)
     if path_error:
         print(f"error: {path_error}", file=sys.stderr)
         return 2
