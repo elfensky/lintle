@@ -8,6 +8,18 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Added
 
+- `clean` now prints a **borderline disk-space warning** when free space on
+  the `--out-dir` volume sits between the 2× input-size abort floor and a
+  2.5× ceiling. The abort path is unchanged — exit `2` below 2×, message
+  unchanged — but a run that previously fell silent above the floor now
+  surfaces a `warning:` line on stderr (`free space in <out-dir> is close to
+  the 2× safety guard: N bytes free of ~M recommended; the run will proceed
+  but may exhaust the disk`) when free is in the 2×-to-2.5× band, so users
+  know they are cutting it close before commits start exhausting the disk.
+  Internal: `cli._check_disk_space` now returns a `(severity, message)`
+  tuple — `"error"` (caller aborts) or `"warn"` (caller prints and
+  proceeds) — or `None` when free is comfortably above the warn ceiling.
+
 - `--max-quarantined` (on both `validate` and `clean`) now accepts a trailing
   `%` to express the exit-code threshold as a **rate** rather than an absolute
   count. `--max-quarantined 1%` exits non-zero if more than 1% of routed
