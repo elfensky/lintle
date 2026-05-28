@@ -280,8 +280,17 @@ before it starts, aborting with exit `2` if short:
 error: insufficient disk space in data/output: need ~63,000,000,000 bytes, have 40,000,000,000
 ```
 
-Rule of thumb: for the bundled ~30 GB corpus, keep **~60 GB free**. (The
-12 GB `TLEs.zip` is not an input and is never read.)
+When free space sits in the borderline band — at or above the 2× floor but
+below 2.5× the input size — the run proceeds, but lintle prints a warning
+to stderr so you know you are cutting it close:
+
+```
+warning: free space in data/output is close to the 2× safety guard: 70,000,000,000 bytes free of ~63,000,000,000 recommended; the run will proceed but may exhaust the disk
+```
+
+Rule of thumb: for the bundled ~30 GB corpus, keep **~60 GB free** to clear
+the abort floor and **~75 GB free** to clear the warning band. (The 12 GB
+`TLEs.zip` is not an input and is never read.)
 
 ## Results on the bundled corpus
 

@@ -260,15 +260,29 @@ def build_parser():
 
 
 def _check_disk_space(out_dir, files):
-    """Return an error string if ``out_dir`` lacks room for cleaned +
-    broken output (roughly twice the total input size), else ``None``.
+    """Return a ``(severity, message)`` tuple when ``out_dir``'s free space
+    is at or near the 2× input-size guard, else ``None``. Severity is
+    ``"error"`` when free is below 2× input (caller aborts with exit 2);
+    ``"warn"`` when free sits in the borderline band 2× to 2.5× (caller
+    proceeds but surfaces the warning so the user knows they're cutting
+    it close). Cleaned + broken output is ~1× input; the 2× guard leaves
+    transient headroom for ``.partial`` files coexisting with their final
+    renames mid-run.
     """
     needed = sum(os.path.getsize(f) for f in files) * 2
     free = shutil.disk_usage(out_dir).free
     if free < needed:
         return (
+            "error",
             f"insufficient disk space in {out_dir}: "
-            f"need ~{needed:,} bytes, have {free:,}"
+            f"need ~{needed:,} bytes, have {free:,}",
+        )
+    if free < int(needed * 1.25):
+        return (
+            "warn",
+            f"free space in {out_dir} is close to the 2× safety guard: "
+            f"{free:,} bytes free of ~{needed:,} recommended; "
+            f"the run will proceed but may exhaust the disk",
         )
     return None
 
@@ -538,10 +552,13 @@ def main(argv=None):
 
     if args.command == "clean":
         os.makedirs(args.out_dir, exist_ok=True)
-        disk_error = _check_disk_space(args.out_dir, files)
-        if disk_error:
-            print(f"error: {disk_error}", file=sys.stderr)
-            return 2
+        disk_status = _check_disk_space(args.out_dir, files)
+        if disk_status is not None:
+            severity, msg = disk_status
+            if severity == "error":
+                print(f"error: {msg}", file=sys.stderr)
+                return 2
+            print(f"warning: {msg}", file=sys.stderr)
         # Per-input identity for the resume checkpoint (issue #56): computed
         # once, up front, for every discovered file. Cheap and constant-memory
         # (a head+tail window hash), it is written into the checkpoint as files

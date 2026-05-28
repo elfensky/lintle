@@ -253,6 +253,33 @@ class TestMain:
         rc = cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
         assert rc == 2
 
+    def test_main_warns_on_disk_borderline(
+        self, tmp_path, line1, line2, monkeypatch, capsys
+    ):
+        # Free space between 2x and 2.5x input lands in the borderline band:
+        # the run proceeds (exit 0 on a clean corpus) but lintle prints a
+        # warning to stderr so the user knows they are close to the guard.
+        src = tmp_path / "src"
+        src.mkdir()
+        input_file = src / "tle2099.txt"
+        input_file.write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
+        out = tmp_path / "out"
+        input_size = input_file.stat().st_size
+
+        class _Usage:
+            # 2.25x input — between the 2x abort floor and the 2.5x warn
+            # ceiling. Sits squarely in the borderline band.
+            free = int(input_size * 2.25)
+
+        monkeypatch.setattr(cli.shutil, "disk_usage", lambda _path: _Usage())
+        rc = cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
+
+        assert rc == 0
+        err = capsys.readouterr().err
+        assert "warning" in err.lower()
+        assert "free space" in err.lower()
+        assert "error" not in err.lower().split("\n")[0]  # not the abort path
+
     def test_main_prints_progress_to_stderr(self, tmp_path, line1, line2, capsys):
         src = tmp_path / "src"
         src.mkdir()
