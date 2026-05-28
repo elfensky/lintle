@@ -80,10 +80,10 @@ The console script is `lintle`:
 
 ```bash
 # Audit only — report defects, write nothing
-uv run lintle validate [paths...]
+uv run lintle validate [path]
 
 # Produce cleaned output + quarantine sidecars
-uv run lintle clean [paths...]
+uv run lintle clean [path]
 
 # Explain a rule ID or fix tag — definition, examples, source citation
 uv run lintle explain <TAG>
@@ -95,7 +95,7 @@ uv run lintle explain <TAG>
 
 | Option | Default | Meaning |
 |--------|---------|---------|
-| `paths` | `data/source` | Files or directories. A directory is globbed for `tle*.txt` (tool output `*.cleaned.txt` / `*.broken.txt` is excluded). |
+| `path` | `data/source` | A single file or directory. A directory is globbed for `tle*.txt` (tool output `*.cleaned.txt` / `*.broken.txt` is excluded). |
 | `--out-dir DIR` | `data/output` | Where `clean` writes its output. Created if absent. |
 | `--jobs N` | CPU count | Number of files processed in parallel. Lower it if a slow disk causes I/O contention. |
 | `--report text\|json` | `text` | Summary format. |
