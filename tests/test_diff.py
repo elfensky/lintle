@@ -432,8 +432,8 @@ class TestIterFindings:
 
 class TestAggregateByFile:
     """``aggregate_by_file`` returns ``{basename: Counter(rule_id)}``. Because
-    clean refuses colliding basenames, each basename is a unique file within a
-    run, so the grouping is unambiguous."""
+    clean accepts only a single positional input, each basename is a unique file
+    within a run, so the grouping is unambiguous."""
 
     def test_groups_counts_by_file(self, tmp_path):
         run = _write_run_files(
