@@ -183,9 +183,12 @@ def build_parser():
         sub.add_argument(
             "--jobs",
             type=int,
-            default=os.cpu_count() or 1,
+            default=None,
             metavar="N",
-            help="number of files to process in parallel (default: CPU count)",
+            help=(
+                "files processed in parallel "
+                "(default: CPU count - 1, capped at file count)"
+            ),
         )
         sub.add_argument(
             "--report",
@@ -472,6 +475,16 @@ class _ProgressDisplay:
             sys.stderr.flush()
 
 
+def resolve_jobs(explicit, cpu_count, n_files):
+    """Resolve the worker count for a run. An explicit ``--jobs`` is the user's
+    deliberate choice and is returned unchanged; otherwise default to one fewer
+    than the CPU count — reserving a core for the OS during a long run — capped
+    at the number of files and floored at one."""
+    if explicit is not None:
+        return explicit
+    return max(1, min((cpu_count or 1) - 1, n_files))
+
+
 def main(argv=None):
     """Entry point for the ``lintle`` console script.
 
@@ -512,7 +525,7 @@ def main(argv=None):
     using_default = args.path is None
     path = args.path if args.path is not None else _DEFAULT_SOURCE
 
-    if args.jobs < 1:
+    if args.jobs is not None and args.jobs < 1:
         print(f"error: --jobs must be >= 1 (got {args.jobs})", file=sys.stderr)
         return 2
 
@@ -611,17 +624,22 @@ def main(argv=None):
             if os.path.exists(shard_dir):
                 shutil.rmtree(shard_dir)
 
+    # Resolve the worker count now that files_to_process is final: an explicit
+    # --jobs is honoured as-is; the default is CPU count - 1, capped at the file
+    # count and floored at one (issue #53 §2.3).
+    jobs = resolve_jobs(args.jobs, os.cpu_count(), len(files_to_process))
+
     reused_n = len(reused_stats)
     if reused_n:
         print(
             f"resuming: {reused_n} file(s) already complete, processing "
-            f"{len(files_to_process)} of {len(files)} with {args.jobs} worker(s)...",
+            f"{len(files_to_process)} of {len(files)} with {jobs} worker(s)...",
             file=sys.stderr,
             flush=True,
         )
     else:
         print(
-            f"processing {len(files_to_process)} file(s) with {args.jobs} worker(s)...",
+            f"processing {len(files_to_process)} file(s) with {jobs} worker(s)...",
             file=sys.stderr,
             flush=True,
         )
@@ -649,7 +667,7 @@ def main(argv=None):
     with multiprocessing.Manager() as manager:
         progress_queue = manager.Queue()
         executor = concurrent.futures.ProcessPoolExecutor(
-            max_workers=args.jobs, initializer=_ignore_sigint
+            max_workers=jobs, initializer=_ignore_sigint
         )
         try:
             futures = {
