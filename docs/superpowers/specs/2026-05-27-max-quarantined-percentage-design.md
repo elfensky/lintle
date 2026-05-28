@@ -1,8 +1,12 @@
 # `--max-quarantined` percentage threshold — Design
 
 - **Date:** 2026-05-27
-- **Status:** Designed; not yet implemented
-- **Revision:** initial
+- **Status:** Implemented (PR #62)
+- **Revision:** initial. **2026-05-28:** marked Implemented after PR #62 merged into
+  `develop` (rebased commits `e7cd5ff..be0666f`); no design changes from the initial spec
+  — the only post-design wording adjustment during implementation was the local variable
+  rename `quarantine_mode` → `threshold_mode` in `cli.py`, which is internal and not part
+  of the spec contract.
 - **Topic:** Let `--max-quarantined` accept a trailing `%` so the exit-code gate can be
   expressed as a *rate* (fraction of routed records quarantined), not only an absolute
   count. Mutually exclusive by construction; fully backward-compatible.
