@@ -659,6 +659,98 @@ class TestMaxQuarantinedThreshold:
 
         assert rc == 0
 
+    def test_pct_over_threshold_fails(self, tmp_path, line1, line2):
+        # 1 bad of 100 routed = 1.0%. `--max-quarantined 0.5%` is below
+        # that, so the run exits 1.
+        src = self._write_n_good_and_one_bad(tmp_path, line1, line2, n_good=99)
+        out = tmp_path / "out"
+
+        rc = cli.main(
+            [
+                "clean",
+                str(src),
+                "--out-dir",
+                str(out),
+                "--jobs",
+                "1",
+                "--max-quarantined",
+                "0.5%",
+            ]
+        )
+
+        assert rc == 1
+
+    def test_pct_at_exact_boundary_passes(self, tmp_path, line1, line2):
+        # 1 bad of 100 routed = exactly 1.0%. Strictly-greater semantics
+        # (matching count mode) mean exactly-at-boundary passes.
+        src = self._write_n_good_and_one_bad(tmp_path, line1, line2, n_good=99)
+        out = tmp_path / "out"
+
+        rc = cli.main(
+            [
+                "clean",
+                str(src),
+                "--out-dir",
+                str(out),
+                "--jobs",
+                "1",
+                "--max-quarantined",
+                "1%",
+            ]
+        )
+
+        assert rc == 0
+
+    def test_pct_hundred_percent_never_fails(self, tmp_path, line1, line2):
+        # 100% is the upper bound. The cross-multiplied comparison
+        # `100*q > 100*r` reduces to `q > r`, which is structurally
+        # impossible (quarantined <= routed). Even an all-bad input
+        # passes a 100% gate.
+        src = self._write_one_bad_record(tmp_path, line1, line2)
+        out = tmp_path / "out"
+
+        rc = cli.main(
+            [
+                "clean",
+                str(src),
+                "--out-dir",
+                str(out),
+                "--jobs",
+                "1",
+                "--max-quarantined",
+                "100%",
+            ]
+        )
+
+        assert rc == 0
+
+    def test_pct_applies_to_validate(self, tmp_path, line1, line2):
+        src = self._write_n_good_and_one_bad(tmp_path, line1, line2, n_good=99)
+
+        rc = cli.main(["validate", str(src), "--jobs", "1", "--max-quarantined", "5%"])
+
+        assert rc == 0
+
+    def test_pct_malformed_returns_2(self, tmp_path, line1, line2, capsys):
+        src = self._write_one_bad_record(tmp_path, line1, line2)
+
+        rc = cli.main(
+            ["validate", str(src), "--jobs", "1", "--max-quarantined", "1.2.3%"]
+        )
+
+        assert rc == 2
+        assert "invalid percentage" in capsys.readouterr().err
+
+    def test_pct_out_of_range_returns_2(self, tmp_path, line1, line2, capsys):
+        src = self._write_one_bad_record(tmp_path, line1, line2)
+
+        rc = cli.main(
+            ["validate", str(src), "--jobs", "1", "--max-quarantined", "150%"]
+        )
+
+        assert rc == 2
+        assert "percentage must be in 0..100" in capsys.readouterr().err
+
 
 class TestReportJsonl:
     """Issue #9 spec §8.5: ``clean`` mode emits ``<out_dir>/report.jsonl``
