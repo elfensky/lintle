@@ -38,6 +38,28 @@ All notable changes to this project are documented in this file. The format is b
   checkpoint can never name a file whose bytes are not yet on disk. Durability
   is always-on (no flag) — measured at roughly 1 second of overhead across a
   full ~120-commit run on the 30 GB corpus. Closes #58.
+- **Breaking change.** `lintle validate` and `lintle clean` now accept exactly
+  one positional input — a single file *or* a single directory — instead of
+  zero-or-more. The default remains `data/source`. Scripts invoking
+  `lintle clean dirA dirB` (or multiple explicit files) will now fail at
+  argparse with a usage error. Run the tool once per input directory
+  (`for d in dirA dirB; do lintle clean "$d"; done`), or stage the inputs
+  into a single directory first (e.g. `mkdir merged && cp dirA/* dirB/*
+  merged/ && lintle clean merged`). This trims speculative flexibility
+  the documented workflow never exercised: the per-file output names are
+  derived from each input's basename alone, so multi-input runs needed a
+  defensive collision check whose existence was the only reason multi-input
+  was risky in the first place. With single-input, basenames within one
+  directory are unique by filesystem guarantee, so the failure mode and its
+  guard disappear together.
+
+### Removed
+
+- `cli._detect_basename_collisions` and its `TestDetectBasenameCollisions`
+  tests — no callers after the single-input `validate`/`clean` change above.
+- The realpath dedup loop inside `cli.discover_paths` (a single input has
+  nothing to dedup against). `discover_paths` and `check_paths` now take a
+  single path string rather than a list.
 
 ## [0.3.0] - 2026-05-27
 
