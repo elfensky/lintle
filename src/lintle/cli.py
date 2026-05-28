@@ -668,9 +668,11 @@ def main(argv=None):
                         all_stats.append(stats)
                         progress.file_done(stats)
                         # Record this file as completed in the always-on resume
-                        # checkpoint (issue #56). Written atomically after each
-                        # file commits, so an interruption leaves a checkpoint
-                        # naming exactly the files whose outputs are durable.
+                        # checkpoint (issue #56). Both the worker's outputs and
+                        # this checkpoint write go through fsutil.durable_replace,
+                        # so a checkpoint entry can only name a file whose bytes
+                        # are on disk — the ordering invariant --resume's "trust
+                        # without reprocessing" requires (issue #58).
                         if args.command == "clean":
                             completed[path] = report.summary_dict(stats)
                             resume.write_checkpoint(
