@@ -40,7 +40,7 @@ class FixSpec:
     :class:`FixClass`. The repair-side counterpart to ``RuleSpec``.
     """
 
-    fix_class: "FixClass"
+    fix_class: FixClass
     short_title: str
     introduced: str
 

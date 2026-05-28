@@ -35,6 +35,12 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Changed
 
+- **Breaking change.** Minimum Python is now **3.14** (was 3.11). `requires-python`,
+  `tool.ruff.target-version`, `.python-version`, and the trove classifiers all
+  bumped together; drops 3.11 / 3.12 / 3.13 support. Aligns lintle with the
+  drunik-org Python stack standard (drunik / lintle / descent-engine all on
+  Python 3.14, `line-length = 88`, `target-version = "py314"`, ruff rule set
+  `["E","F","I","UP","B","SIM"]`, `pytest-cov` in the dev group).
 - Every output file `clean` commits — the `cleaned/` files, `.broken.txt`
   sidecars, findings shards, `report.jsonl`/`report.md`/`broken-noradids.ndjson`,
   and the `--resume` checkpoint — is now committed **durably**, not just

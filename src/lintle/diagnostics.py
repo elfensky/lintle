@@ -75,11 +75,11 @@ class RuleSpec:
     remain readable by downstream parsers indefinitely.
     """
 
-    rule_id: "RuleID"
+    rule_id: RuleID
     family: str
     short_title: str
     introduced: str
-    deprecated_for: tuple["RuleID", ...] = ()
+    deprecated_for: tuple[RuleID, ...] = ()
 
 
 RULES: dict[RuleID, RuleSpec] = {

@@ -15,7 +15,7 @@ changes.
 
 ## Tech Stack
 
-Python 3.11 · uv · lean runtime (**currently zero third-party deps**) · `sgp4` (dev-only
+Python 3.14 · uv · lean runtime (**currently zero third-party deps**) · `sgp4` (dev-only
 test oracle) · `pytest` · `pytest-cov` · `ruff`
 
 **Runtime dependencies** are governed by a four-MUST-bar policy — *earns its weight ·
@@ -56,7 +56,7 @@ output shows failures.
 
 ## Code Style
 
-- Python 3.11. Concise one-paragraph docstrings on every public module, function, and
+- Python 3.14. Concise one-paragraph docstrings on every public module, function, and
   class — match that established style; do not expand to Args/Returns/Raises blocks.
 - `ruff` for linting and formatting, configured in `pyproject.toml` (rule sets `E`, `F`,
   `I`, `UP`, `B`, `SIM`; 88-column lines).
