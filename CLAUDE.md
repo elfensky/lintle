@@ -15,11 +15,16 @@ changes.
 
 ## Tech Stack
 
-Python 3.11 · uv · standard library only at runtime · `sgp4` (dev-only test oracle) ·
-`pytest` · `pytest-cov` · `ruff`
+Python 3.11 · uv · lean runtime (**currently zero third-party deps**) · `sgp4` (dev-only
+test oracle) · `pytest` · `pytest-cov` · `ruff`
 
-The runtime is **pure standard library**. `sgp4` and `pytest` are dev-only dependencies;
-`sgp4` is a test oracle and must never be imported at runtime.
+**Runtime dependencies** are governed by a four-MUST-bar policy — *earns its weight ·
+mature · small transitive surface · operational fit*; the aim (stable/maintainable/
+understandable) is a veto, never a waiver. The canonical rule and the considered/deferred
+table live in the authoritative spec §3.1
+(`docs/superpowers/specs/2026-05-21-tle-corpus-cleaner-design.md`); rationale in
+`2026-05-28-runtime-dependency-policy-design.md`. **Current runtime deps: none.** `sgp4`
+and `pytest` are dev-only; `sgp4` is a test oracle and must never be imported at runtime.
 
 ## Critical Rules — principles that must not be violated
 

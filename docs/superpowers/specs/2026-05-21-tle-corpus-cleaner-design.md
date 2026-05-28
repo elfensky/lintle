@@ -80,6 +80,13 @@
   `2` (unchanged); 2× to 2.5× now prints a warning to stderr and proceeds;
   above 2.5× is silent (unchanged). Internal: `cli._check_disk_space` returns
   `(severity, message) | None` instead of `string | None` (PR #64).
+  **2026-05-28:** §3 — added §3.1 "Runtime dependency policy & considered
+  dependencies": the flat pure-stdlib runtime rule becomes a goal-led
+  four-MUST-bar test (earns-its-weight · mature · small surface · operational
+  fit; the aim is veto-only) with a canonical considered/deferred table. This
+  spec is the canonical home; `CLAUDE.md` / `CONTRIBUTING.md` point here. Runtime
+  stays zero-dependency. Companion:
+  [`2026-05-28-runtime-dependency-policy-design.md`](2026-05-28-runtime-dependency-policy-design.md).
 - **Topic:** A tool to validate and clean a multi-gigabyte corpus of Two-Line Element (TLE) files exported from space-track.org
 
 ## 1. Problem statement
@@ -185,13 +192,76 @@ Two adjustments taken from the survey:
   not guessed.
 - **Use an existing parser as a test oracle.** `sgp4` (and optionally `tletools`) are added as
   **dev-only** dependencies and used in the test suite to cross-check our validation against a
-  trusted implementation. The runtime stays pure-stdlib.
+  trusted implementation. The runtime carries no third-party dependencies today; when that
+  changes it is governed by the policy in §3.1.
+
+### 3.1 Runtime dependency policy & considered dependencies
+
+The runtime is lean by policy, not by dogma. **This subsection is the canonical source for
+the runtime-dependency rule** — `CLAUDE.md` and `CONTRIBUTING.md` carry only a pointer to it,
+and the rationale + the four-model debate behind it are in
+[`2026-05-28-runtime-dependency-policy-design.md`](2026-05-28-runtime-dependency-policy-design.md).
+
+The aim is a stable, maintainable, easy-to-understand app. A third-party **runtime**
+dependency may be added only when it advances that aim and **clears all four bars below —
+each a necessary condition (MUST).** The aim is a **veto, never a waiver**: it can reject a
+dependency that clears every bar, but never admit one that fails a bar. A genuine exception
+requires an explicit row in the table below naming which bar fails and why.
+
+1. **Earns its weight** — replaces real code we would otherwise maintain (~100 lines, rule of
+   thumb, *or* a gotcha-prone domain: terminal control, parsing, compression). A `left-pad`
+   one-liner never qualifies; an `axios`-class domain does.
+2. **Mature & widely deployed** — used by major CLIs, active upstream, healthy releases.
+3. **Small transitive surface** — its *direct* runtime dependencies number ≤ 3, each itself
+   well-known. A single call that drags a large tree fails here.
+4. **Operational fit** — packaging and behaviour must not threaten our invariants:
+   pure-Python or widely-prebuilt wheels (no surprise native toolchain at install); bounded,
+   streaming-friendly memory (Critical Rule #3); deterministic, locale-independent output
+   (Critical Rules #1/#2); no heavy import-time side effects; an acceptable license; a clean
+   `pip-audit` history.
+
+**Recording requirement (not a bar):** adoption lands with a `CHANGELOG.md` entry beside the
+`pyproject.toml` edit. **Maintenance:** pin to exclude the next major (e.g. `rich>=13,<14`);
+`uv.lock` is the lockfile of record; re-run all four bars on any major-version bump. **The
+Critical Rules gate a dependency's *behaviour*, not just our own code** — a dep that would
+form a second validator (#4), load a file whole (#3), or make output nondeterministic
+(#1/#2) is out regardless of which module imports it. **Dev-only** deps (test oracles,
+tooling) are exempt from the bars but record purpose/scope if nontrivial.
+
+There is deliberately **no layering rule**: we gate on a dependency's value and behaviour,
+never its file location. The core stays auditable because bar 1 rejects most core deps on
+their own (the validator is simple stdlib code) and bar 4 + the Critical Rules cover the
+behavioural risks.
+
+**Current runtime dependencies: none** (`dependencies = []`).
+
+#### Considered & deferred (canonical record)
+
+| Tool | Disposition | Reason |
+|---|---|---|
+| TLE/orbital libs (`sgp4`, `Skyfield`, `tletools`, `astropy`) | **Reject (runtime)** | Using one as a parser/validator is a second validation path (**Critical Rule #4**) — this is *why* `sgp4` is a test-oracle dev dep. Dev-only oracle use is fine. |
+| `click` / `typer` | **Reject** | `argparse` covers the small CLI surface; ~0 net lines. Fails bar 1. |
+| `pydantic` | **Reject** | We own our formats (`report.jsonl`, resume checkpoint); dataclasses + `json` cover them (bar 1); `pydantic-core` is native (bar 4). As TLE validation it is a second validator (#4). |
+| `structlog` / `loguru` | **Reject** | No logging; a report + progress UI cover output. Nothing to save. |
+| `orjson` / `ujson` | **Reject** | Replaces ~zero code; JSON isn't the bottleneck; native (bar 4). Fails bar 1. |
+| `polars` / `pandas` | **Reject** | `diff` is per-rule counters; a `dict[str,int]` does it (bar 1); huge native tree (bars 3+4). |
+| config parsing (`tomli`, …) | **Reject** | `tomllib` is stdlib (3.11+); `configparser` / `json` / `argparse` cover the rest. |
+| caching (`diskcache`, `cachetools`) | **Reject** | One-pass streaming tool; a `dict` suffices for bounded state. Fails bar 1. |
+| `tqdm` | **Reject** | Can't render a dynamic block of N concurrent bars whose set changes; we'd rebuild it ourselves. |
+| `textual` | **Reject** | Full TUI framework; we want a progress block, not an app. |
+| `blessed` / `prompt_toolkit` | **Reject** | Lower-level; still ~50 lines of layout glue. `rich` fits better. |
+| `rich` | **Candidate (pending issue #53 evidence)** | Plausibly clears all four bars for the issue-53 progress UI (~150 lines of gotcha-prone ANSI replaced; mature; pure-Python; transitive `markdown-it-py` + `pygments`). **Not approved; `dependencies = []` holds.** Approval is evidence-driven, in the adopting PR. A parity-only swap fails bar 1. |
+| `zstandard` | **Defer (trigger-gated)** | Only if output size / transfer time becomes a *measured* bottleneck (compressing sidecars/shards). Trigger: file a ticket with the measurement; until then stdlib `gzip`. Native ext → must clear bar 4. |
+
+Dev-only (exempt from the bars; record purpose/scope; land any time): `hypothesis`
+(property-based tests for `tle.py` / `repair.py` — strongest candidate), `pytest-xdist`
+(parallel test runs).
 
 ## 4. Architecture (Approach B)
 
-A single `uv`-managed Python project, **pure standard library at runtime**. The two user-facing
-asks become **one validator** used in two modes: the validator defines "perfect"; the cleaner
-reuses it and emits only records that pass it.
+A single `uv`-managed Python project with a **zero-dependency runtime today** (governed by
+§3.1). The two user-facing asks become **one validator** used in two modes: the validator
+defines "perfect"; the cleaner reuses it and emits only records that pass it.
 
 ### 4.1 The validated-transformation principle
 
