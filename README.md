@@ -222,10 +222,21 @@ A run summary is also printed per file to stdout (and as JSON with
 `--report json`):
 
 ```
-tle2022.txt   8,412,067 records   8,412,064 clean   3 quarantined
+tle2022.txt   8,412,066 records   8,412,064 clean   3 quarantined   (1 orphan, 16,824,134 lines)
   fixes:   trailing-backslash 8,412,064 | reconstructed-checksum 195,293
   rejects: TLE-CHK-001 1 | TLE-PAIR-001 1 | TLE-COL-001 1
 ```
+
+The header line separates three input tallies that an earlier version
+conflated into a single "records" number (issue #5): `records` is **paired
+records** (proper 2-line TLE entries — orphans are not counted here); `clean`
+is paired records that passed validation and were written to `cleaned/`;
+`quarantined` is everything routed to `broken/`, which includes both failed
+paired records and every orphan (an unpaired line is quarantined as
+`TLE-PAIR-001`); the parenthetical `orphan` counts unpaired single lines and
+`lines` counts every physical line read (including blanks dropped by the
+pairing loop). The invariant is `records + orphan == clean + quarantined`,
+so `clean + quarantined` can exceed `records` by the orphan count.
 
 Reject counts key by the stable `RuleID` registry (e.g. `TLE-CHK-001` for
 checksum mismatch, `TLE-PAIR-001` for orphan lines, `TLE-COL-001` for wrong
