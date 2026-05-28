@@ -40,37 +40,26 @@ See `lintle <command> --help` for command-specific options.
 """
 
 
-def discover_paths(paths):
-    """Expand each entry in ``paths``: a directory becomes its sorted
-    ``tle*.txt`` files (excluding ``*.cleaned.txt`` / ``*.broken.txt`` tool
-    output); a file is passed through unchanged. Nonexistent entries are
-    dropped — callers should validate inputs with :func:`check_paths` first.
-    Duplicates (same canonical path via ``os.path.realpath``) are collapsed,
-    so e.g. ``lintle clean dirA dirA/foo.txt`` processes ``foo.txt`` once.
+def discover_paths(path):
+    """Expand ``path``: a directory becomes its sorted ``tle*.txt`` files
+    (excluding ``*.cleaned.txt`` / ``*.broken.txt`` tool output); a file is
+    returned as a single-element list. A nonexistent entry yields ``[]`` —
+    callers should validate inputs with :func:`check_paths` first.
     """
-    result = []
-    seen = set()
-
-    def _add(candidate):
-        canonical = os.path.realpath(candidate)
-        if canonical in seen:
-            return
-        seen.add(canonical)
-        result.append(candidate)
-
-    for path in paths:
-        if os.path.isdir(path):
-            for name in sorted(os.listdir(path)):
-                if (
-                    name.startswith("tle")
-                    and name.endswith(".txt")
-                    and not name.endswith(".cleaned.txt")
-                    and not name.endswith(".broken.txt")
-                ):
-                    _add(os.path.join(path, name))
-        elif os.path.isfile(path):
-            _add(path)
-    return result
+    if os.path.isdir(path):
+        return [
+            os.path.join(path, name)
+            for name in sorted(os.listdir(path))
+            if (
+                name.startswith("tle")
+                and name.endswith(".txt")
+                and not name.endswith(".cleaned.txt")
+                and not name.endswith(".broken.txt")
+            )
+        ]
+    if os.path.isfile(path):
+        return [path]
+    return []
 
 
 def parse_quarantine_threshold(raw):
@@ -537,7 +526,6 @@ def main(argv=None):
     # that default doesn't exist on this machine.
     using_default = args.path is None
     path = args.path if args.path is not None else _DEFAULT_SOURCE
-    paths = [path]  # transitional: remove once Tasks 3-4 migrate discover_paths/check_paths to str
 
     if args.jobs < 1:
         print(f"error: --jobs must be >= 1 (got {args.jobs})", file=sys.stderr)
@@ -551,18 +539,16 @@ def main(argv=None):
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
-    path_error = check_paths(paths, using_default=using_default)
+    path_error = check_paths([path], using_default=using_default)
     if path_error:
         print(f"error: {path_error}", file=sys.stderr)
         return 2
 
-    files = discover_paths(paths)
+    files = discover_paths(path)
     if not files:
-        dirs = [p for p in paths if os.path.isdir(p)]
-        if dirs:
-            joined = ", ".join(repr(d) for d in dirs)
+        if os.path.isdir(path):
             print(
-                f"error: no tle*.txt files found in {joined}.\n"
+                f"error: no tle*.txt files found in {path!r}.\n"
                 "  expected one or more files named tle*.txt "
                 "(excluding *.cleaned.txt / *.broken.txt).",
                 file=sys.stderr,
