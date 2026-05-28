@@ -79,28 +79,22 @@ class TestBuildParser:
 class TestCheckPaths:
     def test_missing_default_yields_friendly_hint(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)  # no data/source here
-        err = cli.check_paths(["data/source"], using_default=True)
+        err = cli.check_paths("data/source", using_default=True)
         assert err is not None
         assert "data/source" in err
         assert "lintle --help" in err
+        assert "or create" in err  # pins the multi-line hint branch
 
     def test_missing_explicit_path_yields_plain_message(self, tmp_path):
-        err = cli.check_paths([str(tmp_path / "nope.txt")], using_default=False)
+        err = cli.check_paths(str(tmp_path / "nope.txt"), using_default=False)
         assert err is not None
         assert "no such file or directory" in err
         assert "data/source" not in err  # not the default-hint variant
 
-    def test_multiple_missing_paths_are_listed(self, tmp_path):
-        a = tmp_path / "a.txt"
-        b = tmp_path / "b.txt"
-        err = cli.check_paths([str(a), str(b)], using_default=False)
-        assert err is not None
-        assert str(a) in err and str(b) in err
-
-    def test_existing_paths_return_none(self, tmp_path):
+    def test_existing_path_returns_none(self, tmp_path):
         f = tmp_path / "x.txt"
         f.write_text("x")
-        assert cli.check_paths([str(f), str(tmp_path)], using_default=False) is None
+        assert cli.check_paths(str(f), using_default=False) is None
 
     def test_os_access_false_negative_does_not_refuse_run(self, tmp_path, monkeypatch):
         # os.access() consults POSIX mode bits and is a false-negative on
@@ -110,7 +104,7 @@ class TestCheckPaths:
         f = tmp_path / "readable.txt"
         f.write_text("x")
         monkeypatch.setattr(cli.os, "access", lambda _p, _m: False)
-        assert cli.check_paths([str(f)], using_default=False) is None
+        assert cli.check_paths(str(f), using_default=False) is None
 
 
 class TestDiscoverPathsEdgeCases:
