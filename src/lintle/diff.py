@@ -9,9 +9,9 @@ corpus-level per-rule delta, then a per-file (per-basename) breakdown.
 
 The per-file breakdown is keyed by ``report.jsonl``'s ``file`` field, which is
 a basename (``pipeline.py``: ``os.path.basename``). That key is unambiguous
-because ``clean`` refuses to run on inputs with colliding basenames
-(``cli._detect_basename_collisions``), so within any producible run each
-basename names exactly one file. A basename present in only one run, however,
+because ``clean`` accepts only a single positional input, so within any
+producible run each basename names exactly one file. A basename present in
+only one run, however,
 may have been fixed, removed, or renamed — so one-sided files are flagged, not
 attributed. Memory is bounded by (distinct files × distinct RuleIDs) — tens of
 files × ≤9 rules for a real corpus — never the number of findings. A new leaf
@@ -95,7 +95,7 @@ def aggregate(run_dir):
 def aggregate_by_file(run_dir):
     """Return ``{basename: Counter(rule_id → count)}`` for ``run_dir``. Keyed by
     the ``report.jsonl`` ``file`` basename, which uniquely names one file within
-    a run (``clean`` rejects colliding basenames). Memory is bounded by
+    a run (``clean`` accepts only a single positional input). Memory is bounded by
     (distinct files × distinct RuleIDs), not the number of findings."""
     by_file = collections.defaultdict(collections.Counter)
     for file, rule_id in iter_findings(run_dir):

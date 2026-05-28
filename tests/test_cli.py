@@ -113,43 +113,6 @@ class TestDiscoverPathsEdgeCases:
         assert cli.discover_paths(str(tmp_path / "missing")) == []
 
 
-class TestDetectBasenameCollisions:
-    def test_no_collisions_returns_none(self, tmp_path):
-        a = tmp_path / "tle2001.txt"
-        b = tmp_path / "tle2002.txt"
-        assert cli._detect_basename_collisions([str(a), str(b)]) is None
-
-    def test_returns_error_with_each_colliding_path(self, tmp_path):
-        # Two inputs with the same basename would write to the same
-        # cleaned/broken sidecar — silently overwriting each other.
-        dir_a = tmp_path / "a"
-        dir_a.mkdir()
-        dir_b = tmp_path / "b"
-        dir_b.mkdir()
-        a = dir_a / "tle2022.txt"
-        b = dir_b / "tle2022.txt"
-        err = cli._detect_basename_collisions([str(a), str(b)])
-        assert err is not None
-        assert "tle2022.txt" in err
-        assert str(a) in err and str(b) in err
-
-    def test_lists_all_collision_groups(self, tmp_path):
-        # Multiple distinct basename collisions all surface in one message.
-        dir_a = tmp_path / "a"
-        dir_a.mkdir()
-        dir_b = tmp_path / "b"
-        dir_b.mkdir()
-        files = [
-            str(dir_a / "tle2001.txt"),
-            str(dir_b / "tle2001.txt"),
-            str(dir_a / "tle2002.txt"),
-            str(dir_b / "tle2002.txt"),
-        ]
-        err = cli._detect_basename_collisions(files)
-        assert err is not None
-        assert "tle2001.txt" in err and "tle2002.txt" in err
-
-
 class TestMain:
     def test_main_clean_returns_zero_on_clean_corpus(self, tmp_path, line1, line2):
         src = tmp_path / "src"
