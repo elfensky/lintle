@@ -30,6 +30,28 @@ class TestDiscoverPaths:
         assert cli.discover_paths(str(explicit)) == [str(explicit)]
 
 
+class TestResolveJobs:
+    """cli.resolve_jobs — default worker count (issue #53 §2.3/§3.4)."""
+
+    def test_default_reserves_one_core(self):
+        # Plenty of files, 8 cores: reserve one for the OS during the long run.
+        assert cli.resolve_jobs(None, 8, 100) == 7
+
+    def test_default_caps_at_file_count(self):
+        # 16 cores but only 4 files: no point spawning idle workers.
+        assert cli.resolve_jobs(None, 16, 4) == 4
+
+    def test_default_floor_is_one(self):
+        # Few cores must never resolve below a single worker.
+        assert cli.resolve_jobs(None, 2, 30) == 1
+        assert cli.resolve_jobs(None, 1, 30) == 1
+
+    def test_explicit_jobs_passthrough_not_capped(self):
+        # An explicit --jobs is the user's deliberate choice; never capped.
+        assert cli.resolve_jobs(16, 16, 4) == 16
+        assert cli.resolve_jobs(4, 8, 100) == 4
+
+
 class TestBuildParser:
     def test_parser_defaults(self):
         args = cli.build_parser().parse_args(["validate"])
@@ -133,6 +155,29 @@ class TestMain:
         # broken-noradids.ndjson is always emitted on clean — empty when
         # nothing was quarantined, so downstream sees a stable artifact.
         assert (out / "broken-noradids.ndjson").read_bytes() == b""
+
+    def test_main_routes_default_jobs_through_resolve_jobs(
+        self, tmp_path, monkeypatch, line1, line2
+    ):
+        # With no --jobs, main() resolves the worker count via resolve_jobs,
+        # passing explicit=None and the count of files to process (issue #53).
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "tle2099.txt").write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
+        out = tmp_path / "out"
+        seen = {}
+        real = cli.resolve_jobs
+
+        def spy(explicit, cpu_count, n_files):
+            seen["explicit"] = explicit
+            seen["n_files"] = n_files
+            return real(explicit, cpu_count, n_files)
+
+        monkeypatch.setattr(cli, "resolve_jobs", spy)
+        rc = cli.main(["clean", str(src), "--out-dir", str(out)])
+
+        assert rc == 0
+        assert seen == {"explicit": None, "n_files": 1}
 
     def test_main_clean_writes_norad_ids_for_quarantined_records(
         self, tmp_path, line1, line2
