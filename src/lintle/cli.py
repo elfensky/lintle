@@ -24,7 +24,7 @@ Examples:
   lintle validate                         audit data/source/ (read-only)
   lintle clean                            clean data/source/ -> data/output/
   lintle validate file.txt                audit a single file
-  lintle clean dir1 dir2 --jobs 4         clean multiple directories
+  lintle clean data/raw --jobs 4          clean with 4 parallel workers
   lintle clean data/raw --out-dir build   write to a custom location
   lintle validate --report json           emit a machine-readable summary
   lintle diff run-a/ run-b/               compare two runs' findings
