@@ -1283,3 +1283,10 @@ class TestParseQuarantineThreshold:
     def test_pct_malformed_rejected(self):
         with pytest.raises(ValueError, match="invalid percentage"):
             cli.parse_quarantine_threshold("1.2.3%")
+
+    def test_inner_whitespace_around_percent_tolerated(self):
+        # A space between the number and the `%` is accepted: the helper
+        # strips the inner whitespace before parsing the float, so the
+        # value still resolves to the same percentage.
+        assert cli.parse_quarantine_threshold("1 %") == ("pct", 1.0)
+        assert cli.parse_quarantine_threshold("  1.5 %  ") == ("pct", 1.5)
