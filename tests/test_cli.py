@@ -34,18 +34,18 @@ class TestBuildParser:
     def test_parser_defaults(self):
         args = cli.build_parser().parse_args(["validate"])
         assert args.command == "validate"
-        # paths defaults to None so main() can tell "user passed nothing"
+        # path defaults to None so main() can tell "user passed nothing"
         # apart from "user explicitly passed the default" for error wording.
-        assert args.paths == []
+        assert args.path is None
         assert args.out_dir == "data/output"
         assert args.report == "text"
 
-    def test_parser_accepts_jobs_and_paths(self):
+    def test_parser_accepts_jobs_and_path(self):
         args = cli.build_parser().parse_args(
-            ["clean", "a.txt", "b.txt", "--jobs", "4", "--report", "json"]
+            ["clean", "a.txt", "--jobs", "4", "--report", "json"]
         )
         assert args.command == "clean"
-        assert args.paths == ["a.txt", "b.txt"]
+        assert args.path == "a.txt"
         assert args.jobs == 4
         assert args.report == "json"
 
@@ -66,6 +66,14 @@ class TestBuildParser:
         out = capsys.readouterr().out
         assert "Examples:" in out
         assert "Exit codes:" in out
+
+    def test_parser_rejects_multiple_positional_inputs(self):
+        # Single-input contract: only one positional allowed.
+        import pytest
+
+        with pytest.raises(SystemExit) as exc:
+            cli.build_parser().parse_args(["clean", "a.txt", "b.txt"])
+        assert exc.value.code == 2  # argparse usage error
 
 
 class TestCheckPaths:
@@ -302,49 +310,6 @@ class TestMain:
         rc = cli.main(["validate", str(src), "--jobs", "0"])
         assert rc == 2
         assert "--jobs must be >= 1" in capsys.readouterr().err
-
-    def test_main_returns_two_on_basename_collision(self, tmp_path, capsys):
-        # Two input dirs each contain a file named tle2022.txt — their cleaned
-        # and broken outputs would silently overwrite each other under
-        # data/output/. main() must catch this upfront and refuse the run.
-        dir_a = tmp_path / "a"
-        dir_a.mkdir()
-        dir_b = tmp_path / "b"
-        dir_b.mkdir()
-        (dir_a / "tle2022.txt").write_text("x")
-        (dir_b / "tle2022.txt").write_text("x")
-
-        rc = cli.main(["validate", str(dir_a), str(dir_b), "--jobs", "1"])
-
-        assert rc == 2
-        err = capsys.readouterr().err
-        assert "tle2022.txt" in err
-        assert "collision" in err.lower() or "overwrite" in err.lower()
-        assert "Traceback" not in err
-
-    def test_main_does_not_collide_when_same_file_listed_twice(
-        self, tmp_path, line1, line2
-    ):
-        # `lintle clean dirA dirA/tle.txt` resolves to one file via
-        # discover_paths' realpath dedup — there's no collision to report.
-        src = tmp_path / "src"
-        src.mkdir()
-        f = src / "tle2099.txt"
-        f.write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
-
-        rc = cli.main(
-            [
-                "clean",
-                str(src),
-                str(f),
-                "--out-dir",
-                str(tmp_path / "out"),
-                "--jobs",
-                "1",
-            ]
-        )
-
-        assert rc == 0
 
     def test_main_returns_two_on_disk_shortfall(
         self, tmp_path, line1, line2, monkeypatch

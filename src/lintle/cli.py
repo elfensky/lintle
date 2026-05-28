@@ -204,14 +204,14 @@ def build_parser():
             formatter_class=argparse.RawDescriptionHelpFormatter,
         )
         sub.add_argument(
-            "paths",
-            nargs="*",
+            "path",
+            nargs="?",
             default=None,
             metavar="PATH",
             help=(
-                f"files or directories to process "
+                f"file or directory to process "
                 f"(default: {_DEFAULT_SOURCE}). "
-                "Directories are globbed for tle*.txt."
+                "A directory is globbed for tle*.txt."
             ),
         )
         sub.add_argument(
@@ -532,11 +532,12 @@ def main(argv=None):
             return 2
         return 0
 
-    # `args.paths` is None when the user passed nothing — fall back to the
+    # `args.path` is None when the user passed nothing — fall back to the
     # default source dir, and remember it so we can give a tailored error if
     # that default doesn't exist on this machine.
-    using_default = not args.paths
-    paths = args.paths or [_DEFAULT_SOURCE]
+    using_default = args.path is None
+    path = args.path if args.path is not None else _DEFAULT_SOURCE
+    paths = [path]  # transitional: remove once Tasks 3-4 migrate discover_paths/check_paths to str
 
     if args.jobs < 1:
         print(f"error: --jobs must be >= 1 (got {args.jobs})", file=sys.stderr)
