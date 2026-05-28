@@ -6,6 +6,8 @@ import queue
 import signal
 import time
 
+import pytest
+
 from lintle import cli, pipeline, report, resume
 
 
@@ -1220,3 +1222,64 @@ class TestResume:
         assert rc == 2
         assert "corrupt" in err.lower() or "unreadable" in err.lower()
         assert "no interrupted run" not in err.lower()
+
+
+class TestParseQuarantineThreshold:
+    """The ``--max-quarantined`` value parser. A bare integer is an absolute
+    count; a trailing ``%`` switches to a percentage of routed records. The
+    two modes are mutually exclusive by construction (a single value is one
+    or the other, never both).
+    """
+
+    def test_bare_integer_is_count_mode(self):
+        assert cli.parse_quarantine_threshold("100") == ("count", 100)
+
+    def test_zero_is_count_zero(self):
+        assert cli.parse_quarantine_threshold("0") == ("count", 0)
+
+    def test_trailing_percent_is_pct_mode(self):
+        assert cli.parse_quarantine_threshold("1%") == ("pct", 1.0)
+
+    def test_zero_percent_is_valid(self):
+        assert cli.parse_quarantine_threshold("0%") == ("pct", 0.0)
+
+    def test_hundred_percent_is_valid(self):
+        assert cli.parse_quarantine_threshold("100%") == ("pct", 100.0)
+
+    def test_fractional_percent(self):
+        assert cli.parse_quarantine_threshold("1.5%") == ("pct", 1.5)
+
+    def test_surrounding_whitespace_tolerated(self):
+        assert cli.parse_quarantine_threshold("  100  ") == ("count", 100)
+        assert cli.parse_quarantine_threshold("  1%  ") == ("pct", 1.0)
+
+    def test_negative_count_rejected_with_legacy_message(self):
+        # Preserves the issue-#13 substring required by the existing
+        # negative-value integration test in TestMaxQuarantinedThreshold.
+        with pytest.raises(ValueError, match=r"--max-quarantined must be >= 0"):
+            cli.parse_quarantine_threshold("-1")
+
+    def test_non_integer_count_rejected(self):
+        # Counts are whole records; "1.5" with no `%` is not a count.
+        with pytest.raises(ValueError, match="invalid value"):
+            cli.parse_quarantine_threshold("1.5")
+
+    def test_non_numeric_rejected(self):
+        with pytest.raises(ValueError, match="invalid value"):
+            cli.parse_quarantine_threshold("abc")
+
+    def test_bare_percent_rejected(self):
+        with pytest.raises(ValueError, match="invalid percentage"):
+            cli.parse_quarantine_threshold("%")
+
+    def test_pct_over_one_hundred_rejected(self):
+        with pytest.raises(ValueError, match=r"percentage must be in 0\.\.100"):
+            cli.parse_quarantine_threshold("150%")
+
+    def test_pct_negative_rejected(self):
+        with pytest.raises(ValueError, match=r"percentage must be in 0\.\.100"):
+            cli.parse_quarantine_threshold("-1%")
+
+    def test_pct_malformed_rejected(self):
+        with pytest.raises(ValueError, match="invalid percentage"):
+            cli.parse_quarantine_threshold("1.2.3%")
