@@ -30,8 +30,9 @@ Examples:
   lintle diff run-a/ run-b/               compare two runs' findings
 
 Exit codes:
-  0    no records quarantined — every defect repaired (or under --max-quarantined)
-  1    more than --max-quarantined records were quarantined (default threshold: 0)
+  0    quarantine count (or rate) is at or below --max-quarantined
+  1    quarantine count (or rate) exceeded --max-quarantined
+       (default: 0 — any quarantine fails)
   2    operational error (missing input, disk shortfall, file failure)
   130  interrupted (Ctrl-C)
 
@@ -234,11 +235,11 @@ def build_parser():
         )
         sub.add_argument(
             "--max-quarantined",
-            type=int,
-            default=0,
-            metavar="N",
+            default="0",
+            metavar="N[%]",
             help=(
-                "exit non-zero only if MORE than N records were quarantined "
+                "exit non-zero only if MORE than N records were quarantined; "
+                "or, with a trailing `%%`, more than N%% of routed records "
                 "(default: 0 — any quarantine fails)"
             ),
         )
@@ -500,11 +501,13 @@ class _ProgressDisplay:
 def main(argv=None):
     """Entry point for the ``lintle`` console script.
 
-    Returns the process exit code: ``0`` = total quarantined is at or below
-    ``--max-quarantined`` (default 0); ``1`` = more than ``--max-quarantined``
-    records quarantined; ``2`` = operational error (no input files, disk
-    shortfall, or a file that failed to process); ``130`` = interrupted with
-    Ctrl-C.
+    Returns the process exit code: ``0`` = quarantine count (or rate) is at
+    or below ``--max-quarantined``; ``1`` = it exceeded the threshold
+    (default ``0`` — any quarantine fails); ``2`` = operational error (no
+    input files, disk shortfall, or a file that failed to process); ``130``
+    = interrupted with Ctrl-C. The threshold accepts either an integer
+    record count (``--max-quarantined 100``) or a percentage of routed
+    records (``--max-quarantined 1%``); see :func:`parse_quarantine_threshold`.
     """
     args = build_parser().parse_args(argv)
 
@@ -539,11 +542,12 @@ def main(argv=None):
         print(f"error: --jobs must be >= 1 (got {args.jobs})", file=sys.stderr)
         return 2
 
-    if args.max_quarantined < 0:
-        print(
-            f"error: --max-quarantined must be >= 0 (got {args.max_quarantined})",
-            file=sys.stderr,
+    try:
+        quarantine_mode, quarantine_threshold = parse_quarantine_threshold(
+            args.max_quarantined
         )
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
         return 2
 
     path_error = check_paths(paths, using_default=using_default)
@@ -790,4 +794,11 @@ def main(argv=None):
     if failed_files:
         return 2
     total_quarantined = sum(s.quarantined_count for s in all_stats)
-    return 1 if total_quarantined > args.max_quarantined else 0
+    if quarantine_mode == "count":
+        return 1 if total_quarantined > quarantine_threshold else 0
+    # Rate mode: cross-multiplied (`100*q > p*r`) to avoid divide-by-zero on
+    # an empty corpus and float drift at the boundary. See design §3.
+    total_routed = sum(s.clean_count + s.quarantined_count for s in all_stats)
+    if 100 * total_quarantined > quarantine_threshold * total_routed:
+        return 1
+    return 0
