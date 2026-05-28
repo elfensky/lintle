@@ -75,6 +75,11 @@
   corpus — and the worker fsyncs its outputs before the parent records `completed`, so
   `--resume` can never trust a non-durable output. §15.4 retitled "Durability limit" →
   "Durability".
+  **2026-05-28:** §10 — `clean`'s preflight disk-space check gains a
+  borderline-warning band: free space below 2× input still aborts with exit
+  `2` (unchanged); 2× to 2.5× now prints a warning to stderr and proceeds;
+  above 2.5× is silent (unchanged). Internal: `cli._check_disk_space` returns
+  `(severity, message) | None` instead of `string | None` (PR #64).
 - **Topic:** A tool to validate and clean a multi-gigabyte corpus of Two-Line Element (TLE) files exported from space-track.org
 
 ## 1. Problem statement
@@ -588,6 +593,8 @@ Built so that a 20-minute run does not die on one bad byte:
   leaves a half-written `.cleaned.txt` that looks complete.
 - `clean` checks free space on `--out-dir` before starting (cleaned + broken output ≈ input size,
   plus transient headroom for the temp file), so a 20-minute run does not fail late on a full disk.
+  Free below the 2× input-size floor aborts with exit `2`; free in the 2× to 2.5× borderline
+  band prints a warning to stderr and proceeds; above 2.5× is silent.
 - Exit codes: `0` = clean (no defects, or — for `clean` — every defect was repaired and every
   emitted record is valid); `1` = **unrepairable** records exist (`validate`: at least one record
   *would* be quarantined; `clean`: records were routed to `.broken.txt`); `2` = operational error
