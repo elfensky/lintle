@@ -27,6 +27,25 @@ are genuinely corrupt (garbled columns, orphaned lines, wrong lengths).
 `lintle` distinguishes the safely-repairable from the genuinely-corrupt and
 treats each correctly.
 
+## What lintle will and won't reconstruct
+
+**lintle never invents data.** It emits only information that was already in the
+record. The single exception is the column-69 checksum — and it is an exception
+*precisely because* the checksum carries no information of its own: it is a
+deterministic mod-10 function of columns 1–68, so recomputing a missing one
+asserts nothing the record didn't already say. This is the **redundancy paradox**
+at the heart of the tool: the only field safe to rebuild is the one field that
+was redundant to begin with.
+
+Every other defect that could only be "fixed" by guessing a real data character
+is **quarantined, never repaired**. A mod-10 checksum has a 1-in-10 chance of
+accepting a wrong line by luck, so inventing an orbital-data character risks
+emitting a record that *looks* valid but is silently wrong — the one outcome
+worse than dropping it. When in doubt, lintle quarantines.
+
+See [How it works](#how-it-works) below for the fix-class table that
+operationalises this principle.
+
 ## How it works
 
 **One validator, used two ways.** A single module (`tle.py`) defines what a
