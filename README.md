@@ -252,6 +252,26 @@ processing 29 file(s) with 10 worker(s)...
 A worker emits a record-count line every 1,000,000 records; the main process
 prints an `[k/N]` line as each file finishes.
 
+## Disk-space requirements
+
+Every record is **routed** to exactly one of `cleaned/` or `broken/` — never
+duplicated — so the finished output is roughly the same total size as the
+input, plus negligible metadata (`report.md`, `report.jsonl`,
+`broken-noradids.ndjson`, and the transient `.shards/` findings, all tiny
+next to the records).
+
+Outputs are written to temporary `.partial` files and atomically renamed on
+completion. As a conservative guard, lintle checks free space up front and
+**requires roughly twice the total input size** on the `--out-dir` volume
+before it starts, aborting with exit `2` if short:
+
+```
+error: insufficient disk space in data/output: need ~63,000,000,000 bytes, have 40,000,000,000
+```
+
+Rule of thumb: for the bundled ~30 GB corpus, keep **~60 GB free**. (The
+12 GB `TLEs.zip` is not an input and is never read.)
+
 ## Results on the bundled corpus
 
 A full run over the 29-file corpus (`tle2004`–`tle2025`, ~232 million records):
