@@ -267,7 +267,7 @@ def build_parser():
     return parser
 
 
-def _check_disk_space(out_dir, files):
+def _check_disk_space(out_dir, input_bytes):
     """Return a ``(severity, message)`` tuple when ``out_dir``'s free space
     is at or near the 2× input-size guard, else ``None``. Severity is
     ``"error"`` when free is below 2× input (caller aborts with exit 2);
@@ -275,9 +275,10 @@ def _check_disk_space(out_dir, files):
     proceeds but surfaces the warning so the user knows they're cutting
     it close). Cleaned + broken output is ~1× input; the 2× guard leaves
     transient headroom for ``.partial`` files coexisting with their final
-    renames mid-run.
+    renames mid-run. ``input_bytes`` is the total source size, stat'd once
+    by the caller and shared with the roster and byte-bar denominators.
     """
-    needed = sum(os.path.getsize(f) for f in files) * 2
+    needed = input_bytes * 2
     free = shutil.disk_usage(out_dir).free
     if free < needed:
         return (
@@ -502,18 +503,19 @@ def _format_size(n_bytes):
         size /= 1024
 
 
-def _render_roster(console, files):
+def _render_roster(console, file_sizes):
     """Print a one-shot, size-only roster of the files to be processed — index,
-    basename, and size from ``os.path.getsize`` (no contents are read) — with a
-    final total row. Rendered via ``rich`` so it degrades to plain text off a
-    TTY (issue #53 §2.1)."""
+    basename, and size — with a final total row. ``file_sizes`` is an ordered
+    ``path -> size`` map the caller stat'd once (no contents are read), so the
+    roster, the disk-space guard, and the byte-bar denominators all agree.
+    Rendered via ``rich`` so it degrades to plain text off a TTY (issue #53
+    §2.1)."""
     table = Table(box=box.SIMPLE, pad_edge=False)
     table.add_column("#", justify="right", style="dim")
     table.add_column("file")
     table.add_column("size", justify="right")
     total = 0
-    for index, path in enumerate(files, start=1):
-        size = os.path.getsize(path)
+    for index, (path, size) in enumerate(file_sizes.items(), start=1):
         total += size
         table.add_row(str(index), os.path.basename(path), _format_size(size))
     table.add_section()
@@ -591,6 +593,12 @@ def main(argv=None):
             print("error: no input files found", file=sys.stderr)
         return 2
 
+    # Stat every input exactly once — the single source of size truth shared by
+    # the disk-space guard, the pre-run roster, and the live byte-bar
+    # denominators, so those three readouts can never silently diverge. Ordered
+    # by discovery so the roster lists files in a stable order.
+    file_sizes = {p: os.path.getsize(p) for p in files}
+
     # Defaults for the shared dispatch below; ``clean --resume`` narrows them.
     # ``inputs`` and ``completed`` drive the single-run resume checkpoint
     # (issue #56) and stay empty for ``validate``.
@@ -601,7 +609,7 @@ def main(argv=None):
 
     if args.command == "clean":
         os.makedirs(args.out_dir, exist_ok=True)
-        disk_status = _check_disk_space(args.out_dir, files)
+        disk_status = _check_disk_space(args.out_dir, sum(file_sizes.values()))
         if disk_status is not None:
             severity, msg = disk_status
             if severity == "error":
@@ -669,9 +677,9 @@ def main(argv=None):
     # block; off a TTY each degrades to plain text. Byte-bar denominators come
     # from os.stat (issue #53 §2.1/§2.2) — no pre-read of the corpus.
     console = Console(stderr=True)
-    sizes = {os.path.basename(p): os.path.getsize(p) for p in files_to_process}
+    sizes = {os.path.basename(p): file_sizes[p] for p in files_to_process}
     if args.command == "clean":
-        _render_roster(console, files_to_process)
+        _render_roster(console, {p: file_sizes[p] for p in files_to_process})
 
     reused_n = len(reused_stats)
     if reused_n:

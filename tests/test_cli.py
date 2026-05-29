@@ -79,7 +79,7 @@ class TestRenderRoster:
         f2.write_bytes(b"y" * 512)  # 512 B
         console = Console(file=io.StringIO(), width=80)
 
-        cli._render_roster(console, [str(f1), str(f2)])
+        cli._render_roster(console, {str(f1): 1536, str(f2): 512})
 
         out = console.file.getvalue()
         assert "tle2001.txt" in out
@@ -89,17 +89,16 @@ class TestRenderRoster:
         assert "total" in out
         assert "2.0 KB" in out  # 1536 + 512 = 2048 bytes
 
-    def test_sizes_come_from_stat_not_contents(self, tmp_path, monkeypatch):
-        # The roster's sizes come from os.path.getsize (a stat), never from
-        # reading file contents — the whole point of dropping the pre-scan.
+    def test_renders_the_sizes_it_is_given(self, tmp_path):
+        # The roster renders the caller-supplied sizes verbatim — it never
+        # reads file contents (the caller stats once; the roster just displays).
         f1 = tmp_path / "tle2001.txt"
-        f1.write_bytes(b"ignored")  # 7 bytes on disk
-        monkeypatch.setattr(cli.os.path, "getsize", lambda _p: 2048)
+        f1.write_bytes(b"ignored")  # 7 bytes on disk, irrelevant
         console = Console(file=io.StringIO(), width=80)
 
-        cli._render_roster(console, [str(f1)])
+        cli._render_roster(console, {str(f1): 2048})
 
-        # 2.0 KB proves getsize (2048) was used, not the 7-byte content.
+        # 2.0 KB proves the passed size (2048) was used, not the 7-byte content.
         assert "2.0 KB" in console.file.getvalue()
 
 
