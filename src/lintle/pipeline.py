@@ -45,8 +45,10 @@ def iter_records(path, stats=None):
     one missing line cannot cascade into a run of mispaired records.
 
     When ``stats`` is given, ``stats.input_lines_seen`` is updated to the
-    1-indexed lineno of the line just consumed — including blanks the
-    pairing loop drops, so the counter reflects every physical line read.
+    1-indexed lineno of the line just consumed and ``stats.bytes_consumed``
+    accumulates each line's raw byte length — both including blanks the
+    pairing loop drops, so the counters reflect every physical line and byte
+    read (``bytes_consumed`` reaches ``st_size`` at EOF).
     """
     held = None  # (raw_bytes, line_number) of a line-1 awaiting its line-2
 
@@ -54,6 +56,7 @@ def iter_records(path, stats=None):
         for lineno, raw in enumerate(handle, start=1):
             if stats is not None:
                 stats.input_lines_seen = lineno
+                stats.bytes_consumed += len(raw)
             line = raw.rstrip(b"\n")
             if line.strip(b" \t\r") == b"":
                 continue  # blank, whitespace-only, or CR-only line — dropped
@@ -113,13 +116,15 @@ def process_file(src_path, out_dir, mode, progress_queue=None, progress_every=25
     written to a temp file and atomically renamed, so an interrupted run
     never leaves a half-written output.
 
-    When ``progress_queue`` is given, the count of newly processed records
-    is pushed to it every ``progress_every`` records — and once more when
-    the file ends — so the caller can render live progress. The queue also
-    receives ``("start", src_name)`` before processing begins and
-    ``("end", src_name)`` in a ``finally`` (so failures still emit it),
-    letting the caller track which files are currently in flight. With no
-    queue (or ``progress_every`` set to 0) no progress is reported.
+    When ``progress_queue`` is given, a per-file delta message
+    ``("progress", src_name, bytes_delta, records_delta)`` is pushed every
+    ``progress_every`` records — and once more when the file ends — so the
+    caller can render live byte + record progress; the byte deltas sum to the
+    file's size. The queue also receives ``("start", src_name)`` before
+    processing begins and ``("end", src_name)`` in a ``finally`` (so failures
+    still emit it), letting the caller track which files are currently in
+    flight. With no queue (or ``progress_every`` set to 0) no progress is
+    reported.
     """
     src_name = os.path.basename(src_path)
     stats = report.FileStats(src_name=src_name)
@@ -204,7 +209,7 @@ def _run(src_path, out_dir, mode, stats, progress_queue, progress_every):
     # split: paired_records and orphan_entries each advance on their own
     # branch below, but progress is an aggregate signal.
     entries_processed = 0
-    bytes_since_flush = 0
+    bytes_flushed = 0  # bytes already reported via the progress queue
     records_since_flush = 0
     with sink:
         try:
@@ -219,29 +224,24 @@ def _run(src_path, out_dir, mode, stats, progress_queue, progress_every):
             for candidate in iter_records(src_path, stats):
                 entries_processed += 1
 
-                # Accumulate a per-file progress delta (bytes + records) and
-                # flush it as one ``("progress", name, bytes, records)`` message
-                # every ``progress_every`` records (issue #53 §6). Bytes are the
-                # raw line lengths (each yielded line plus its newline), so the
-                # caller's byte-bar denominator (st_size) is tracked closely.
+                # Flush one ``("progress", name, bytes, records)`` message every
+                # ``progress_every`` records (issue #53 §6). The byte delta is
+                # the advance in ``stats.bytes_consumed`` — the true file offset
+                # tracked by ``iter_records``, counting dropped blank lines and
+                # exact newline widths — so the deltas sum to st_size exactly.
                 if progress_queue is not None and progress_every:
-                    if isinstance(candidate, Orphan):
-                        bytes_since_flush += len(candidate.raw_line) + 1
-                    else:
-                        bytes_since_flush += (
-                            len(candidate.raw_line1) + len(candidate.raw_line2) + 2
-                        )
                     records_since_flush += 1
                     if entries_processed % progress_every == 0:
+                        byte_delta = stats.bytes_consumed - bytes_flushed
                         progress_queue.put(
                             (
                                 "progress",
                                 stats.src_name,
-                                bytes_since_flush,
+                                byte_delta,
                                 records_since_flush,
                             )
                         )
-                        bytes_since_flush = 0
+                        bytes_flushed += byte_delta
                         records_since_flush = 0
 
                 if isinstance(candidate, Orphan):
@@ -297,10 +297,15 @@ def _run(src_path, out_dir, mode, stats, progress_queue, progress_every):
                         result.source_lines,
                     )
             # Push the trailing partial batch so the caller's tally is exact.
-            if progress_queue is not None and progress_every and records_since_flush:
-                progress_queue.put(
-                    ("progress", stats.src_name, bytes_since_flush, records_since_flush)
-                )
+            # ``byte_delta`` can be non-zero with zero records when the file
+            # ends in dropped blank lines — still flush it so the byte bar
+            # reaches st_size.
+            if progress_queue is not None and progress_every:
+                byte_delta = stats.bytes_consumed - bytes_flushed
+                if byte_delta or records_since_flush:
+                    progress_queue.put(
+                        ("progress", stats.src_name, byte_delta, records_since_flush)
+                    )
             completed = True
         finally:
             if cleaned_handle is not None:

@@ -38,6 +38,31 @@ class TestProgressQueue:
         assert sum(m[3] for m in progress) == 1  # one record processed
         assert sum(m[2] for m in progress) == src.stat().st_size  # bytes == file
 
+    def test_byte_deltas_sum_to_st_size_with_dropped_lines(
+        self, tmp_path, line1, line2
+    ):
+        # Byte deltas track the true file offset, so dropped blank/CR-only
+        # separator lines and a missing final newline are all accounted for:
+        # the reported bytes still sum to st_size exactly (issue #53).
+        src = tmp_path / "tle2099.txt"
+        # Blank + CR-only separators between records, no trailing newline.
+        src.write_bytes(
+            (line1 + "\n\n\r\n" + line2 + "\n" + line1 + "\n\n" + line2).encode("ascii")
+        )
+        out = tmp_path / "out"
+        q = queue.Queue()
+
+        pipeline.process_file(str(src), str(out), "clean", q, progress_every=1)
+
+        progress = []
+        while not q.empty():
+            msg = q.get_nowait()
+            if msg[0] == "progress":
+                progress.append(msg)
+
+        assert sum(m[2] for m in progress) == src.stat().st_size
+        assert sum(m[3] for m in progress) == 2  # two records processed
+
 
 class TestIterRecords:
     def test_pairs_simple_records(self, tmp_path, line1, line2):
