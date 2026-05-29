@@ -15,7 +15,7 @@ changes.
 
 ## Tech Stack
 
-Python 3.14 · uv · lean runtime (**currently zero third-party deps**) · `sgp4` (dev-only
+Python 3.14 · uv · lean runtime (**`rich`** — the one third-party dep) · `sgp4` (dev-only
 test oracle) · `pytest` · `pytest-cov` · `ruff`
 
 **Runtime dependencies** are governed by a four-MUST-bar policy — *earns its weight ·
@@ -23,8 +23,9 @@ mature · small transitive surface · operational fit*; the aim (stable/maintain
 understandable) is a veto, never a waiver. The canonical rule and the considered/deferred
 table live in the authoritative spec §3.1
 (`docs/superpowers/specs/2026-05-21-tle-corpus-cleaner-design.md`); rationale in
-`2026-05-28-runtime-dependency-policy-design.md`. **Current runtime deps: none.** `sgp4`
-and `pytest` are dev-only; `sgp4` is a test oracle and must never be imported at runtime.
+`2026-05-28-runtime-dependency-policy-design.md`. **Current runtime deps: `rich>=13,<14`**
+(terminal rendering for `clean`). `sgp4` and `pytest` are dev-only; `sgp4` is a test
+oracle and must never be imported at runtime.
 
 ## Critical Rules — principles that must not be violated
 
