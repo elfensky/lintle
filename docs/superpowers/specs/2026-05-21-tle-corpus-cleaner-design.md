@@ -233,7 +233,8 @@ never its file location. The core stays auditable because bar 1 rejects most cor
 their own (the validator is simple stdlib code) and bar 4 + the Critical Rules cover the
 behavioural risks.
 
-**Current runtime dependencies: none** (`dependencies = []`).
+**Current runtime dependencies: `rich>=13,<14`** — terminal rendering for the `clean`
+progress UI (issue #53).
 
 #### Considered & deferred (canonical record)
 
@@ -250,7 +251,7 @@ behavioural risks.
 | `tqdm` | **Reject** | Can't render a dynamic block of N concurrent bars whose set changes; we'd rebuild it ourselves. |
 | `textual` | **Reject** | Full TUI framework; we want a progress block, not an app. |
 | `blessed` / `prompt_toolkit` | **Reject** | Lower-level; still ~50 lines of layout glue. `rich` fits better. |
-| `rich` | **Candidate (pending issue #53 evidence)** | Plausibly clears all four bars for the issue-53 progress UI (~150 lines of gotcha-prone ANSI replaced; mature; pure-Python; transitive `markdown-it-py` + `pygments`). **Not approved; `dependencies = []` holds.** Approval is evidence-driven, in the adopting PR. A parity-only swap fails bar 1. |
+| `rich` | **Adopted (issue #53)** | Drives the `clean` progress UI (multi-file live block + size-only roster). Cleared all four bars: replaced ~150 lines of hand-rolled ANSI in `cli.py`; mature (`pip`/`uv`/`pdm`/`typer`); pure-Python; transitive `markdown-it-py` + `pygments`; terminal-rendering only in `cli.py`, no streaming-path or memory impact. A parity-only swap would have failed bar 1. |
 | `zstandard` | **Defer (trigger-gated)** | Only if output size / transfer time becomes a *measured* bottleneck (compressing sidecars/shards). Trigger: file a ticket with the measurement; until then stdlib `gzip`. Native ext → must clear bar 4. |
 
 Dev-only (exempt from the bars; record purpose/scope; land any time): `hypothesis`

@@ -25,10 +25,10 @@ uv add --group dev <pkg>   # Add a dev-only dependency
 uv sync                    # Reinstall from the lock file (after a pull)
 ```
 
-The **runtime currently has no third-party dependencies.** Adding one is governed by the
-four-MUST-bar policy (earns its weight · mature · small transitive surface · operational
-fit; the aim is a veto, never a waiver) — the canonical rule and considered/deferred table
-live in the authoritative spec §3.1
+The runtime's one third-party dependency is **`rich`** (`>=13,<14`, terminal rendering for
+`clean`). Further additions are governed by the four-MUST-bar policy (earns its weight ·
+mature · small transitive surface · operational fit; the aim is a veto, never a waiver) —
+the canonical rule and considered/deferred table live in the authoritative spec §3.1
 (`docs/superpowers/specs/2026-05-21-tle-corpus-cleaner-design.md`). `sgp4` is a dev-only
 test oracle and must never be imported at runtime.
 
