@@ -204,6 +204,8 @@ def _run(src_path, out_dir, mode, stats, progress_queue, progress_every):
     # split: paired_records and orphan_entries each advance on their own
     # branch below, but progress is an aggregate signal.
     entries_processed = 0
+    bytes_since_flush = 0
+    records_since_flush = 0
     with sink:
         try:
             # Input size for the v1 envelope (issue #20). Captured inside
@@ -217,12 +219,30 @@ def _run(src_path, out_dir, mode, stats, progress_queue, progress_every):
             for candidate in iter_records(src_path, stats):
                 entries_processed += 1
 
-                if (
-                    progress_queue is not None
-                    and progress_every
-                    and entries_processed % progress_every == 0
-                ):
-                    progress_queue.put(progress_every)
+                # Accumulate a per-file progress delta (bytes + records) and
+                # flush it as one ``("progress", name, bytes, records)`` message
+                # every ``progress_every`` records (issue #53 §6). Bytes are the
+                # raw line lengths (each yielded line plus its newline), so the
+                # caller's byte-bar denominator (st_size) is tracked closely.
+                if progress_queue is not None and progress_every:
+                    if isinstance(candidate, Orphan):
+                        bytes_since_flush += len(candidate.raw_line) + 1
+                    else:
+                        bytes_since_flush += (
+                            len(candidate.raw_line1) + len(candidate.raw_line2) + 2
+                        )
+                    records_since_flush += 1
+                    if entries_processed % progress_every == 0:
+                        progress_queue.put(
+                            (
+                                "progress",
+                                stats.src_name,
+                                bytes_since_flush,
+                                records_since_flush,
+                            )
+                        )
+                        bytes_since_flush = 0
+                        records_since_flush = 0
 
                 if isinstance(candidate, Orphan):
                     stats.orphan_entries += 1
@@ -277,10 +297,10 @@ def _run(src_path, out_dir, mode, stats, progress_queue, progress_every):
                         result.source_lines,
                     )
             # Push the trailing partial batch so the caller's tally is exact.
-            if progress_queue is not None and progress_every:
-                remainder = entries_processed % progress_every
-                if remainder:
-                    progress_queue.put(remainder)
+            if progress_queue is not None and progress_every and records_since_flush:
+                progress_queue.put(
+                    ("progress", stats.src_name, bytes_since_flush, records_since_flush)
+                )
             completed = True
         finally:
             if cleaned_handle is not None:

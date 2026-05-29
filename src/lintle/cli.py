@@ -15,6 +15,8 @@ import threading
 import time
 
 from rich import box
+from rich.console import Console
+from rich.progress import BarColumn, Progress, TaskProgressColumn, TextColumn
 from rich.table import Table
 
 from lintle import __version__, diff, explain, pipeline, report, resume
@@ -343,139 +345,141 @@ def _format_elapsed(seconds):
 
 
 class _ProgressDisplay:
-    """A live, single-line progress indicator for a parallel run.
+    """Live multi-file progress for a parallel run, driven by ``rich``.
 
-    On a terminal, a background thread repaints one self-overwriting line
-    — spinner, elapsed time, files completed, and the running total of
-    records processed (workers stream their counts in over the progress
-    queue). When stderr is not a TTY (a pipe or a log file) there is no
-    spinner: one plain line is printed per completed file instead, so
-    redirected output stays readable.
-
-    Used as a context manager: the thread starts on entry and is stopped,
-    with the live line cleared, on exit.
+    On a TTY a ``rich.progress.Progress`` shows an overall line (files done /
+    total, elapsed, total records, rec/s) plus one row per in-flight file (a
+    byte-progress bar + that file's running record count). Off a TTY the live
+    block is suppressed and one plain line — with exact clean/quarantined
+    counts — is printed per completed file. A daemon thread drains the worker
+    progress queue; ``rich`` owns all terminal control (cursor, resize,
+    ``NO_COLOR``, clear-on-exit). Used as a context manager.
     """
 
-    _SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
-    _REFRESH = 0.1  # seconds between repaints — ~10 fps: smooth but cheap
+    _REFRESH = 0.1  # seconds between queue drains
 
-    def __init__(self, total_files, progress_queue):
+    def __init__(self, total_files, progress_queue, console, sizes):
         self._total_files = total_files
         self._queue = progress_queue
-        self._live = sys.stderr.isatty()
+        self._console = console
+        self._sizes = sizes
+        self._live = console.is_terminal
         self._records = 0
         self._files_done = 0
-        self._frame = 0
         self._start = time.monotonic()
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
-        # Files currently in flight, keyed by basename in insertion order so
-        # the earliest entry is the candidate "slow" file once peers finish.
-        # Values are start-times — kept for symmetry with the worker events,
-        # not currently rendered.
-        self._active = {}
+        self._file_records = {}  # name -> running record count
+        self._tasks = {}  # name -> rich TaskID (live mode only)
+        self._progress = None
+        self._overall = None
 
     def __enter__(self):
+        if self._live:
+            self._progress = Progress(
+                TextColumn("{task.fields[label]}"),
+                BarColumn(bar_width=None),
+                TaskProgressColumn(),
+                TextColumn("{task.fields[detail]}"),
+                console=self._console,
+                transient=True,
+            )
+            self._progress.start()
+            self._overall = self._progress.add_task(
+                "overall", label="overall", total=self._total_files, detail=""
+            )
         self._thread.start()
         return self
 
     def __exit__(self, *_exc):
         self._stop.set()
         self._thread.join()
-        if self._live:
-            sys.stderr.write("\r\x1b[K")
-            sys.stderr.flush()
+        if self._progress is not None:
+            self._progress.stop()
         return False
 
     def file_done(self, stats):
-        """Count a finished file; off a TTY, log its one-line summary."""
-        done = self._advance()
-        if not self._live:
-            self.log(
-                f"[{done}/{self._total_files}] {stats.src_name} — "
-                f"{stats.clean_count:,} clean, "
-                f"{stats.quarantined_count:,} quarantined"
-            )
+        """Count a finished file and print its one-line summary with exact
+        clean/quarantined counts (above the live block on a TTY)."""
+        self._complete(
+            f"{stats.src_name} — {stats.clean_count:,} clean, "
+            f"{stats.quarantined_count:,} quarantined"
+        )
 
     def file_failed(self, path, exc):
-        """Count a file that could not be processed and log the error."""
-        done = self._advance()
-        self.log(f"[{done}/{self._total_files}] error processing {path}: {exc!r}")
+        """Count a file that could not be processed and print the error."""
+        self._complete(f"error processing {path}: {exc!r}")
 
-    def log(self, message):
-        """Print a line without the live status line swallowing it."""
-        with self._lock:
-            if self._live:
-                sys.stderr.write("\r\x1b[K")
-            sys.stderr.write(message + "\n")
-            sys.stderr.flush()
-
-    def _advance(self):
+    def _complete(self, summary):
         with self._lock:
             self._files_done += 1
-            return self._files_done
+            done = self._files_done
+            if self._live:
+                self._progress.update(self._overall, completed=self._files_done)
+        target = self._progress.console if self._live else self._console
+        target.print(f"[{done}/{self._total_files}] {summary}", markup=False)
 
     def _run(self):
-        # The display is cosmetic: never let a broken progress queue (e.g.
-        # its manager gone mid-shutdown) crash this thread with a traceback.
+        # The display is cosmetic: a broken queue (its manager gone at
+        # shutdown) must never crash this thread with a traceback.
         with contextlib.suppress(Exception):
             while not self._stop.is_set():
                 self._drain()
-                if self._live:
-                    self._render()
                 self._stop.wait(self._REFRESH)
             self._drain()
 
     def _drain(self):
-        """Fold every queued message into the running state. Two kinds
-        share one queue: ``int`` deltas (records processed since the last
-        tick) and ``(kind, name)`` lifecycle events (``"start"`` / ``"end"``)
-        from each worker.
-        """
-        batch = 0
-        started = []
-        ended = []
+        """Fold queued messages into running state. Shapes: ``("start", name)``
+        / ``("end", name)`` lifecycle and ``("progress", name, bytes_delta,
+        records_delta)`` per-file deltas (issue #53 §6)."""
+        msgs = []
         with contextlib.suppress(queue.Empty):
             while True:
-                msg = self._queue.get_nowait()
-                if isinstance(msg, int):
-                    batch += msg
-                else:
-                    kind, name = msg
-                    (started if kind == "start" else ended).append(name)
-        if batch or started or ended:
-            with self._lock:
-                self._records += batch
-                for name in started:
-                    self._active[name] = time.monotonic()
-                for name in ended:
-                    self._active.pop(name, None)
-
-    def _render(self):
+                msgs.append(self._queue.get_nowait())
+        if not msgs:
+            return
         with self._lock:
-            frame = self._SPINNER[self._frame % len(self._SPINNER)]
-            self._frame += 1
-            elapsed = time.monotonic() - self._start
-            # Guard against the first frame's near-zero elapsed: integer
-            # division by 0 raises; floor it to 0 rec/s until time accrues.
-            rps = int(self._records / elapsed) if elapsed >= 1.0 else 0
-            line = (
-                f"{frame} {_format_elapsed(elapsed)} · "
-                f"{self._files_done}/{self._total_files} files · "
-                f"{self._records:,} records · "
-                f"{rps:,} rec/s"
-            )
-            if self._active:
-                # The oldest entry is the longest-running file — the one
-                # that surfaces alone once peers finish, which is the whole
-                # point of showing names at all.
-                names = list(self._active)
-                line += f" · {names[0]}"
-                if len(names) > 1:
-                    line += f" +{len(names) - 1} more"
-            sys.stderr.write("\r\x1b[K" + line)
-            sys.stderr.flush()
+            for msg in msgs:
+                kind = msg[0]
+                if kind == "progress":
+                    _, name, byte_delta, record_delta = msg
+                    self._records += record_delta
+                    self._file_records[name] = (
+                        self._file_records.get(name, 0) + record_delta
+                    )
+                    if self._live and name in self._tasks:
+                        self._progress.update(
+                            self._tasks[name],
+                            advance=byte_delta,
+                            detail=f"{self._file_records[name]:,} rec",
+                        )
+                elif kind == "start":
+                    name = msg[1]
+                    self._file_records.setdefault(name, 0)
+                    if self._live:
+                        self._tasks[name] = self._progress.add_task(
+                            name,
+                            label=name,
+                            total=self._sizes.get(name),
+                            detail="0 rec",
+                        )
+                elif kind == "end":
+                    name = msg[1]
+                    if self._live and name in self._tasks:
+                        self._progress.remove_task(self._tasks.pop(name))
+                    self._file_records.pop(name, None)
+            if self._live:
+                self._update_overall()
+
+    def _update_overall(self):
+        elapsed = time.monotonic() - self._start
+        rps = int(self._records / elapsed) if elapsed >= 1.0 else 0
+        self._progress.update(
+            self._overall,
+            completed=self._files_done,
+            detail=f"{_format_elapsed(elapsed)} · {self._records:,} rec · {rps:,}/s",
+        )
 
 
 def resolve_jobs(explicit, cpu_count, n_files):
@@ -661,6 +665,14 @@ def main(argv=None):
     # count and floored at one (issue #53 §2.3).
     jobs = resolve_jobs(args.jobs, os.cpu_count(), len(files_to_process))
 
+    # One rich Console on stderr drives both the roster and the live progress
+    # block; off a TTY each degrades to plain text. Byte-bar denominators come
+    # from os.stat (issue #53 §2.1/§2.2) — no pre-read of the corpus.
+    console = Console(stderr=True)
+    sizes = {os.path.basename(p): os.path.getsize(p) for p in files_to_process}
+    if args.command == "clean":
+        _render_roster(console, files_to_process)
+
     reused_n = len(reused_stats)
     if reused_n:
         print(
@@ -712,7 +724,9 @@ def main(argv=None):
                 ): path
                 for path in files_to_process
             }
-            with _ProgressDisplay(len(files_to_process), progress_queue) as progress:
+            with _ProgressDisplay(
+                len(files_to_process), progress_queue, console, sizes
+            ) as progress:
                 for future in concurrent.futures.as_completed(futures):
                     path = futures[future]
                     try:
