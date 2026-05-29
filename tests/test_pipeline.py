@@ -10,6 +10,35 @@ from lintle import pipeline, report
 from lintle.diagnostics import RuleID
 
 
+class TestProgressQueue:
+    """process_file's progress-queue protocol (issue #53 §6)."""
+
+    def test_emits_unified_progress_messages(self, tmp_path, line1, line2):
+        # With a queue, process_file emits start, then
+        # ("progress", name, bytes_delta, records_delta), then end.
+        src = tmp_path / "tle2099.txt"
+        src.write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
+        out = tmp_path / "out"
+        q = queue.Queue()
+
+        pipeline.process_file(str(src), str(out), "clean", q, progress_every=1)
+
+        msgs = []
+        while not q.empty():
+            msgs.append(q.get_nowait())
+
+        assert msgs[0] == ("start", "tle2099.txt")
+        assert msgs[-1] == ("end", "tle2099.txt")
+        progress = [m for m in msgs if m[0] == "progress"]
+        assert progress, "expected at least one progress message"
+        assert all(
+            name == "tle2099.txt" and b > 0 and r > 0
+            for (_kind, name, b, r) in progress
+        )
+        assert sum(m[3] for m in progress) == 1  # one record processed
+        assert sum(m[2] for m in progress) == src.stat().st_size  # bytes == file
+
+
 class TestIterRecords:
     def test_pairs_simple_records(self, tmp_path, line1, line2):
         src = tmp_path / "in.txt"
@@ -243,9 +272,9 @@ class TestProcessFile:
         assert not list(out.rglob("*.partial"))  # but no partial temp file leaked
 
     def test_process_file_pushes_progress_to_queue(self, tmp_path, line1, line2):
-        # With a queue, process_file streams record-count deltas to it; the
-        # deltas sum to the exact record total — a partial trailing batch
-        # included — so the caller can render an accurate live count.
+        # With a queue, process_file streams ("progress", name, bytes, records)
+        # deltas; the record deltas sum to the exact total — a partial trailing
+        # batch included — so the caller can render an accurate live count.
         src = tmp_path / "tle2099.txt"
         src.write_bytes(
             ((line1 + "\n" + line2 + "\n") * 3).encode("ascii")
@@ -261,9 +290,10 @@ class TestProcessFile:
         messages = []
         while not progress.empty():
             messages.append(progress.get_nowait())
-        # Tuples are lifecycle events; ints are record-count deltas.
-        deltas = [m for m in messages if isinstance(m, int)]
-        assert sum(deltas) == 3
+        # ("progress", name, bytes_delta, records_delta): record deltas sum to
+        # the exact total (one flush of 2 records + a trailing flush of 1).
+        record_deltas = [m[3] for m in messages if m[0] == "progress"]
+        assert sum(record_deltas) == 3
 
     def test_process_file_emits_start_and_end_events(self, tmp_path, line1, line2):
         # The display needs to know which files are in flight to surface

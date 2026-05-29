@@ -5,7 +5,6 @@ import json
 import os
 import queue
 import signal
-import time
 
 import pytest
 from rich.console import Console
@@ -102,6 +101,74 @@ class TestRenderRoster:
 
         # 2.0 KB proves getsize (2048) was used, not the 7-byte content.
         assert "2.0 KB" in console.file.getvalue()
+
+
+class TestProgressDisplayDrain:
+    """_ProgressDisplay folds the queue into running state (issue #53 §6).
+
+    These exercise the mode-independent tally/lifecycle logic (not rich's
+    rendering), so they run with a non-terminal console.
+    """
+
+    def _display(self, q):
+        console = Console(file=io.StringIO(), force_terminal=False, width=100)
+        return cli._ProgressDisplay(
+            total_files=2,
+            progress_queue=q,
+            console=console,
+            sizes={"a": 1000, "b": 500},
+        )
+
+    def test_progress_accumulates_overall_and_per_file_records(self):
+        q = queue.Queue()
+        disp = self._display(q)
+        for msg in [
+            ("start", "a"),
+            ("progress", "a", 100, 5),
+            ("progress", "a", 50, 3),
+        ]:
+            q.put(msg)
+        disp._drain()
+        assert disp._records == 8
+        assert disp._file_records["a"] == 8
+
+    def test_records_sum_across_files(self):
+        q = queue.Queue()
+        disp = self._display(q)
+        for msg in [
+            ("start", "a"),
+            ("start", "b"),
+            ("progress", "a", 10, 4),
+            ("progress", "b", 20, 6),
+        ]:
+            q.put(msg)
+        disp._drain()
+        assert disp._records == 10
+        assert disp._file_records == {"a": 4, "b": 6}
+
+    def test_end_clears_per_file_state_but_keeps_overall(self):
+        q = queue.Queue()
+        disp = self._display(q)
+        for msg in [("start", "a"), ("progress", "a", 10, 4), ("end", "a")]:
+            q.put(msg)
+        disp._drain()
+        assert "a" not in disp._file_records
+        assert disp._records == 4  # overall tally survives the file ending
+
+    def test_file_done_counts_and_logs_in_non_tty(self):
+        q = queue.Queue()
+        console = Console(file=io.StringIO(), force_terminal=False, width=100)
+        disp = cli._ProgressDisplay(2, q, console, sizes={})
+        stats = report.FileStats(src_name="tle2001.txt")
+        stats.clean_count = 7
+        stats.quarantined_count = 2
+
+        disp.file_done(stats)
+
+        out = console.file.getvalue()
+        assert disp._files_done == 1
+        assert "tle2001.txt" in out
+        assert "7" in out and "2" in out
 
 
 class TestBuildParser:
@@ -952,188 +1019,55 @@ class TestShutdownHelpers:
         assert "_processes" in err
 
 
-class TestProgressDisplay:
-    def test_drain_folds_queued_deltas_into_total(self):
-        progress = queue.Queue()
-        progress.put(10)
-        progress.put(5)
-        display = cli._ProgressDisplay(total_files=3, progress_queue=progress)
+class TestProgressDisplayRendering:
+    """_ProgressDisplay output and TTY/non-TTY modes (issue #53)."""
 
-        display._drain()
+    def test_file_failed_counts_and_logs_error(self):
+        console = Console(file=io.StringIO(), force_terminal=False, width=100)
+        disp = cli._ProgressDisplay(1, queue.Queue(), console, sizes={})
 
-        assert display._records == 15
+        disp.file_failed("bad.txt", RuntimeError("boom"))
 
-    def test_render_writes_a_status_line(self, capsys):
-        display = cli._ProgressDisplay(total_files=3, progress_queue=queue.Queue())
-        display._live = True
-        display._records = 1234
+        out = console.file.getvalue()
+        assert disp._files_done == 1
+        assert "[1/1]" in out and "bad.txt" in out and "boom" in out
 
-        display._render()
+    def test_non_tty_emits_no_ansi(self):
+        # Off a TTY the live block is suppressed and the per-file completion
+        # line is plain text — no ANSI escape sequences.
+        console = Console(file=io.StringIO(), force_terminal=False, width=100)
+        disp = cli._ProgressDisplay(1, queue.Queue(), console, sizes={"a": 100})
+        assert disp._live is False
+        stats = report.FileStats(src_name="a")
+        stats.clean_count = 1
+        stats.quarantined_count = 0
 
-        err = capsys.readouterr().err
-        assert "0/3 files" in err
-        assert "1,234 records" in err
+        disp.file_done(stats)
 
-    def test_render_includes_records_per_second(self, capsys, monkeypatch):
-        # Long runs are easier to monitor with a throughput number. Stubbing
-        # cli.time.monotonic pins elapsed to exactly 4 seconds so the rate
-        # is exactly 2,500 rec/s, not 2,499 (real-clock drift between the
-        # _start assignment and the _render call would otherwise floor it).
-        display = cli._ProgressDisplay(total_files=1, progress_queue=queue.Queue())
-        display._live = True
-        display._records = 10_000
-        display._start = 0.0
-        monkeypatch.setattr(cli.time, "monotonic", lambda: 4.0)
+        out = console.file.getvalue()
+        assert "\x1b[" not in out  # no ANSI escapes
+        assert "a — 1 clean, 0 quarantined" in out
 
-        display._render()
+    def test_live_mode_tracks_per_file_tasks(self):
+        # On a (forced) TTY, entering starts the rich live block; a per-file
+        # task appears on "start", advances on "progress", and is removed on
+        # "end". The drain thread is halted so the assertions are deterministic.
+        q = queue.Queue()
+        console = Console(file=io.StringIO(), force_terminal=True, width=100)
+        disp = cli._ProgressDisplay(1, q, console, sizes={"a": 1000})
+        with disp:
+            disp._stop.set()  # halt the drain thread; drive _drain ourselves
+            disp._thread.join()
 
-        err = capsys.readouterr().err
-        assert "2,500 rec/s" in err
+            q.put(("start", "a"))
+            q.put(("progress", "a", 200, 9))
+            disp._drain()
+            assert "a" in disp._tasks
+            assert disp._records == 9
 
-    def test_render_rps_handles_zero_elapsed_without_dividing(
-        self, capsys, monkeypatch
-    ):
-        # On the first frame elapsed is sub-second — never raise
-        # ZeroDivisionError, just show 0 rec/s until a second has passed.
-        display = cli._ProgressDisplay(total_files=1, progress_queue=queue.Queue())
-        display._live = True
-        display._records = 100
-        display._start = 0.0
-        monkeypatch.setattr(cli.time, "monotonic", lambda: 0.0)
-
-        display._render()
-
-        err = capsys.readouterr().err
-        assert "0 rec/s" in err
-
-    def test_render_shows_the_active_filename(self, capsys):
-        display = cli._ProgressDisplay(total_files=2, progress_queue=queue.Queue())
-        display._live = True
-        display._active["tle2024.txt"] = 0.0
-
-        display._render()
-
-        assert "tle2024.txt" in capsys.readouterr().err
-
-    def test_render_collapses_multiple_active_files(self, capsys):
-        # With --jobs N, several files run in parallel. Show the
-        # earliest-started one (the candidate slow file once peers finish)
-        # plus a count of the others so the line stays readable.
-        display = cli._ProgressDisplay(total_files=3, progress_queue=queue.Queue())
-        display._live = True
-        # Insertion order doubles as start-order: tle_first is the oldest.
-        display._active["tle_first.txt"] = 0.0
-        display._active["tle_second.txt"] = 1.0
-        display._active["tle_third.txt"] = 2.0
-
-        display._render()
-
-        err = capsys.readouterr().err
-        assert "tle_first.txt" in err
-        assert "+2 more" in err
-        # The other two names aren't spelled out — only the oldest is shown.
-        assert "tle_second.txt" not in err
-        assert "tle_third.txt" not in err
-
-    def test_drain_handles_start_event(self):
-        progress = queue.Queue()
-        progress.put(("start", "tle2024.txt"))
-        display = cli._ProgressDisplay(total_files=1, progress_queue=progress)
-
-        display._drain()
-
-        assert "tle2024.txt" in display._active
-
-    def test_drain_handles_end_event(self):
-        progress = queue.Queue()
-        progress.put(("end", "tle2024.txt"))
-        display = cli._ProgressDisplay(total_files=1, progress_queue=progress)
-        display._active["tle2024.txt"] = 0.0
-
-        display._drain()
-
-        assert "tle2024.txt" not in display._active
-
-    def test_drain_handles_mixed_int_and_event_messages(self):
-        # The queue interleaves record deltas with lifecycle events; drain
-        # must fold all of them in one pass without dropping any.
-        progress = queue.Queue()
-        progress.put(("start", "tle_a.txt"))
-        progress.put(100)
-        progress.put(("start", "tle_b.txt"))
-        progress.put(50)
-        progress.put(("end", "tle_a.txt"))
-        display = cli._ProgressDisplay(total_files=2, progress_queue=progress)
-
-        display._drain()
-
-        assert display._records == 150
-        assert "tle_a.txt" not in display._active
-        assert "tle_b.txt" in display._active
-
-    def test_drain_preserves_active_insertion_order(self):
-        # Showing the earliest-still-active file relies on dict insertion
-        # order — verify it survives a drain.
-        progress = queue.Queue()
-        progress.put(("start", "tle_first.txt"))
-        progress.put(("start", "tle_second.txt"))
-        display = cli._ProgressDisplay(total_files=2, progress_queue=progress)
-
-        display._drain()
-
-        assert list(display._active) == ["tle_first.txt", "tle_second.txt"]
-
-    def test_log_prints_the_message(self, capsys):
-        display = cli._ProgressDisplay(total_files=1, progress_queue=queue.Queue())
-        display.log("hello")
-        assert "hello" in capsys.readouterr().err
-
-    def test_log_clears_the_live_line_first(self, capsys):
-        display = cli._ProgressDisplay(total_files=1, progress_queue=queue.Queue())
-        display._live = True  # pretend stderr is a TTY
-        display.log("hello")
-        err = capsys.readouterr().err
-        assert "\x1b[K" in err  # the live line is cleared before the message
-        assert "hello" in err
-
-    def test_file_done_logs_a_summary_off_a_tty(self, capsys):
-        display = cli._ProgressDisplay(total_files=2, progress_queue=queue.Queue())
-        stats = report.FileStats(src_name="tle2099.txt")
-        stats.clean_count = 5
-        stats.quarantined_count = 1
-
-        display.file_done(stats)
-
-        err = capsys.readouterr().err
-        assert "[1/2] tle2099.txt" in err
-        assert "5 clean" in err and "1 quarantined" in err
-
-    def test_file_done_is_silent_on_a_tty(self, capsys):
-        display = cli._ProgressDisplay(total_files=2, progress_queue=queue.Queue())
-        display._live = True  # on a TTY the spinner shows progress instead
-        display.file_done(report.FileStats(src_name="tle2099.txt"))
-
-        assert "tle2099.txt" not in capsys.readouterr().err
-        assert display._files_done == 1
-
-    def test_file_failed_logs_the_error(self, capsys):
-        display = cli._ProgressDisplay(total_files=1, progress_queue=queue.Queue())
-        display.file_failed("bad.txt", RuntimeError("boom"))
-        err = capsys.readouterr().err
-        assert "[1/1]" in err and "bad.txt" in err and "boom" in err
-
-    def test_context_manager_runs_a_thread_and_clears_the_line(self, capsys):
-        progress = queue.Queue()
-        display = cli._ProgressDisplay(total_files=1, progress_queue=progress)
-        display._live = True  # exercise the repaint thread and the exit clear
-
-        with display:
-            progress.put(7)
-            time.sleep(0.15)  # let the repaint thread tick at least once
-
-        err = capsys.readouterr().err
-        assert "\x1b[K" in err  # the live line was painted, then cleared on exit
-        assert display._records == 7  # the queued delta was drained
+            q.put(("end", "a"))
+            disp._drain()
+            assert "a" not in disp._tasks
 
 
 class TestExplainCommand:
