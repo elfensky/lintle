@@ -14,6 +14,9 @@ import sys
 import threading
 import time
 
+from rich import box
+from rich.table import Table
+
 from lintle import __version__, diff, explain, pipeline, report, resume
 
 _DEFAULT_SOURCE = "data/source"
@@ -483,6 +486,35 @@ def resolve_jobs(explicit, cpu_count, n_files):
     if explicit is not None:
         return explicit
     return max(1, min((cpu_count or 1) - 1, n_files))
+
+
+def _format_size(n_bytes):
+    """Render a byte count as a short human-readable string (e.g. ``2.9 GB``),
+    using binary (1024) units."""
+    size = float(n_bytes)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if size < 1024 or unit == "TB":
+            return f"{int(size)} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+
+
+def _render_roster(console, files):
+    """Print a one-shot, size-only roster of the files to be processed — index,
+    basename, and size from ``os.path.getsize`` (no contents are read) — with a
+    final total row. Rendered via ``rich`` so it degrades to plain text off a
+    TTY (issue #53 §2.1)."""
+    table = Table(box=box.SIMPLE, pad_edge=False)
+    table.add_column("#", justify="right", style="dim")
+    table.add_column("file")
+    table.add_column("size", justify="right")
+    total = 0
+    for index, path in enumerate(files, start=1):
+        size = os.path.getsize(path)
+        total += size
+        table.add_row(str(index), os.path.basename(path), _format_size(size))
+    table.add_section()
+    table.add_row("", "total", _format_size(total))
+    console.print(table)
 
 
 def main(argv=None):

@@ -1,5 +1,6 @@
 """Tests for lintle.cli — argument parsing, path discovery, exit codes."""
 
+import io
 import json
 import os
 import queue
@@ -7,6 +8,7 @@ import signal
 import time
 
 import pytest
+from rich.console import Console
 
 from lintle import cli, pipeline, report, resume
 
@@ -50,6 +52,56 @@ class TestResolveJobs:
         # An explicit --jobs is the user's deliberate choice; never capped.
         assert cli.resolve_jobs(16, 16, 4) == 16
         assert cli.resolve_jobs(4, 8, 100) == 4
+
+
+class TestFormatSize:
+    """cli._format_size — human-readable byte counts for the roster (#53)."""
+
+    def test_bytes_below_one_kib(self):
+        assert cli._format_size(0) == "0 B"
+        assert cli._format_size(512) == "512 B"
+
+    def test_kilobytes(self):
+        assert cli._format_size(1024) == "1.0 KB"
+        assert cli._format_size(1536) == "1.5 KB"
+
+    def test_gigabytes(self):
+        assert cli._format_size(1024**3) == "1.0 GB"
+        assert cli._format_size(3 * 1024**3) == "3.0 GB"
+
+
+class TestRenderRoster:
+    """cli._render_roster — the size-only pre-run roster (#53 §2.1)."""
+
+    def test_lists_files_with_sizes_and_total(self, tmp_path):
+        f1 = tmp_path / "tle2001.txt"
+        f1.write_bytes(b"x" * 1536)  # 1.5 KB
+        f2 = tmp_path / "tle2002.txt"
+        f2.write_bytes(b"y" * 512)  # 512 B
+        console = Console(file=io.StringIO(), width=80)
+
+        cli._render_roster(console, [str(f1), str(f2)])
+
+        out = console.file.getvalue()
+        assert "tle2001.txt" in out
+        assert "tle2002.txt" in out
+        assert "1.5 KB" in out
+        assert "512 B" in out
+        assert "total" in out
+        assert "2.0 KB" in out  # 1536 + 512 = 2048 bytes
+
+    def test_sizes_come_from_stat_not_contents(self, tmp_path, monkeypatch):
+        # The roster's sizes come from os.path.getsize (a stat), never from
+        # reading file contents — the whole point of dropping the pre-scan.
+        f1 = tmp_path / "tle2001.txt"
+        f1.write_bytes(b"ignored")  # 7 bytes on disk
+        monkeypatch.setattr(cli.os.path, "getsize", lambda _p: 2048)
+        console = Console(file=io.StringIO(), width=80)
+
+        cli._render_roster(console, [str(f1)])
+
+        # 2.0 KB proves getsize (2048) was used, not the 7-byte content.
+        assert "2.0 KB" in console.file.getvalue()
 
 
 class TestBuildParser:

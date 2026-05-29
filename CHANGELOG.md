@@ -8,6 +8,19 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Added
 
+- `clean` gains a redesigned live progress UI (issue #53): a one-shot
+  **size-only roster** of the files to be processed (printed instantly from
+  `os.stat` — no pre-read of the corpus), a **multi-file per-worker progress
+  block** showing each active file's byte progress and running record count,
+  and exact per-file counts at completion. The `--jobs` default is now
+  *CPU count − 1, capped at the file count* (reserving a core during the long
+  run; an explicit `--jobs` is still honoured as-is). This adopts **`rich`**
+  (`>=13,<14`) as the first runtime dependency, clearing the four-bar policy
+  (authoritative spec §3.1): it replaces ~150 lines of hand-rolled ANSI in
+  `cli.py`, is the de-facto standard live-display library (`pip`, `uv`, `pdm`),
+  is pure-Python with a small transitive surface (`markdown-it-py`, `pygments`),
+  and is confined to terminal rendering in `cli.py`.
+
 - `clean` now prints a **borderline disk-space warning** when free space on
   the `--out-dir` volume sits between the 2× input-size abort floor and a
   2.5× ceiling. The abort path is unchanged — exit `2` below 2×, message
