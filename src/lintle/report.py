@@ -171,6 +171,12 @@ class FileStats:
     paired_records: int = 0
     orphan_entries: int = 0
     input_lines_seen: int = 0
+    # Running count of physical bytes read from the source — every line
+    # including the blanks the pairing loop drops, so it tracks the true file
+    # offset and reaches ``bytes`` (st_size) at EOF. Drives the byte-progress
+    # bar (issue #53); updated by ``pipeline.iter_records`` alongside
+    # ``input_lines_seen``.
+    bytes_consumed: int = 0
     clean_count: int = 0
     quarantined_count: int = 0
     fix_counts: dict = dataclasses.field(default_factory=dict)
