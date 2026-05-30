@@ -151,32 +151,67 @@ class TestBuildCheckpoint:
         assert ckpt["completed"]["a.txt"]["summary"]["clean_count"] == 3
 
 
-class TestValidateResumable:
+class TestValidateRunIdentity:
+    def _ckpt(self, **over):
+        base = dict(
+            schema_version=resume.SCHEMA_VERSION,
+            lintle_version=lintle.__version__,
+            run_identity={"args": []},
+            inputs={"a.txt": {"size": 1}},
+            completed={},
+        )
+        base.update(over)
+        return base
+
+    def test_passes_when_everything_matches(self):
+        ck = self._ckpt()
+        result = resume.validate_run_identity(ck, {"a.txt": {"size": 1}}, {"args": []})
+        assert result is None
+
+    def test_refuses_on_run_identity_drift(self):
+        ck = self._ckpt()
+        reason = resume.validate_run_identity(
+            ck, {"a.txt": {"size": 1}}, {"args": ["--x"]}
+        )
+        assert reason and "configuration" in reason.lower()
+
+    def test_refuses_on_schema_bump(self):
+        ck = self._ckpt(schema_version=1)
+        assert resume.validate_run_identity(ck, {"a.txt": {"size": 1}}, {"args": []})
+
     def test_identical_inputs_pass(self):
         inputs = {"a.txt": _fp(), "b.txt": _fp(size=20)}
-        assert resume.validate_resumable(_ckpt(inputs), dict(inputs)) is None
+        ckpt = _ckpt(inputs)
+        ckpt["run_identity"] = {"args": []}
+        assert resume.validate_run_identity(ckpt, dict(inputs), {"args": []}) is None
 
     def test_unknown_schema_refused(self):
         ckpt = _ckpt({"a.txt": _fp()})
         ckpt["schema_version"] = resume.SCHEMA_VERSION + 99
-        reason = resume.validate_resumable(ckpt, {"a.txt": _fp()})
+        ckpt["run_identity"] = {"args": []}
+        reason = resume.validate_run_identity(ckpt, {"a.txt": _fp()}, {"args": []})
         assert reason and "schema" in reason.lower()
 
     def test_version_mismatch_refused(self):
         ckpt = _ckpt({"a.txt": _fp()})
         ckpt["lintle_version"] = "0.0.0-other"
-        reason = resume.validate_resumable(ckpt, {"a.txt": _fp()})
+        ckpt["run_identity"] = {"args": []}
+        reason = resume.validate_run_identity(ckpt, {"a.txt": _fp()}, {"args": []})
         assert reason and "version" in reason.lower()
         assert "0.0.0-other" in reason and lintle.__version__ in reason
 
     def test_added_file_refused(self):
         ckpt = _ckpt({"a.txt": _fp()})
-        reason = resume.validate_resumable(ckpt, {"a.txt": _fp(), "new.txt": _fp()})
+        ckpt["run_identity"] = {"args": []}
+        reason = resume.validate_run_identity(
+            ckpt, {"a.txt": _fp(), "new.txt": _fp()}, {"args": []}
+        )
         assert reason and "new.txt" in reason
 
     def test_removed_file_refused(self):
         ckpt = _ckpt({"a.txt": _fp(), "gone.txt": _fp()})
-        reason = resume.validate_resumable(ckpt, {"a.txt": _fp()})
+        ckpt["run_identity"] = {"args": []}
+        reason = resume.validate_run_identity(ckpt, {"a.txt": _fp()}, {"args": []})
         assert reason and "gone.txt" in reason
 
     @pytest.mark.parametrize(
@@ -184,8 +219,9 @@ class TestValidateResumable:
     )
     def test_changed_identity_refused(self, field):
         ckpt = _ckpt({"a.txt": _fp()})
+        ckpt["run_identity"] = {"args": []}
         changed = _fp()
         int_fields = {"size", "mtime_ns", "ctime_ns", "inode"}
         changed[field] = 999 if field in int_fields else "CHANGED"
-        reason = resume.validate_resumable(ckpt, {"a.txt": changed})
+        reason = resume.validate_run_identity(ckpt, {"a.txt": changed}, {"args": []})
         assert reason and "a.txt" in reason

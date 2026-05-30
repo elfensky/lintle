@@ -643,7 +643,7 @@ def main(argv=None):
                         file=sys.stderr,
                     )
                 return 2
-            reason = resume.validate_resumable(checkpoint, inputs)
+            reason = resume.validate_run_identity(checkpoint, inputs, {})
             if reason is not None:
                 print(
                     f"error: cannot resume: {reason}.\n"
