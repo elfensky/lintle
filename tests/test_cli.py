@@ -369,6 +369,59 @@ class TestMain:
         assert "no such file or directory" in err
         assert "Traceback" not in err  # no stack trace leaks to the user
 
+    def test_main_returns_one_when_a_worker_raises(
+        self, tmp_path, line1, line2, monkeypatch
+    ):
+        # A worker exception (e.g. I/O error mid-stream) is an operational
+        # failure → exit 1 (spec §2.7). Exit 2 is argparse usage errors only.
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "tle2099.txt").write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
+
+        _sentinel = object()
+
+        class _RaisingFuture:
+            def result(self):
+                raise RuntimeError("worker boom")
+
+        class _FakeExecutor:
+            def __init__(self, *_args, **_kwargs):
+                self._processes = {}
+                self._f = _RaisingFuture()
+
+            def submit(self, fn, *args, **kwargs):
+                return self._f
+
+            def shutdown(self, **_kwargs):
+                pass
+
+        fake_executor = None
+
+        def _capture_executor(*args, **kwargs):
+            nonlocal fake_executor
+            fake_executor = _FakeExecutor(*args, **kwargs)
+            return fake_executor
+
+        monkeypatch.setattr(
+            cli.concurrent.futures, "ProcessPoolExecutor", _capture_executor
+        )
+
+        def _as_completed_one(futures):
+            # Yield the one fake future so the collection loop can call result()
+            yield list(futures.keys())[0]
+
+        monkeypatch.setattr(cli.concurrent.futures, "as_completed", _as_completed_one)
+
+        original_sigint = signal.getsignal(signal.SIGINT)
+        try:
+            rc = cli.main(
+                ["clean", str(src), "--out-dir", str(tmp_path / "out"), "--jobs", "1"]
+            )
+        finally:
+            signal.signal(signal.SIGINT, original_sigint)
+
+        assert rc == 1
+
     def test_main_friendly_error_when_default_source_missing(
         self, tmp_path, monkeypatch, capsys
     ):
@@ -1454,6 +1507,18 @@ class TestScrubOutputs:
 
     def test_noop_on_empty_dir(self, tmp_path):
         cli._scrub_outputs(str(tmp_path))  # must not raise
+
+
+class TestSignalHandling:
+    def test_cancel_message_names_counts_and_flag(self):
+        msg = cli._format_cancel_message(done=12, total=29)
+        assert "12/29" in msg
+        assert "--no-resume" in msg
+        assert "same --out-dir" in msg
+
+    def test_signal_exit_code(self):
+        assert cli._signal_exit_code(signal.SIGINT) == 130
+        assert cli._signal_exit_code(signal.SIGTERM) == 143
 
 
 class TestResumeWiring:
