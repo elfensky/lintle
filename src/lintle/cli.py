@@ -756,7 +756,9 @@ def main(argv=None):
                             resume.write_checkpoint(
                                 args.out_dir,
                                 resume.build_checkpoint(
-                                    inputs=inputs, completed=completed
+                                    inputs=inputs,
+                                    completed=completed,
+                                    run_identity={},
                                 ),
                             )
         except KeyboardInterrupt:

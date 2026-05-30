@@ -1122,7 +1122,8 @@ def _simulate_interrupted_clean(src_paths, out_dir, *, completed_count):
         stats = pipeline.process_file(path, out_dir, "clean")
         completed[path] = report.summary_dict(stats)
     resume.write_checkpoint(
-        out_dir, resume.build_checkpoint(inputs=inputs, completed=completed)
+        out_dir,
+        resume.build_checkpoint(inputs=inputs, completed=completed, run_identity={}),
     )
 
 
@@ -1223,6 +1224,7 @@ class TestResume:
                     }
                 },
                 completed={},
+                run_identity={},
             ),
         )
         rc = cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])

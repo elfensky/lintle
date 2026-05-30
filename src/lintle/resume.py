@@ -17,7 +17,7 @@ import os
 from lintle import __version__, fsutil
 
 CHECKPOINT_NAME = ".clean-state.json"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 # Head+tail window hashed for input identity — large enough that any append
 # (tail changes) or truncation (size changes) is caught in one seek, small
 # enough to stay O(1) regardless of file size. A one-time correctness gate on
@@ -54,15 +54,18 @@ def input_fingerprint(path):
     }
 
 
-def build_checkpoint(*, inputs, completed):
-    """Assemble the checkpoint payload, pinning the current schema and lintle
-    version. ``inputs`` maps each discovered input path to its
-    :func:`input_fingerprint`; ``completed`` maps each fully-processed path to
-    its :func:`report.summary_dict` snapshot.
+def build_checkpoint(*, inputs, completed, run_identity):
+    """Assemble the checkpoint payload, pinning schema, lintle version, and the
+    run identity (spec §3.1). ``inputs`` maps each discovered input path to its
+    :func:`input_fingerprint`; ``completed`` maps each fully-processed path to a
+    ``{"summary": summary_dict, "outputs": {name: size}}`` record (output sizes
+    back the integrity re-verification of a resumed run). ``run_identity`` pins
+    output-affecting configuration beyond version+inputs.
     """
     return {
         "schema_version": SCHEMA_VERSION,
         "lintle_version": __version__,
+        "run_identity": run_identity,
         "inputs": inputs,
         "completed": completed,
     }
