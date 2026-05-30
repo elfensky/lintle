@@ -141,6 +141,20 @@ def classify_checkpoint(out_dir, current_inputs, current_run_identity):
     return Classification(CheckpointStatus.VALID, checkpoint=checkpoint)
 
 
+def archive_checkpoint(out_dir, *, timestamp):
+    """Rename the checkpoint to ``.clean-state.json.stale-<timestamp>`` so a fresh
+    run never silently destroys a recoverable interrupted run (spec §2.3): the
+    operator can downgrade/revert and recover it. Returns the archived basename,
+    or None if there was no checkpoint. ``timestamp`` is supplied by the caller
+    (clock access is forbidden in pure helpers)."""
+    src = _checkpoint_path(out_dir)
+    if not os.path.exists(src):
+        return None
+    archived = f"{CHECKPOINT_NAME}.stale-{timestamp}"
+    os.replace(src, os.path.join(out_dir, archived))
+    return archived
+
+
 def delete_checkpoint(out_dir):
     """Remove the checkpoint if present; a no-op when absent. Called on a fully
     successful run so a completed run leaves no resumable state behind.

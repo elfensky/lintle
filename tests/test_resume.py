@@ -372,3 +372,17 @@ class TestResolveResumeAction:
         assert d_yes.action is resume.ResumeAction.FRESH
         d_no = self.call(resume.CheckpointStatus.STALE, interactive=True, answer=False)
         assert d_no.action is resume.ResumeAction.ABORT
+
+
+class TestArchiveCheckpoint:
+    def test_renames_with_stale_suffix(self, tmp_path):
+        ck = resume.build_checkpoint(inputs={}, completed={}, run_identity={})
+        resume.write_checkpoint(str(tmp_path), ck)
+        archived = resume.archive_checkpoint(str(tmp_path), timestamp="20260530T0000Z")
+        assert archived is not None
+        assert not (tmp_path / resume.CHECKPOINT_NAME).exists()
+        assert (tmp_path / archived).exists()
+        assert archived.startswith(resume.CHECKPOINT_NAME + ".stale-")
+
+    def test_noop_when_absent(self, tmp_path):
+        assert resume.archive_checkpoint(str(tmp_path), timestamp="x") is None
