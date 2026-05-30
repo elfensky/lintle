@@ -1108,22 +1108,38 @@ def _strip_generated(path):
     )
 
 
-def _simulate_interrupted_clean(src_paths, out_dir, *, completed_count):
+def _simulate_interrupted_clean(
+    src_paths, out_dir, *, completed_count, run_identity=None
+):
     """Leave `out_dir` looking exactly like a clean run interrupted partway:
     the first `completed_count` files fully processed (their cleaned/broken
     outputs and findings shards committed, as a worker leaves them — no
     end-of-run concat), plus a checkpoint that lists them complete with every
     input fingerprinted. Mirrors the real interrupted state without needing to
-    actually kill a parallel run."""
+    actually kill a parallel run. ``run_identity`` defaults to the schema-v2
+    shape used by ``main()`` (``{"max_quarantined": "0"}``)."""
+    if run_identity is None:
+        run_identity = {"max_quarantined": "0"}
     os.makedirs(out_dir, exist_ok=True)
     inputs = {p: resume.input_fingerprint(p) for p in src_paths}
     completed = {}
     for path in src_paths[:completed_count]:
         stats = pipeline.process_file(path, out_dir, "clean")
-        completed[path] = report.summary_dict(stats)
+        cleaned_name = os.path.splitext(os.path.basename(path))[0] + ".cleaned.txt"
+        sizes = {}
+        cleaned_path = os.path.join(out_dir, "cleaned", cleaned_name)
+        if os.path.exists(cleaned_path):
+            sizes[cleaned_name] = os.path.getsize(cleaned_path)
+        broken_name = os.path.splitext(os.path.basename(path))[0] + ".broken.txt"
+        broken_path = os.path.join(out_dir, "broken", broken_name)
+        if os.path.exists(broken_path):
+            sizes[broken_name] = os.path.getsize(broken_path)
+        completed[path] = {"summary": report.summary_dict(stats), "outputs": sizes}
     resume.write_checkpoint(
         out_dir,
-        resume.build_checkpoint(inputs=inputs, completed=completed, run_identity={}),
+        resume.build_checkpoint(
+            inputs=inputs, completed=completed, run_identity=run_identity
+        ),
     )
 
 
@@ -1151,6 +1167,8 @@ class TestResume:
         assert not (out / resume.CHECKPOINT_NAME).exists()
 
     def test_resume_without_checkpoint_errors(self, tmp_path, line1, line2, capsys):
+        # --resume (explicit force-resume) with no checkpoint: ABSENT + resume
+        # → ABORT with exit_code=1 (operational refusal, not a usage error).
         src = self._two_file_src(tmp_path, line1, line2)
         out = tmp_path / "out"
         out.mkdir()
@@ -1158,7 +1176,7 @@ class TestResume:
             ["clean", str(src), "--out-dir", str(out), "--resume", "--jobs", "1"]
         )
         err = capsys.readouterr().err
-        assert rc == 2
+        assert rc == 1
         assert "no interrupted run" in err.lower()
 
     def test_resume_finishes_and_matches_full_run(self, tmp_path, line1, line2):
@@ -1209,6 +1227,8 @@ class TestResume:
         assert not (out_partial / ".shards").exists()
 
     def test_fresh_run_clears_stale_checkpoint(self, tmp_path, line1, line2):
+        # --no-resume discards an incompatible checkpoint and starts fresh
+        # (archives it, scrubs output trees, reprocesses everything).
         src = self._two_file_src(tmp_path, line1, line2)
         out = tmp_path / "out"
         out.mkdir()
@@ -1227,13 +1247,17 @@ class TestResume:
                 run_identity={},
             ),
         )
-        rc = cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
+        rc = cli.main(
+            ["clean", str(src), "--out-dir", str(out), "--no-resume", "--jobs", "1"]
+        )
         assert rc == 1  # quarantines present
         assert not (out / resume.CHECKPOINT_NAME).exists()
         assert (out / "cleaned" / "tle2098.cleaned.txt").exists()
         assert (out / "cleaned" / "tle2099.cleaned.txt").exists()
 
     def test_resume_refuses_when_input_changed(self, tmp_path, line1, line2, capsys):
+        # --resume (explicit force-resume) with a stale checkpoint (input changed)
+        # → STALE + resume flag → ABORT with exit_code=1.
         src = self._two_file_src(tmp_path, line1, line2)
         paths = cli.discover_paths(str(src))
         out_partial = tmp_path / "partial"
@@ -1254,7 +1278,7 @@ class TestResume:
             ]
         )
         err = capsys.readouterr().err
-        assert rc == 2
+        assert rc == 1
         assert "input changed" in err.lower()
         assert "tle2099" in err
         # A refused resume leaves the checkpoint intact for an explicit restart.
@@ -1290,6 +1314,7 @@ class TestResume:
         self, tmp_path, line1, line2, capsys
     ):
         # A present-but-corrupt checkpoint must not be reported as "not found".
+        # CORRUPT + any flag (or no flag) → ABORT with exit_code=1 unless --no-resume.
         src = self._two_file_src(tmp_path, line1, line2)
         out = tmp_path / "out"
         out.mkdir()
@@ -1298,7 +1323,7 @@ class TestResume:
             ["clean", str(src), "--out-dir", str(out), "--resume", "--jobs", "1"]
         )
         err = capsys.readouterr().err
-        assert rc == 2
+        assert rc == 1
         assert "corrupt" in err.lower() or "unreadable" in err.lower()
         assert "no interrupted run" not in err.lower()
 
@@ -1429,3 +1454,46 @@ class TestScrubOutputs:
 
     def test_noop_on_empty_dir(self, tmp_path):
         cli._scrub_outputs(str(tmp_path))  # must not raise
+
+
+class TestResumeWiring:
+    """Task 11: --no-resume flag + decision-core wiring in main() (spec §2)."""
+
+    def _make_src(self, tmp_path, line1, line2, n=2):
+        src = tmp_path / "src"
+        src.mkdir()
+        for i in range(n):
+            (src / f"tle20{i:02d}.txt").write_bytes(
+                (line1 + "\n" + line2 + "\n").encode()
+            )
+        return src
+
+    def test_no_resume_and_resume_are_mutually_exclusive(
+        self, tmp_path, line1, line2, capsys
+    ):
+        src = self._make_src(tmp_path, line1, line2)
+        out = tmp_path / "out"
+        with pytest.raises(SystemExit) as exc:
+            cli.main(
+                [
+                    "clean",
+                    str(src),
+                    "--out-dir",
+                    str(out),
+                    "--resume",
+                    "--no-resume",
+                    "--jobs",
+                    "1",
+                ]
+            )
+        assert exc.value.code == 2  # argparse usage error
+
+    def test_default_run_with_no_checkpoint_is_fresh_and_succeeds(
+        self, tmp_path, line1, line2
+    ):
+        src = self._make_src(tmp_path, line1, line2)
+        out = tmp_path / "out"
+        rc = cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
+        assert rc == 0
+        # checkpoint deleted on success
+        assert not (out / ".clean-state.json").exists()
