@@ -19,7 +19,7 @@ from rich.console import Console
 from rich.progress import BarColumn, Progress, TaskProgressColumn, TextColumn
 from rich.table import Table
 
-from lintle import __version__, diff, explain, pipeline, report, resume
+from lintle import __version__, diff, explain, pipeline, report, resume, stem
 
 _DEFAULT_SOURCE = "data/source"
 _DEFAULT_OUTPUT = "data/output"
@@ -212,14 +212,21 @@ def build_parser():
             ),
         )
         if name == "clean":
-            sub.add_argument(
+            resume_group = sub.add_mutually_exclusive_group()
+            resume_group.add_argument(
                 "--resume",
                 action="store_true",
                 help=(
-                    "continue an interrupted run in --out-dir: skip files already "
-                    "completed (per its .clean-state.json checkpoint) and process "
-                    "only the rest. Refuses if the lintle version or any input "
-                    "changed since the interrupted run."
+                    "resume an interrupted run in --out-dir without prompting "
+                    "(resume is the default when an interrupted run is found)"
+                ),
+            )
+            resume_group.add_argument(
+                "--no-resume",
+                action="store_true",
+                help=(
+                    "ignore any interrupted run and start fresh, clearing prior "
+                    "outputs in --out-dir"
                 ),
             )
 
@@ -338,6 +345,27 @@ def _scrub_outputs(out_dir):
         shutil.rmtree(os.path.join(out_dir, sub), ignore_errors=True)
 
 
+def run_started_stamp():
+    """ISO-8601 UTC timestamp for archive/lock naming. Isolated so the rest of the
+    resume logic stays clock-free and testable."""
+    return datetime.datetime.now(datetime.UTC).strftime("%Y%m%dT%H%M%SZ")
+
+
+def _output_sizes(out_dir, stats):
+    """Map each output basename this file produced to its on-disk size, captured
+    at completion for the resume integrity check (spec §3.6). The broken sidecar
+    is present only when something was quarantined."""
+    sizes = {}
+    cleaned = stem(stats.src_name) + ".cleaned.txt"
+    with contextlib.suppress(OSError):
+        sizes[cleaned] = os.path.getsize(os.path.join(out_dir, "cleaned", cleaned))
+    if stats.quarantined_count:
+        broken = stem(stats.src_name) + ".broken.txt"
+        with contextlib.suppress(OSError):
+            sizes[broken] = os.path.getsize(os.path.join(out_dir, "broken", broken))
+    return sizes
+
+
 def _ignore_sigint():
     """Worker-process initializer: ignore Ctrl-C in the worker.
 
@@ -401,14 +429,14 @@ class _ProgressDisplay:
 
     _REFRESH = 0.1  # seconds between queue drains
 
-    def __init__(self, total_files, progress_queue, console, sizes):
+    def __init__(self, total_files, progress_queue, console, sizes, already_done=0):
         self._total_files = total_files
         self._queue = progress_queue
         self._console = console
         self._sizes = sizes
         self._live = console.is_terminal
         self._records = 0
-        self._files_done = 0
+        self._files_done = already_done
         self._start = time.monotonic()
         self._lock = threading.Lock()
         self._stop = threading.Event()
@@ -658,57 +686,52 @@ def main(argv=None):
                 print(f"error: {msg}", file=sys.stderr)
                 return 2
             print(f"warning: {msg}", file=sys.stderr)
-        # Per-input identity for the resume checkpoint (issue #56): computed
+        # Per-input identity for the resume checkpoint (spec §3.1): computed
         # once, up front, for every discovered file. Cheap and constant-memory
         # (a head+tail window hash), it is written into the checkpoint as files
         # complete so an interrupted run can be finished later.
         inputs = {path: resume.input_fingerprint(path) for path in files}
         shard_dir = os.path.join(args.out_dir, ".shards")
-        if args.resume:
-            checkpoint = resume.load_checkpoint(args.out_dir)
-            if checkpoint is None:
-                # load_checkpoint returns None for both "absent" and "present
-                # but corrupt" — distinguish them so the operator can tell a
-                # nothing-to-resume from a damaged checkpoint.
-                ckpt_file = os.path.join(args.out_dir, resume.CHECKPOINT_NAME)
-                if os.path.exists(ckpt_file):
-                    print(
-                        f"error: cannot resume: {resume.CHECKPOINT_NAME} in "
-                        f"{args.out_dir!r} is unreadable or corrupt.\n"
-                        "  re-run without --resume to do a clean full pass.",
-                        file=sys.stderr,
-                    )
-                else:
-                    print(
-                        f"error: no interrupted run to resume in {args.out_dir!r} "
-                        f"(no {resume.CHECKPOINT_NAME} found)",
-                        file=sys.stderr,
-                    )
-                return 2
-            reason = resume.validate_run_identity(checkpoint, inputs, {})
-            if reason is not None:
-                print(
-                    f"error: cannot resume: {reason}.\n"
-                    "  re-run without --resume to do a clean full pass.",
-                    file=sys.stderr,
-                )
-                return 2
-            # Reuse files already committed; reconstruct their stats so the
-            # final report covers the whole corpus. Their findings shards
-            # survived the interruption (resume does NOT scrub ``.shards``),
-            # so ``report.jsonl`` stays complete.
+        # Output-affecting configuration pinned into the checkpoint identity
+        # (spec §3.1). Today only the input set + version affect output content;
+        # this is the explicit, future-proof hook so a new output-affecting flag
+        # cannot validate-through and mix policies.
+        run_identity = {"max_quarantined": args.max_quarantined}
+
+        classification = resume.classify_checkpoint(args.out_dir, inputs, run_identity)
+        decision = resume.resolve_resume_action(
+            classification,
+            resume=args.resume,
+            no_resume=args.no_resume,
+            interactive=_is_interactive(),
+            prompt=_prompt_yes_no,
+        )
+        if decision.action is resume.ResumeAction.ABORT:
+            print(f"error: {decision.message}", file=sys.stderr)
+            return decision.exit_code
+        if decision.action is resume.ResumeAction.RESUME:
+            checkpoint = classification.checkpoint
             completed = dict(checkpoint["completed"])
-            reused_stats = [report.stats_from_summary(s) for s in completed.values()]
+            # Integrity re-verification (spec §3.6): drop any completed entry
+            # whose outputs are missing or truncated, so they are reprocessed.
+            for bad_path in resume.verify_completed_outputs(completed, args.out_dir):
+                completed.pop(bad_path, None)
+            reused_stats = [
+                report.stats_from_summary(e["summary"]) for e in completed.values()
+            ]
             files_to_process = [f for f in files if f not in completed]
-        else:
-            # Fresh run: any leftover checkpoint describes a different attempt
-            # and must not be resumable after this run partially overwrites
-            # outputs; and ``.shards`` from a prior aborted run would
-            # contaminate this run's ``report.jsonl`` (issue #9, spec §4.6).
-            # Clear both before writing anything.
-            resume.delete_checkpoint(args.out_dir)
-            if os.path.exists(shard_dir):
-                shutil.rmtree(shard_dir)
+            print(
+                f"resuming: {len(completed)}/{len(files)} files already complete, "
+                f"processing {len(files_to_process)}"
+                " — pass --no-resume for a fresh run",
+                file=sys.stderr,
+                flush=True,
+            )
+        else:  # FRESH
+            # True-fresh slate (spec §3.4): archive any checkpoint (never delete
+            # a recoverable run), then scrub output trees so no orphans linger.
+            resume.archive_checkpoint(args.out_dir, timestamp=run_started_stamp())
+            _scrub_outputs(args.out_dir)
 
     # Resolve the worker count now that files_to_process is final: an explicit
     # --jobs is honoured as-is; the default is CPU count - 1, capped at the file
@@ -723,15 +746,7 @@ def main(argv=None):
     if args.command == "clean":
         _render_roster(console, {p: file_sizes[p] for p in files_to_process})
 
-    reused_n = len(reused_stats)
-    if reused_n:
-        print(
-            f"resuming: {reused_n} file(s) already complete, processing "
-            f"{len(files_to_process)} of {len(files)} with {jobs} worker(s)...",
-            file=sys.stderr,
-            flush=True,
-        )
-    else:
+    if not reused_stats:
         print(
             f"processing {len(files_to_process)} file(s) with {jobs} worker(s)...",
             file=sys.stderr,
@@ -775,7 +790,11 @@ def main(argv=None):
                 for path in files_to_process
             }
             with _ProgressDisplay(
-                len(files_to_process), progress_queue, console, sizes
+                len(files),
+                progress_queue,
+                console,
+                sizes,
+                already_done=len(completed),
             ) as progress:
                 for future in concurrent.futures.as_completed(futures):
                     path = futures[future]
@@ -794,13 +813,16 @@ def main(argv=None):
                         # are on disk — the ordering invariant --resume's "trust
                         # without reprocessing" requires (issue #58).
                         if args.command == "clean":
-                            completed[path] = report.summary_dict(stats)
+                            completed[path] = {
+                                "summary": report.summary_dict(stats),
+                                "outputs": _output_sizes(args.out_dir, stats),
+                            }
                             resume.write_checkpoint(
                                 args.out_dir,
                                 resume.build_checkpoint(
                                     inputs=inputs,
                                     completed=completed,
-                                    run_identity={},
+                                    run_identity=run_identity,
                                 ),
                             )
         except KeyboardInterrupt:
