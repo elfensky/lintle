@@ -10,6 +10,8 @@ library.
 """
 
 import contextlib
+import dataclasses
+import enum
 import hashlib
 import json
 import os
@@ -100,6 +102,43 @@ def load_checkpoint(out_dir):
             return json.load(handle)
     except OSError, json.JSONDecodeError:
         return None
+
+
+class CheckpointStatus(enum.Enum):
+    ABSENT = "absent"
+    CORRUPT = "corrupt"
+    VALID = "valid"
+    STALE = "stale"
+
+
+@dataclasses.dataclass
+class Classification:
+    """Result of :func:`classify_checkpoint` — bundles status, optional reason string
+    (populated for STALE), and the parsed payload (populated for VALID and STALE).
+    """
+
+    status: CheckpointStatus
+    reason: str | None = None
+    checkpoint: dict | None = None
+
+
+def classify_checkpoint(out_dir, current_inputs, current_run_identity):
+    """Classify the checkpoint in ``out_dir`` against the current run (spec §2.3).
+    Distinguishes ABSENT (no file), CORRUPT (present but unparseable — never
+    treated as absent, so a damaged interrupted run is surfaced, not silently
+    discarded), VALID, and STALE(reason).
+    """
+    if not os.path.exists(_checkpoint_path(out_dir)):
+        return Classification(CheckpointStatus.ABSENT)
+    checkpoint = load_checkpoint(out_dir)
+    if checkpoint is None:
+        return Classification(CheckpointStatus.CORRUPT)
+    reason = validate_run_identity(checkpoint, current_inputs, current_run_identity)
+    if reason is not None:
+        return Classification(
+            CheckpointStatus.STALE, reason=reason, checkpoint=checkpoint
+        )
+    return Classification(CheckpointStatus.VALID, checkpoint=checkpoint)
 
 
 def delete_checkpoint(out_dir):

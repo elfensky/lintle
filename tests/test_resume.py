@@ -227,6 +227,43 @@ class TestValidateRunIdentity:
         assert reason and "a.txt" in reason
 
 
+class TestClassifyCheckpoint:
+    def test_absent(self, tmp_path):
+        c = resume.classify_checkpoint(
+            str(tmp_path), {"a.txt": {"size": 1}}, {"args": []}
+        )
+        assert c.status is resume.CheckpointStatus.ABSENT
+
+    def test_corrupt(self, tmp_path):
+        (tmp_path / resume.CHECKPOINT_NAME).write_text("{not json")
+        c = resume.classify_checkpoint(
+            str(tmp_path), {"a.txt": {"size": 1}}, {"args": []}
+        )
+        assert c.status is resume.CheckpointStatus.CORRUPT
+
+    def test_valid(self, tmp_path):
+        ck = resume.build_checkpoint(
+            inputs={"a.txt": {"size": 1}}, completed={}, run_identity={"args": []}
+        )
+        resume.write_checkpoint(str(tmp_path), ck)
+        c = resume.classify_checkpoint(
+            str(tmp_path), {"a.txt": {"size": 1}}, {"args": []}
+        )
+        assert c.status is resume.CheckpointStatus.VALID
+        assert c.checkpoint is not None
+
+    def test_stale(self, tmp_path):
+        ck = resume.build_checkpoint(
+            inputs={"a.txt": {"size": 1}}, completed={}, run_identity={"args": []}
+        )
+        resume.write_checkpoint(str(tmp_path), ck)
+        c = resume.classify_checkpoint(
+            str(tmp_path), {"a.txt": {"size": 2}}, {"args": []}
+        )
+        assert c.status is resume.CheckpointStatus.STALE
+        assert "changed" in c.reason
+
+
 class TestVerifyCompletedOutputs:
     def _completed(self, name, cleaned_size):
         return {
