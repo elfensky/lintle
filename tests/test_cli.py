@@ -1521,6 +1521,20 @@ class TestSignalHandling:
         assert cli._signal_exit_code(signal.SIGTERM) == 143
 
 
+class TestLockWiring:
+    def test_refuses_when_locked(self, tmp_path, line1, line2):
+        from lintle import fsutil
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "tle2000.txt").write_bytes((line1 + "\n" + line2 + "\n").encode())
+        out = tmp_path / "out"
+        out.mkdir()
+        with fsutil.out_dir_lock(str(out)):  # simulate a concurrent run
+            rc = cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
+        assert rc == 2  # operational refusal — lock held
+
+
 class TestResumeWiring:
     """Task 11: --no-resume flag + decision-core wiring in main() (spec §2)."""
 

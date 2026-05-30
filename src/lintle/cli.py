@@ -19,7 +19,7 @@ from rich.console import Console
 from rich.progress import BarColumn, Progress, TaskProgressColumn, TextColumn
 from rich.table import Table
 
-from lintle import __version__, diff, explain, pipeline, report, resume, stem
+from lintle import __version__, diff, explain, fsutil, pipeline, report, resume, stem
 
 _DEFAULT_SOURCE = "data/source"
 _DEFAULT_OUTPUT = "data/output"
@@ -696,254 +696,282 @@ def main(argv=None):
     reused_stats = []
     inputs = {}
     completed = {}
+    # ExitStack holds the out-dir lock for a clean run. Closed in the finally
+    # block below — so every exit path (LockHeldError aside, which returns
+    # before entering the try, leaving the stack empty) releases the lock.
+    # For validate the stack stays empty and close() is a no-op.
+    _lock_stack = contextlib.ExitStack()
 
     if args.command == "clean":
         os.makedirs(args.out_dir, exist_ok=True)
-        disk_status = _check_disk_space(args.out_dir, sum(file_sizes.values()))
-        if disk_status is not None:
-            severity, msg = disk_status
-            if severity == "error":
-                print(f"error: {msg}", file=sys.stderr)
-                return 2
-            print(f"warning: {msg}", file=sys.stderr)
-        # Per-input identity for the resume checkpoint (spec §3.1): computed
-        # once, up front, for every discovered file. Cheap and constant-memory
-        # (a head+tail window hash), it is written into the checkpoint as files
-        # complete so an interrupted run can be finished later.
-        inputs = {path: resume.input_fingerprint(path) for path in files}
-        # Output-affecting configuration pinned into the checkpoint identity
-        # (spec §3.1). Today only the input set + version affect output content;
-        # this is the explicit, future-proof hook so a new output-affecting flag
-        # cannot validate-through and mix policies.
-        run_identity = {"max_quarantined": args.max_quarantined}
-
-        classification = resume.classify_checkpoint(args.out_dir, inputs, run_identity)
-        decision = resume.resolve_resume_action(
-            classification,
-            resume=args.resume,
-            no_resume=args.no_resume,
-            interactive=_is_interactive(),
-            prompt=_prompt_yes_no,
-        )
-        if decision.action is resume.ResumeAction.ABORT:
-            print(f"error: {decision.message}", file=sys.stderr)
-            return decision.exit_code
-        if decision.action is resume.ResumeAction.RESUME:
-            checkpoint = classification.checkpoint
-            completed = dict(checkpoint["completed"])
-            # Integrity re-verification (spec §3.6): drop any completed entry
-            # whose outputs are missing or truncated, so they are reprocessed.
-            for bad_path in resume.verify_completed_outputs(completed, args.out_dir):
-                completed.pop(bad_path, None)
-            reused_stats = [
-                report.stats_from_summary(e["summary"]) for e in completed.values()
-            ]
-            files_to_process = [f for f in files if f not in completed]
-            print(
-                f"resuming: {len(completed)}/{len(files)} files already complete, "
-                f"processing {len(files_to_process)}"
-                " — pass --no-resume for a fresh run",
-                file=sys.stderr,
-                flush=True,
-            )
-        else:  # FRESH
-            # True-fresh slate (spec §3.4): archive any checkpoint (never delete
-            # a recoverable run), then scrub output trees so no orphans linger.
-            resume.archive_checkpoint(args.out_dir, timestamp=_run_started_stamp())
-            _scrub_outputs(args.out_dir)
-
-    # Resolve the worker count now that files_to_process is final: an explicit
-    # --jobs is honoured as-is; the default is CPU count - 1, capped at the file
-    # count and floored at one (issue #53 §2.3).
-    jobs = resolve_jobs(args.jobs, os.cpu_count(), len(files_to_process))
-
-    # One rich Console on stderr drives both the roster and the live progress
-    # block; off a TTY each degrades to plain text. Byte-bar denominators come
-    # from os.stat (issue #53 §2.1/§2.2) — no pre-read of the corpus.
-    console = Console(stderr=True)
-    sizes = {os.path.basename(p): file_sizes[p] for p in files_to_process}
-    if args.command == "clean":
-        _render_roster(console, {p: file_sizes[p] for p in files_to_process})
-
-    if not reused_stats:
-        print(
-            f"processing {len(files_to_process)} file(s) with {jobs} worker(s)...",
-            file=sys.stderr,
-            flush=True,
-        )
-    # Run-level timing for the v1 envelope (issue #20). The wall-clock
-    # start captures NOW (just before worker dispatch); the corresponding
-    # stop happens after the executor drains. Two separate measurements:
-    # ``run_started_iso`` is an ISO 8601 UTC string for human-readable
-    # ``run.timestamp``; ``run_monotonic_start`` feeds the elapsed_seconds
-    # subtraction using a monotonic clock so NTP jitter mid-run cannot
-    # produce a negative duration. Per spec §4, this aggregate is
-    # intentionally NOT the sum of per-file worker durations.
-    run_started_iso = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    run_monotonic_start = time.monotonic()
-    # Files reused from a resume checkpoint are already done — seed the report
-    # with their reconstructed stats so corpus totals cover the whole run.
-    all_stats = list(reused_stats)
-    failed_files = []
-    interrupted = False
-    interrupted_signo = signal.SIGINT
-
-    # The executor runs without a `with` block deliberately: that block's
-    # __exit__ calls shutdown(wait=True), which on Ctrl-C would block until
-    # every in-flight corpus file finished. Instead the workers ignore
-    # SIGINT (so only this process sees it) and, on interrupt, we terminate
-    # them outright. A manager queue carries record counts back for display.
-    with multiprocessing.Manager() as manager:
-        progress_queue = manager.Queue()
-        executor = concurrent.futures.ProcessPoolExecutor(
-            max_workers=jobs, initializer=_ignore_sigint
-        )
-        caught = {"signo": signal.SIGINT}
-
-        def _raise_interrupt(signo, _frame):
-            caught["signo"] = signo
-            raise KeyboardInterrupt
-
-        prev_term = signal.signal(signal.SIGTERM, _raise_interrupt)
-        prev_hup = signal.signal(signal.SIGHUP, _raise_interrupt)
         try:
-            futures = {
-                executor.submit(
-                    pipeline.process_file,
-                    path,
-                    args.out_dir,
-                    args.command,
-                    progress_queue,
-                ): path
-                for path in files_to_process
-            }
-            with _ProgressDisplay(
-                len(files),
-                progress_queue,
-                console,
-                sizes,
-                already_done=len(completed),
-            ) as progress:
-                for future in concurrent.futures.as_completed(futures):
-                    path = futures[future]
-                    try:
-                        stats = future.result()
-                    except Exception as exc:
-                        progress.file_failed(path, exc)
-                        failed_files.append(path)
-                    else:
-                        all_stats.append(stats)
-                        progress.file_done(stats)
-                        # Record this file as completed in the always-on resume
-                        # checkpoint (issue #56). Both the worker's outputs and
-                        # this checkpoint write go through fsutil.durable_replace,
-                        # so a checkpoint entry can only name a file whose bytes
-                        # are on disk — the ordering invariant --resume's "trust
-                        # without reprocessing" requires (issue #58).
-                        if args.command == "clean":
-                            completed[path] = {
-                                "summary": report.summary_dict(stats),
-                                "outputs": _output_sizes(args.out_dir, stats),
-                            }
-                            resume.write_checkpoint(
-                                args.out_dir,
-                                resume.build_checkpoint(
-                                    inputs=inputs,
-                                    completed=completed,
-                                    run_identity=run_identity,
-                                ),
-                            )
-        except KeyboardInterrupt:
-            # Ignore any further Ctrl-C so the shutdown itself cannot be
-            # interrupted half-way (which is what left it hung before).
-            signal.signal(signal.SIGINT, signal.SIG_IGN)
-            interrupted = True
-            interrupted_signo = caught["signo"]
-            _terminate_workers(executor)
-            executor.shutdown(wait=False, cancel_futures=True)
+            _lock_stack.enter_context(
+                fsutil.out_dir_lock(args.out_dir, started=_run_started_stamp())
+            )
+        except fsutil.LockHeldError as exc:
+            # Stack is still empty — no lock to release.
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+
+    # The try/finally guarantees _lock_stack.close() runs on every exit path
+    # that reaches here: disk-error return, ABORT return, interrupt return,
+    # failed-files return, and normal success — so the lock file is always
+    # removed.  For validate the stack is empty; close() is a no-op.
+    try:
+        if args.command == "clean":
+            disk_status = _check_disk_space(args.out_dir, sum(file_sizes.values()))
+            if disk_status is not None:
+                severity, msg = disk_status
+                if severity == "error":
+                    print(f"error: {msg}", file=sys.stderr)
+                    return 2
+                print(f"warning: {msg}", file=sys.stderr)
+            # Per-input identity for the resume checkpoint (spec §3.1): computed
+            # once, up front, for every discovered file. Cheap and constant-memory
+            # (a head+tail window hash), it is written into the checkpoint as files
+            # complete so an interrupted run can be finished later.
+            inputs = {path: resume.input_fingerprint(path) for path in files}
+            # Output-affecting configuration pinned into the checkpoint identity
+            # (spec §3.1). Today only the input set + version affect output content;
+            # this is the explicit, future-proof hook so a new output-affecting flag
+            # cannot validate-through and mix policies.
+            run_identity = {"max_quarantined": args.max_quarantined}
+
+            classification = resume.classify_checkpoint(
+                args.out_dir, inputs, run_identity
+            )
+            decision = resume.resolve_resume_action(
+                classification,
+                resume=args.resume,
+                no_resume=args.no_resume,
+                interactive=_is_interactive(),
+                prompt=_prompt_yes_no,
+            )
+            if decision.action is resume.ResumeAction.ABORT:
+                print(f"error: {decision.message}", file=sys.stderr)
+                return decision.exit_code
+            if decision.action is resume.ResumeAction.RESUME:
+                checkpoint = classification.checkpoint
+                completed = dict(checkpoint["completed"])
+                # Integrity re-verification (spec §3.6): drop any completed entry
+                # whose outputs are missing or truncated, so they are reprocessed.
+                for bad_path in resume.verify_completed_outputs(
+                    completed, args.out_dir
+                ):
+                    completed.pop(bad_path, None)
+                reused_stats = [
+                    report.stats_from_summary(e["summary"]) for e in completed.values()
+                ]
+                files_to_process = [f for f in files if f not in completed]
+                print(
+                    f"resuming: {len(completed)}/{len(files)} files already complete, "
+                    f"processing {len(files_to_process)}"
+                    " — pass --no-resume for a fresh run",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            else:  # FRESH
+                # True-fresh slate (spec §3.4): archive any checkpoint (never
+                # delete a recoverable run), then scrub output trees so no
+                # orphans linger.
+                resume.archive_checkpoint(args.out_dir, timestamp=_run_started_stamp())
+                _scrub_outputs(args.out_dir)
+        # Resolve the worker count now that files_to_process is final: an
+        # explicit --jobs is honoured as-is; the default is CPU count - 1,
+        # capped at the file count and floored at one (issue #53 §2.3).
+        jobs = resolve_jobs(args.jobs, os.cpu_count(), len(files_to_process))
+
+        # One rich Console on stderr drives both the roster and the live progress
+        # block; off a TTY each degrades to plain text. Byte-bar denominators come
+        # from os.stat (issue #53 §2.1/§2.2) — no pre-read of the corpus.
+        console = Console(stderr=True)
+        sizes = {os.path.basename(p): file_sizes[p] for p in files_to_process}
+        if args.command == "clean":
+            _render_roster(console, {p: file_sizes[p] for p in files_to_process})
+
+        if not reused_stats:
             print(
-                _format_cancel_message(done=len(completed), total=len(files)),
+                f"processing {len(files_to_process)} file(s) with {jobs} worker(s)...",
                 file=sys.stderr,
                 flush=True,
             )
-        else:
-            executor.shutdown(wait=True)
-        finally:
-            signal.signal(signal.SIGTERM, prev_term)
-            signal.signal(signal.SIGHUP, prev_hup)
-
-    if interrupted:
-        return _signal_exit_code(interrupted_signo)
-
-    all_stats.sort(key=lambda stats: stats.src_name)
-
-    # A `clean` run writes a Markdown run report, a corpus-wide NDJSON of
-    # NORAD IDs whose records were quarantined anywhere, and (issue #9) a
-    # corpus-wide ``report.jsonl`` of structured findings concatenated
-    # from the per-worker shards. All three are always written on a
-    # successful clean run — empty when nothing was quarantined — so
-    # downstream consumers see a stable artifact set.
-    report_path = None
-    noradids_path = None
-    findings_path = None
-    if args.command == "clean" and all_stats:
-        report_path = os.path.join(args.out_dir, "report.md")
-        report.write_run_report(report_path, all_stats)
-        noradids_path = os.path.join(args.out_dir, "broken-noradids.ndjson")
-        report.write_broken_noradids_ndjson(noradids_path, all_stats)
-        findings_path = os.path.join(args.out_dir, "report.jsonl")
-        report.concat_findings_shards(args.out_dir, findings_path, all_stats)
-
-    if args.report == "json":
-        # Issue #20: top-level versioned envelope; replaces the prior
-        # flat-array output. Run wall-clock is the parent process's
-        # monotonic delta, NOT the sum of per-file worker durations
-        # (those are reported per-file under ``files[i].elapsed_seconds``
-        # and exceed parent wall-clock under ``--jobs N``).
-        run_elapsed = time.monotonic() - run_monotonic_start
-        envelope = report.build_run_envelope(
-            all_stats,
-            command=args.command,
-            started_at=run_started_iso,
-            elapsed_seconds=run_elapsed,
+        # Run-level timing for the v1 envelope (issue #20). The wall-clock
+        # start captures NOW (just before worker dispatch); the corresponding
+        # stop happens after the executor drains. Two separate measurements:
+        # ``run_started_iso`` is an ISO 8601 UTC string for human-readable
+        # ``run.timestamp``; ``run_monotonic_start`` feeds the elapsed_seconds
+        # subtraction using a monotonic clock so NTP jitter mid-run cannot
+        # produce a negative duration. Per spec §4, this aggregate is
+        # intentionally NOT the sum of per-file worker durations.
+        run_started_iso = datetime.datetime.now(datetime.UTC).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
         )
-        print(json.dumps(envelope, indent=2))
-    else:
-        for stats in all_stats:
-            print(report.format_summary(stats))
-            if args.command == "validate" and stats.reject_sample.buckets:
-                print(report.format_reject_lines(stats))
-        if report_path:
-            print(f"\nrun report: {report_path}")
-        if noradids_path:
-            print(f"broken NORAD IDs: {noradids_path}")
-        if findings_path:
-            print(f"findings: {findings_path}")
+        run_monotonic_start = time.monotonic()
+        # Files reused from a resume checkpoint are already done — seed the report
+        # with their reconstructed stats so corpus totals cover the whole run.
+        all_stats = list(reused_stats)
+        failed_files = []
+        interrupted = False
+        interrupted_signo = signal.SIGINT
 
-    # A fully successful clean run leaves no resumable state behind. The
-    # checkpoint and the findings shards (`.shards`) are both in-progress run
-    # state and are torn down together, here, ONLY on success: an interrupted
-    # run already returned 130 above (keeping both), and a failed run keeps both
-    # too, so the operator can fix the cause and `--resume` re-reads the
-    # surviving shards to rebuild a complete `report.jsonl` (issue #56). The
-    # `report.jsonl` was written from those shards by the report block above.
-    if args.command == "clean" and not failed_files:
-        resume.delete_checkpoint(args.out_dir)
-        shard_dir = os.path.join(args.out_dir, ".shards")
-        if os.path.exists(shard_dir):
-            shutil.rmtree(shard_dir)
+        # The executor runs without a `with` block deliberately: that block's
+        # __exit__ calls shutdown(wait=True), which on Ctrl-C would block until
+        # every in-flight corpus file finished. Instead the workers ignore
+        # SIGINT (so only this process sees it) and, on interrupt, we terminate
+        # them outright. A manager queue carries record counts back for display.
+        with multiprocessing.Manager() as manager:
+            progress_queue = manager.Queue()
+            executor = concurrent.futures.ProcessPoolExecutor(
+                max_workers=jobs, initializer=_ignore_sigint
+            )
+            caught = {"signo": signal.SIGINT}
 
-    # A file that could not be processed is an operational failure (spec §2.7
-    # / §10): exit 2 (operational error). Exit 1 is the quarantine quality
-    # gate (threshold exceeded); exit 2 covers all other operational failures.
-    if failed_files:
-        return 2
-    total_quarantined = sum(s.quarantined_count for s in all_stats)
-    if threshold_mode == "count":
-        return 1 if total_quarantined > quarantine_threshold else 0
-    # Rate mode: cross-multiplied (`100*q > p*r`) to avoid divide-by-zero on
-    # an empty corpus and float drift at the boundary. See design §3.
-    total_routed = sum(s.clean_count + s.quarantined_count for s in all_stats)
-    if 100 * total_quarantined > quarantine_threshold * total_routed:
-        return 1
-    return 0
+            def _raise_interrupt(signo, _frame):
+                caught["signo"] = signo
+                raise KeyboardInterrupt
+
+            prev_term = signal.signal(signal.SIGTERM, _raise_interrupt)
+            prev_hup = signal.signal(signal.SIGHUP, _raise_interrupt)
+            try:
+                futures = {
+                    executor.submit(
+                        pipeline.process_file,
+                        path,
+                        args.out_dir,
+                        args.command,
+                        progress_queue,
+                    ): path
+                    for path in files_to_process
+                }
+                with _ProgressDisplay(
+                    len(files),
+                    progress_queue,
+                    console,
+                    sizes,
+                    already_done=len(completed),
+                ) as progress:
+                    for future in concurrent.futures.as_completed(futures):
+                        path = futures[future]
+                        try:
+                            stats = future.result()
+                        except Exception as exc:
+                            progress.file_failed(path, exc)
+                            failed_files.append(path)
+                        else:
+                            all_stats.append(stats)
+                            progress.file_done(stats)
+                            # Record this file as completed in the always-on resume
+                            # checkpoint (issue #56). Both the worker's outputs and
+                            # this checkpoint write go through fsutil.durable_replace,
+                            # so a checkpoint entry can only name a file whose bytes
+                            # are on disk — the ordering invariant --resume's "trust
+                            # without reprocessing" requires (issue #58).
+                            if args.command == "clean":
+                                completed[path] = {
+                                    "summary": report.summary_dict(stats),
+                                    "outputs": _output_sizes(args.out_dir, stats),
+                                }
+                                resume.write_checkpoint(
+                                    args.out_dir,
+                                    resume.build_checkpoint(
+                                        inputs=inputs,
+                                        completed=completed,
+                                        run_identity=run_identity,
+                                    ),
+                                )
+            except KeyboardInterrupt:
+                # Ignore any further Ctrl-C so the shutdown itself cannot be
+                # interrupted half-way (which is what left it hung before).
+                signal.signal(signal.SIGINT, signal.SIG_IGN)
+                interrupted = True
+                interrupted_signo = caught["signo"]
+                _terminate_workers(executor)
+                executor.shutdown(wait=False, cancel_futures=True)
+                print(
+                    _format_cancel_message(done=len(completed), total=len(files)),
+                    file=sys.stderr,
+                    flush=True,
+                )
+            else:
+                executor.shutdown(wait=True)
+            finally:
+                signal.signal(signal.SIGTERM, prev_term)
+                signal.signal(signal.SIGHUP, prev_hup)
+
+        if interrupted:
+            return _signal_exit_code(interrupted_signo)
+
+        all_stats.sort(key=lambda stats: stats.src_name)
+
+        # A `clean` run writes a Markdown run report, a corpus-wide NDJSON of
+        # NORAD IDs whose records were quarantined anywhere, and (issue #9) a
+        # corpus-wide ``report.jsonl`` of structured findings concatenated
+        # from the per-worker shards. All three are always written on a
+        # successful clean run — empty when nothing was quarantined — so
+        # downstream consumers see a stable artifact set.
+        report_path = None
+        noradids_path = None
+        findings_path = None
+        if args.command == "clean" and all_stats:
+            report_path = os.path.join(args.out_dir, "report.md")
+            report.write_run_report(report_path, all_stats)
+            noradids_path = os.path.join(args.out_dir, "broken-noradids.ndjson")
+            report.write_broken_noradids_ndjson(noradids_path, all_stats)
+            findings_path = os.path.join(args.out_dir, "report.jsonl")
+            report.concat_findings_shards(args.out_dir, findings_path, all_stats)
+
+        if args.report == "json":
+            # Issue #20: top-level versioned envelope; replaces the prior
+            # flat-array output. Run wall-clock is the parent process's
+            # monotonic delta, NOT the sum of per-file worker durations
+            # (those are reported per-file under ``files[i].elapsed_seconds``
+            # and exceed parent wall-clock under ``--jobs N``).
+            run_elapsed = time.monotonic() - run_monotonic_start
+            envelope = report.build_run_envelope(
+                all_stats,
+                command=args.command,
+                started_at=run_started_iso,
+                elapsed_seconds=run_elapsed,
+            )
+            print(json.dumps(envelope, indent=2))
+        else:
+            for stats in all_stats:
+                print(report.format_summary(stats))
+                if args.command == "validate" and stats.reject_sample.buckets:
+                    print(report.format_reject_lines(stats))
+            if report_path:
+                print(f"\nrun report: {report_path}")
+            if noradids_path:
+                print(f"broken NORAD IDs: {noradids_path}")
+            if findings_path:
+                print(f"findings: {findings_path}")
+
+        # A fully successful clean run leaves no resumable state behind. The
+        # checkpoint and the findings shards (`.shards`) are both in-progress run
+        # state and are torn down together, here, ONLY on success: an interrupted
+        # run already returned 130 above (keeping both), and a failed run keeps both
+        # too, so the operator can fix the cause and `--resume` re-reads the
+        # surviving shards to rebuild a complete `report.jsonl` (issue #56). The
+        # `report.jsonl` was written from those shards by the report block above.
+        if args.command == "clean" and not failed_files:
+            resume.delete_checkpoint(args.out_dir)
+            shard_dir = os.path.join(args.out_dir, ".shards")
+            if os.path.exists(shard_dir):
+                shutil.rmtree(shard_dir)
+
+        # A file that could not be processed is an operational failure (spec §2.7
+        # / §10): exit 2 (operational error). Exit 1 is the quarantine quality
+        # gate (threshold exceeded); exit 2 covers all other operational failures.
+        if failed_files:
+            return 2
+        total_quarantined = sum(s.quarantined_count for s in all_stats)
+        if threshold_mode == "count":
+            return 1 if total_quarantined > quarantine_threshold else 0
+        # Rate mode: cross-multiplied (`100*q > p*r`) to avoid divide-by-zero on
+        # an empty corpus and float drift at the boundary. See design §3.
+        total_routed = sum(s.clean_count + s.quarantined_count for s in all_stats)
+        if 100 * total_quarantined > quarantine_threshold * total_routed:
+            return 1
+        return 0
+    finally:
+        _lock_stack.close()
