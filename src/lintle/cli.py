@@ -267,6 +267,40 @@ def build_parser():
     return parser
 
 
+def _is_interactive():
+    """A run is interactive iff stdin is a TTY (the prompt answer is read there)
+    and no CI/NONINTERACTIVE env var forces non-interactive — which prevents a
+    CI runner that allocates a pseudo-TTY from hanging on the prompt (spec §2.2)."""
+    if os.environ.get("CI") or os.environ.get("NONINTERACTIVE"):
+        return False
+    try:
+        return sys.stdin.isatty()
+    except AttributeError, ValueError:
+        return False
+
+
+def _prompt_yes_no(message, *, default):
+    """Ask a y/n question on stderr, reading the answer from stdin (spec §2.4).
+    Enter takes ``default``; up to 3 unrecognised answers then give up; EOF/Ctrl-D
+    gives up. Returns True/False, or None when the operator gave no usable answer
+    (caller treats None as abort)."""
+    for _ in range(3):
+        print(message, end="", file=sys.stderr, flush=True)
+        line = sys.stdin.readline()
+        if line == "":  # EOF / Ctrl-D
+            print(file=sys.stderr)
+            return None
+        token = line.strip().lower()
+        if token == "":
+            return default
+        if token in ("y", "yes"):
+            return True
+        if token in ("n", "no"):
+            return False
+        print("  please answer y or n.", file=sys.stderr)
+    return None
+
+
 def _check_disk_space(out_dir, input_bytes):
     """Return a ``(severity, message)`` tuple when ``out_dir``'s free space
     is at or near the 2× input-size guard, else ``None``. Severity is

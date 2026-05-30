@@ -1369,3 +1369,48 @@ class TestParseQuarantineThreshold:
         # value still resolves to the same percentage.
         assert cli.parse_quarantine_threshold("1 %") == ("pct", 1.0)
         assert cli.parse_quarantine_threshold("  1.5 %  ") == ("pct", 1.5)
+
+
+class TestIsInteractive:
+    def test_requires_stdin_tty_and_no_ci(self, monkeypatch):
+        monkeypatch.setattr(cli.sys, "stdin", io.StringIO())  # not a tty
+        monkeypatch.delenv("CI", raising=False)
+        monkeypatch.delenv("NONINTERACTIVE", raising=False)
+        assert cli._is_interactive() is False
+
+    def test_ci_env_forces_non_interactive(self, monkeypatch):
+        class _TTY(io.StringIO):
+            def isatty(self):
+                return True
+
+        monkeypatch.setattr(cli.sys, "stdin", _TTY())
+        monkeypatch.setenv("CI", "true")
+        assert cli._is_interactive() is False
+
+    def test_interactive_when_stdin_tty_and_no_ci(self, monkeypatch):
+        class _TTY(io.StringIO):
+            def isatty(self):
+                return True
+
+        monkeypatch.setattr(cli.sys, "stdin", _TTY())
+        monkeypatch.delenv("CI", raising=False)
+        monkeypatch.delenv("NONINTERACTIVE", raising=False)
+        assert cli._is_interactive() is True
+
+
+class TestPromptYesNo:
+    def test_enter_takes_default(self, monkeypatch):
+        monkeypatch.setattr(cli.sys, "stdin", io.StringIO("\n"))
+        assert cli._prompt_yes_no("go? ", default=True) is True
+
+    def test_explicit_no(self, monkeypatch):
+        monkeypatch.setattr(cli.sys, "stdin", io.StringIO("n\n"))
+        assert cli._prompt_yes_no("go? ", default=True) is False
+
+    def test_eof_returns_none(self, monkeypatch):
+        monkeypatch.setattr(cli.sys, "stdin", io.StringIO(""))
+        assert cli._prompt_yes_no("go? ", default=True) is None
+
+    def test_garbage_then_abort(self, monkeypatch):
+        monkeypatch.setattr(cli.sys, "stdin", io.StringIO("maybe\nhuh\nwhat\n"))
+        assert cli._prompt_yes_no("go? ", default=True) is None
