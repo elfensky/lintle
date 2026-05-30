@@ -1414,3 +1414,18 @@ class TestPromptYesNo:
     def test_garbage_then_abort(self, monkeypatch):
         monkeypatch.setattr(cli.sys, "stdin", io.StringIO("maybe\nhuh\nwhat\n"))
         assert cli._prompt_yes_no("go? ", default=True) is None
+
+
+class TestScrubOutputs:
+    def test_removes_output_trees(self, tmp_path):
+        out = tmp_path
+        for sub in ("cleaned", "broken", ".shards"):
+            d = out / sub
+            d.mkdir()
+            (d / "stale.txt").write_text("old")
+        cli._scrub_outputs(str(out))
+        for sub in ("cleaned", "broken", ".shards"):
+            assert not (out / sub).exists()
+
+    def test_noop_on_empty_dir(self, tmp_path):
+        cli._scrub_outputs(str(tmp_path))  # must not raise
