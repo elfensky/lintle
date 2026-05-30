@@ -18,11 +18,34 @@ class TestInputFingerprint:
         path = tmp_path / "tle.txt"
         _write(path, b"hello world\n")
         fp = resume.input_fingerprint(str(path))
-        assert set(fp) == {"size", "mtime_ns", "head_sha256", "tail_sha256"}
+        assert set(fp) == {
+            "size",
+            "mtime_ns",
+            "ctime_ns",
+            "inode",
+            "head_sha256",
+            "tail_sha256",
+        }
         assert fp["size"] == len(b"hello world\n")
         assert isinstance(fp["mtime_ns"], int)
         # Below the window, head and tail hash the same full content.
         assert fp["head_sha256"] == fp["tail_sha256"]
+
+    def test_includes_ctime_and_inode(self, tmp_path):
+        f = tmp_path / "tle.txt"
+        f.write_bytes(b"1 line\n2 line\n")
+        fp = resume.input_fingerprint(str(f))
+        assert set(fp) == {
+            "size",
+            "mtime_ns",
+            "ctime_ns",
+            "inode",
+            "head_sha256",
+            "tail_sha256",
+        }
+        st = os.stat(str(f))
+        assert fp["ctime_ns"] == st.st_ctime_ns
+        assert fp["inode"] == st.st_ino
 
     def test_distinguishes_files_by_head(self, tmp_path):
         a, b = tmp_path / "a.txt", tmp_path / "b.txt"
@@ -93,10 +116,12 @@ class TestCheckpointRoundTrip:
         resume.delete_checkpoint(str(tmp_path))  # must not raise
 
 
-def _fp(size=10, mtime_ns=100, head="h", tail="t"):
+def _fp(size=10, mtime_ns=100, ctime_ns=200, inode=1, head="h", tail="t"):
     return {
         "size": size,
         "mtime_ns": mtime_ns,
+        "ctime_ns": ctime_ns,
+        "inode": inode,
         "head_sha256": head,
         "tail_sha256": tail,
     }
@@ -140,11 +165,12 @@ class TestValidateResumable:
         assert reason and "gone.txt" in reason
 
     @pytest.mark.parametrize(
-        "field", ["size", "mtime_ns", "head_sha256", "tail_sha256"]
+        "field", ["size", "mtime_ns", "ctime_ns", "inode", "head_sha256", "tail_sha256"]
     )
     def test_changed_identity_refused(self, field):
         ckpt = _ckpt({"a.txt": _fp()})
         changed = _fp()
-        changed[field] = 999 if field in ("size", "mtime_ns") else "CHANGED"
+        int_fields = {"size", "mtime_ns", "ctime_ns", "inode"}
+        changed[field] = 999 if field in int_fields else "CHANGED"
         reason = resume.validate_resumable(ckpt, {"a.txt": changed})
         assert reason and "a.txt" in reason

@@ -26,11 +26,15 @@ _HASH_WINDOW = 65536
 
 
 def input_fingerprint(path):
-    """Return a cheap identity for ``path``: size, integer ``mtime_ns``, and the
-    SHA-256 of its first and last 64 KB. Integer ``mtime_ns`` (not the float
-    ``st_mtime``) avoids JSON round-trip precision loss and cross-filesystem
-    granularity skew. Files at or below the window hash their whole content for
-    both windows. Constant memory — the interior is never read.
+    """Return a cheap identity for ``path``: size, integer ``mtime_ns``,
+    ``ctime_ns``, inode number, and SHA-256 of its first and last 64 KB.
+    Integer nanosecond timestamps avoid JSON round-trip precision loss and
+    cross-filesystem granularity skew. ``ctime_ns`` + inode catch
+    metadata-preserving copies (``cp -p``, ``rsync -t``, ``touch -r``) and
+    replace-by-rename; residual: an interior edit that also preserves
+    size+mtime+ctime+inode is not detected (spec §3.5/§7). Files at or below
+    the window hash their whole content for both windows. Constant memory —
+    the interior is never read.
     """
     st = os.stat(path)
     with open(path, "rb") as handle:
@@ -43,6 +47,8 @@ def input_fingerprint(path):
     return {
         "size": st.st_size,
         "mtime_ns": st.st_mtime_ns,
+        "ctime_ns": st.st_ctime_ns,
+        "inode": st.st_ino,
         "head_sha256": hashlib.sha256(head).hexdigest(),
         "tail_sha256": hashlib.sha256(tail).hexdigest(),
     }
