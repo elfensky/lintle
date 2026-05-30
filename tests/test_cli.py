@@ -369,11 +369,11 @@ class TestMain:
         assert "no such file or directory" in err
         assert "Traceback" not in err  # no stack trace leaks to the user
 
-    def test_main_returns_one_when_a_worker_raises(
+    def test_main_returns_two_when_a_worker_raises(
         self, tmp_path, line1, line2, monkeypatch
     ):
         # A worker exception (e.g. I/O error mid-stream) is an operational
-        # failure → exit 1 (spec §2.7). Exit 2 is argparse usage errors only.
+        # failure → exit 2 (spec §2.7). Exit 1 is the quarantine quality gate.
         src = tmp_path / "src"
         src.mkdir()
         (src / "tle2099.txt").write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
@@ -420,7 +420,7 @@ class TestMain:
         finally:
             signal.signal(signal.SIGINT, original_sigint)
 
-        assert rc == 1
+        assert rc == 2
 
     def test_main_friendly_error_when_default_source_missing(
         self, tmp_path, monkeypatch, capsys
@@ -1221,7 +1221,7 @@ class TestResume:
 
     def test_resume_without_checkpoint_errors(self, tmp_path, line1, line2, capsys):
         # --resume (explicit force-resume) with no checkpoint: ABSENT + resume
-        # → ABORT with exit_code=1 (operational refusal, not a usage error).
+        # → ABORT with exit_code=2 (operational error, not the quarantine gate).
         src = self._two_file_src(tmp_path, line1, line2)
         out = tmp_path / "out"
         out.mkdir()
@@ -1229,7 +1229,7 @@ class TestResume:
             ["clean", str(src), "--out-dir", str(out), "--resume", "--jobs", "1"]
         )
         err = capsys.readouterr().err
-        assert rc == 1
+        assert rc == 2
         assert "no interrupted run" in err.lower()
 
     def test_resume_finishes_and_matches_full_run(self, tmp_path, line1, line2):
@@ -1310,7 +1310,7 @@ class TestResume:
 
     def test_resume_refuses_when_input_changed(self, tmp_path, line1, line2, capsys):
         # --resume (explicit force-resume) with a stale checkpoint (input changed)
-        # → STALE + resume flag → ABORT with exit_code=1.
+        # → STALE + resume flag → ABORT with exit_code=2.
         src = self._two_file_src(tmp_path, line1, line2)
         paths = cli.discover_paths(str(src))
         out_partial = tmp_path / "partial"
@@ -1331,7 +1331,7 @@ class TestResume:
             ]
         )
         err = capsys.readouterr().err
-        assert rc == 1
+        assert rc == 2
         assert "input changed" in err.lower()
         assert "tle2099" in err
         # A refused resume leaves the checkpoint intact for an explicit restart.
@@ -1367,7 +1367,7 @@ class TestResume:
         self, tmp_path, line1, line2, capsys
     ):
         # A present-but-corrupt checkpoint must not be reported as "not found".
-        # CORRUPT + any flag (or no flag) → ABORT with exit_code=1 unless --no-resume.
+        # CORRUPT + any flag (or no flag) → ABORT with exit_code=2 unless --no-resume.
         src = self._two_file_src(tmp_path, line1, line2)
         out = tmp_path / "out"
         out.mkdir()
@@ -1376,7 +1376,7 @@ class TestResume:
             ["clean", str(src), "--out-dir", str(out), "--resume", "--jobs", "1"]
         )
         err = capsys.readouterr().err
-        assert rc == 1
+        assert rc == 2
         assert "corrupt" in err.lower() or "unreadable" in err.lower()
         assert "no interrupted run" not in err.lower()
 

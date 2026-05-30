@@ -38,8 +38,12 @@ Exit codes:
   0    quarantine count (or rate) is at or below --max-quarantined
   1    quarantine count (or rate) exceeded --max-quarantined
        (default: 0 — any quarantine fails)
-  2    operational error (missing input, disk shortfall, file failure)
-  130  interrupted (Ctrl-C)
+  2    operational/usage error: bad args, no input files, disk shortfall,
+       a file that failed to process, lock held, or a stale/corrupt/
+       declined resume (including EOF at the prompt)
+  129  terminated by SIGHUP (128+1)
+  130  terminated by SIGINT / Ctrl-C (128+2)
+  143  terminated by SIGTERM (128+15)
 
 See `lintle <command> --help` for command-specific options.
 """
@@ -612,12 +616,13 @@ def main(argv=None):
     """Entry point for the ``lintle`` console script.
 
     Returns the process exit code: ``0`` = quarantine count (or rate) is at
-    or below ``--max-quarantined``; ``1`` = it exceeded the threshold
-    (default ``0`` — any quarantine fails); ``2`` = operational error (no
-    input files, disk shortfall, or a file that failed to process); ``130``
-    = interrupted with Ctrl-C. The threshold accepts either an integer
-    record count (``--max-quarantined 100``) or a percentage of routed
-    records (``--max-quarantined 1%``); see :func:`parse_quarantine_threshold`.
+    or below ``--max-quarantined``; ``1`` = quarantine threshold exceeded
+    (default ``0`` — any quarantine fails); ``2`` = operational/usage error
+    (bad args, no input files, disk shortfall, a file that failed to process,
+    or a stale/corrupt/declined resume); ``130``/``143``/``129`` = terminated
+    by SIGINT/SIGTERM/SIGHUP. The threshold accepts either an integer record
+    count (``--max-quarantined 100``) or a percentage of routed records
+    (``--max-quarantined 1%``); see :func:`parse_quarantine_threshold`.
     """
     args = build_parser().parse_args(argv)
 
@@ -929,10 +934,10 @@ def main(argv=None):
             shutil.rmtree(shard_dir)
 
     # A file that could not be processed is an operational failure (spec §2.7
-    # / §10): exit 1 (operational). Exit 2 is reserved for argparse usage
-    # errors only.
+    # / §10): exit 2 (operational error). Exit 1 is the quarantine quality
+    # gate (threshold exceeded); exit 2 covers all other operational failures.
     if failed_files:
-        return 1
+        return 2
     total_quarantined = sum(s.quarantined_count for s in all_stats)
     if threshold_mode == "count":
         return 1 if total_quarantined > quarantine_threshold else 0
