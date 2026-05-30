@@ -46,8 +46,17 @@ All notable changes to this project are documented in this file. The format is b
   at the boundary); `0%` ≡ `0` and `100%` effectively never trips. Design at
   `docs/superpowers/specs/2026-05-27-max-quarantined-percentage-design.md`.
 
+- Host-aware out-dir lock: refuses to start a second concurrent `clean` against
+  the same `--out-dir`.
+
 ### Changed
 
+- `clean` now resumes by default after an interruption: re-run the same command
+  (same `--out-dir`, unchanged inputs) to continue where it stopped. Interactive
+  terminals prompt; CI/non-TTY auto-resumes with a notice. `--no-resume` starts
+  fresh (clearing prior outputs); `--resume` resumes without prompting.
+- Cancelling (`Ctrl-C`, or `SIGTERM`/`SIGHUP` from a scheduler) prints how to
+  continue or start over.
 - **Breaking change.** Minimum Python is now **3.14** (was 3.11). `requires-python`,
   `tool.ruff.target-version`, `.python-version`, and the trove classifiers all
   bumped together; drops 3.11 / 3.12 / 3.13 support. Aligns lintle with the
