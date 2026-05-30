@@ -119,7 +119,8 @@ uv run lintle explain <TAG>
 | `--jobs N` | CPU count | Number of files processed in parallel. Lower it if a slow disk causes I/O contention. |
 | `--report text\|json` | `text` | Summary format. |
 | `--max-quarantined N[%]` | `0` | Exit non-zero only if MORE than N records were quarantined; or, with a trailing `%`, more than `N%` of routed records (`clean + quarantined`) were quarantined. Default `0` ≡ "any quarantine fails". |
-| `--resume` | off | (`clean` only) Continue an interrupted run in `--out-dir`: skip files already completed and process only the rest. Refuses if the `lintle` version or any input changed since the interrupted run. |
+| `--resume` | — | (`clean` only) Resume an interrupted run without prompting, even in a non-interactive context. |
+| `--no-resume` | — | (`clean` only) Ignore any checkpoint and start fresh, clearing prior outputs in `--out-dir`. |
 
 **Examples:**
 
@@ -143,8 +144,11 @@ uv run lintle clean data/source --max-quarantined 1% --report json > run-summary
 uv run lintle explain TLE-CHK-001
 uv run lintle explain reconstructed-checksum
 
-# Resume an interrupted run (e.g. the laptop slept mid-corpus) — finish only what's left
-uv run lintle clean data/source --out-dir data/output --resume
+# Resume an interrupted run (e.g. the laptop slept mid-corpus) — re-run the same command
+uv run lintle clean data/source --out-dir data/output  # prompts to resume; auto-resumes in CI
+
+# Start completely fresh, discarding any checkpoint and prior outputs
+uv run lintle clean data/source --out-dir data/output --no-resume
 ```
 
 **Exit codes:**
@@ -153,27 +157,45 @@ uv run lintle clean data/source --out-dir data/output --resume
 |------|---------|
 | `0` | Quarantine count (or rate) is at or below `--max-quarantined` (default `0`). |
 | `1` | Quarantine count (or rate) exceeded `--max-quarantined`. |
-| `2` | Operational error — no input files, disk shortfall, or a file that failed to process. |
+| `2` | Operational error — no input files, disk shortfall, lock held, stale/corrupt/declined resume, or a file that failed to process. |
+| `129` | Killed by `SIGHUP` (e.g. terminal closed). |
+| `130` | Interrupted with `Ctrl-C` (`SIGINT`). |
+| `143` | Terminated by `SIGTERM` (e.g. from a scheduler). |
 
 Repairable defects (including the near-universal trailing `\`) do **not** raise
 the exit code above 0 — almost every raw file contains them. `--max-quarantined`
 preserves the meaningful `2` (operational error) and `130` (Ctrl-C) signals that
 a `lintle ... || true` pipe would swallow.
 
-## Resuming an interrupted run
+## Cancelling and resuming
 
 A long `clean` over the full corpus can be interrupted — Ctrl-C, a closed
-laptop, a crash. Re-run the **same command with `--resume`** to finish it: files
-already completed are skipped (their `cleaned/`, `broken/`, and report
-contributions reused) and only the remainder is processed.
+laptop, or a `SIGTERM`/`SIGHUP` from a scheduler. When that happens lintle
+prints the exit code and a one-liner showing how to continue or start over. Just
+re-run **the same command** to resume:
+
+```bash
+uv run lintle clean data/source --out-dir data/output   # interrupted with Ctrl-C
+uv run lintle clean data/source --out-dir data/output   # picks up where it left off
+```
+
+On an interactive terminal lintle prompts `Resume interrupted run? [Y/n]`; in
+CI or any non-TTY context it auto-resumes and prints a loud notice. Resume is
+scoped to the same `--out-dir` — re-running against a different output directory
+always starts fresh.
 
 While a run is in flight it maintains a small `.clean-state.json` checkpoint in
 `--out-dir`, deleted on successful completion — so its presence marks an
-interrupted run, and a finished run leaves none behind. `--resume` **refuses**
-(exit `2`) if the `lintle` version or any input file changed since the
-interruption, rather than silently mixing outputs from two different states;
-re-run without `--resume` for a clean full pass. This is single-run resume, not
-a cross-run cache: each run still re-validates every record it emits.
+interrupted run, and a finished run leaves none behind. A stale checkpoint (the
+`lintle` version or an input file changed since the interruption) is never
+silently resumed: interactive → prompt (default No); non-interactive → exit `2`
+with the reason and a `--no-resume` hint.
+
+Use `--no-resume` to discard any checkpoint and start fresh — this also clears
+prior `cleaned/`/`broken/` outputs so no orphaned files linger. Use `--resume`
+to resume without prompting. The two flags are mutually exclusive. This is
+single-run resume, not a cross-run cache: each run still re-validates every
+record it emits.
 
 ## Output
 
