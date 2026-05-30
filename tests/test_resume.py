@@ -5,7 +5,7 @@ import os
 import pytest
 
 import lintle
-from lintle import resume
+from lintle import resume, stem
 
 
 def _write(path, data: bytes):
@@ -225,3 +225,37 @@ class TestValidateRunIdentity:
         changed[field] = 999 if field in int_fields else "CHANGED"
         reason = resume.validate_run_identity(ckpt, {"a.txt": changed}, {"args": []})
         assert reason and "a.txt" in reason
+
+
+class TestVerifyCompletedOutputs:
+    def _completed(self, name, cleaned_size):
+        return {
+            name: {
+                "summary": {"src_name": name},
+                "outputs": {stem(name) + ".cleaned.txt": cleaned_size},
+            }
+        }
+
+    def test_intact_outputs_are_trusted(self, tmp_path):
+        out = tmp_path
+        (out / "cleaned").mkdir()
+        (out / "cleaned" / "tle2099.cleaned.txt").write_bytes(b"x" * 100)
+        assert (
+            resume.verify_completed_outputs(
+                self._completed("tle2099.txt", 100), str(out)
+            )
+            == []
+        )
+
+    def test_missing_output_flags_reprocess(self, tmp_path):
+        assert resume.verify_completed_outputs(
+            self._completed("tle2099.txt", 100), str(tmp_path)
+        ) == ["tle2099.txt"]
+
+    def test_truncated_output_flags_reprocess(self, tmp_path):
+        out = tmp_path
+        (out / "cleaned").mkdir()
+        (out / "cleaned" / "tle2099.cleaned.txt").write_bytes(b"x" * 7)
+        assert resume.verify_completed_outputs(
+            self._completed("tle2099.txt", 100), str(out)
+        ) == ["tle2099.txt"]

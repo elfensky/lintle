@@ -110,6 +110,30 @@ def delete_checkpoint(out_dir):
         os.remove(_checkpoint_path(out_dir))
 
 
+def verify_completed_outputs(completed, out_dir):
+    """Return the list of input paths whose recorded outputs are missing or do
+    not match their recorded size (spec §3.6). A checkpoint entry is trusted only
+    when every output file it named still exists on disk at the exact byte size
+    captured at completion — guarding against a SIGKILL/disk-full truncation that
+    ``os.stat``-existence alone would not catch. Flagged files are reprocessed."""
+    reprocess = []
+    for path, entry in completed.items():
+        for rel_name, expected_size in entry.get("outputs", {}).items():
+            actual = (
+                os.path.join(out_dir, "cleaned", rel_name)
+                if rel_name.endswith(".cleaned.txt")
+                else os.path.join(out_dir, "broken", rel_name)
+            )
+            try:
+                if os.path.getsize(actual) != expected_size:
+                    reprocess.append(path)
+                    break
+            except OSError:
+                reprocess.append(path)
+                break
+    return reprocess
+
+
 def validate_run_identity(checkpoint, current_inputs, current_run_identity):
     """Return a human-readable reason the checkpoint cannot be resumed against the
     current run, or None if it can. Refuse-on-change (spec §3.1, all-or-nothing):
