@@ -81,18 +81,20 @@ class TestCheckpointRoundTrip:
                 }
             },
             completed={},
+            run_identity={},
         )
         resume.write_checkpoint(str(tmp_path), ckpt)
         assert resume.load_checkpoint(str(tmp_path)) == ckpt
 
     def test_build_checkpoint_pins_schema_and_version(self, tmp_path):
-        ckpt = resume.build_checkpoint(inputs={}, completed={})
+        ckpt = resume.build_checkpoint(inputs={}, completed={}, run_identity={})
         assert ckpt["schema_version"] == resume.SCHEMA_VERSION
         assert ckpt["lintle_version"] == lintle.__version__
 
     def test_write_is_atomic_no_partial_left_behind(self, tmp_path):
         resume.write_checkpoint(
-            str(tmp_path), resume.build_checkpoint(inputs={}, completed={})
+            str(tmp_path),
+            resume.build_checkpoint(inputs={}, completed={}, run_identity={}),
         )
         leftovers = [n for n in os.listdir(tmp_path) if n.endswith(".partial")]
         assert leftovers == []
@@ -107,7 +109,8 @@ class TestCheckpointRoundTrip:
 
     def test_delete_removes_checkpoint(self, tmp_path):
         resume.write_checkpoint(
-            str(tmp_path), resume.build_checkpoint(inputs={}, completed={})
+            str(tmp_path),
+            resume.build_checkpoint(inputs={}, completed={}, run_identity={}),
         )
         resume.delete_checkpoint(str(tmp_path))
         assert resume.load_checkpoint(str(tmp_path)) is None
@@ -134,6 +137,18 @@ def _ckpt(inputs):
         "inputs": inputs,
         "completed": {},
     }
+
+
+class TestBuildCheckpoint:
+    def test_schema_version_is_2_and_records_run_identity(self):
+        ckpt = resume.build_checkpoint(
+            inputs={"a.txt": {"size": 1}},
+            completed={"a.txt": {"summary": {"clean_count": 3}, "outputs": {}}},
+            run_identity={"args": []},
+        )
+        assert ckpt["schema_version"] == 2
+        assert ckpt["run_identity"] == {"args": []}
+        assert ckpt["completed"]["a.txt"]["summary"]["clean_count"] == 3
 
 
 class TestValidateResumable:
