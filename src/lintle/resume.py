@@ -100,7 +100,7 @@ def load_checkpoint(out_dir):
     try:
         with open(_checkpoint_path(out_dir), encoding="utf-8") as handle:
             return json.load(handle)
-    except OSError, json.JSONDecodeError:
+    except (OSError, json.JSONDecodeError):
         return None
 
 
