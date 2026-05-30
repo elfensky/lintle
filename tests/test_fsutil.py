@@ -77,3 +77,33 @@ class TestPlatformBarrier:
             assert fsutil._USE_FULLFSYNC is True
         else:
             assert fsutil._USE_FULLFSYNC is False
+
+
+class TestOutDirLock:
+    def test_acquires_and_releases(self, tmp_path):
+        with fsutil.out_dir_lock(str(tmp_path)):
+            assert os.path.exists(os.path.join(str(tmp_path), ".clean.lock"))
+        with fsutil.out_dir_lock(str(tmp_path)):
+            pass  # re-acquire succeeds after release
+
+    def test_refuses_when_held_by_live_same_host(self, tmp_path):
+        with fsutil.out_dir_lock(str(tmp_path)):  # noqa: SIM117
+            with pytest.raises(fsutil.LockHeldError):
+                with fsutil.out_dir_lock(str(tmp_path)):
+                    pass
+
+    def test_reclaims_dead_same_host_pid(self, tmp_path):
+        lock = os.path.join(str(tmp_path), ".clean.lock")
+        payload = f'{{"host": "{fsutil._host_id()}", "pid": 999999999, "started": "x"}}'
+        with open(lock, "w") as h:
+            h.write(payload)
+        with fsutil.out_dir_lock(str(tmp_path)):
+            pass  # reclaimed, no error
+
+    def test_refuses_cross_host_even_if_pid_dead(self, tmp_path):
+        lock = os.path.join(str(tmp_path), ".clean.lock")
+        with open(lock, "w") as h:
+            h.write('{"host": "some-other-host-xyz", "pid": 999999999, "started": "x"}')
+        with pytest.raises(fsutil.LockHeldError):  # noqa: SIM117
+            with fsutil.out_dir_lock(str(tmp_path)):
+                pass
