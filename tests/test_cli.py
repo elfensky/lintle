@@ -1612,3 +1612,91 @@ class TestResumeWiring:
         # A successful auto-resume tears down the checkpoint and shards.
         assert not (out_partial / resume.CHECKPOINT_NAME).exists()
         assert not (out_partial / ".shards").exists()
+
+
+class TestFreshRunOrphanScrub:
+    """Gap 1 (spec §3.4): a true-fresh run wipes cleaned/ + broken/ so outputs
+    from a prior run whose input is no longer in the input set do not linger."""
+
+    def test_no_resume_scrubs_orphaned_outputs(self, tmp_path, line1, line2):
+        # Step 1 — run on two inputs; both cleaned outputs are written.
+        src = tmp_path / "src"
+        src.mkdir()
+        content = (line1 + "\n" + line2 + "\n").encode("ascii")
+        (src / "tle2000.txt").write_bytes(content)
+        (src / "tle2001.txt").write_bytes(content)
+        out = tmp_path / "out"
+
+        rc1 = cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
+        assert rc1 == 0
+        assert (out / "cleaned" / "tle2000.cleaned.txt").exists()
+        assert (out / "cleaned" / "tle2001.cleaned.txt").exists()
+        # A completed run deletes the checkpoint.
+        assert not (out / resume.CHECKPOINT_NAME).exists()
+
+        # Step 2 — remove tle2001.txt from the input set; its cleaned output is
+        # now an orphan in the out-dir.
+        (src / "tle2001.txt").unlink()
+        assert (out / "cleaned" / "tle2001.cleaned.txt").exists()  # orphan present
+
+        # Step 3 — fresh run (--no-resume) on the now-one-file dir.
+        rc2 = cli.main(
+            ["clean", str(src), "--out-dir", str(out), "--no-resume", "--jobs", "1"]
+        )
+        assert rc2 == 0
+
+        # The output for the surviving input must exist.
+        assert (out / "cleaned" / "tle2000.cleaned.txt").exists()
+
+        # The orphan from the prior run must be gone — spec §3.4 guarantees
+        # the fresh run scrubs the whole cleaned/ tree before processing.
+        assert not (out / "cleaned" / "tle2001.cleaned.txt").exists()
+
+
+class TestStaleCheckpointNonInteractive:
+    """Gap 2 (spec §2.3): STALE checkpoint + no flag + non-interactive mode
+    must exit 2 and print the change reason plus a --no-resume hint.
+
+    ``test_resume_refuses_when_input_changed`` in TestResume covers the
+    STALE + *explicit --resume flag* cell.  This class covers the
+    STALE + *no flag* + non-interactive cell — a different branch in
+    resolve_resume_action — so both are independently tested."""
+
+    def _make_stale_setup(self, tmp_path, line1, line2):
+        """Return (src, out_partial) with a valid checkpoint whose fingerprint
+        will not match after we mutate the input."""
+        src = tmp_path / "src"
+        src.mkdir()
+        content = (line1 + "\n" + line2 + "\n").encode("ascii")
+        (src / "tle2000.txt").write_bytes(content)
+        (src / "tle2001.txt").write_bytes(content)
+        paths = cli.discover_paths(str(src))
+        out_partial = tmp_path / "partial"
+        _simulate_interrupted_clean(paths, str(out_partial), completed_count=1)
+        return src, out_partial
+
+    def test_stale_checkpoint_non_interactive_errors(
+        self, tmp_path, line1, line2, capsys, monkeypatch
+    ):
+        # Ensure non-interactive mode regardless of the test runner environment.
+        monkeypatch.setenv("CI", "true")
+
+        src, out_partial = self._make_stale_setup(tmp_path, line1, line2)
+
+        # Mutate tle2001.txt so its fingerprint no longer matches the checkpoint.
+        with open(src / "tle2001.txt", "ab") as fh:
+            fh.write(b"extra junk\n")
+
+        # No --resume and no --no-resume: the default path.
+        rc = cli.main(["clean", str(src), "--out-dir", str(out_partial), "--jobs", "1"])
+        err = capsys.readouterr().err
+
+        # spec §2.3: STALE + no flag + non-interactive → exit 2 + guidance.
+        assert rc == 2
+        # The error message must name the change reason.
+        assert "input changed" in err.lower() or "cannot resume" in err.lower()
+        # The guidance hint directs the operator to --no-resume.
+        assert "--no-resume" in err
+        # The checkpoint must survive (not silently discarded) so the operator
+        # can inspect what changed before choosing to discard or investigate.
+        assert (out_partial / resume.CHECKPOINT_NAME).exists()
