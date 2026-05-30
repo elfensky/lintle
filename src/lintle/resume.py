@@ -173,6 +173,74 @@ def verify_completed_outputs(completed, out_dir):
     return reprocess
 
 
+class ResumeAction(enum.Enum):
+    FRESH = "fresh"
+    RESUME = "resume"
+    ABORT = "abort"
+
+
+@dataclasses.dataclass
+class Decision:
+    """Result of :func:`resolve_resume_action` — bundles the chosen action, an
+    optional human-readable message for the caller to surface, and the process
+    exit code (set only for ABORT).
+    """
+
+    action: ResumeAction
+    message: str | None = None
+    exit_code: int | None = None
+
+
+def resolve_resume_action(classification, *, resume, no_resume, interactive, prompt):
+    """Pure decision for the §2.3 matrix. ``resume``/``no_resume`` are the explicit
+    flags (authoritative); ``interactive`` is the detected mode; ``prompt`` is a
+    callable ``(message, *, default) -> bool | None`` (None = EOF/no-answer) used
+    only when a decision needs the operator. Returns a Decision."""
+    status = classification.status
+    St = CheckpointStatus
+    if status is St.ABSENT:
+        if resume:
+            return Decision(ResumeAction.ABORT, "no interrupted run to resume", 1)
+        return Decision(ResumeAction.FRESH)
+    if status is St.CORRUPT:
+        if no_resume:
+            return Decision(ResumeAction.FRESH)
+        return Decision(
+            ResumeAction.ABORT,
+            "checkpoint is unreadable; pass --no-resume to start fresh",
+            1,
+        )
+    if status is St.VALID:
+        if resume:
+            return Decision(ResumeAction.RESUME)
+        if no_resume:
+            return Decision(ResumeAction.FRESH)
+        if not interactive:
+            return Decision(ResumeAction.RESUME)
+        answer = prompt("Resume interrupted run? [Y/n] ", default=True)
+        if answer is None:
+            return Decision(ResumeAction.ABORT, "aborted", 1)
+        return Decision(ResumeAction.RESUME if answer else ResumeAction.FRESH)
+    # STALE
+    reason = classification.reason or "inputs changed"
+    if no_resume:
+        return Decision(ResumeAction.FRESH)
+    if resume:
+        return Decision(ResumeAction.ABORT, f"cannot resume: {reason}", 1)
+    if not interactive:
+        return Decision(
+            ResumeAction.ABORT,
+            f"cannot resume: {reason}. Pass --no-resume to start fresh",
+            1,
+        )
+    answer = prompt(
+        f"Can't resume ({reason}). Reprocess all from scratch? [y/N] ", default=False
+    )
+    if answer:
+        return Decision(ResumeAction.FRESH)
+    return Decision(ResumeAction.ABORT, "aborted", 1)
+
+
 def validate_run_identity(checkpoint, current_inputs, current_run_identity):
     """Return a human-readable reason the checkpoint cannot be resumed against the
     current run, or None if it can. Refuse-on-change (spec §3.1, all-or-nothing):
