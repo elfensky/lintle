@@ -345,7 +345,7 @@ def _scrub_outputs(out_dir):
         shutil.rmtree(os.path.join(out_dir, sub), ignore_errors=True)
 
 
-def run_started_stamp():
+def _run_started_stamp():
     """ISO-8601 UTC timestamp for archive/lock naming. Isolated so the rest of the
     resume logic stays clock-free and testable."""
     return datetime.datetime.now(datetime.UTC).strftime("%Y%m%dT%H%M%SZ")
@@ -691,7 +691,6 @@ def main(argv=None):
         # (a head+tail window hash), it is written into the checkpoint as files
         # complete so an interrupted run can be finished later.
         inputs = {path: resume.input_fingerprint(path) for path in files}
-        shard_dir = os.path.join(args.out_dir, ".shards")
         # Output-affecting configuration pinned into the checkpoint identity
         # (spec §3.1). Today only the input set + version affect output content;
         # this is the explicit, future-proof hook so a new output-affecting flag
@@ -730,7 +729,7 @@ def main(argv=None):
         else:  # FRESH
             # True-fresh slate (spec §3.4): archive any checkpoint (never delete
             # a recoverable run), then scrub output trees so no orphans linger.
-            resume.archive_checkpoint(args.out_dir, timestamp=run_started_stamp())
+            resume.archive_checkpoint(args.out_dir, timestamp=_run_started_stamp())
             _scrub_outputs(args.out_dir)
 
     # Resolve the worker count now that files_to_process is final: an explicit

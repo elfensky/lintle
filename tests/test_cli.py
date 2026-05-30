@@ -1497,3 +1497,39 @@ class TestResumeWiring:
         assert rc == 0
         # checkpoint deleted on success
         assert not (out / ".clean-state.json").exists()
+
+    def test_auto_resume_when_checkpoint_valid(self, tmp_path, line1, line2):
+        # DEFAULT behavior (no --resume flag, no --no-resume flag, non-interactive
+        # environment — pytest has no TTY): a valid checkpoint is picked up
+        # automatically and the completed files are skipped.
+        src = self._make_src(tmp_path, line1, line2)
+        paths = cli.discover_paths(str(src))
+        out_full = tmp_path / "full"
+        rc_full = cli.main(
+            ["clean", str(src), "--out-dir", str(out_full), "--jobs", "1"]
+        )
+
+        out_partial = tmp_path / "partial"
+        _simulate_interrupted_clean(paths, str(out_partial), completed_count=1)
+        # Note the mtime of the already-completed file so we can confirm it
+        # was NOT reprocessed.
+        first_name = os.path.basename(paths[0])
+        first_stem = os.path.splitext(first_name)[0]
+        first_cleaned = out_partial / "cleaned" / f"{first_stem}.cleaned.txt"
+        mtime_before = first_cleaned.stat().st_mtime_ns
+
+        # No --resume flag — auto-resume is the default in non-interactive mode.
+        rc_auto = cli.main(
+            ["clean", str(src), "--out-dir", str(out_partial), "--jobs", "1"]
+        )
+
+        assert rc_auto == rc_full
+        # The already-completed file was skipped, not reprocessed.
+        assert first_cleaned.stat().st_mtime_ns == mtime_before
+        # report.jsonl output matches the full run.
+        assert (out_partial / "report.jsonl").read_bytes() == (
+            out_full / "report.jsonl"
+        ).read_bytes()
+        # A successful auto-resume tears down the checkpoint and shards.
+        assert not (out_partial / resume.CHECKPOINT_NAME).exists()
+        assert not (out_partial / ".shards").exists()
