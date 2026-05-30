@@ -296,3 +296,79 @@ class TestVerifyCompletedOutputs:
         assert resume.verify_completed_outputs(
             self._completed("tle2099.txt", 100), str(out)
         ) == ["tle2099.txt"]
+
+
+class TestResolveResumeAction:
+    def _c(self, status, reason=None):
+        return resume.Classification(status, reason=reason)
+
+    def call(
+        self,
+        status,
+        *,
+        resume_flag=False,
+        no_resume=False,
+        interactive=False,
+        answer=True,
+        reason="inputs changed",
+    ):
+        cls = self._c(status, reason=reason)
+        prompt = lambda msg, *, default: answer  # noqa: E731
+        return resume.resolve_resume_action(
+            cls,
+            resume=resume_flag,
+            no_resume=no_resume,
+            interactive=interactive,
+            prompt=prompt,
+        )
+
+    def test_absent_default_is_fresh(self):
+        d = self.call(resume.CheckpointStatus.ABSENT)
+        assert d.action is resume.ResumeAction.FRESH
+
+    def test_absent_with_resume_aborts(self):
+        d = self.call(resume.CheckpointStatus.ABSENT, resume_flag=True)
+        assert d.action is resume.ResumeAction.ABORT and d.exit_code == 1
+
+    def test_corrupt_default_aborts_no_resume_freshes(self):
+        d_abort = self.call(resume.CheckpointStatus.CORRUPT)
+        assert d_abort.action is resume.ResumeAction.ABORT
+        d_fresh = self.call(resume.CheckpointStatus.CORRUPT, no_resume=True)
+        assert d_fresh.action is resume.ResumeAction.FRESH
+
+    def test_valid_flags(self):
+        d_resume = self.call(resume.CheckpointStatus.VALID, resume_flag=True)
+        assert d_resume.action is resume.ResumeAction.RESUME
+        d_fresh = self.call(resume.CheckpointStatus.VALID, no_resume=True)
+        assert d_fresh.action is resume.ResumeAction.FRESH
+
+    def test_valid_non_interactive_auto_resumes(self):
+        d = self.call(resume.CheckpointStatus.VALID, interactive=False)
+        assert d.action is resume.ResumeAction.RESUME
+
+    def test_valid_interactive_prompt(self):
+        d_yes = self.call(resume.CheckpointStatus.VALID, interactive=True, answer=True)
+        assert d_yes.action is resume.ResumeAction.RESUME
+        d_no = self.call(resume.CheckpointStatus.VALID, interactive=True, answer=False)
+        assert d_no.action is resume.ResumeAction.FRESH
+
+    def test_valid_interactive_eof_aborts(self):
+        d = self.call(resume.CheckpointStatus.VALID, interactive=True, answer=None)
+        assert d.action is resume.ResumeAction.ABORT and d.exit_code == 1
+
+    def test_stale_no_resume_freshes_resume_aborts(self):
+        d_fresh = self.call(resume.CheckpointStatus.STALE, no_resume=True)
+        assert d_fresh.action is resume.ResumeAction.FRESH
+        d_abort = self.call(resume.CheckpointStatus.STALE, resume_flag=True)
+        assert d_abort.action is resume.ResumeAction.ABORT
+
+    def test_stale_non_interactive_aborts(self):
+        d = self.call(resume.CheckpointStatus.STALE, interactive=False)
+        assert d.action is resume.ResumeAction.ABORT and d.exit_code == 1
+        assert "--no-resume" in d.message
+
+    def test_stale_interactive_prompt(self):
+        d_yes = self.call(resume.CheckpointStatus.STALE, interactive=True, answer=True)
+        assert d_yes.action is resume.ResumeAction.FRESH
+        d_no = self.call(resume.CheckpointStatus.STALE, interactive=True, answer=False)
+        assert d_no.action is resume.ResumeAction.ABORT
