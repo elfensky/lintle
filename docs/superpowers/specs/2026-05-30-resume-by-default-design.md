@@ -3,6 +3,9 @@
 - **Date:** 2026-05-30
 - **Status:** Designed; ready for implementation.
 - **Revision:**
+  - **rev 3 (2026-05-30)** — exit-code fix: exit 1 stays the quarantine quality-gate signal
+    (pre-existing convention in `cli.py`); operational/usage errors and resume-abort are exit
+    2, not 1 (rev 2 wrongly reused 1 for both). §2.3 matrix and §2.7 updated accordingly.
   - **rev 2 (2026-05-30)** — hardened by a multi-AI debate (Gemini + Codex adversarial
     reviews against Claude's three-lens review). Adopted: output **integrity** checks (not
     mere existence), **flock + host/boot-id-aware** lock (not bare PID), **SIGTERM/SIGHUP**
@@ -68,10 +71,10 @@ reason. "Corrupt" = present but unparseable. Exit codes per §2.7.
 
 | Checkpoint | none / prompt | `--resume` | `--no-resume` |
 | --- | --- | --- | --- |
-| **absent** | Fresh run | **Error (1)** — "nothing to resume" (honours explicit intent) | Fresh run |
-| **corrupt** | Error (1) — "checkpoint unreadable; pass `--no-resume`"; keep file | **Error (1)** — unreadable; keep file | **Archive + fresh** (§3.4) |
+| **absent** | Fresh run | **Error (2)** — "nothing to resume" (honours explicit intent) | Fresh run |
+| **corrupt** | Error (2) — "checkpoint unreadable; pass `--no-resume`"; keep file | **Error (2)** — unreadable; keep file | **Archive + fresh** (§3.4) |
 | **valid** | interactive → **prompt** `Resume interrupted run (12/29 done)? [Y/n]`; non-interactive → **auto-resume + loud line** (§2.5) | **Resume** | **Fresh** (§3.4) |
-| **stale** | interactive → **prompt** `Can't resume (<reason>). Reprocess all 29 from scratch? [y/N]` (y→fresh, n/Enter→**abort 1**); non-interactive → **Error (1)** + reason + recovery command | **Error (1)** — `--resume` cannot force a stale resume; print reason | **Fresh** (§3.4) |
+| **stale** | interactive → **prompt** `Can't resume (<reason>). Reprocess all 29 from scratch? [y/N]` (y→fresh, n/Enter→**abort 2**); non-interactive → **Error (2)** + reason + recovery command | **Error (2)** — `--resume` cannot force a stale resume; print reason | **Fresh** (§3.4) |
 
 Safety properties:
 
@@ -85,8 +88,8 @@ Safety properties:
 
 - Enter → default: resume-prompt → **Yes**; stale-prompt → **No (abort)**. Capitalised
   default letter, standard convention.
-- Unrecognised input → re-prompt, capped at 3, then **abort (1)** — never silently default.
-- **EOF / Ctrl-D** mid-prompt → **abort (1)** (an operational refusal, *not* a signal —
+- Unrecognised input → re-prompt, capped at 3, then **abort (2)** — never silently default.
+- **EOF / Ctrl-D** mid-prompt → **abort (2)** (an operational refusal, *not* a signal —
   so not 130); never take the Yes default on EOF.
 - **Ctrl-C** at the prompt → exit **130**, checkpoint untouched, no traceback.
 
@@ -113,14 +116,16 @@ not over-promise a resume that identity validation might decline.
 
 ### 2.7 Exit-code scheme (conventional)
 
-One consistent scheme, fixing rev 1's inconsistencies (EOF was wrongly 130; stale differed
-by mode):
+One consistent scheme, preserving lintle's pre-existing quality-gate convention:
 
-- **0** — success.
-- **1** — operational refusal / failure: stale, corrupt, lock held, declined prompt, EOF at
-  prompt, or a file that failed to process. (One code, mode-independent.)
-- **2** — CLI usage/syntax errors only (argparse).
-- **130** — terminated by **SIGINT** (128+2), only.
+- **0** — success: quarantine count (or rate) is at or below `--max-quarantined`.
+- **1** — quarantine threshold exceeded (the quality-gate signal — pre-existing; must not
+  be reused for any other purpose).
+- **2** — operational/usage error: bad args, no input files, disk shortfall, a file that
+  failed to process, lock held, or a stale/corrupt/declined resume (including EOF at the
+  prompt). (One code, mode-independent.)
+- **129** — terminated by **SIGHUP** (128+1).
+- **130** — terminated by **SIGINT** (128+2).
 - **143** — terminated by **SIGTERM** (128+15).
 
 ## 3. Hardening (what makes default-on resume safe)
@@ -151,7 +156,7 @@ scheduler/preemption case that resume-by-default is partly *for*.
 
 Hold an exclusive OS lock for the run: an `fcntl.flock` (or `O_CREAT|O_EXCL`) on
 `<out-dir>/.clean.lock`, whose contents record **hostname + boot-id (where available) + PID +
-ISO start time**. Refuse to start (exit 1) if held. Reclaim a stale lock **only** when it is
+ISO start time**. Refuse to start (exit 2) if held. Reclaim a stale lock **only** when it is
 same-host *and* its PID is dead — never reclaim across hosts (guards the NAS/NFS multi-node
 case). Documented assumption: robust mutual exclusion requires a POSIX-lock-capable
 filesystem; on exotic network filesystems the lock degrades to advisory and the operator owns

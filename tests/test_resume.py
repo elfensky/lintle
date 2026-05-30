@@ -328,7 +328,7 @@ class TestResolveResumeAction:
 
     def test_absent_with_resume_aborts(self):
         d = self.call(resume.CheckpointStatus.ABSENT, resume_flag=True)
-        assert d.action is resume.ResumeAction.ABORT and d.exit_code == 1
+        assert d.action is resume.ResumeAction.ABORT and d.exit_code == 2
 
     def test_corrupt_default_aborts_no_resume_freshes(self):
         d_abort = self.call(resume.CheckpointStatus.CORRUPT)
@@ -354,7 +354,7 @@ class TestResolveResumeAction:
 
     def test_valid_interactive_eof_aborts(self):
         d = self.call(resume.CheckpointStatus.VALID, interactive=True, answer=None)
-        assert d.action is resume.ResumeAction.ABORT and d.exit_code == 1
+        assert d.action is resume.ResumeAction.ABORT and d.exit_code == 2
 
     def test_stale_no_resume_freshes_resume_aborts(self):
         d_fresh = self.call(resume.CheckpointStatus.STALE, no_resume=True)
@@ -364,7 +364,7 @@ class TestResolveResumeAction:
 
     def test_stale_non_interactive_aborts(self):
         d = self.call(resume.CheckpointStatus.STALE, interactive=False)
-        assert d.action is resume.ResumeAction.ABORT and d.exit_code == 1
+        assert d.action is resume.ResumeAction.ABORT and d.exit_code == 2
         assert "--no-resume" in d.message
 
     def test_stale_interactive_prompt(self):
