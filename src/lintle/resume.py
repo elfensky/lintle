@@ -110,15 +110,11 @@ def delete_checkpoint(out_dir):
         os.remove(_checkpoint_path(out_dir))
 
 
-def validate_resumable(checkpoint, current_inputs):
-    """Return a human-readable reason the ``checkpoint`` cannot be resumed against
-    ``current_inputs`` (``{path: input_fingerprint}``), or ``None`` if it can.
-
-    Refuse-on-change (issue #56): a resume is valid only against the exact code
-    and inputs that produced it. Any drift — unknown schema, a different lintle
-    version, an added or removed input, or a changed file identity — invalidates
-    the whole checkpoint, so the operator re-runs a clean full pass rather than
-    silently mixing outputs from two states.
+def validate_run_identity(checkpoint, current_inputs, current_run_identity):
+    """Return a human-readable reason the checkpoint cannot be resumed against the
+    current run, or None if it can. Refuse-on-change (spec §3.1, all-or-nothing):
+    schema, lintle version, output-affecting configuration, or any input identity
+    drift invalidates the whole checkpoint.
     """
     schema = checkpoint.get("schema_version")
     if schema != SCHEMA_VERSION:
@@ -132,6 +128,8 @@ def validate_resumable(checkpoint, current_inputs):
             f"lintle version changed since the interrupted run "
             f"({recorded_version} -> {__version__})"
         )
+    if checkpoint.get("run_identity") != current_run_identity:
+        return "run configuration changed since the interrupted run"
     recorded = checkpoint.get("inputs", {})
     added = sorted(set(current_inputs) - set(recorded))
     if added:
