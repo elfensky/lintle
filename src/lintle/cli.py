@@ -330,6 +330,14 @@ def _check_disk_space(out_dir, input_bytes):
     return None
 
 
+def _scrub_outputs(out_dir):
+    """Clear the cleaned/, broken/, and .shards/ trees so a fresh run starts from
+    a clean slate and never leaves orphaned outputs from a prior, differently
+    scoped input set (spec §3.4). Idempotent — missing trees are ignored."""
+    for sub in ("cleaned", "broken", ".shards"):
+        shutil.rmtree(os.path.join(out_dir, sub), ignore_errors=True)
+
+
 def _ignore_sigint():
     """Worker-process initializer: ignore Ctrl-C in the worker.
 
