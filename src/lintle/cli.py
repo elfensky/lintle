@@ -366,6 +366,21 @@ def _output_sizes(out_dir, stats):
     return sizes
 
 
+def _signal_exit_code(signo):
+    """Conventional 128 + signal number (spec §2.7): 130 SIGINT, 143 SIGTERM,
+    129 SIGHUP."""
+    return 128 + int(signo)
+
+
+def _format_cancel_message(*, done, total):
+    return (
+        f"interrupted — workers stopped ({done}/{total} files done).\n"
+        "Re-run the same command (same --out-dir) to continue where it stopped; "
+        "inputs must be unchanged.\n"
+        "Pass --no-resume to start over."
+    )
+
+
 def _ignore_sigint():
     """Worker-process initializer: ignore Ctrl-C in the worker.
 
@@ -766,6 +781,7 @@ def main(argv=None):
     all_stats = list(reused_stats)
     failed_files = []
     interrupted = False
+    interrupted_signo = signal.SIGINT
 
     # The executor runs without a `with` block deliberately: that block's
     # __exit__ calls shutdown(wait=True), which on Ctrl-C would block until
@@ -777,6 +793,14 @@ def main(argv=None):
         executor = concurrent.futures.ProcessPoolExecutor(
             max_workers=jobs, initializer=_ignore_sigint
         )
+        caught = {"signo": signal.SIGINT}
+
+        def _raise_interrupt(signo, _frame):
+            caught["signo"] = signo
+            raise KeyboardInterrupt
+
+        prev_term = signal.signal(signal.SIGTERM, _raise_interrupt)
+        prev_hup = signal.signal(signal.SIGHUP, _raise_interrupt)
         try:
             futures = {
                 executor.submit(
@@ -829,14 +853,22 @@ def main(argv=None):
             # interrupted half-way (which is what left it hung before).
             signal.signal(signal.SIGINT, signal.SIG_IGN)
             interrupted = True
+            interrupted_signo = caught["signo"]
             _terminate_workers(executor)
             executor.shutdown(wait=False, cancel_futures=True)
-            print("interrupted — workers stopped", file=sys.stderr, flush=True)
+            print(
+                _format_cancel_message(done=len(completed), total=len(files)),
+                file=sys.stderr,
+                flush=True,
+            )
         else:
             executor.shutdown(wait=True)
+        finally:
+            signal.signal(signal.SIGTERM, prev_term)
+            signal.signal(signal.SIGHUP, prev_hup)
 
     if interrupted:
-        return 130
+        return _signal_exit_code(interrupted_signo)
 
     all_stats.sort(key=lambda stats: stats.src_name)
 
@@ -896,10 +928,11 @@ def main(argv=None):
         if os.path.exists(shard_dir):
             shutil.rmtree(shard_dir)
 
-    # A file that could not be processed is an operational error (spec §10),
-    # and that outranks the quarantined-record signal.
+    # A file that could not be processed is an operational failure (spec §2.7
+    # / §10): exit 1 (operational). Exit 2 is reserved for argparse usage
+    # errors only.
     if failed_files:
-        return 2
+        return 1
     total_quarantined = sum(s.quarantined_count for s in all_stats)
     if threshold_mode == "count":
         return 1 if total_quarantined > quarantine_threshold else 0
