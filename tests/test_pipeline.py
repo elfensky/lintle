@@ -97,15 +97,15 @@ class TestIterRecords:
         records = list(pipeline.iter_records(str(src)))
         assert len(records) == 1
         assert isinstance(records[0], pipeline.Orphan)
-        assert records[0].diagnostic.rule_id == RuleID.ORPHAN_LINE
-        assert records[0].diagnostic.note == "orphan line 1 at end of file"
+        assert records[0].diag.rule_id == RuleID.ORPHAN_LINE
+        assert records[0].diag.note == "orphan line 1 at end of file"
 
     def test_two_line1s_orphan_the_first(self, tmp_path, line1):
         src = tmp_path / "in.txt"
         src.write_bytes((line1 + "\n" + line1 + "\n").encode("ascii"))
         records = list(pipeline.iter_records(str(src)))
         assert all(isinstance(r, pipeline.Orphan) for r in records)
-        assert records[0].diagnostic.rule_id == RuleID.ORPHAN_LINE
+        assert records[0].diag.rule_id == RuleID.ORPHAN_LINE
 
     def test_orphan_line2(self, tmp_path, line2):
         src = tmp_path / "in.txt"
@@ -118,7 +118,7 @@ class TestIterRecords:
         src.write_bytes(("garbage\n" + line1 + "\n" + line2 + "\n").encode("ascii"))
         records = list(pipeline.iter_records(str(src)))
         orphans = [r for r in records if isinstance(r, pipeline.Orphan)]
-        assert any(o.diagnostic.rule_id == RuleID.BAD_PREFIX for o in orphans)
+        assert any(o.diag.rule_id == RuleID.BAD_PREFIX for o in orphans)
         # The valid record after the garbage line still pairs.
         assert any(isinstance(r, pipeline.RecordCandidate) for r in records)
 

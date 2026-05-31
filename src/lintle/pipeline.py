@@ -21,14 +21,15 @@ class RecordCandidate:
 
 @dataclasses.dataclass
 class Orphan:
-    """A line that could not be paired into a record. The diagnostic carries
-    the rule ID and source line; the raw bytes survive verbatim for the
-    quarantine sidecar.
+    """A line that could not be paired into a record. ``diag`` carries the
+    rule ID and source line; the raw bytes survive verbatim for the
+    quarantine sidecar. (Named ``diag``, not ``diagnostic``, so it does not
+    shadow the imported :func:`diagnostic` constructor used in this module.)
     """
 
     raw_line: bytes
     src: int
-    diagnostic: Diagnostic
+    diag: Diagnostic
 
 
 def _orphan(raw_line, src, rule_id, note):
@@ -249,7 +250,7 @@ def _run(src_path, out_dir, mode, stats, progress_queue, progress_every):
                     _record_reject(
                         stats,
                         sink,
-                        candidate.diagnostic,
+                        candidate.diag,
                         (),
                         [candidate.raw_line],
                         [candidate.src],

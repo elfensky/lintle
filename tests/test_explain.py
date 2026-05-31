@@ -76,7 +76,7 @@ class TestRuleExamplesMatchValidator:
                 src = tmp_path / f"{entry.rule_id}.txt"
                 src.write_bytes(("\n".join(entry.bad_lines) + "\n").encode("latin-1"))
                 fired = {
-                    item.diagnostic.rule_id
+                    item.diag.rule_id
                     for item in pipeline.iter_records(str(src))
                     if isinstance(item, pipeline.Orphan)
                 }
