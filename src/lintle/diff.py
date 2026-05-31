@@ -213,9 +213,7 @@ def _title(rule_id):
     in the current registry (e.g. a retired ID in an older run)."""
     try:
         spec = RULES[RuleID(rule_id)]
-    except ValueError:
-        return ""
-    except KeyError:
+    except ValueError, KeyError:
         return ""
     return spec.short_title
 
