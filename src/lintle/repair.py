@@ -95,31 +95,28 @@ def repair_line(raw, lineno, source_line_no):
             if FixClass.RECONSTRUCTED_CHECKSUM in fixes
             else RepairTier.NORMALIZATION
         )
+        # Route on the validator's own error wording. Body (column/semantic)
+        # errors fire before the checksum check in validate_line, so a record
+        # with both a bad layout and a bad checksum stays INVALID_COLUMN_LAYOUT.
+        # Do not reroute on checksum_error() alone — it reads only column 69 and
+        # would misroute such a record to CHECKSUM_MISMATCH (a public RuleID).
         if any("checksum" in e for e in errors):
-            observed = candidate[68] if len(candidate) > 68 else ""
-            expected = str(tle.compute_checksum(candidate))
-            return (
-                None,
-                fixes,
-                diagnostic(
-                    RuleID.CHECKSUM_MISMATCH,
-                    source_line_nos=src,
-                    tier_attempted=tier,
-                    column_range=(69, 69),
-                    observed=observed,
-                    expected=expected,
-                ),
+            diag = diagnostic(
+                RuleID.CHECKSUM_MISMATCH,
+                source_line_nos=src,
+                tier_attempted=tier,
+                column_range=(69, 69),
+                observed=candidate[68] if len(candidate) > 68 else "",
+                expected=str(tle.compute_checksum(candidate)),
             )
-        return (
-            None,
-            fixes,
-            diagnostic(
+        else:
+            diag = diagnostic(
                 RuleID.INVALID_COLUMN_LAYOUT,
                 source_line_nos=src,
                 tier_attempted=tier,
                 note="; ".join(errors),
-            ),
-        )
+            )
+        return None, fixes, diag
 
     return candidate, fixes, None
 
