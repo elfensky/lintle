@@ -4,6 +4,7 @@ import argparse
 import concurrent.futures
 import contextlib
 import datetime
+import enum
 import json
 import multiprocessing
 import os
@@ -312,28 +313,37 @@ def _prompt_yes_no(message, *, default):
     return None
 
 
+class Severity(enum.Enum):
+    """Severity of a preflight disk-space finding: ``ERROR`` aborts the run
+    (exit 2), ``WARNING`` proceeds after surfacing the message. The member
+    values double as the stderr prefix word so the two never drift."""
+
+    ERROR = "error"
+    WARNING = "warning"
+
+
 def _check_disk_space(out_dir, input_bytes):
-    """Return a ``(severity, message)`` tuple when ``out_dir``'s free space
-    is at or near the 2× input-size guard, else ``None``. Severity is
-    ``"error"`` when free is below 2× input (caller aborts with exit 2);
-    ``"warn"`` when free sits in the borderline band 2× to 2.5× (caller
-    proceeds but surfaces the warning so the user knows they're cutting
-    it close). Cleaned + broken output is ~1× input; the 2× guard leaves
-    transient headroom for ``.partial`` files coexisting with their final
-    renames mid-run. ``input_bytes`` is the total source size, stat'd once
-    by the caller and shared with the roster and byte-bar denominators.
+    """Return a ``(Severity, message)`` tuple when ``out_dir``'s free space
+    is at or near the 2× input-size guard, else ``None``. ``Severity.ERROR``
+    when free is below 2× input (caller aborts with exit 2); ``Severity.WARNING``
+    when free sits in the borderline band 2× to 2.5× (caller proceeds but
+    surfaces the warning so the user knows they're cutting it close). Cleaned +
+    broken output is ~1× input; the 2× guard leaves transient headroom for
+    ``.partial`` files coexisting with their final renames mid-run.
+    ``input_bytes`` is the total source size, stat'd once by the caller and
+    shared with the roster and byte-bar denominators.
     """
     needed = input_bytes * 2
     free = shutil.disk_usage(out_dir).free
     if free < needed:
         return (
-            "error",
+            Severity.ERROR,
             f"insufficient disk space in {out_dir}: "
             f"need ~{needed:,} bytes, have {free:,}",
         )
     if free < int(needed * 1.25):
         return (
-            "warn",
+            Severity.WARNING,
             f"free space in {out_dir} is close to the 2× safety guard: "
             f"{free:,} bytes free of ~{needed:,} recommended; "
             f"the run will proceed but may exhaust the disk",
@@ -586,10 +596,11 @@ def _format_size(n_bytes):
     """Render a byte count as a short human-readable string (e.g. ``2.9 GB``),
     using binary (1024) units."""
     size = float(n_bytes)
-    for unit in ("B", "KB", "MB", "GB", "TB"):
-        if size < 1024 or unit == "TB":
-            return f"{int(size)} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024:
+            return f"{int(size)} B" if unit == "B" else f"{size:.1f} {unit}"
         size /= 1024
+    return f"{size:.1f} TB"
 
 
 def _render_roster(console, file_sizes):
@@ -722,10 +733,9 @@ def main(argv=None):
             disk_status = _check_disk_space(args.out_dir, sum(file_sizes.values()))
             if disk_status is not None:
                 severity, msg = disk_status
-                if severity == "error":
-                    print(f"error: {msg}", file=sys.stderr)
+                print(f"{severity.value}: {msg}", file=sys.stderr)
+                if severity is Severity.ERROR:
                     return 2
-                print(f"warning: {msg}", file=sys.stderr)
             # Per-input identity for the resume checkpoint (spec §3.1): computed
             # once, up front, for every discovered file. Cheap and constant-memory
             # (a head+tail window hash), it is written into the checkpoint as files
