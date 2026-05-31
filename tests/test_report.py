@@ -485,28 +485,6 @@ class TestWriteBrokenFile:
 
 
 class TestSummaries:
-    def test_format_summary_shows_counts(self):
-        out = report.format_summary(_stats_with_counts())
-        assert "tle2022.txt" in out
-        assert "100" in out  # paired_records — the anchor field of the header
-        assert "98" in out
-        assert "trailing-backslash 50" in out
-        assert "reconstructed-checksum 7" in out
-        assert "TLE-CHK-001 2" in out
-
-    def test_format_summary_distinguishes_paired_from_orphan(self):
-        stats = report.FileStats(src_name="tle2099.txt")
-        stats.paired_records = 7
-        stats.orphan_entries = 2
-        stats.input_lines_seen = 17  # 7*2 + 2 + 1 blank, say
-        stats.clean_count = 6
-        stats.quarantined_count = 3  # 1 paired-failure + 2 orphans
-        out = report.format_summary(stats)
-        # The summary must surface the three independent counters from issue #5.
-        assert "7" in out  # paired records
-        assert "2" in out  # orphan lines
-        assert "17" in out  # lines read
-
     def test_summary_dict_is_json_friendly(self):
         data = report.summary_dict(_stats_with_counts())
         assert data["src_name"] == "tle2022.txt"

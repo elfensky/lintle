@@ -38,6 +38,7 @@ from lintle import (
     report_writers,
     resume,
     stem,
+    summary,
     term,
 )
 
@@ -165,7 +166,7 @@ def build_parser():
     subparsers = parser.add_subparsers(
         dest="command",
         required=True,
-        metavar="{clean,diff,explain}",
+        metavar="{clean,diff,explain,report}",
         title="commands",
     )
     sub = subparsers.add_parser(
@@ -278,6 +279,35 @@ def build_parser():
         "tag",
         metavar="TAG",
         help="a rule ID (TLE-CHK-001) or fix tag (reconstructed-checksum)",
+    )
+
+    # `report` is a read-only render of a prior clean run's aggregate summary
+    # from report.json; no --out-dir / --jobs / --max-quarantined. Writes nothing.
+    report_parser = subparsers.add_parser(
+        "report",
+        help="render the last clean run's aggregate summary from report.json",
+        description=(
+            "Read report.json from a clean-run output directory and render the "
+            "aggregate summary panel. Read-only; writes nothing."
+        ),
+        epilog=_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    report_parser.add_argument(
+        "out_dir",
+        nargs="?",
+        default=_DEFAULT_OUTPUT,
+        metavar="OUT-DIR",
+        help=f"clean run output directory (default: {_DEFAULT_OUTPUT})",
+    )
+    report_parser.add_argument(
+        "--report",
+        choices=["text", "json"],
+        default="text",
+        help=(
+            "output format: text renders the panel to stdout; "
+            "json emits report.json verbatim (default: text)"
+        ),
     )
     return parser
 
@@ -705,6 +735,10 @@ def main(argv=None):
             return 2
         return 0
 
+    # `report` is a read-only render of a prior run's report.json.
+    if args.command == "report":
+        return summary.run(args.out_dir, args.report)
+
     # `args.path` is None when the user passed nothing — fall back to the
     # default source dir, and remember it so we can give a tailored error if
     # that default doesn't exist on this machine.
@@ -963,26 +997,14 @@ def main(argv=None):
         report_path = None
         noradids_path = None
         findings_path = None
+        envelope = None
         if args.command == "clean" and all_stats:
-            # A spinner over the silent finalization (the per-worker shard
-            # concat into report.jsonl dominates on a large corpus); a no-op off
-            # a TTY. Runs after the progress block has exited, so no Live nesting.
-            with _status("finalizing report…"):
-                report_path = os.path.join(args.out_dir, "report.md")
-                report.write_run_report(report_path, all_stats)
-                noradids_path = os.path.join(args.out_dir, "broken-noradids.ndjson")
-                report_writers.write_broken_noradids_ndjson(noradids_path, all_stats)
-                findings_path = os.path.join(args.out_dir, "report.jsonl")
-                report_writers.concat_findings_shards(
-                    args.out_dir, findings_path, all_stats
-                )
-
-        if args.report == "json":
-            # Issue #20: top-level versioned envelope; replaces the prior
-            # flat-array output. Run wall-clock is the parent process's
-            # monotonic delta, NOT the sum of per-file worker durations
-            # (those are reported per-file under ``files[i].elapsed_seconds``
-            # and exceed parent wall-clock under ``--jobs N``).
+            # Build the envelope once here so it can be persisted to report.json
+            # AND (when --report json) printed to stdout — one object, one write,
+            # no divergence. Run wall-clock is the parent process's monotonic
+            # delta, NOT the sum of per-file worker durations (those are reported
+            # per-file under ``files[i].elapsed_seconds`` and exceed parent
+            # wall-clock under ``--jobs N``).
             run_elapsed = time.monotonic() - run_monotonic_start
             envelope = report.build_run_envelope(
                 all_stats,
@@ -990,16 +1012,27 @@ def main(argv=None):
                 started_at=run_started_iso,
                 elapsed_seconds=run_elapsed,
             )
-            print(json.dumps(envelope, indent=2))
-        else:
-            for stats in all_stats:
-                print(report.format_summary(stats))
-            if report_path:
-                print(f"\nrun report: {report_path}")
-            if noradids_path:
-                print(f"broken NORAD IDs: {noradids_path}")
-            if findings_path:
-                print(f"findings: {findings_path}")
+            # A spinner over the silent finalization (the per-worker shard
+            # concat into report.jsonl dominates on a large corpus); a no-op off
+            # a TTY. Runs after the progress block has exited, so no Live nesting.
+            with _status("finalizing report…"):
+                report_path = os.path.join(args.out_dir, "report.md")
+                report.write_run_report(report_path, all_stats)
+                report_json_path = os.path.join(args.out_dir, "report.json")
+                report.write_run_json(report_json_path, envelope)
+                noradids_path = os.path.join(args.out_dir, "broken-noradids.ndjson")
+                report_writers.write_broken_noradids_ndjson(noradids_path, all_stats)
+                findings_path = os.path.join(args.out_dir, "report.jsonl")
+                report_writers.concat_findings_shards(
+                    args.out_dir, findings_path, all_stats
+                )
+
+        if envelope is not None:
+            # Human aggregate panel -> stderr (styled ephemera; coexists with the
+            # machine envelope on stdout). Per-file detail lives in report.md.
+            summary.render(envelope, console=term.stderr_console, command_label="clean")
+            if args.report == "json":
+                print(json.dumps(envelope, indent=2))
 
         # A fully successful clean run leaves no resumable state behind. The
         # checkpoint and the findings shards (`.shards`) are both in-progress run
