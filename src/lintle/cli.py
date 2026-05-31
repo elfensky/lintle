@@ -388,10 +388,25 @@ def _signal_exit_code(signo):
 
 
 def _format_cancel_message(*, done, total):
+    # Resume granularity is a whole file: the checkpoint is written only as
+    # files complete, so the file interrupted mid-stream is never resumable and
+    # always restarts. With nothing completed there is no checkpoint at all, so
+    # the re-run simply starts over — say so, rather than promise a continuation
+    # the design can't deliver (issue #56 field report: a single-file Ctrl-C
+    # looked like a broken resume).
+    if done == 0:
+        return (
+            f"interrupted — workers stopped (0/{total} files done).\n"
+            "No file finished, so nothing was checkpointed — re-running starts "
+            "over from the beginning.\n"
+            "Resume only skips fully-completed files; a file interrupted "
+            "mid-stream always restarts."
+        )
     return (
         f"interrupted — workers stopped ({done}/{total} files done).\n"
-        "Re-run the same command (same --out-dir) to continue where it stopped; "
-        "inputs must be unchanged.\n"
+        f"Re-run the same command (same --out-dir) to skip the {done} completed "
+        "file(s) and finish the rest; inputs must be unchanged. The file "
+        "interrupted mid-stream restarts.\n"
         "Pass --no-resume to start over."
     )
 

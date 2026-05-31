@@ -1512,11 +1512,27 @@ class TestScrubOutputs:
 
 
 class TestSignalHandling:
-    def test_cancel_message_names_counts_and_flag(self):
+    def test_cancel_message_some_done_skips_completed_not_continues(self):
+        # With some files completed, the re-run skips them and reprocesses the
+        # rest; the file interrupted mid-stream restarts. The message must not
+        # promise to "continue where it stopped" — resume has no intra-file
+        # granularity, and that wording read as a broken resume.
         msg = cli._format_cancel_message(done=12, total=29)
         assert "12/29" in msg
         assert "--no-resume" in msg
         assert "same --out-dir" in msg
+        assert "continue where it stopped" not in msg
+        assert "restart" in msg.lower()
+
+    def test_cancel_message_zero_done_says_it_restarts(self):
+        # No file finished -> no checkpoint is written -> the re-run starts over
+        # from the beginning. The message must say so rather than imply
+        # resumable progress (the single-file Ctrl-C field report). It also must
+        # not dangle --no-resume, since there is no checkpoint to ignore.
+        msg = cli._format_cancel_message(done=0, total=1)
+        assert "0/1" in msg
+        assert "continue where it stopped" not in msg
+        assert "starts over" in msg.lower()
 
     def test_signal_exit_code(self):
         assert cli._signal_exit_code(signal.SIGINT) == 130
