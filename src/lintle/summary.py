@@ -70,27 +70,32 @@ def _sorted_counts(d):
 
 
 def _totals_lines(run, s):
-    """Return a list of ``(label, value)`` pairs for the totals block."""
+    """Return a list of ``(label, value_str, pct_str)`` triples for the totals block."""
     routed = s["clean_count"] + s["quarantined_count"]
     return [
-        ("files", f"{s['files_processed']:,}"),
-        ("records", f"{s['paired_records']:,}"),
-        ("clean", f"{s['clean_count']:,}   {_format_pct(s['clean_count'], routed)}"),
+        ("files", f"{s['files_processed']:,}", ""),
+        ("records", f"{s['paired_records']:,}", ""),
+        ("clean", f"{s['clean_count']:,}", _format_pct(s["clean_count"], routed)),
         (
             "quarantined",
-            f"{s['quarantined_count']:,}   "
-            f"{_format_pct(s['quarantined_count'], routed)}",
+            f"{s['quarantined_count']:,}",
+            _format_pct(s["quarantined_count"], routed),
         ),
-        ("orphans", f"{s['orphan_entries']:,}"),
-        ("lines", f"{s['input_lines_seen']:,}"),
-        ("elapsed", _humanize_duration(run["elapsed_seconds"])),
+        ("orphans", f"{s['orphan_entries']:,}", ""),
+        ("lines", f"{s['input_lines_seen']:,}", ""),
+        ("elapsed", _humanize_duration(run["elapsed_seconds"]), ""),
     ]
 
 
 def _print_totals(console, run, s):
-    """Print one totals field per line to ``console``."""
-    for k, v in _totals_lines(run, s):
-        console.print(Text(f"  {k:<12} {v}"), highlight=False)
+    """Print one totals field per line to ``console``; right-aligns the value column."""
+    rows = _totals_lines(run, s)
+    width = max(len(value) for _, value, _ in rows)
+    for label, value, pct in rows:
+        line = f"  {label:<12} {value:>{width}}"
+        if pct:
+            line += f"   {pct}"
+        console.print(Text(line), highlight=False)
 
 
 def _render_plain(console, label, run, s):
