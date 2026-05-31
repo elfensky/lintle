@@ -82,7 +82,7 @@ src/lintle/
 ├── cli.py         # argparse, globbing, parallel workers, live progress, Ctrl-C handling
 ├── pipeline.py    # streams a file in binary, pairs 1/2 lines into records, routes them
 ├── repair.py      # speculative fixes, each confirmed by tle.py before commit
-├── report.py      # FileStats + dataclasses, the validate summaries, the run report
+├── report.py      # FileStats + dataclasses, the run report
 ├── report_writers.py # structured-file writers: .broken.txt sidecar, report.jsonl findings, broken-noradids.ndjson, shard concat
 ├── resume.py      # single-run checkpoint for `clean --resume` (issue #56)
 ├── fsutil.py      # durable_replace — the one atomic+fsync commit path (issue #58)
@@ -125,7 +125,6 @@ uv run pytest tests/test_tle.py::TestComputeChecksum   # A single test class
 uv run pytest --cov=lintle --cov-report=term-missing --cov-branch  # Tests + coverage
 uv run ruff check .                # Lint
 uv run ruff format --check .       # Format check
-uv run lintle validate          # Audit data/source/ (read-only)
 uv run lintle clean             # Clean data/source/ -> data/output/
 ```
 

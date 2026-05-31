@@ -21,11 +21,9 @@ orbital-mechanics library can ingest directly. Records it cannot *safely* repair
 **quarantined** — never silently mangled — into a per-file sidecar detailed enough to file a
 defect report with space-track.
 
-**One validator, used two ways.** A single module (`tle.py`) defines what a "perfect" TLE
-record is — column layout, semantic ranges, the mod-10 checksum, and line pairing. The
-`validate` command reports defects against that definition and writes nothing; the `clean`
-command reuses the *exact same* validator and emits only records that pass it. There is no
-second "perfect."
+**One validator.** A single module (`tle.py`) defines what a "perfect" TLE record is —
+column layout, semantic ranges, the mod-10 checksum, and line pairing. The `clean` command
+reuses that definition to emit only records that pass it. There is no second "perfect."
 
 These four principles are the reason the design exists. An implementation that breaks one is
 wrong, not merely suboptimal.
@@ -73,7 +71,7 @@ diagnostics.py, categories.py, explain_examples.py    pure-data leaves (no I/O)
 | `tle.py` | The validator: column layout, mod-10 checksum, semantic ranges, record pairing. The single definition of "perfect." Pure functions, no I/O. |
 | `repair.py` | Speculative fixes, each confirmed by `tle.py` before commit; the `Accepted` / `Quarantined` record outcomes. Pure functions. |
 | `pipeline.py` | Streams a file in binary, pairs `1 `/`2 ` lines into records, routes each to clean output or quarantine. Owns the per-file `process_file` worker entry. |
-| `report.py` | `FileStats` and its sibling dataclasses, the `validate` summary renderers, the `summary_dict` / `build_run_envelope` JSON shapes, and the Markdown `report.md` writer. |
+| `report.py` | `FileStats` and its sibling dataclasses, the `summary_dict` / `build_run_envelope` JSON shapes, and the Markdown `report.md` writer. |
 | `report_writers.py` | Structured-file writers leaf: the `.broken.txt` sidecar (`BrokenFileWriter`), the `report.jsonl` findings shards (`JsonlFindingsWriter`), the `QuarantineSink` (bounded sample + streaming), `broken-noradids.ndjson`, and shard concatenation. Imports `report.py` one-way. |
 | `resume.py` | The single-run `.clean-state.json` checkpoint for `clean --resume`: input fingerprinting, checkpoint build/load, the resume-decision matrix. |
 | `fsutil.py` | `durable_replace` (the one atomic+fsync commit path) and `out_dir_lock` (the host-aware out-dir lock). Stdlib only. |

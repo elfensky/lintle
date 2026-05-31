@@ -172,8 +172,8 @@ class TestProgressDisplayDrain:
 
 class TestBuildParser:
     def test_parser_defaults(self):
-        args = cli.build_parser().parse_args(["validate"])
-        assert args.command == "validate"
+        args = cli.build_parser().parse_args(["clean"])
+        assert args.command == "clean"
         # path defaults to None so main() can tell "user passed nothing"
         # apart from "user explicitly passed the default" for error wording.
         assert args.path is None
@@ -214,6 +214,11 @@ class TestBuildParser:
         with pytest.raises(SystemExit) as exc:
             cli.build_parser().parse_args(["clean", "a.txt", "b.txt"])
         assert exc.value.code == 2  # argparse usage error
+
+    def test_parser_rejects_validate_subcommand(self):
+        # validate was removed in Phase 1; the parser must reject it.
+        with pytest.raises(SystemExit):
+            cli.build_parser().parse_args(["validate", "x"])
 
 
 class TestCheckPaths:
@@ -316,19 +321,6 @@ class TestMain:
         # NORAD 00005 (Vanguard 1) — the canonical fixture's catalog number.
         assert (out / "broken-noradids.ndjson").read_bytes() == b'{"noradId":5}\n'
 
-    def test_main_validate_does_not_write_norad_ids_ndjson(
-        self, tmp_path, line1, line2
-    ):
-        # validate is read-only — no NDJSON, no run report, no out-dir.
-        src = tmp_path / "src"
-        src.mkdir()
-        (src / "tle2099.txt").write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
-        out = tmp_path / "out"
-
-        cli.main(["validate", str(src), "--out-dir", str(out), "--jobs", "1"])
-
-        assert not (out / "broken-noradids.ndjson").exists()
-
     def test_main_returns_one_when_records_quarantined(self, tmp_path, line1, line2):
         src = tmp_path / "src"
         src.mkdir()
@@ -345,15 +337,16 @@ class TestMain:
     def test_main_returns_two_when_no_input_files(self, tmp_path):
         empty = tmp_path / "empty"
         empty.mkdir()
-        rc = cli.main(["validate", str(empty)])
+        rc = cli.main(["clean", str(empty), "--out-dir", str(tmp_path / "out")])
         assert rc == 2
 
-    def test_main_validate_prints_summary(self, tmp_path, line1, line2, capsys):
+    def test_main_prints_summary(self, tmp_path, line1, line2, capsys):
         src = tmp_path / "src"
         src.mkdir()
         (src / "tle2099.txt").write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
 
-        rc = cli.main(["validate", str(src), "--jobs", "1"])
+        out = tmp_path / "out"
+        rc = cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
 
         assert rc == 0
         assert "tle2099.txt" in capsys.readouterr().out
@@ -363,7 +356,9 @@ class TestMain:
         # input-validation step, before any worker is spawned — friendlier
         # than the old "worker raises on open" path, same exit code.
         missing = tmp_path / "tle_missing.txt"  # never created
-        rc = cli.main(["validate", str(missing), "--jobs", "1"])
+        rc = cli.main(
+            ["clean", str(missing), "--out-dir", str(tmp_path / "out"), "--jobs", "1"]
+        )
         assert rc == 2
         err = capsys.readouterr().err
         assert "no such file or directory" in err
@@ -442,7 +437,9 @@ class TestMain:
         empty = tmp_path / "empty"
         empty.mkdir()
         (empty / "notes.md").write_text("not a tle file")
-        rc = cli.main(["validate", str(empty), "--jobs", "1"])
+        rc = cli.main(
+            ["clean", str(empty), "--out-dir", str(tmp_path / "out"), "--jobs", "1"]
+        )
         assert rc == 2
         err = capsys.readouterr().err
         assert "no tle*.txt files found" in err
@@ -450,7 +447,9 @@ class TestMain:
     def test_main_rejects_zero_jobs(self, tmp_path, capsys):
         src = tmp_path / "src"
         src.mkdir()
-        rc = cli.main(["validate", str(src), "--jobs", "0"])
+        rc = cli.main(
+            ["clean", str(src), "--out-dir", str(tmp_path / "out"), "--jobs", "0"]
+        )
         assert rc == 2
         assert "--jobs must be >= 1" in capsys.readouterr().err
 
@@ -517,14 +516,26 @@ class TestMain:
         src.mkdir()
         (src / "tle2099.txt").write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
 
-        rc = cli.main(["validate", str(src), "--jobs", "1", "--report", "json"])
+        out = tmp_path / "out"
+        rc = cli.main(
+            [
+                "clean",
+                str(src),
+                "--out-dir",
+                str(out),
+                "--jobs",
+                "1",
+                "--report",
+                "json",
+            ]
+        )
 
         assert rc == 0
         data = json.loads(capsys.readouterr().out)
         # Top-level envelope shape (issue #20 spec §3).
         assert isinstance(data, dict)
         assert data["schema_version"] == "2"
-        assert data["run"]["command"] == "validate"
+        assert data["run"]["command"] == "clean"
         assert data["run"]["timestamp"].endswith("Z")
         assert isinstance(data["run"]["elapsed_seconds"], float)
         assert "tool_version" in data["environment"]
@@ -539,45 +550,6 @@ class TestMain:
         assert isinstance(data["files"][0]["elapsed_seconds"], float)
         assert isinstance(data["files"][0]["records_per_sec"], float)
         assert data["files"][0]["bytes"] > 0
-
-    def test_main_validate_lists_quarantine_locations(
-        self, tmp_path, line1, line2, capsys
-    ):
-        src = tmp_path / "src"
-        src.mkdir()
-        bad_line1 = line1[:68] + "9"  # wrong checksum — the record is quarantined
-        (src / "tle2099.txt").write_bytes(
-            (bad_line1 + "\n" + line2 + "\n").encode("ascii")
-        )
-
-        rc = cli.main(["validate", str(src), "--jobs", "1"])
-
-        assert rc == 1
-        # validate mode lists each quarantined record's location and rule ID.
-        assert "TLE-CHK-001" in capsys.readouterr().out
-
-    def test_main_validate_renders_grouped_exemplars(
-        self, tmp_path, line1, line2, capsys
-    ):
-        # Two distinct defect rules in one file: a checksum mismatch
-        # (TLE-CHK-001) and a stray line that isn't a TLE (TLE-PAIR-002).
-        src = tmp_path / "src"
-        src.mkdir()
-        bad_line1 = line1[:68] + "9"  # wrong checksum
-        (src / "tle2099.txt").write_bytes(
-            (bad_line1 + "\n" + line2 + "\n" + "garbage\n").encode("ascii")
-        )
-
-        rc = cli.main(["validate", str(src), "--jobs", "1"])
-
-        out = capsys.readouterr().out
-        assert rc == 1
-        # The grouped rule heading (2-space indent, count parenthesized).
-        assert "  TLE-CHK-001 (" in out
-        # The 4-space-indented exemplar line under it.
-        assert "    line " in out
-        # The other rule is grouped under its own heading.
-        assert "  TLE-PAIR-002 (" in out
 
     def test_main_returns_130_on_keyboard_interrupt(
         self, tmp_path, line1, line2, monkeypatch
@@ -749,10 +721,24 @@ class TestMaxQuarantinedThreshold:
 
         assert rc == 1
 
-    def test_max_quarantined_applies_to_validate_too(self, tmp_path, line1, line2):
+    def test_max_quarantined_allows_single_quarantined_record_with_count_1(
+        self, tmp_path, line1, line2
+    ):
         src = self._write_one_bad_record(tmp_path, line1, line2)
+        out = tmp_path / "out"
 
-        rc = cli.main(["validate", str(src), "--jobs", "1", "--max-quarantined", "1"])
+        rc = cli.main(
+            [
+                "clean",
+                str(src),
+                "--out-dir",
+                str(out),
+                "--jobs",
+                "1",
+                "--max-quarantined",
+                "1",
+            ]
+        )
 
         assert rc == 0
 
@@ -760,11 +746,14 @@ class TestMaxQuarantinedThreshold:
         self, tmp_path, line1, line2, capsys
     ):
         src = self._write_one_bad_record(tmp_path, line1, line2)
+        out = tmp_path / "out"
 
         rc = cli.main(
             [
-                "validate",
+                "clean",
                 str(src),
+                "--out-dir",
+                str(out),
                 "--jobs",
                 "1",
                 "--max-quarantined",
@@ -861,18 +850,40 @@ class TestMaxQuarantinedThreshold:
 
         assert rc == 0
 
-    def test_pct_applies_to_validate(self, tmp_path, line1, line2):
+    def test_pct_under_threshold_passes_clean(self, tmp_path, line1, line2):
         src = self._write_n_good_and_one_bad(tmp_path, line1, line2, n_good=99)
+        out = tmp_path / "out"
 
-        rc = cli.main(["validate", str(src), "--jobs", "1", "--max-quarantined", "5%"])
+        rc = cli.main(
+            [
+                "clean",
+                str(src),
+                "--out-dir",
+                str(out),
+                "--jobs",
+                "1",
+                "--max-quarantined",
+                "5%",
+            ]
+        )
 
         assert rc == 0
 
     def test_pct_malformed_returns_2(self, tmp_path, line1, line2, capsys):
         src = self._write_one_bad_record(tmp_path, line1, line2)
+        out = tmp_path / "out"
 
         rc = cli.main(
-            ["validate", str(src), "--jobs", "1", "--max-quarantined", "1.2.3%"]
+            [
+                "clean",
+                str(src),
+                "--out-dir",
+                str(out),
+                "--jobs",
+                "1",
+                "--max-quarantined",
+                "1.2.3%",
+            ]
         )
 
         assert rc == 2
@@ -880,9 +891,19 @@ class TestMaxQuarantinedThreshold:
 
     def test_pct_out_of_range_returns_2(self, tmp_path, line1, line2, capsys):
         src = self._write_one_bad_record(tmp_path, line1, line2)
+        out = tmp_path / "out"
 
         rc = cli.main(
-            ["validate", str(src), "--jobs", "1", "--max-quarantined", "150%"]
+            [
+                "clean",
+                str(src),
+                "--out-dir",
+                str(out),
+                "--jobs",
+                "1",
+                "--max-quarantined",
+                "150%",
+            ]
         )
 
         assert rc == 2
@@ -891,7 +912,7 @@ class TestMaxQuarantinedThreshold:
 
 class TestReportJsonl:
     """Issue #9 spec §8.5: ``clean`` mode emits ``<out_dir>/report.jsonl``
-    after every successful run; validate mode does not.
+    after every successful run.
     """
 
     def test_clean_emits_report_jsonl(self, tmp_path, line1, line2, capsys):
@@ -947,19 +968,6 @@ class TestReportJsonl:
         stdout = capsys.readouterr().out
         assert "findings: " in stdout
         assert "report.jsonl" in stdout
-
-    def test_validate_does_not_emit_jsonl(self, tmp_path, line1, line2):
-        # Validate mode owns no --out-dir artifacts; no report.jsonl.
-        src = tmp_path / "src"
-        src.mkdir()
-        (src / "tle2099.txt").write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
-        out = tmp_path / "out"
-
-        cli.main(["validate", str(src), "--out-dir", str(out), "--jobs", "1"])
-
-        assert not (out / "report.jsonl").exists()
-        # Validate mode never even creates the out_dir.
-        assert not out.exists() or not list(out.iterdir())
 
 
 class TestPreRunShardScrub:
