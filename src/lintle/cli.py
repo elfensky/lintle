@@ -286,7 +286,9 @@ def _is_interactive():
         return False
     try:
         return sys.stdin.isatty()
-    except (AttributeError, ValueError):
+    except AttributeError:
+        return False
+    except ValueError:
         return False
 
 
