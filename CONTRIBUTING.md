@@ -81,6 +81,7 @@ Tests are grouped into `Test*` classes, one per unit or behaviour under test.
 | `test_cli.py` | Argument parsing, path discovery, exit codes, elapsed-time formatting |
 | `test_diff.py` | `lintle diff` — per-rule delta between two runs' `report.jsonl` |
 | `test_explain.py` | `lintle explain` — rule/fix docs, examples validated against the live validator, coverage + disjointness guards |
+| `test_summary.py` | `summary.py` — responsive aggregate panel renderer and `lintle report` |
 | `test_integration.py` | End-to-end: golden output, idempotence, re-validation |
 | `test_oracle.py` | Cross-checks a known-good TLE against the trusted `sgp4` parser |
 | `test_pipeline_throughput.py` | Opt-in records/sec regression guard, gated by `pytest -m slow` (excluded by default) |

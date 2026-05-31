@@ -60,6 +60,7 @@ cli.py ──▶ pipeline.py ──▶ repair.py ──▶ tle.py
   ├──▶ resume.py        (single-run checkpoint; depends only on __version__ + fsutil)
   ├──▶ diff.py          (read-only consumer of report.jsonl)
   ├──▶ explain.py ──▶ explain_examples.py
+  ├──▶ summary.py       (read-only: renders envelope → aggregate panel; backs lintle report)
   └──▶ term.py          (stderr-only rich Console + error/warning/note/prompt)
 
 fsutil.py    stdlib-only I/O leaf — durable_replace + out_dir_lock
@@ -71,7 +72,7 @@ diagnostics.py, categories.py, explain_examples.py    pure-data leaves (no I/O)
 | `tle.py` | The validator: column layout, mod-10 checksum, semantic ranges, record pairing. The single definition of "perfect." Pure functions, no I/O. |
 | `repair.py` | Speculative fixes, each confirmed by `tle.py` before commit; the `Accepted` / `Quarantined` record outcomes. Pure functions. |
 | `pipeline.py` | Streams a file in binary, pairs `1 `/`2 ` lines into records, routes each to clean output or quarantine. Owns the per-file `process_file` worker entry. |
-| `report.py` | `FileStats` and its sibling dataclasses, the `summary_dict` / `build_run_envelope` JSON shapes, and the Markdown `report.md` writer. |
+| `report.py` | `FileStats` and its sibling dataclasses, the `summary_dict` / `build_run_envelope` JSON shapes, and the Markdown `report.md` writer. Does not render the terminal summary — that is `summary.py`. |
 | `report_writers.py` | Structured-file writers leaf: the `.broken.txt` sidecar (`BrokenFileWriter`), the `report.jsonl` findings shards (`JsonlFindingsWriter`), the `QuarantineSink` (bounded sample + streaming), `broken-noradids.ndjson`, and shard concatenation. Imports `report.py` one-way. |
 | `resume.py` | The single-run `.clean-state.json` checkpoint for `clean --resume`: input fingerprinting, checkpoint build/load, the resume-decision matrix. |
 | `fsutil.py` | `durable_replace` (the one atomic+fsync commit path) and `out_dir_lock` (the host-aware out-dir lock). Stdlib only. |
@@ -81,6 +82,7 @@ diagnostics.py, categories.py, explain_examples.py    pure-data leaves (no I/O)
 | `categories.py` | `FixClass` enum + `FixSpec` registry — the repair taxonomy. Pure data. |
 | `explain_examples.py` | Validator-verified examples + citations backing `explain`. Pure data. |
 | `term.py` | The single stderr `rich` Console and the `error:` / `warning:` / `note` / `prompt` emitters. |
+| `summary.py` | Renders the run envelope dict as the responsive aggregate panel (corpus totals + Fixes / Quarantined-by-rule, width-tiered); backs `lintle report`. Depends on `rich` + `term`. |
 | `cli.py` | argparse, globbing, parallel workers, live progress, Ctrl-C handling, exit codes. |
 
 `tle.py` and the data leaves carry no I/O. `report_writers.py` depends on `report.py` (never
@@ -255,6 +257,7 @@ A successful `clean` run lays out `--out-dir`:
 <out-dir>/
 ├── cleaned/                 tleYYYY.cleaned.txt    — one per input file
 ├── broken/                  tleYYYY.broken.txt     — one per input file (sidecar)
+├── report.json              — the persisted run envelope (schema_version "2")
 ├── report.md                — corpus-wide Markdown run report
 ├── report.jsonl             — corpus-wide structured findings (one JSON object per line)
 └── broken-noradids.ndjson   — corpus-wide list of quarantined NORAD IDs
@@ -263,9 +266,13 @@ A successful `clean` run lays out `--out-dir`:
 Transient run state lives alongside and is removed on success: `.shards/` (per-worker
 `report.jsonl` shards, concatenated then `rmtree`'d) and `.clean-state.json` (the resume
 checkpoint). On an interrupted or failed run, both survive so a later `--resume` can rebuild a
-complete `report.jsonl` from the shards. `report.md`, `report.jsonl`, and
+complete `report.jsonl` from the shards. `report.md`, `report.jsonl`, `report.json`, and
 `broken-noradids.ndjson` are **always** written on a successful clean run — empty when nothing
 was quarantined — so the consumer artifact set is stable.
+
+**`report.json`** is the durable, persisted twin of the `--report json` envelope: byte-identical
+output (`indent=2`, trailing `\n`, insertion-order keys), committed via `durable_replace`.
+`schema_version` is `"2"`. Its consumer is `lintle report`.
 
 - **`cleaned/tleYYYY.cleaned.txt`** — standard 2-line TLE text, every record verified valid: 69
   ASCII columns per line, `\n`-terminated, matching catalog numbers, valid checksums.
@@ -275,12 +282,15 @@ was quarantined — so the consumer artifact set is stable.
 
 A hard three-channel rule, so output is safely pipeable:
 
-- **stdout** = pipeable data + the plain per-file summary. With `--report json`, stdout carries
-  *only* the JSON envelope. Never styled.
-- **stderr** = the live `rich` UI (roster, progress block), `processing…` notices, and
-  `error:` / `warning:` lines. rich styling is applied only when stderr is a TTY; off a TTY
-  (pipe, `capsys`, `NO_COLOR`) it degrades to plain literal text, so even stderr stays
-  machine-readable.
+- **stdout** = machine/data/pipeable. For `clean` in text mode, **stdout is silent** — the
+  aggregate panel and artifact-path footer are written to stderr. With `--report json`, stdout
+  carries *only* the JSON envelope (the two modes coexist — stderr still shows the panel on a
+  TTY). For `lintle report`, the aggregate panel renders to stdout (it is the deliverable).
+  Never styled.
+- **stderr** = the styled human UI: the live `rich` roster, progress block, the end-of-run
+  aggregate panel, `processing…` notices, and `error:` / `warning:` lines. `rich` styling is
+  applied only when stderr is a TTY; off a TTY (pipe, `capsys`, `NO_COLOR`) it degrades to
+  plain literal text, so even stderr stays machine-readable.
 - The structured output **files** are never routed through the stderr Console.
 
 ### Exit codes
@@ -333,7 +343,7 @@ fields stays under `"2"`; renaming or removing one bumps the major — which is 
 | Field | Type | Notes |
 |---|---|---|
 | `schema_version` | string | exactly `"2"` in this release |
-| `run.command` | string | `"validate"` or `"clean"` |
+| `run.command` | string | `"clean"` — the CLI only emits this value; the field accepts any string |
 | `run.timestamp` | string | ISO 8601 UTC, suffix `Z` |
 | `run.elapsed_seconds` | float | parent-process wall-clock; `>= 0` |
 | `environment.tool_version` | string | `lintle.__version__` |

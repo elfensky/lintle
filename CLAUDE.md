@@ -59,7 +59,7 @@ output shows failures.
 ## The corpus (`data/`, git-ignored)
 
 - `data/source/` — 29 raw `tle*.txt` files (~30 GB) plus `TLEs.zip` (~12 GB). Inputs.
-- `data/output/` — where `clean` writes `cleaned/`, `broken/`, and `report.md`. Outputs.
+- `data/output/` — where `clean` writes `cleaned/`, `broken/`, `report.json`, `report.md`, `report.jsonl`, and `broken-noradids.ndjson`. Outputs.
 - The whole `data/` tree is git-ignored — ~42 GB — and must never be staged or committed.
 - **Never read a corpus file whole** — the largest is 3.2 GB. Sample with `head`, `awk`,
   or `sed -n`.
@@ -87,6 +87,7 @@ src/lintle/
 ├── resume.py      # single-run checkpoint for `clean --resume` (issue #56)
 ├── fsutil.py      # durable_replace — the one atomic+fsync commit path (issue #58)
 ├── term.py        # shared stderr Console + error/warning/note/prompt helpers (rich)
+├── summary.py     # responsive aggregate panel (corpus totals + Fixes/Quarantined); backs lintle report
 ├── diff.py        # read-only: per-rule delta between two runs' report.jsonl (lintle diff)
 ├── explain.py     # read-only: renders rule/fix documentation (lintle explain)
 ├── tle.py         # the validator — column layout, checksum, semantic ranges, pairing
@@ -126,6 +127,7 @@ uv run pytest --cov=lintle --cov-report=term-missing --cov-branch  # Tests + cov
 uv run ruff check .                # Lint
 uv run ruff format --check .       # Format check
 uv run lintle clean             # Clean data/source/ -> data/output/
+uv run lintle report            # Render last run's aggregate summary from data/output/report.json
 ```
 
 ## Working Style

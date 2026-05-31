@@ -6,6 +6,28 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Added
+
+- **`report.json`** — the persisted run envelope, written by `clean` into `--out-dir` on
+  every successful run via `durable_replace`. Byte-identical to `--report json` stdout
+  (`schema_version "2"`, `indent=2`, trailing newline, insertion-order keys). Its consumer
+  is `lintle report`.
+- **`lintle report [out-dir]`** — read-only command that renders the last run's aggregate
+  summary from `report.json` (default `data/output`). `--report text` (default) prints the
+  responsive aggregate panel to stdout; `--report json` re-emits `report.json` verbatim.
+  Missing file or `schema_version != "2"` is a hard error (exit 2). Mirrors the read-only
+  shape of `lintle diff` / `lintle explain`.
+
+### Changed
+
+- **`clean`'s end-of-run summary is now a single terminal-width-responsive aggregate panel
+  on stderr** (corpus totals + Fixes applied + Quarantined-by-rule counts; width-tiered:
+  plain when piped/narrow, sections and bars at wide). The old per-file summary blocks are
+  removed from the terminal output; per-file detail remains in `report.md`. In text mode,
+  `clean`'s stdout is now silent — the panel and artifact-path footer render to stderr only.
+  With `--report json`, the JSON envelope is still emitted on stdout and the panel renders
+  to stderr when a TTY is attached.
+
 ### Removed
 
 - The `lintle validate` subcommand (read-only audit mode) has been removed from the CLI.

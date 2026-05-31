@@ -55,6 +55,9 @@ The console script is `lintle` (`python -m lintle …` is equivalent):
 # Produce cleaned output + quarantine sidecars
 uv run lintle clean [path]
 
+# Render the aggregate summary from the last clean run
+uv run lintle report [out-dir]
+
 # Explain a rule ID or fix tag — definition, examples, source citation
 uv run lintle explain <TAG>
 
@@ -66,10 +69,11 @@ uv run lintle diff <run-a> <run-b>
 
 | Option | Default | Meaning |
 |--------|---------|---------|
-| `path` | `data/source` | A single file or directory. A directory is globbed for `tle*.txt` (tool output `*.cleaned.txt` / `*.broken.txt` is excluded). |
-| `--out-dir DIR` | `data/output` | Where `clean` writes its output. Created if absent. |
+| `path` | `data/source` | (`clean`) A single file or directory. A directory is globbed for `tle*.txt` (tool output `*.cleaned.txt` / `*.broken.txt` is excluded). |
+| `out-dir` | `data/output` | (`report`) The `--out-dir` written by a prior `clean` run. Reads `report.json`; exits 2 if absent or wrong schema. |
+| `--out-dir DIR` | `data/output` | (`clean`) Where `clean` writes its output. Created if absent. |
 | `--jobs N` | CPU count − 1 | Files processed in parallel. Lower it if a slow disk causes I/O contention. |
-| `--report text\|json` | `text` | Summary format. |
+| `--report text\|json` | `text` | Summary format. For `clean`, `text` renders the aggregate panel on stderr; `json` emits the envelope on stdout. For `report`, `text` renders the panel on stdout; `json` re-emits `report.json` verbatim on stdout. |
 | `--max-quarantined N[%]` | `0` | Exit non-zero only if MORE than N records were quarantined; or, with a trailing `%`, more than `N%` of routed records (`clean + quarantined`). Default `0` ≡ "any quarantine fails". |
 | `--resume` / `--no-resume` | — | (`clean` only) Resume an interrupted run without prompting / ignore any checkpoint and start fresh. See [Cancelling and resuming](#cancelling-and-resuming). |
 
@@ -139,8 +143,9 @@ A `clean` run lays `--out-dir` out like this:
 ├── cleaned/                tleYYYY.cleaned.txt   — one per input file
 ├── broken/                 tleYYYY.broken.txt    — one per input file
 ├── broken-noradids.ndjson  — corpus-wide list of quarantined NORAD IDs
+├── report.json             — persisted run envelope (schema_version "2")
 ├── report.jsonl            — corpus-wide structured findings stream
-└── report.md               — corpus-wide run report
+└── report.md               — corpus-wide run report (per-file detail)
 ```
 
 - **`cleaned/tleYYYY.cleaned.txt`** — standard 2-line TLE text, every record verified valid
@@ -150,26 +155,26 @@ A `clean` run lays `--out-dir` out like this:
   formatted to paste into a space-track defect report.
 - **`broken-noradids.ndjson`** — one `{"noradId":N}` per line, the deduplicated, sorted set
   of NORAD catalog numbers quarantined anywhere in the run (for programmatic consumers).
+- **`report.json`** — the persisted run envelope: byte-identical to `--report json` stdout
+  (`indent=2`, trailing newline, insertion-order keys). Read by `lintle report`.
 - **`report.md`** — human-readable run report: corpus totals, % cleaned/quarantined, fix
   counts, the per-rule defect breakdown, a per-file table, and a per-NORAD breakdown.
 
-A per-file summary is printed to stdout (and as JSON with `--report json`):
+At the end of a run, `clean` renders a **responsive aggregate panel** to stderr (corpus
+totals, Fixes applied, and Quarantined-by-rule counts). The panel is width-tiered: plain
+output when piped or on a narrow terminal, richer sections and progress bars at wider widths.
+Per-file detail (record counts, fix breakdown per file) remains in `report.md`. With
+`--report json`, the JSON envelope is emitted on stdout and the panel still renders on stderr
+when a TTY is attached.
 
-```
-tle2022.txt   8,412,066 records   8,412,064 clean   3 quarantined   (1 orphan, 16,824,134 lines)
-  fixes:   trailing-backslash 8,412,064 | reconstructed-checksum 195,293
-  quarantined: TLE-CHK-001 1 | TLE-PAIR-001 1 | TLE-COL-001 1
-```
+`lintle report [out-dir]` re-renders this panel at any later time from `report.json`
+(default `data/output`). It exits 2 if `report.json` is missing or carries a
+`schema_version` other than `"2"`. With `--report json` it re-emits `report.json` verbatim
+on stdout instead.
 
-`records` counts paired 2-line entries; `clean` are those that passed and were written;
-`quarantined` is everything routed to `broken/` (failed records **and** every orphan line);
-the parenthetical reports unpaired `orphan` lines and total physical `lines`. The invariant
-is `records + orphan == clean + quarantined`. Defects key by the stable `RuleID` registry
-(`TLE-CHK-001`, `TLE-PAIR-001`, …) so one identifier names a defect across every artifact.
-
-Live progress during a long run is written to **stderr** (so it never pollutes the stdout
-summary or a `--report json` pipe): a size roster up front, per-file byte/record progress
-with throughput and ETA, and an `[k/N]` line as each file finishes.
+Live progress during a long run is written to **stderr**: a size roster up front, per-file
+byte/record progress with throughput and ETA, and a files-done/total counter. Stdout stays
+silent in text mode, so `--report json > run-summary.json` captures only the clean envelope.
 
 → Machine-readable contracts (`--report json` envelope, `report.jsonl`, the `.broken.txt`
 format, the checkpoint): [`ARCHITECTURE.md` §6](ARCHITECTURE.md#6-outputs--machine-readable-contracts).
