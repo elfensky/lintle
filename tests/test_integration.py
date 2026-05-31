@@ -60,7 +60,7 @@ class TestEndToEnd:
         cleaned2 = out2 / "cleaned" / "tle2099.cleaned.cleaned.txt"
 
         assert cleaned1.read_bytes() == cleaned2.read_bytes()
-        # Idempotence (spec §8): re-cleaning applies zero fixes and zero rejects.
+        # Idempotence (spec §8): re-cleaning applies zero fixes and zero quarantines.
         assert stats2.fix_counts == {}
         assert stats2.quarantined_count == 0
 

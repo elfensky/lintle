@@ -43,7 +43,7 @@ class VerifyKind(enum.Enum):
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class RuleExplain:
-    """Explain metadata for one rejection rule. ``good_lines``/``bad_lines``
+    """Explain metadata for one quarantine rule. ``good_lines``/``bad_lines``
     are input lines; ``verify`` says how they reproduce. ``tier_note`` is the
     one field not machine-verified — it describes which repair tier is tried
     before the rule fires.
@@ -117,7 +117,7 @@ RULE_EXPLAIN: dict[RuleID, RuleExplain] = {
         lineno=1,
         column_range=None,
         citation="repair.repair_line",
-        tier_note="rejected before any repair tier — the bytes are not ASCII.",
+        tier_note="quarantined before any repair tier — the bytes are not ASCII.",
     ),
     RuleID.INVALID_COLUMN_LAYOUT: RuleExplain(
         RuleID.INVALID_COLUMN_LAYOUT,

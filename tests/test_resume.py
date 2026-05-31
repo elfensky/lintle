@@ -140,13 +140,13 @@ def _ckpt(inputs):
 
 
 class TestBuildCheckpoint:
-    def test_schema_version_is_2_and_records_run_identity(self):
+    def test_schema_version_is_3_and_records_run_identity(self):
         ckpt = resume.build_checkpoint(
             inputs={"a.txt": {"size": 1}},
             completed={"a.txt": {"summary": {"clean_count": 3}, "outputs": {}}},
             run_identity={"args": []},
         )
-        assert ckpt["schema_version"] == 2
+        assert ckpt["schema_version"] == 3
         assert ckpt["run_identity"] == {"args": []}
         assert ckpt["completed"]["a.txt"]["summary"]["clean_count"] == 3
 

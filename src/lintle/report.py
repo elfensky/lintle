@@ -16,13 +16,13 @@ from lintle.diagnostics import RULES, Diagnostic, RepairTier, RuleID
 # memory stays constant even on files where every record is corrupt.
 # Total ceiling per file is ``|RuleID| × _PER_RULE_EXEMPLAR_BOUND``. Owned
 # here — alongside the :class:`FileSample` dataclass it defaults — because
-# the sample shape is report-layer state; ``report_writers.RejectSink`` (the
+# the sample shape is report-layer state; ``report_writers.QuarantineSink`` (the
 # canonical cap-enforcement boundary) imports it from here.
 _PER_RULE_EXEMPLAR_BOUND = 5
 
 
 @dataclasses.dataclass
-class RejectEntry:
+class QuarantineEntry:
     """One quarantined record, rendered into ``.broken.txt``.
 
     ``raw_lines`` are original bytes (1 line for an orphan, 2 for a record)
@@ -30,13 +30,13 @@ class RejectEntry:
     is the headline :class:`Diagnostic`; ``related`` carries any secondary
     diagnostics, rendered on indented continuation lines. ``norad_id``
     (issue #9) carries the 5-digit catalog ID extracted from line 1,
-    populated by ``pipeline._record_reject`` — consumed by the structured
+    populated by ``pipeline._record_quarantine`` — consumed by the structured
     ``report.jsonl`` emitter, not rendered into ``.broken.txt``. ``norad_id``
     MUST stay the trailing field: the pipeline call site constructs this
     dataclass positionally, so any reorder would silently corrupt the
     per-call arguments. This is the report-layer twin of
-    :class:`repair.Rejected`; ``pipeline._record_reject`` unpacks a
-    ``Rejected`` (or an orphan's fields) and rebuilds it here.
+    :class:`repair.Quarantined`; ``pipeline._record_quarantine`` unpacks a
+    ``Quarantined`` (or an orphan's fields) and rebuilds it here.
     """
 
     raw_lines: list
@@ -50,8 +50,8 @@ class RejectEntry:
 class FileSample:
     """Immutable, per-file bounded sample of quarantined records (issue #19).
 
-    Produced by :meth:`RejectSink.finalize`; consumed by renderers
-    (:func:`format_reject_lines`, :func:`write_broken_file`). Frozen so
+    Produced by :meth:`QuarantineSink.finalize`; consumed by renderers
+    (:func:`format_quarantine_lines`, :func:`write_broken_file`). Frozen so
     post-finalize consumers cannot accidentally mutate the sample — the
     per-rule cap invariant is locked in at construction time. ``cap``
     travels with the sample so renderers can surface truncation against
@@ -59,7 +59,7 @@ class FileSample:
 
     ``dropped_count`` (issue #46) records how many entries the sink
     dropped per rule because the bucket was already at ``cap``. It is
-    derivable from ``reject_counts - len(buckets[rule])`` but stored
+    derivable from ``quarantine_counts - len(buckets[rule])`` but stored
     explicitly so programmatic consumers (JSON output, aggregators) can
     read it as a first-class field. Missing keys mean zero drops.
     """
@@ -143,15 +143,15 @@ class FileStats:
     as findings; ``input_lines_seen`` counts every physical line read,
     including blanks the pairing loop drops. The invariant
     ``paired_records + orphan_entries == clean_count + quarantined_count``
-    holds — orphans still flow through ``_record_reject`` so they are tallied
-    in ``quarantined_count`` and ``reject_counts['TLE-PAIR-001']``.
+    holds — orphans still flow through ``_record_quarantine`` so they are tallied
+    in ``quarantined_count`` and ``quarantine_counts['TLE-PAIR-001']``.
 
-    ``reject_counts`` is keyed by :class:`diagnostics.RuleID` string values
+    ``quarantine_counts`` is keyed by :class:`diagnostics.RuleID` string values
     (e.g. ``"TLE-CHK-001"``) so reports cite stable, citable rule IDs.
 
-    ``reject_sample`` (issue #19) is an immutable :class:`FileSample`
+    ``quarantine_sample`` (issue #19) is an immutable :class:`FileSample`
     holding the per-rule bounded sample of quarantined records. The cap
-    is enforced structurally by :class:`RejectSink` during processing,
+    is enforced structurally by :class:`QuarantineSink` during processing,
     not by this dataclass. The byte-faithful full catalog is streamed to
     ``.broken.txt`` during processing.
     """
@@ -179,20 +179,20 @@ class FileStats:
     clean_count: int = 0
     quarantined_count: int = 0
     fix_counts: dict = dataclasses.field(default_factory=dict)
-    reject_counts: dict = dataclasses.field(default_factory=dict)
-    reject_sample: FileSample = dataclasses.field(
+    quarantine_counts: dict = dataclasses.field(default_factory=dict)
+    quarantine_sample: FileSample = dataclasses.field(
         default_factory=lambda: FileSample.empty(_PER_RULE_EXEMPLAR_BOUND)
     )
     # Per-NORAD breakdown for records quarantined in this file (issue #47:
     # wrapped behind :class:`NoradTracker` so the single-writer convention
     # is enforced by the type — ``stats.quarantined_norad_ids.record(...)``
     # is the only sanctioned mutation entry point). Outer keys (in
-    # ``.counts``) are the 5-digit catalog numbers decoded once at reject
+    # ``.counts``) are the 5-digit catalog numbers decoded once at quarantine
     # time from line-1 columns 3-7; each value is a ``{RuleID: count}``
     # dict tallying which diagnostics that satellite hit in this file.
     # Bounded by the satellite catalog (~tens of thousands of IDs corpus-
     # wide) and the ``RuleID`` enum, so the per-file structure is O(catalog
-    # × |RuleID|) — independent of reject count and constant-memory at
+    # × |RuleID|) — independent of quarantine count and constant-memory at
     # corpus scale. Field name preserved to keep the ``summary_dict`` JSON
     # output key contract intact; only the type changed.
     quarantined_norad_ids: NoradTracker = dataclasses.field(
@@ -219,8 +219,8 @@ def format_summary(stats):
     ]
     if stats.fix_counts:
         lines.append(f"  fixes:   {_join_counts(stats.fix_counts)}")
-    if stats.reject_counts:
-        lines.append(f"  rejects: {_join_counts(stats.reject_counts)}")
+    if stats.quarantine_counts:
+        lines.append(f"  quarantined: {_join_counts(stats.quarantine_counts)}")
     return "\n".join(lines)
 
 
@@ -237,7 +237,7 @@ _RECORDS_PER_SEC_FLOOR = 0.001
 def summary_dict(stats):
     """Return a JSON-serialisable summary of one file's stats.
 
-    The ``reject_counts`` map is keyed by stable rule IDs (e.g.
+    The ``quarantine_counts`` map is keyed by stable rule IDs (e.g.
     ``"TLE-CHK-001"``) — the same handles cited in ``report.md`` and the
     ``.broken.txt`` sidecar. The per-NORAD breakdown is shallow-copied per
     ID so caller mutations do not leak back into the live ``FileStats``;
@@ -262,13 +262,13 @@ def summary_dict(stats):
         "clean_count": stats.clean_count,
         "quarantined_count": stats.quarantined_count,
         "fix_counts": dict(stats.fix_counts),
-        "reject_counts": dict(stats.reject_counts),
+        "quarantine_counts": dict(stats.quarantine_counts),
         # Per-rule count of entries the sink had to drop because the bucket
         # was already at cap (issue #46). Always present (empty when no
         # truncation) so programmatic consumers can rely on the field;
         # shallow-copied so caller mutations don't leak into the frozen
-        # FileSample. Parallels reject_counts in shape and key vocabulary.
-        "dropped_counts": dict(stats.reject_sample.dropped_count),
+        # FileSample. Parallels quarantine_counts in shape and key vocabulary.
+        "dropped_counts": dict(stats.quarantine_sample.dropped_count),
         "quarantined_norad_ids": {
             nid: dict(rule_counts)
             for nid, rule_counts in stats.quarantined_norad_ids.counts.items()
@@ -284,7 +284,7 @@ def stats_from_summary(data):
     without re-reading them. JSON stringifies every dict key, so the rule, fix,
     and NORAD keys are coerced back to their live types (:class:`RuleID`,
     :class:`FixClass`, ``int``) — a rebuilt instance is then indistinguishable
-    from a freshly-produced one. The bytes-bearing ``reject_sample`` exemplars
+    from a freshly-produced one. The bytes-bearing ``quarantine_sample`` exemplars
     are deliberately not persisted (§13.1): the sample reconstructs empty of
     buckets, carrying only the per-rule ``dropped_count`` so the round-trip is
     exact. The derived ``records_per_sec`` field is recomputed by
@@ -300,8 +300,8 @@ def stats_from_summary(data):
         clean_count=data["clean_count"],
         quarantined_count=data["quarantined_count"],
         fix_counts={FixClass(k): v for k, v in data["fix_counts"].items()},
-        reject_counts={RuleID(k): v for k, v in data["reject_counts"].items()},
-        reject_sample=FileSample.from_bounded(
+        quarantine_counts={RuleID(k): v for k, v in data["quarantine_counts"].items()},
+        quarantine_sample=FileSample.from_bounded(
             cap=_PER_RULE_EXEMPLAR_BOUND,
             entries_by_rule={},
             dropped_count={RuleID(k): v for k, v in data["dropped_counts"].items()},
@@ -317,9 +317,10 @@ def stats_from_summary(data):
 
 # Pinned schema version for the ``--report json`` envelope (issue #20).
 # Stored as a string so future additive minor revisions can use tags like
-# ``"1.1"`` without changing the field's JSON type — adding optional
-# fields stays under ``"1"``, renaming or removing fields bumps to ``"2"``.
-_ENVELOPE_SCHEMA_VERSION = "1"
+# ``"2.1"`` without changing the field's JSON type — adding optional
+# fields stays under ``"2"``, renaming or removing fields bumps it again.
+# Bumped "1" -> "2" when the per-rule counts key became ``quarantine_counts``.
+_ENVELOPE_SCHEMA_VERSION = "2"
 
 
 def build_run_envelope(all_stats, *, command, started_at, elapsed_seconds):
@@ -344,7 +345,7 @@ def build_run_envelope(all_stats, *, command, started_at, elapsed_seconds):
     clean = totals.clean
     quarantined = totals.quarantined
     fixes = totals.fixes
-    rejects = totals.rejects
+    quarantines = totals.quarantines
     return {
         "schema_version": _ENVELOPE_SCHEMA_VERSION,
         "run": {
@@ -367,7 +368,7 @@ def build_run_envelope(all_stats, *, command, started_at, elapsed_seconds):
             "clean_count": clean,
             "quarantined_count": quarantined,
             "fix_counts": dict(fixes),
-            "reject_counts": dict(rejects),
+            "quarantine_counts": dict(quarantines),
         },
         "files": [summary_dict(s) for s in all_stats],
     }
@@ -379,7 +380,7 @@ def _format_diagnostic(diag):
     Format: ``rule: <id>[ (<tier>)][ - col(s) <range>][ observed=...][
     expected=...][ - <note>]``. The bracketed pieces are emitted only when
     their underlying field is set. Shared low-level renderer: the
-    ``validate`` summary (:func:`format_reject_lines`) and the
+    ``validate`` summary (:func:`format_quarantine_lines`) and the
     ``.broken.txt`` sidecar (``report_writers._render_entry``) both consume
     it, so it lives in this leaf and ``report_writers`` imports it — keeping
     the dependency one-way and acyclic.
@@ -403,12 +404,12 @@ def _format_diagnostic(diag):
     return head
 
 
-def format_reject_lines(stats):
-    """Render grouped reject exemplars for the ``validate`` summary.
+def format_quarantine_lines(stats):
+    """Render grouped quarantine exemplars for the ``validate`` summary.
 
     Walks rule IDs in descending order of total occurrences from
-    ``stats.reject_counts`` and emits up to N exemplars per rule from
-    ``stats.reject_sample.buckets``, each rendered via
+    ``stats.quarantine_counts`` and emits up to N exemplars per rule from
+    ``stats.quarantine_sample.buckets``, each rendered via
     :func:`_format_diagnostic` so column ranges / observed / expected /
     tier survive into the operator view. Related diagnostics fold onto
     indented continuation lines, identical to ``.broken.txt``. A
@@ -425,10 +426,10 @@ def format_reject_lines(stats):
     """
     blocks = []
     for rule_id, total in sorted(
-        stats.reject_counts.items(), key=lambda kv: (-kv[1], kv[0])
+        stats.quarantine_counts.items(), key=lambda kv: (-kv[1], kv[0])
     ):
-        bucket = stats.reject_sample.buckets.get(rule_id, ())
-        dropped = stats.reject_sample.dropped_count.get(rule_id, 0)
+        bucket = stats.quarantine_sample.buckets.get(rule_id, ())
+        dropped = stats.quarantine_sample.dropped_count.get(rule_id, 0)
         if dropped > 0:
             heading = (
                 f"  {rule_id} ({len(bucket):,} of {total:,} hits, {dropped:,} dropped):"
@@ -466,7 +467,7 @@ class _Totals:
     clean: int
     quarantined: int
     fixes: dict
-    rejects: dict
+    quarantines: dict
     dropped: dict
 
 
@@ -474,18 +475,18 @@ def _aggregate(all_stats):
     """Sum every file's stats into corpus-wide totals and count dicts.
 
     Returns a :class:`_Totals`; its ``dropped`` map (issue #46) sums each
-    file's ``reject_sample.dropped_count`` so ``report.md`` can show a
-    corpus-wide Dropped column alongside the per-rule reject totals.
+    file's ``quarantine_sample.dropped_count`` so ``report.md`` can show a
+    corpus-wide Dropped column alongside the per-rule quarantine totals.
     """
     fixes = {}
-    rejects = {}
+    quarantines = {}
     dropped = {}
     for stats in all_stats:
         for key, value in stats.fix_counts.items():
             fixes[key] = fixes.get(key, 0) + value
-        for key, value in stats.reject_counts.items():
-            rejects[key] = rejects.get(key, 0) + value
-        for key, value in stats.reject_sample.dropped_count.items():
+        for key, value in stats.quarantine_counts.items():
+            quarantines[key] = quarantines.get(key, 0) + value
+        for key, value in stats.quarantine_sample.dropped_count.items():
             dropped[key] = dropped.get(key, 0) + value
     return _Totals(
         paired=sum(s.paired_records for s in all_stats),
@@ -494,7 +495,7 @@ def _aggregate(all_stats):
         clean=sum(s.clean_count for s in all_stats),
         quarantined=sum(s.quarantined_count for s in all_stats),
         fixes=fixes,
-        rejects=rejects,
+        quarantines=quarantines,
         dropped=dropped,
     )
 
@@ -518,7 +519,7 @@ def _aggregate_per_norad(all_stats):
     at least one quarantine). Memory is O(unique IDs × (|RuleID| + |source
     files|)) — bounded by the satellite catalog (~tens of thousands) and the
     small fixed number of source files in a corpus run, so the rollup stays
-    constant-memory regardless of total reject count.
+    constant-memory regardless of total quarantine count.
     """
     rollup = {}
     for stats in all_stats:
@@ -622,7 +623,7 @@ def format_run_report(all_stats, top_n=100):
     clean = totals.clean
     quarantined = totals.quarantined
     fixes = totals.fixes
-    rejects = totals.rejects
+    quarantines = totals.quarantines
     dropped = totals.dropped
     denominator = paired + orphans
 
@@ -656,7 +657,7 @@ def format_run_report(all_stats, top_n=100):
         lines.append("_None._")
 
     lines += ["", "## Records quarantined (by rule)", ""]
-    if rejects:
+    if quarantines:
         # ``Dropped`` (issue #46): per-rule corpus-wide count of entries
         # the sink had to drop because the in-memory bucket was at cap.
         # Most rules read 0 here on healthy runs; non-zero values mean
@@ -664,7 +665,7 @@ def format_run_report(all_stats, top_n=100):
         # should consult the ``.broken.txt`` sidecar for the full catalog.
         lines.append("| Rule | Count | Dropped |")
         lines.append("|------|------:|--------:|")
-        for key, value in sorted(rejects.items(), key=lambda kv: -kv[1]):
+        for key, value in sorted(quarantines.items(), key=lambda kv: -kv[1]):
             lines.append(f"| {key} | {value:,} | {dropped.get(key, 0):,} |")
     else:
         lines.append("_None — every record was clean._")
@@ -683,9 +684,9 @@ def format_run_report(all_stats, top_n=100):
             f"{stats.clean_count:,} | {stats.quarantined_count:,} |"
         )
 
-    if rejects:
+    if quarantines:
         lines += ["", "## Rule reference", ""]
-        for key in sorted(rejects):
+        for key in sorted(quarantines):
             spec = _spec_for_key(key)
             if spec is None:
                 lines.append(f"- `{key}` — (unknown rule)")

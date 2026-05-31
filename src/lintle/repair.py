@@ -133,10 +133,10 @@ class Accepted:
 
 
 @dataclasses.dataclass
-class Rejected:
+class Quarantined:
     """A record routed to quarantine. ``raw_lines`` preserves the original
     bytes for byte-faithful sidecar output. ``primary`` is the headline
-    :class:`Diagnostic` used for aggregation in ``stats.reject_counts`` and
+    :class:`Diagnostic` used for aggregation in ``stats.quarantine_counts`` and
     as the visible diagnosis in ``report.md``; ``related`` carries any
     supporting diagnostics — when both lines of a record fail, the first
     is primary and the second is related.
@@ -153,7 +153,7 @@ def process_record(raw_line1, src1, raw_line2, src2):
 
     ``raw_line1``/``raw_line2`` are line bytes (no ``\\n``); ``src1``/``src2``
     are their 1-indexed source line numbers. Returns ``Accepted`` or
-    ``Rejected``.
+    ``Quarantined``.
     """
     line1, fixes1, diag1 = repair_line(raw_line1, 1, src1)
     line2, fixes2, diag2 = repair_line(raw_line2, 2, src2)
@@ -164,7 +164,7 @@ def process_record(raw_line1, src1, raw_line2, src2):
         else:
             primary = diag1 if diag1 else diag2
             related = ()
-        return Rejected([raw_line1, raw_line2], [src1, src2], primary, related)
+        return Quarantined([raw_line1, raw_line2], [src1, src2], primary, related)
 
     record_errors = tle.validate_record(line1, line2)
     if record_errors:
@@ -177,7 +177,7 @@ def process_record(raw_line1, src1, raw_line2, src2):
             if FixClass.RECONSTRUCTED_CHECKSUM in fixes1 + fixes2
             else RepairTier.NORMALIZATION
         )
-        return Rejected(
+        return Quarantined(
             [raw_line1, raw_line2],
             [src1, src2],
             diagnostic(

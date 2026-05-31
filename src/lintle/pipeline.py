@@ -197,10 +197,10 @@ def _run(src_path, out_dir, mode, stats, progress_queue, progress_every):
     # The sink owns the BrokenFileWriter lifecycle in clean mode and the
     # bounded in-memory sample in both modes. Issue #19: cap-enforcement
     # is now a structural property of the sink, not a convention spread
-    # across pipeline._record_reject. Issue #9: the sink also owns the
+    # across pipeline._record_quarantine. Issue #9: the sink also owns the
     # optional JsonlFindingsWriter, which streams structured findings to
     # the per-file shard alongside the .broken.txt byte-faithful catalog.
-    sink = report_writers.RejectSink(
+    sink = report_writers.QuarantineSink(
         broken_path=broken_path, src_name=src_name, jsonl_path=jsonl_path
     )
 
@@ -247,7 +247,7 @@ def _run(src_path, out_dir, mode, stats, progress_queue, progress_every):
 
                 if isinstance(candidate, Orphan):
                     stats.orphan_entries += 1
-                    _record_reject(
+                    _record_quarantine(
                         stats,
                         sink,
                         candidate.diag,
@@ -267,7 +267,7 @@ def _run(src_path, out_dir, mode, stats, progress_queue, progress_every):
                         candidate.src2,
                     )
                 except Exception as exc:  # one bad record must not kill the run
-                    _record_reject(
+                    _record_quarantine(
                         stats,
                         sink,
                         diagnostic(
@@ -289,7 +289,7 @@ def _run(src_path, out_dir, mode, stats, progress_queue, progress_every):
                         cleaned_handle.write(result.line1 + "\n")
                         cleaned_handle.write(result.line2 + "\n")
                 else:
-                    _record_reject(
+                    _record_quarantine(
                         stats,
                         sink,
                         result.primary,
@@ -325,30 +325,30 @@ def _run(src_path, out_dir, mode, stats, progress_queue, progress_every):
         # adversarial-review voices caught this bug in the original spec.
         if completed and mode == "clean":
             fsutil.durable_replace(cleaned_tmp, cleaned_path)
-        stats.reject_sample = sink.finalize(
+        stats.quarantine_sample = sink.finalize(
             entries=stats.paired_records + stats.orphan_entries
         )
 
     return stats
 
 
-def _record_reject(stats, sink, primary, related, raw_lines, source_lines):
+def _record_quarantine(stats, sink, primary, related, raw_lines, source_lines):
     """Tally one quarantined record; hand it to the sink for sampling + streaming.
 
     ``primary`` is the headline :class:`Diagnostic`; its ``rule_id`` (string
     value, e.g. ``"TLE-CHK-001"``) is the aggregation key written to
-    ``stats.reject_counts``. ``related`` carries supporting diagnostics, if
+    ``stats.quarantine_counts``. ``related`` carries supporting diagnostics, if
     any, and is rendered as indented continuation lines in ``.broken.txt``.
 
-    :class:`RejectSink` owns the bounded-sample insert (cap enforced by
+    :class:`QuarantineSink` owns the bounded-sample insert (cap enforced by
     construction, issue #19) and — in clean mode — the byte-faithful
     sidecar stream via its owned :class:`BrokenFileWriter`. The sample
-    surfaces on ``stats.reject_sample`` once ``sink.finalize`` runs at
+    surfaces on ``stats.quarantine_sample`` once ``sink.finalize`` runs at
     end of file in :func:`_run`.
 
-    Note: ``stats.reject_counts`` and ``stats.quarantined_count`` are
+    Note: ``stats.quarantine_counts`` and ``stats.quarantined_count`` are
     incremented up front, so on an exception mid-file these counters
-    will reflect every reject encountered while ``stats.reject_sample``
+    will reflect every quarantine encountered while ``stats.quarantine_sample``
     stays at its empty default (the ``with sink:`` exit discards the
     in-flight sample). That counter/sample divergence is observable
     only on the abnormal-exit path and matches today's behaviour.
@@ -357,25 +357,25 @@ def _record_reject(stats, sink, primary, related, raw_lines, source_lines):
     # primary.rule_id is a StrEnum — equal to and hashable as its string
     # value, so the dict key is the stable wire token ("TLE-CHK-001") and
     # downstream JSON / sort orders are deterministic.
-    stats.reject_counts[primary.rule_id] = (
-        stats.reject_counts.get(primary.rule_id, 0) + 1
+    stats.quarantine_counts[primary.rule_id] = (
+        stats.quarantine_counts.get(primary.rule_id, 0) + 1
     )
-    # Decode the NORAD ID once, before constructing RejectEntry, so the
+    # Decode the NORAD ID once, before constructing QuarantineEntry, so the
     # structured ``report.jsonl`` emitter sees the same value the per-NORAD
-    # breakdown does (issue #9). Orphan-line-2 and bad-prefix rejects
+    # breakdown does (issue #9). Orphan-line-2 and bad-prefix quarantines
     # expose no line-1 catalog field and yield ``None``.
     norad_id = tle.extract_norad_id(raw_lines[0])
-    # Pass norad_id as a kwarg — RejectEntry's positional contract is
+    # Pass norad_id as a kwarg — QuarantineEntry's positional contract is
     # (raw_lines, source_lines, primary, related), and norad_id is the
     # trailing optional. The kwarg makes the intent explicit at the only
     # production construction site (spec §4.5).
-    entry = report.RejectEntry(
+    entry = report.QuarantineEntry(
         raw_lines, source_lines, primary, related, norad_id=norad_id
     )
     sink.add(entry)  # cap-checked, streamed if writer is open (issue #19)
     # The per-NORAD bucket records which rules the satellite hit, feeding
     # the human-facing per-NORAD breakdown section in report.md; ``record``
-    # accrues a +1 to that satellite's per-rule total across all rejects
+    # accrues a +1 to that satellite's per-rule total across all quarantines
     # in this file. Single typed mutation entry point per issue #47 — any
     # future writer that wants to populate the tracker must go through it.
     if norad_id is not None:

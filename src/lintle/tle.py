@@ -211,7 +211,7 @@ def extract_norad_id(line):
     line does not start with the ``"1 "`` line-1 prefix, is too short to
     contain the field, contains a non-ASCII byte, or the field is not
     five decimal digits — Alpha-5 letter-prefixed IDs are deliberately
-    rejected to keep the downstream contract a plain integer.
+    excluded to keep the downstream contract a plain integer.
     """
     if isinstance(line, bytes):
         try:

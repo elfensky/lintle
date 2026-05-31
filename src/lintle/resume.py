@@ -5,7 +5,7 @@ and deletes it on full success, so the checkpoint's *presence* marks an
 interrupted run. ``--resume`` consults it: validate (refuse on any change to the
 lintle version or the input set's identity), skip files already committed, and
 finish the job. The checkpoint is scoped to *completing one run* — not a
-cross-run skip cache (contrast the rejected manifest, design §13). Pure standard
+cross-run skip cache (contrast the declined manifest, design §13). Pure standard
 library.
 """
 
@@ -19,11 +19,11 @@ import os
 from lintle import __version__, fsutil
 
 CHECKPOINT_NAME = ".clean-state.json"
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 # Head+tail window hashed for input identity — large enough that any append
 # (tail changes) or truncation (size changes) is caught in one seek, small
 # enough to stay O(1) regardless of file size. A one-time correctness gate on
-# resume, not a per-run skip cache (issue #56; contrast the rejected §13 manifest).
+# resume, not a per-run skip cache (issue #56; contrast the declined §13 manifest).
 _HASH_WINDOW = 65536
 
 

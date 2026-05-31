@@ -161,7 +161,7 @@ class TestProcessFile:
         assert stats.input_lines_seen == 3
         assert stats.clean_count == 1
         assert stats.quarantined_count == 1
-        assert stats.reject_counts.get(RuleID.ORPHAN_LINE) == 1
+        assert stats.quarantine_counts.get(RuleID.ORPHAN_LINE) == 1
 
     def test_input_lines_seen_counts_blank_lines(self, tmp_path, line1, line2):
         # ``input_lines_seen`` is the count of physical lines read — including
@@ -190,7 +190,7 @@ class TestProcessFile:
         stats = pipeline.process_file(str(src), str(out), "clean")
 
         assert stats.quarantined_count == 1
-        assert stats.reject_counts.get(RuleID.CHECKSUM_MISMATCH) == 1
+        assert stats.quarantine_counts.get(RuleID.CHECKSUM_MISMATCH) == 1
         broken_bytes = (out / "broken" / "tle2099.broken.txt").read_bytes()
         assert b"TLE-CHK-001" in broken_bytes
 
@@ -274,7 +274,7 @@ class TestProcessFile:
         stats = pipeline.process_file(str(src), str(tmp_path / "out"), "clean")
 
         assert stats.quarantined_count == 1
-        assert stats.reject_counts.get(RuleID.INTERNAL_ERROR) == 1
+        assert stats.quarantine_counts.get(RuleID.INTERNAL_ERROR) == 1
 
     def test_clean_run_leaves_no_temp_file(self, tmp_path, line1, line2):
         src = tmp_path / "tle2099.txt"
@@ -381,11 +381,11 @@ class TestProcessFile:
         assert progress.empty()
 
 
-class TestStreamingRejects:
+class TestStreamingQuarantines:
     """The constant-memory invariant: each ``RuleID`` bucket in
-    ``stats.reject_sample.buckets`` stays bounded even on reject-heavy
+    ``stats.quarantine_sample.buckets`` stays bounded even on quarantine-heavy
     files, while the on-disk ``.broken.txt`` catalog is complete. The
-    bound is now enforced structurally by :class:`report_writers.RejectSink`
+    bound is now enforced structurally by :class:`report_writers.QuarantineSink`
     (issue #19) — these tests exercise the invariant end-to-end through
     ``process_file``.
     """
@@ -400,12 +400,12 @@ class TestStreamingRejects:
 
         stats = pipeline.process_file(str(src), str(out), "clean")
 
-        # Full counters reflect every reject…
+        # Full counters reflect every quarantine…
         assert stats.quarantined_count == n
-        assert stats.reject_counts.get(RuleID.BAD_PREFIX) == n
+        assert stats.quarantine_counts.get(RuleID.BAD_PREFIX) == n
         # …but the in-memory bucket for that rule is capped at the bound.
         assert (
-            len(stats.reject_sample.buckets[RuleID.BAD_PREFIX])
+            len(stats.quarantine_sample.buckets[RuleID.BAD_PREFIX])
             == report._PER_RULE_EXEMPLAR_BOUND
         )
         # The on-disk catalog header and trailing entry both reflect every
@@ -417,7 +417,7 @@ class TestStreamingRejects:
 
     def test_validate_mode_bucket_caps_per_rule(self, tmp_path):
         # In validate mode no sidecar is written, but each per-rule bucket
-        # still caps so peak memory does not grow with reject count.
+        # still caps so peak memory does not grow with quarantine count.
         n = report._PER_RULE_EXEMPLAR_BOUND + 500
         src = tmp_path / "tle2099.txt"
         src.write_bytes(b"\n".join(f"junk {i:08d}".encode("ascii") for i in range(n)))
@@ -426,13 +426,13 @@ class TestStreamingRejects:
 
         assert stats.quarantined_count == n
         assert (
-            len(stats.reject_sample.buckets[RuleID.BAD_PREFIX])
+            len(stats.quarantine_sample.buckets[RuleID.BAD_PREFIX])
             == report._PER_RULE_EXEMPLAR_BOUND
         )
 
     def test_rare_rules_preserved_under_skew(self, tmp_path):
-        # Feed 1000 bad-prefix rejects then a smaller batch of a different
-        # rule. With per-rule buckets, both appear in stats.reject_sample.
+        # Feed 1000 bad-prefix quarantines then a smaller batch of a different
+        # rule. With per-rule buckets, both appear in stats.quarantine_sample.
         many = 1000
         few = 3
         lines = [f"junk {i:08d}".encode("ascii") for i in range(many)]
@@ -449,16 +449,16 @@ class TestStreamingRejects:
 
         # Both rules appear in the sample — the old flat buffer's failure
         # mode is gone.
-        assert RuleID.BAD_PREFIX in stats.reject_sample.buckets
-        assert RuleID.ORPHAN_LINE in stats.reject_sample.buckets
+        assert RuleID.BAD_PREFIX in stats.quarantine_sample.buckets
+        assert RuleID.ORPHAN_LINE in stats.quarantine_sample.buckets
         # The rare rule has all its occurrences (well under the cap).
-        assert len(stats.reject_sample.buckets[RuleID.ORPHAN_LINE]) == few
+        assert len(stats.quarantine_sample.buckets[RuleID.ORPHAN_LINE]) == few
 
     def test_internal_error_rule_bucketed_like_data_defects(
         self, tmp_path, monkeypatch
     ):
         # Force ``repair.process_record`` to raise so every paired record
-        # lands in RuleID.INTERNAL_ERROR. With many more rejects than the
+        # lands in RuleID.INTERNAL_ERROR. With many more quarantines than the
         # cap, the bucket caps just like a data-defect rule.
         n = report._PER_RULE_EXEMPLAR_BOUND + 5
         line1_tmpl = (
@@ -483,9 +483,9 @@ class TestStreamingRejects:
 
         stats = pipeline.process_file(str(src), str(tmp_path / "out"), "validate")
 
-        assert stats.reject_counts.get(RuleID.INTERNAL_ERROR) == n
+        assert stats.quarantine_counts.get(RuleID.INTERNAL_ERROR) == n
         assert (
-            len(stats.reject_sample.buckets[RuleID.INTERNAL_ERROR])
+            len(stats.quarantine_sample.buckets[RuleID.INTERNAL_ERROR])
             == report._PER_RULE_EXEMPLAR_BOUND
         )
 
@@ -496,7 +496,7 @@ class TestQuarantinedNoradIds:
     line 1, when that line is readable, and bucket them by rule ID.
     """
 
-    def test_extracts_id_from_record_reject(self, tmp_path, line1, line2):
+    def test_extracts_id_from_record_quarantine(self, tmp_path, line1, line2):
         # A 2-line record with a wrong checksum gets quarantined; line 1 is
         # otherwise intact, so the catalog number must be recovered.
         src = tmp_path / "tle2099.txt"
@@ -551,7 +551,9 @@ class TestQuarantinedNoradIds:
         assert stats.clean_count == 1
         assert stats.quarantined_norad_ids.counts == {}
 
-    def test_multiple_rejects_for_same_id_accrue_per_rule(self, tmp_path, line1, line2):
+    def test_multiple_quarantines_for_same_id_accrue_per_rule(
+        self, tmp_path, line1, line2
+    ):
         # Two checksum-mismatched records for the same NORAD ID should
         # surface as one entry with a count of 2 under the same rule,
         # confirming the per-rule accumulator advances rather than
