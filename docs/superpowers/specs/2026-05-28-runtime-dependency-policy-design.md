@@ -1,12 +1,22 @@
 # Runtime dependency policy — Design
 
 - **Date:** 2026-05-28
-- **Status:** Draft
-- **Revision:** rev 2 (2026-05-28) — revised per a blinded four-model debate (Gemini, Codex,
-  Sonnet, Opus): bars are now MUST conditions, the "aim" is a veto-only clause, a fifth
-  **operational-fit** bar + a version-pinning clause were added, the policy now has a single
-  canonical source, `rich` is downgraded to a candidate, and the considered/deferred table
-  gains the TLE-library, config, and caching rows. · rev 1: initial.
+- **Status:** Partially superseded — the **four-MUST gate was relaxed on 2026-05-31** (rev 3).
+  The current, authoritative rule lives in spec §3.1; the body below is retained as the
+  historical record of the rev-2 decision and its debate.
+- **Revision:** rev 3 (2026-05-31) — the policy is **relaxed**: the four MUST bars become
+  *favourable signals* (popular · maintained · reduces-our-burden · sensible shape) and the
+  "aim is a veto, never a waiver" clause is retired. The **only** remaining vetoes are the hard
+  correctness invariants (one validator #4, constant memory #3, `sgp4`-never-at-runtime,
+  byte-deterministic unstyled structured/stdout output #1/#2, atomic durability + host-aware
+  lock, validated transformation). §2.1's quoted MUST policy below is **superseded** by spec
+  §3.1; §2.2/§2.3/§5–§7 remain accurate history. A relaxed-bar audit re-evaluated every library
+  (adding `filelock`, atomic-write, `tabulate`, file-hashing rows to the canonical table) and
+  adopted none — so the runtime stays `rich`-only. · rev 2 (2026-05-28) — revised per a blinded
+  four-model debate (Gemini, Codex, Sonnet, Opus): bars are now MUST conditions, the "aim" is a
+  veto-only clause, a fifth **operational-fit** bar + a version-pinning clause were added, the
+  policy now has a single canonical source, `rich` is downgraded to a candidate, and the
+  considered/deferred table gains the TLE-library, config, and caching rows. · rev 1: initial.
 - **Topic:** Replace `lintle`'s flat "pure standard library at runtime" prohibition with a
   calibrated, goal-led dependency policy; record the considered-and-deferred decisions
   canonically so they stop being relitigated; and reconcile with the issue-53 progress-UI
@@ -32,6 +42,12 @@ fixes that.
 ## 2. Decision
 
 ### 2.1 The policy — a goal-led test with four MUST bars
+
+> **⚠️ SUPERSEDED (2026-05-31, rev 3).** The four-MUST framing quoted in this subsection was
+> relaxed: the four bars are now *favourable signals*, not necessary conditions, and the
+> "aim is a veto, never a waiver" clause is retired. The only vetoes are now the hard
+> correctness invariants. **The current authoritative rule is spec §3.1.** The text below is
+> kept verbatim as the historical rev-2 record.
 
 The aim is the headline, not the proxy. Line-count saved is the loudest *signal* that a
 dependency serves the aim, but it is only a net win when the thing taken on is itself

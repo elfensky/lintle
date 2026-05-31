@@ -87,6 +87,16 @@
   spec is the canonical home; `CLAUDE.md` / `CONTRIBUTING.md` point here. Runtime
   stays zero-dependency. Companion:
   [`2026-05-28-runtime-dependency-policy-design.md`](2026-05-28-runtime-dependency-policy-design.md).
+  **2026-05-31:** §3.1 — the runtime-dependency policy is **relaxed**. The four-MUST gate and
+  the "aim is a veto, never a waiver" clause are retired; the four bars become *favourable
+  signals* (popular · maintained · reduces-our-burden · sensible shape) that tilt toward
+  adoption, and the **hard correctness invariants** (one validator #4, constant memory #3,
+  `sgp4`-never-at-runtime, byte-deterministic unstyled structured/stdout output #1/#2, atomic
+  durability + host-aware lock, validated transformation) become the *only* vetoes. A
+  relaxed-bar audit re-evaluated every considered library (adding `filelock`, atomic-write,
+  `tabulate`, and file-hashing rows) and adopted none — each is blocked by a hard invariant or
+  removes ~0 code — so the runtime stays `rich`-only. Companion design doc and `CLAUDE.md`
+  updated in lockstep.
 - **Topic:** A tool to validate and clean a multi-gigabyte corpus of Two-Line Element (TLE) files exported from space-track.org
 
 ## 1. Problem statement
@@ -203,56 +213,98 @@ and the rationale + the four-model debate behind it are in
 [`2026-05-28-runtime-dependency-policy-design.md`](2026-05-28-runtime-dependency-policy-design.md).
 
 The aim is a stable, maintainable, easy-to-understand app. A third-party **runtime**
-dependency may be added only when it advances that aim and **clears all four bars below —
-each a necessary condition (MUST).** The aim is a **veto, never a waiver**: it can reject a
-dependency that clears every bar, but never admit one that fails a bar. A genuine exception
-requires an explicit row in the table below naming which bar fails and why.
+dependency may be added when it advances that aim: when it is **popular, actively
+maintained, and genuinely reduces the code we would otherwise own**, *and* it violates none
+of the hard correctness invariants below. The four signals that follow **favour** adoption —
+they tilt the decision; they are **not** necessary conditions, and none of them is a veto.
+The hard correctness invariants are the *only* vetoes.
 
-1. **Earns its weight** — replaces real code we would otherwise maintain (~100 lines, rule of
-   thumb, *or* a gotcha-prone domain: terminal control, parsing, compression). A `left-pad`
-   one-liner never qualifies; an `axios`-class domain does.
-2. **Mature & widely deployed** — used by major CLIs, active upstream, healthy releases.
-3. **Small transitive surface** — its *direct* runtime dependencies number ≤ 3, each itself
-   well-known. A single call that drags a large tree fails here.
-4. **Operational fit** — packaging and behaviour must not threaten our invariants:
-   pure-Python or widely-prebuilt wheels (no surprise native toolchain at install); bounded,
-   streaming-friendly memory (Critical Rule #3); deterministic, locale-independent output
-   (Critical Rules #1/#2); no heavy import-time side effects; an acceptable license; a clean
-   `pip-audit` history.
+> **Policy note (2026-05-31):** this is a deliberate relaxation of the prior gate. The old
+> rule treated all four signals as MUSTs (necessary conditions) and made the
+> stable/maintainable/understandable aim a *veto-never-a-waiver*. That veto and the MUST
+> framing are **retired**. A mature, popular, well-supported library that reduces our
+> maintenance burden should be adopted where it makes sense even if it would have failed a
+> strict MUST (e.g. a slightly-larger-than-3 transitive tree). What stays immovable are the
+> correctness invariants — see below.
+
+**Favourable signals (a relaxed bar — preferences, not MUSTs):**
+
+1. **Popular / widely deployed** — broadly depended on across the ecosystem (used by major
+   CLIs and well-known projects). Low popularity alone no longer blocks a dependency, but a
+   `left-pad` one-liner earns no tilt.
+2. **Actively maintained & mature** — recent commits, a healthy release history, a responsive
+   upstream, no abandonment signals.
+3. **Reduces our maintenance burden** — deletes or avoids real code we would otherwise own
+   (~100 lines, rule of thumb, *or* a gotcha-prone domain: terminal control, parsing,
+   compression). A parity-only swap that nets ~0 lines is a weak case that barely tilts — but
+   it is no longer auto-disqualified.
+4. **Sensible operational shape** — pure-Python or widely-prebuilt wheels preferred (no
+   surprise native toolchain at install), a small/well-known transitive surface, an acceptable
+   license, a clean `pip-audit` history, no heavy import-time side effects. Imperfect fit tilts
+   against but never auto-rejects.
+
+**Hard correctness invariants (the only vetoes — immovable however popular or well-maintained
+a library is).** A dependency is rejected, no matter how attractive, if it would:
+
+- form a **second validation path** — "perfect" is defined once in `tle.py` (Critical Rule #4;
+  this is *why* an orbital lib like `sgp4` is a dev-only oracle);
+- **load a file whole**, or make any per-file structure grow with record count — files stream
+  and the largest input is ~3.2 GB (Critical Rule #3);
+- import **`sgp4` (or another orbital parser) at runtime**;
+- make any **structured/machine-readable output or stdout-pipeable data non-byte-deterministic
+  or styled** (Critical Rules #1/#2) — `report.md`, `report.jsonl`, `broken-noradids.ndjson`,
+  the `.broken.txt` sidecar, the `--report json` envelope, the `.clean-state.json` checkpoint,
+  and `cleaned/*.txt` all stay exactly as their contracts assert; `rich` styling is confined to
+  stderr ephemera;
+- weaken the **atomic + durable commit** (`fsutil.durable_replace`: fsync data → `os.replace` →
+  fsync directory, with `F_FULLFSYNC` on macOS) or the **host-aware out-dir lock** semantics
+  (cross-host refuse; same-host dead-PID reclaim only); or
+- violate **validated transformation / correctness over recovery** (Critical Rules #1/#2).
+
+These invariants gate a dependency's *behaviour*, not its file location — there is deliberately
+**no layering rule**.
 
 **Recording requirement (not a bar):** adoption lands with a `CHANGELOG.md` entry beside the
 `pyproject.toml` edit. **Maintenance:** pin to exclude the next major (e.g. `rich>=13,<14`);
-`uv.lock` is the lockfile of record; re-run all four bars on any major-version bump. **The
-Critical Rules gate a dependency's *behaviour*, not just our own code** — a dep that would
-form a second validator (#4), load a file whole (#3), or make output nondeterministic
-(#1/#2) is out regardless of which module imports it. **Dev-only** deps (test oracles,
-tooling) are exempt from the bars but record purpose/scope if nontrivial.
+`uv.lock` is the lockfile of record; re-review on any major-version bump. **Dev-only** deps
+(test oracles, tooling) are exempt and record purpose/scope if nontrivial.
 
-There is deliberately **no layering rule**: we gate on a dependency's value and behaviour,
-never its file location. The core stays auditable because bar 1 rejects most core deps on
-their own (the validator is simple stdlib code) and bar 4 + the Critical Rules cover the
-behavioural risks.
-
-**Current runtime dependencies: `rich>=13,<14`** — terminal rendering for the `clean`
-progress UI (issue #53).
+**Current runtime dependencies: `rich>=13,<14`** — terminal rendering for the `clean` progress
+UI (issue #53). A 2026-05-31 audit re-evaluated every considered library under this relaxed bar
+and adopted **none**: each is blocked by a hard correctness invariant above, or removes ~0 real
+code. The relaxed bar is the right policy going forward; it simply does not change today's
+runtime, which stays `rich`-only.
 
 #### Considered & deferred (canonical record)
 
+Two reject grades: **Reject (hard invariant)** is immovable — the library would break a
+correctness invariant and will not be revisited; **Reject (not worth it)** is a judgement
+under the relaxed bar that can be revisited if circumstances change. The 2026-05-31 relaxed-bar
+re-evaluation (audit) updated the reasons and added the lock / atomic-write / table / hashing
+rows; the dispositions did not change — relaxing the bar unlocked no adoptions because the
+hand-rolled subsystems exist to honour invariants no library can express.
+
 | Tool | Disposition | Reason |
 |---|---|---|
-| TLE/orbital libs (`sgp4`, `Skyfield`, `tletools`, `astropy`) | **Reject (runtime)** | Using one as a parser/validator is a second validation path (**Critical Rule #4**) — this is *why* `sgp4` is a test-oracle dev dep. Dev-only oracle use is fine. |
-| `click` / `typer` | **Reject** | `argparse` covers the small CLI surface; ~0 net lines. Fails bar 1. |
-| `pydantic` | **Reject** | We own our formats (`report.jsonl`, resume checkpoint); dataclasses + `json` cover them (bar 1); `pydantic-core` is native (bar 4). As TLE validation it is a second validator (#4). |
-| `structlog` / `loguru` | **Reject** | No logging; a report + progress UI cover output. Nothing to save. |
-| `orjson` / `ujson` | **Reject** | Replaces ~zero code; JSON isn't the bottleneck; native (bar 4). Fails bar 1. |
-| `polars` / `pandas` | **Reject** | `diff` is per-rule counters; a `dict[str,int]` does it (bar 1); huge native tree (bars 3+4). |
-| config parsing (`tomli`, …) | **Reject** | `tomllib` is stdlib (3.11+); `configparser` / `json` / `argparse` cover the rest. |
-| caching (`diskcache`, `cachetools`) | **Reject** | One-pass streaming tool; a `dict` suffices for bounded state. Fails bar 1. |
-| `tqdm` | **Reject** | Can't render a dynamic block of N concurrent bars whose set changes; we'd rebuild it ourselves. |
-| `textual` | **Reject** | Full TUI framework; we want a progress block, not an app. |
-| `blessed` / `prompt_toolkit` | **Reject** | Lower-level; still ~50 lines of layout glue. `rich` fits better. |
-| `rich` | **Adopted (issue #53)** | Drives the `clean` progress UI (multi-file live block + size-only roster). Cleared all four bars: replaced ~150 lines of hand-rolled ANSI in `cli.py`; mature (`pip`/`uv`/`pdm`/`typer`); pure-Python; transitive `markdown-it-py` + `pygments`; terminal-rendering only in `cli.py`, no streaming-path or memory impact. A parity-only swap would have failed bar 1. |
-| `zstandard` | **Defer (trigger-gated)** | Only if output size / transfer time becomes a *measured* bottleneck (compressing sidecars/shards). Trigger: file a ticket with the measurement; until then stdlib `gzip`. Native ext → must clear bar 4. |
+| TLE/orbital libs (`sgp4`, `Skyfield`, `tletools`, `astropy`) | **Reject (hard invariant)** | Using one as a parser/validator is a second validation path (**Critical Rule #4**) — this is *why* `sgp4` is a test-oracle dev dep. Dev-only oracle use is fine. |
+| `pydantic` | **Reject (hard invariant)** | A second coercion/validation path collides with the one-validator rule (#4); it would also drift the byte-deterministic `report.jsonl` / checkpoint outputs (#1/#2), and `pydantic-core` is native at millions-of-records scale. (`attrs` would be a ~parity swap — see `click`.) |
+| `orjson` / `ujson` / `msgspec` | **Reject (hard invariant)** | Changes the on-disk bytes (`sort_keys`, compact separators, `ensure_ascii=False`, LF) that the `report.jsonl` diff contract and resume round-trip assert (#1/#2); native build for zero needed perf. |
+| `tabulate` | **Reject (hard invariant)** | `report.md` is a byte-deterministic artifact asserted byte-for-byte; `tabulate`'s width/padding rules rewrite every byte (#1/#2). The stderr roster already uses `rich`. |
+| `filelock` | **Reject (hard invariant)** | Cannot express the host-aware out-dir lock (cross-host refuse + same-host dead-PID reclaim via `hostname`+`boot_id`); adopting it would be *unsafe* on a shared network `--out-dir`. |
+| atomic-write libs (`atomicwrites`, `boltons`) | **Reject (hard invariant)** | None implements the macOS `F_FULLFSYNC` + directory-fsync ordering `durable_replace` needs for power-loss durability; `atomicwrites` is archived/unmaintained besides. |
+| file-hashing libs (`dirhash`, `xxhash`) | **Reject (hard invariant)** | The resume input fingerprint is a bounded head+tail 64 KB window hash; every whole-file hashing lib would read the full 3.2 GB file (Critical Rule #3). |
+| `click` / `typer` | **Reject (not worth it)** | `argparse` is stdlib with zero supply-chain surface; the real complexity (divergent subcommand shapes, the N/N% threshold parser, the exit-code epilog) is almost none of what they would delete (~0 net lines, plus changed `--help`/error text the e2e tests assert on). `typer` would also tempt a *second* `rich` pathway. |
+| `polars` / `pandas` | **Reject (not worth it)** | `diff` is per-rule counters; a `dict[str,int]` does it; huge native tree. |
+| `structlog` / `loguru` | **Reject (not worth it)** | No logging; the strict 3-channel output covers it; net-negative LOC. |
+| `joblib` / `loky` / `tenacity` | **Reject (not worth it)** | The bespoke exact-cancel, `128+signo` exit codes, and checkpoint-ordering are `lintle` policy no executor library deletes. |
+| `platformdirs` | **Reject (not worth it)** | Wrong-tool mismatch — `lintle` has no user config/cache dirs to resolve. |
+| config parsing (`tomli`, …) | **Reject (not worth it)** | `tomllib` is stdlib (3.11+); `configparser` / `json` / `argparse` cover the rest. |
+| caching (`diskcache`, `cachetools`) | **Reject (not worth it)** | One-pass streaming tool; a `dict` suffices for bounded state. |
+| `tqdm` | **Reject (not worth it)** | Can't render a dynamic block of N concurrent bars whose set changes, and `rich` already covers progress; it would duplicate the adopted dep. |
+| `textual` | **Reject (not worth it)** | Full TUI framework; we want a progress block, not an app. |
+| `blessed` / `prompt_toolkit` | **Reject (not worth it)** | Lower-level; still ~50 lines of layout glue. `rich` fits better. |
+| `rich` | **Adopted (issue #53)** | The popular, well-maintained terminal-rendering library (`pip`/`uv`/`pdm`/`typer` depend on it); drives the `clean` stderr progress UI (multi-file live block + size-only roster), replacing ~150 lines of hand-rolled ANSI. Pure-Python; transitive `markdown-it-py` + `pygments`. Confined to `cli.py` stderr — no streaming-path, memory, or structured-output impact. |
+| `zstandard` | **Defer (trigger-gated)** | Only if output size / transfer time becomes a *measured* bottleneck (compressing sidecars/shards). Trigger: file a ticket with the measurement; until then stdlib `gzip`. Native ext → re-check the operational-shape signal. |
 
 Dev-only (exempt from the bars; record purpose/scope; land any time): `hypothesis`
 (property-based tests for `tle.py` / `repair.py` — strongest candidate), `pytest-xdist`
@@ -260,9 +312,10 @@ Dev-only (exempt from the bars; record purpose/scope; land any time): `hypothesi
 
 ## 4. Architecture (Approach B)
 
-A single `uv`-managed Python project with a **zero-dependency runtime today** (governed by
-§3.1). The two user-facing asks become **one validator** used in two modes: the validator
-defines "perfect"; the cleaner reuses it and emits only records that pass it.
+A single `uv`-managed Python project with a **lean runtime** — one third-party dependency,
+`rich`, for the `clean` terminal UI; everything else is standard library (governed by §3.1).
+The two user-facing asks become **one validator** used in two modes: the validator defines
+"perfect"; the cleaner reuses it and emits only records that pass it.
 
 ### 4.1 The validated-transformation principle
 

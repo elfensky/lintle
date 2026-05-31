@@ -78,11 +78,12 @@ worker process.
 
 ## Requirements
 
-- Python 3.11+
+- Python 3.14+
 - [`uv`](https://docs.astral.sh/uv/) for environment and dependency management
 
-`lintle` itself has **no runtime dependencies** — it is pure standard library.
-`sgp4` is a dev-only dependency, used as a test oracle.
+`lintle`'s only runtime dependency is **`rich`** (`>=13,<14`, terminal rendering for the
+`clean` progress UI); everything else is standard library. `sgp4` is a dev-only dependency,
+used as a test oracle.
 
 ## Installation
 

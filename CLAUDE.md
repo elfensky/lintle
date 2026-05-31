@@ -18,14 +18,20 @@ changes.
 Python 3.14 · uv · lean runtime (**`rich`** — the one third-party dep) · `sgp4` (dev-only
 test oracle) · `pytest` · `pytest-cov` · `ruff`
 
-**Runtime dependencies** are governed by a four-MUST-bar policy — *earns its weight ·
-mature · small transitive surface · operational fit*; the aim (stable/maintainable/
-understandable) is a veto, never a waiver. The canonical rule and the considered/deferred
-table live in the authoritative spec §3.1
-(`docs/superpowers/specs/2026-05-21-tle-corpus-cleaner-design.md`); rationale in
-`2026-05-28-runtime-dependency-policy-design.md`. **Current runtime deps: `rich>=13,<14`**
-(terminal rendering for `clean`). `sgp4` and `pytest` are dev-only; `sgp4` is a test
-oracle and must never be imported at runtime.
+**Runtime dependencies** are governed by a *relaxed* policy (revised 2026-05-31): a popular,
+actively-maintained library that genuinely reduces the code we'd otherwise own should be
+adopted where it makes sense. The old four-MUST gate and its "aim is a veto" clause are
+retired — those four (popular · maintained · reduces-our-burden · sensible shape) are now
+*favourable signals*, not necessary conditions. The **only vetoes are the hard correctness
+invariants**: one validator definition (Critical Rule #4), constant-memory streaming (#3),
+`sgp4`-never-at-runtime, byte-deterministic *unstyled* structured/stdout output (#1/#2 —
+`report.*`, NDJSON, sidecar, `--report json`, checkpoint, `cleaned/*`), and the atomic-durable
+commit + host-aware lock. The canonical rule and the considered/deferred table live in the
+authoritative spec §3.1 (`docs/superpowers/specs/2026-05-21-tle-corpus-cleaner-design.md`);
+rationale in `2026-05-28-runtime-dependency-policy-design.md`. **Current runtime deps:
+`rich>=13,<14`** (terminal rendering for `clean`) — a relaxed-bar audit re-evaluated every
+candidate and still adopted none, since each trips a hard invariant or removes ~0 code. `sgp4`
+and `pytest` are dev-only; `sgp4` is a test oracle and must never be imported at runtime.
 
 ## Critical Rules — principles that must not be violated
 
