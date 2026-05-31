@@ -487,6 +487,17 @@ class _ForKind(ProgressColumn):
         return Text("")
 
 
+def _status(message):
+    """A transient ``rich`` spinner on stderr for an otherwise-silent phase (e.g.
+    concatenating the per-worker findings shards into ``report.jsonl``), or a
+    no-op context off a TTY so nothing leaks to a pipe. MUST NOT be entered
+    inside the live progress block — both wrap ``rich.live.Live``, which cannot
+    nest — but report finalization runs after that block has exited."""
+    if term.stderr_console.is_terminal:
+        return term.stderr_console.status(message)
+    return contextlib.nullcontext()
+
+
 class _ProgressDisplay:
     """Live multi-file progress for a parallel run, driven by ``rich``.
 
@@ -967,14 +978,18 @@ def main(argv=None):
         noradids_path = None
         findings_path = None
         if args.command == "clean" and all_stats:
-            report_path = os.path.join(args.out_dir, "report.md")
-            report.write_run_report(report_path, all_stats)
-            noradids_path = os.path.join(args.out_dir, "broken-noradids.ndjson")
-            report_writers.write_broken_noradids_ndjson(noradids_path, all_stats)
-            findings_path = os.path.join(args.out_dir, "report.jsonl")
-            report_writers.concat_findings_shards(
-                args.out_dir, findings_path, all_stats
-            )
+            # A spinner over the silent finalization (the per-worker shard
+            # concat into report.jsonl dominates on a large corpus); a no-op off
+            # a TTY. Runs after the progress block has exited, so no Live nesting.
+            with _status("finalizing report…"):
+                report_path = os.path.join(args.out_dir, "report.md")
+                report.write_run_report(report_path, all_stats)
+                noradids_path = os.path.join(args.out_dir, "broken-noradids.ndjson")
+                report_writers.write_broken_noradids_ndjson(noradids_path, all_stats)
+                findings_path = os.path.join(args.out_dir, "report.jsonl")
+                report_writers.concat_findings_shards(
+                    args.out_dir, findings_path, all_stats
+                )
 
         if args.report == "json":
             # Issue #20: top-level versioned envelope; replaces the prior

@@ -17,6 +17,11 @@ All notable changes to this project are documented in this file. The format is b
   on the file-count overall row and the counter never renders raw bytes on a
   per-file row. TTY-only, additive UX — off a TTY the plain per-file summary lines
   are unchanged, and stdout / structured output are untouched.
+- A **spinner** (`rich` status) now covers the otherwise-silent report
+  finalization after the progress block exits — writing `report.md`,
+  `broken-noradids.ndjson`, and concatenating the per-worker shards into
+  `report.jsonl` (the slow part on a large corpus). TTY-only; a no-op context off
+  a TTY, so piped/structured output is unaffected.
 
 ### Changed
 
