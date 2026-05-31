@@ -1,102 +1,55 @@
 # lintle
 
-A validator and cleaner for **Two-Line Element (TLE)** corpus files exported
-from [space-track.org](https://www.space-track.org/).
+**Validate and clean Two-Line Element (TLE) satellite corpora — correctness-first.**
 
-It audits a TLE file against the standardized TLE specification, repairs the
-systematic export defects, and emits a **uniform, de-defected** corpus that any
-SGP4 / orbital-mechanics library can ingest directly. Records it cannot safely
-repair are quarantined — never silently mangled — into a per-file sidecar
-detailed enough to file a defect report with space-track.
+`lintle` audits TLE files exported from [space-track.org](https://www.space-track.org/)
+against the standardized TLE spec, repairs the systematic export defects, and emits a
+uniform, **de-defected** corpus that any SGP4 / orbital-mechanics library can ingest
+directly. Records it cannot *safely* repair are quarantined — never silently mangled —
+into a per-file sidecar detailed enough to file a defect report with space-track.
+
+- **Correctness over recovery** — every emitted record is re-validated and valid *by
+  construction*; on any doubt a record is quarantined, never guessed.
+- **Constant memory** — streams a 3 GB file line-by-line; the whole ~30 GB corpus never
+  loads into RAM.
+- **Byte-deterministic output** — same input → identical bytes every run (diff-able,
+  CI-friendly).
+
+On the bundled 29-file corpus (~232 M records): **99.96 % cleaned, 0.044 % quarantined** —
+every quarantined record fell into an anticipated defect category.
 
 ---
 
 ## What problem it solves
 
-A TLE record is two fixed-width lines, each *exactly* 69 ASCII columns, with a
-mod-10 checksum in column 69. Bulk historical exports from space-track carry
-two systematic, era-specific defects:
+A TLE record is two fixed-width lines, each *exactly* 69 ASCII columns, with a mod-10
+checksum in column 69. Bulk historical exports from space-track carry two systematic,
+era-specific defects:
 
-- **Trailing `\` artifact** — almost every `Line 1` has an extra `\` byte
-  appended before the newline.
-- **Missing checksum digit** — many records were exported without their
-  column-69 checksum, leaving 68-column lines.
+- **Trailing `\` artifact** — almost every `Line 1` has an extra `\` byte appended before
+  the newline.
+- **Missing checksum digit** — many records were exported without their column-69
+  checksum, leaving 68-column lines.
 
-These appear independently and in combination, and a small fraction of records
-are genuinely corrupt (garbled columns, orphaned lines, wrong lengths).
-`lintle` distinguishes the safely-repairable from the genuinely-corrupt and
-treats each correctly.
-
-## What lintle will and won't reconstruct
-
-**lintle never invents data.** It emits only information that was already in the
-record. The single exception is the column-69 checksum — and it is an exception
-*precisely because* the checksum carries no information of its own: it is a
-deterministic mod-10 function of columns 1–68, so recomputing a missing one
-asserts nothing the record didn't already say. This is the **redundancy paradox**
-at the heart of the tool: the only field safe to rebuild is the one field that
-was redundant to begin with.
-
-Every other defect that could only be "fixed" by guessing a real data character
-is **quarantined, never repaired**. A mod-10 checksum has a 1-in-10 chance of
-accepting a wrong line by luck, so inventing an orbital-data character risks
-emitting a record that *looks* valid but is silently wrong — the one outcome
-worse than dropping it. When in doubt, lintle quarantines.
-
-See [How it works](#how-it-works) below for the fix-class table that
-operationalises this principle.
-
-## How it works
-
-**One validator, used two ways.** A single module (`tle.py`) defines what a
-"perfect" TLE record is — column layout, semantic ranges, and the mod-10
-checksum. The `validate` command reports defects against that definition; the
-`clean` command reuses the *exact same* validator and only emits records that
-pass it.
-
-**The validated-transformation principle.** The cleaner never applies a fix and
-hopes. It applies a candidate fix, then re-runs full validation on the result,
-and commits the fix *only if it now passes*. Consequently the cleaner cannot
-turn a bad record into a wrong-but-valid-looking one, and every line in the
-output is valid by construction.
-
-**Five fix classes, in decreasing order of safety:**
-
-| Class | Examples | Action |
-|-------|----------|--------|
-| Content-preserving | trailing `\`, CRLF, trailing whitespace | auto-fix (checksum survives as an independent check) |
-| Reconstructed-checksum | a record exported without its column-69 digit | recompute the checksum from intact columns 1–68 |
-| Content-shifting | leading whitespace / BOM | trim, then re-validate; quarantine if it fails |
-| Structural | blank / whitespace-only lines | drop, resynchronise pairing |
-| Corrupt | bad checksum, wrong length, orphan line, garbled columns | **quarantine** |
-
-**Streaming and parallel.** Files are read in binary, line by line, in constant
-memory — a 3 GB file never loads into RAM. Records are paired by a prefix-driven
-state machine that resynchronises on every `1 ` line, so one missing line
-cannot cascade into mispaired records. Each input file is processed in its own
-worker process.
-
-## Requirements
-
-- Python 3.14+
-- [`uv`](https://docs.astral.sh/uv/) for environment and dependency management
-
-`lintle`'s only runtime dependency is **`rich`** (`>=13,<14`, terminal rendering for the
-`clean` progress UI); everything else is standard library. `sgp4` is a dev-only dependency,
-used as a test oracle.
+These appear independently and in combination, and a small fraction of records are
+genuinely corrupt (garbled columns, orphaned lines, wrong lengths). `lintle` distinguishes
+the safely-repairable from the genuinely-corrupt and treats each correctly.
 
 ## Installation
+
+Requires **Python 3.14+** and [`uv`](https://docs.astral.sh/uv/). The only runtime
+dependency is **`rich`** (`>=15,<16`, terminal rendering for the `clean` progress UI);
+everything else is standard library. (`sgp4` is a dev-only test oracle.)
 
 ```bash
 uv sync
 ```
 
-This creates the virtual environment and installs the dev dependencies. No
-build step is needed to run the tool.
+No build step is needed to run the tool.
 
 ## Usage
 
-The console script is `lintle`:
+The console script is `lintle` (`python -m lintle …` is equivalent):
 
 ```bash
 # Audit only — report defects, write nothing
@@ -107,9 +60,10 @@ uv run lintle clean [path]
 
 # Explain a rule ID or fix tag — definition, examples, source citation
 uv run lintle explain <TAG>
-```
 
-`python -m lintle ...` is equivalent to `uv run lintle ...`.
+# Compare two clean runs' findings (per-rule deltas)
+uv run lintle diff <run-a> <run-b>
+```
 
 **Arguments and options:**
 
@@ -117,11 +71,10 @@ uv run lintle explain <TAG>
 |--------|---------|---------|
 | `path` | `data/source` | A single file or directory. A directory is globbed for `tle*.txt` (tool output `*.cleaned.txt` / `*.broken.txt` is excluded). |
 | `--out-dir DIR` | `data/output` | Where `clean` writes its output. Created if absent. |
-| `--jobs N` | CPU count | Number of files processed in parallel. Lower it if a slow disk causes I/O contention. |
+| `--jobs N` | CPU count − 1 | Files processed in parallel. Lower it if a slow disk causes I/O contention. |
 | `--report text\|json` | `text` | Summary format. |
-| `--max-quarantined N[%]` | `0` | Exit non-zero only if MORE than N records were quarantined; or, with a trailing `%`, more than `N%` of routed records (`clean + quarantined`) were quarantined. Default `0` ≡ "any quarantine fails". |
-| `--resume` | — | (`clean` only) Resume an interrupted run without prompting, even in a non-interactive context. |
-| `--no-resume` | — | (`clean` only) Ignore any checkpoint and start fresh, clearing prior outputs in `--out-dir`. |
+| `--max-quarantined N[%]` | `0` | Exit non-zero only if MORE than N records were quarantined; or, with a trailing `%`, more than `N%` of routed records (`clean + quarantined`). Default `0` ≡ "any quarantine fails". |
+| `--resume` / `--no-resume` | — | (`clean` only) Resume an interrupted run without prompting / ignore any checkpoint and start fresh. See [Cancelling and resuming](#cancelling-and-resuming). |
 
 **Examples:**
 
@@ -129,27 +82,19 @@ uv run lintle explain <TAG>
 # Validate the whole corpus
 uv run lintle validate data/source
 
-# Clean one file
+# Clean one file to a custom location
 uv run lintle clean data/source/tle2022.txt --out-dir data/output
 
 # Clean the corpus, capture a machine-readable summary
 uv run lintle clean data/source --report json > run-summary.json
 
-# CI gate: tolerate up to 100 quarantined records before failing the job
+# CI gate: fail only if more than 100 records (or 1% of routed records) are quarantined
 uv run lintle clean data/source --max-quarantined 100 --report json > run-summary.json
-
-# CI gate (scale-invariant): tolerate up to 1% of routed records
-uv run lintle clean data/source --max-quarantined 1% --report json > run-summary.json
+uv run lintle clean data/source --max-quarantined 1%  --report json > run-summary.json
 
 # Look up what a rule ID or fix tag means, with a verified example
 uv run lintle explain TLE-CHK-001
 uv run lintle explain reconstructed-checksum
-
-# Resume an interrupted run (e.g. the laptop slept mid-corpus) — re-run the same command
-uv run lintle clean data/source --out-dir data/output  # prompts to resume; auto-resumes in CI
-
-# Start completely fresh, discarding any checkpoint and prior outputs
-uv run lintle clean data/source --out-dir data/output --no-resume
 ```
 
 **Exit codes:**
@@ -159,44 +104,37 @@ uv run lintle clean data/source --out-dir data/output --no-resume
 | `0` | Quarantine count (or rate) is at or below `--max-quarantined` (default `0`). |
 | `1` | Quarantine count (or rate) exceeded `--max-quarantined`. |
 | `2` | Operational error — no input files, disk shortfall, lock held, stale/corrupt/declined resume, or a file that failed to process. |
-| `129` | Killed by `SIGHUP` (e.g. terminal closed). |
-| `130` | Interrupted with `Ctrl-C` (`SIGINT`). |
-| `143` | Terminated by `SIGTERM` (e.g. from a scheduler). |
+| `129` / `130` / `143` | Killed by `SIGHUP` / `Ctrl-C` (`SIGINT`) / `SIGTERM`. |
 
-Repairable defects (including the near-universal trailing `\`) do **not** raise
-the exit code above 0 — almost every raw file contains them. `--max-quarantined`
-preserves the meaningful `2` (operational error) and `130` (Ctrl-C) signals that
-a `lintle ... || true` pipe would swallow.
+Repairable defects (including the near-universal trailing `\`) do **not** raise the exit
+code above 0 — almost every raw file contains them. `--max-quarantined` preserves the
+meaningful `2` (operational error) and `130` (Ctrl-C) signals that a `lintle … || true`
+pipe would swallow.
 
-## Cancelling and resuming
+## Correctness guarantees & limits
 
-A long `clean` over the full corpus can be interrupted — Ctrl-C, a closed
-laptop, or a `SIGTERM`/`SIGHUP` from a scheduler. When that happens lintle
-prints the exit code and a one-liner showing how to continue or start over. Just
-re-run **the same command** to resume:
+This is the heart of the tool. The cleaner never applies a fix and hopes: it applies a
+candidate fix, re-runs the *full* validator, and commits **only if the result passes** — so
+the output cannot contain a wrong-but-valid-looking record. **One validator** (`tle.py`)
+defines what "perfect" means; `validate` reports against it and `clean` reuses the *exact
+same* definition.
 
-```bash
-uv run lintle clean data/source --out-dir data/output   # interrupted with Ctrl-C
-uv run lintle clean data/source --out-dir data/output   # picks up where it left off
-```
+**lintle never invents data.** The single sanctioned reconstruction is the column-69
+checksum — safe *only because* it is a deterministic mod-10 function of columns 1–68, so
+recomputing a missing one asserts nothing the record didn't already say (the **redundancy
+paradox**: the only field safe to rebuild is the one that was redundant to begin with). A
+mod-10 checksum accepts a wrong line 1-in-10 times by luck, so guessing an orbital-data
+character risks a record that *looks* valid but is silently wrong — the one outcome worse
+than dropping it. So anything requiring such a guess (bad checksum, wrong length, orphan
+line, garbled columns) is **quarantined**, not repaired.
 
-On an interactive terminal lintle prompts `Resume interrupted run? [Y/n]`; in
-CI or any non-TTY context it auto-resumes and prints a loud notice. Resume is
-scoped to the same `--out-dir` — re-running against a different output directory
-always starts fresh.
+Fixes fall into five classes in decreasing order of safety — content-preserving (trailing
+`\`, CRLF, trailing whitespace), reconstructed-checksum, content-shifting (leading trim),
+structural (drop blanks), and corrupt (quarantine).
 
-While a run is in flight it maintains a small `.clean-state.json` checkpoint in
-`--out-dir`, deleted on successful completion — so its presence marks an
-interrupted run, and a finished run leaves none behind. A stale checkpoint (the
-`lintle` version or an input file changed since the interruption) is never
-silently resumed: interactive → prompt (default No); non-interactive → exit `2`
-with the reason and a `--no-resume` hint.
-
-Use `--no-resume` to discard any checkpoint and start fresh — this also clears
-prior `cleaned/`/`broken/` outputs so no orphaned files linger. Use `--resume`
-to resume without prompting. The two flags are mutually exclusive. This is
-single-run resume, not a cross-run cache: each run still re-validates every
-record it emits.
+→ Full fix-class table, repair tiers, and the stable rule registry:
+[`ARCHITECTURE.md` §1](ARCHITECTURE.md#1-purpose--principles) and
+[§4](ARCHITECTURE.md#4-repair-model).
 
 ## Output
 
@@ -207,42 +145,21 @@ A `clean` run lays `--out-dir` out like this:
 ├── cleaned/                tleYYYY.cleaned.txt   — one per input file
 ├── broken/                 tleYYYY.broken.txt    — one per input file
 ├── broken-noradids.ndjson  — corpus-wide list of quarantined NORAD IDs
+├── report.jsonl            — corpus-wide structured findings stream
 └── report.md               — corpus-wide run report
 ```
 
-- **`cleaned/tleYYYY.cleaned.txt`** — standard 2-line TLE text, every record
-  verified valid: 69 ASCII columns per line, `\n`-terminated, matching
-  satellite catalog numbers, valid checksums. World-readable, ready for
-  downstream ingestion.
+- **`cleaned/tleYYYY.cleaned.txt`** — standard 2-line TLE text, every record verified valid
+  and ready for downstream ingestion.
+- **`broken/tleYYYY.broken.txt`** — the quarantine sidecar: source line number(s), a
+  human-readable reason, and the offending line(s) copied **byte-faithfully**, with a header
+  formatted to paste into a space-track defect report.
+- **`broken-noradids.ndjson`** — one `{"noradId":N}` per line, the deduplicated, sorted set
+  of NORAD catalog numbers quarantined anywhere in the run (for programmatic consumers).
+- **`report.md`** — human-readable run report: corpus totals, % cleaned/quarantined, fix
+  counts, the per-rule defect breakdown, a per-file table, and a per-NORAD breakdown.
 
-- **`broken/tleYYYY.broken.txt`** — the quarantine sidecar. Each entry records
-  the source line number(s), a human-readable reason, and the offending line(s)
-  copied **byte-faithfully**. The header carries totals, a timestamp, and the
-  tool version — formatted to paste into a space-track defect report.
-
-- **`broken-noradids.ndjson`** — newline-delimited JSON, one
-  `{"noradId":N}` object per line, listing every NORAD catalog number whose
-  records were quarantined anywhere in the run, deduplicated and sorted
-  ascending. Records whose line 1 is itself unreadable are omitted —
-  there's no catalog number to recover. Intended for programmatic
-  downstream consumers (e.g. a satellite catalog flagging archive gaps)
-  that want the affected IDs without parsing `broken/*.txt`. The schema
-  is deliberately minimal; future releases may extend each record with
-  additional fields, which consumers can ignore safely. Empty file when
-  nothing was quarantined.
-
-- **`report.md`** — a Markdown run report aggregating the whole run: corpus
-  totals, the percentage cleaned and quarantined, corpus-wide fix counts, the
-  defect-rule breakdown (keyed by stable `RuleID` tokens like `TLE-CHK-001`),
-  a per-file table, a "Rule reference" section auto-generated from the
-  `diagnostics.RULES` registry naming every rule that fired, and a per-NORAD
-  breakdown table listing each satellite whose records were quarantined with
-  its per-rule counts and the source files it appeared in (sorted by
-  quarantined-record count descending, capped at the top 100 with a remainder
-  footer pointing at `broken-noradids.ndjson` for the long tail).
-
-A run summary is also printed per file to stdout (and as JSON with
-`--report json`):
+A per-file summary is printed to stdout (and as JSON with `--report json`):
 
 ```
 tle2022.txt   8,412,066 records   8,412,064 clean   3 quarantined   (1 orphan, 16,824,134 lines)
@@ -250,80 +167,51 @@ tle2022.txt   8,412,066 records   8,412,064 clean   3 quarantined   (1 orphan, 1
   quarantined: TLE-CHK-001 1 | TLE-PAIR-001 1 | TLE-COL-001 1
 ```
 
-The header line separates three input tallies that an earlier version
-conflated into a single "records" number (issue #5): `records` is **paired
-records** (proper 2-line TLE entries — orphans are not counted here); `clean`
-is paired records that passed validation and were written to `cleaned/`;
-`quarantined` is everything routed to `broken/`, which includes both failed
-paired records and every orphan (an unpaired line is quarantined as
-`TLE-PAIR-001`); the parenthetical `orphan` counts unpaired single lines and
-`lines` counts every physical line read (including blanks dropped by the
-pairing loop). The invariant is `records + orphan == clean + quarantined`,
-so `clean + quarantined` can exceed `records` by the orphan count.
+`records` counts paired 2-line entries; `clean` are those that passed and were written;
+`quarantined` is everything routed to `broken/` (failed records **and** every orphan line);
+the parenthetical reports unpaired `orphan` lines and total physical `lines`. The invariant
+is `records + orphan == clean + quarantined`. Defects key by the stable `RuleID` registry
+(`TLE-CHK-001`, `TLE-PAIR-001`, …) so one identifier names a defect across every artifact.
+`validate` writes nothing — it only prints this summary and defect locations.
 
-Quarantine counts key by the stable `RuleID` registry (e.g. `TLE-CHK-001` for
-checksum mismatch, `TLE-PAIR-001` for orphan lines, `TLE-COL-001` for wrong
-length) — the same handles cited in `report.md` and the `.broken.txt`
-sidecar so a defect surfaces under one identifier across every artifact a
-run emits. `reconstructed-checksum` is reported separately from
-content-preserving fixes: those records are format-conformant, but their
-checksums are *computed*, not independently verified.
+Live progress during a long run is written to **stderr** (so it never pollutes the stdout
+summary or a `--report json` pipe): a size roster up front, per-file byte/record progress
+with throughput and ETA, and an `[k/N]` line as each file finishes.
 
-`validate` writes nothing — it only prints the per-file summary and the
-locations of defective records to stdout.
-
-### Progress
-
-A 30 GB run is not silent. Live progress is written to **stderr** as it goes —
-so it never pollutes the stdout summary or a `--report json` pipe:
-
-```
-processing 29 file(s) with 10 worker(s)...
-  tle2004_7of8.txt: 5,000,000 records...
-[3/29] tle2004_3of8.txt — 2,527,820 clean, 183 quarantined
-```
-
-A worker emits a record-count line every 1,000,000 records; the main process
-prints an `[k/N]` line as each file finishes.
-
-## Disk-space requirements
-
-Every record is **routed** to exactly one of `cleaned/` or `broken/` — never
-duplicated — so the finished output is roughly the same total size as the
-input, plus negligible metadata (`report.md`, `report.jsonl`,
-`broken-noradids.ndjson`, and the transient `.shards/` findings, all tiny
-next to the records).
-
-Outputs are written to temporary `.partial` files and atomically renamed on
-completion. As a conservative guard, lintle checks free space up front and
-**requires roughly twice the total input size** on the `--out-dir` volume
-before it starts, aborting with exit `2` if short:
-
-```
-error: insufficient disk space in data/output: need ~63,000,000,000 bytes, have 40,000,000,000
-```
-
-When free space sits in the borderline band — at or above the 2× floor but
-below 2.5× the input size — the run proceeds, but lintle prints a warning
-to stderr so you know you are cutting it close:
-
-```
-warning: free space in data/output is close to the 2× safety guard: 70,000,000,000 bytes free of ~63,000,000,000 recommended; the run will proceed but may exhaust the disk
-```
-
-Rule of thumb: for the bundled ~30 GB corpus, keep **~60 GB free** to clear
-the abort floor and **~75 GB free** to clear the warning band. (The 12 GB
-`TLEs.zip` is not an input and is never read.)
+→ Machine-readable contracts (`--report json` envelope, `report.jsonl`, the `.broken.txt`
+format, the checkpoint): [`ARCHITECTURE.md` §6](ARCHITECTURE.md#6-outputs--machine-readable-contracts).
 
 ## Results on the bundled corpus
 
 A full run over the 29-file corpus (`tle2004`–`tle2025`, ~232 million records):
 
-- **99.96 % cleaned** — 187.9 M trailing-`\` artifacts stripped, 71.3 M missing
-  checksums reconstructed
-- **0.044 % quarantined** (103,228 records) as genuinely corrupt — every
-  quarantined record fell into an anticipated category; no unknown defect type
-  surfaced
+- **99.96 % cleaned** — 187.9 M trailing-`\` artifacts stripped, 71.3 M missing checksums
+  reconstructed.
+- **0.044 % quarantined** (103,228 records) as genuinely corrupt — every quarantined record
+  fell into an anticipated category; no unknown defect type surfaced.
+
+## Operational notes
+
+### Cancelling and resuming
+
+A long `clean` can be interrupted (Ctrl-C, a closed laptop, `SIGTERM`/`SIGHUP`). Re-run
+**the same command** (same `--out-dir`, unchanged inputs) to resume; on a TTY it prompts,
+in CI it auto-resumes. **Resume granularity is a whole file:** completed files are skipped
+and the file in flight at the interruption restarts from the beginning — so a multi-file
+corpus run benefits, but a single-file run gains nothing. `--no-resume` discards the
+checkpoint and starts fresh (clearing prior outputs).
+
+→ Checkpoint shape and the resume-decision matrix:
+[`ARCHITECTURE.md` §5](ARCHITECTURE.md#5-streaming-parallelism-durability-resume).
+
+### Disk space
+
+Every record is **routed** to exactly one of `cleaned/` or `broken/` — never duplicated — so
+the output is roughly the input's size plus tiny metadata. As a guard, lintle requires
+**~2× the total input size** free on the `--out-dir` volume before starting, aborting with
+exit `2` if short (and warning on stderr in the 2×–2.5× borderline band). Rule of thumb for
+the ~30 GB corpus: keep **~60 GB free** to clear the abort floor, **~75 GB** to clear the
+warning. (The 12 GB `TLEs.zip` is not an input and is never read.)
 
 ## Development
 
@@ -335,58 +223,15 @@ uv run ruff check                # lint
 uv run ruff format               # auto-format
 ```
 
-The suite includes unit tests per module, an asymmetric cross-check against the
-trusted `sgp4` parser (a known-good TLE must be accepted by both), and
-end-to-end integration tests (golden output, idempotence, re-validation).
-
-Code quality is enforced with [`ruff`](https://docs.astral.sh/ruff/) (lint rule
-sets `E`, `F`, `I`, `UP`, `B`, `SIM`; 88-column lines) and coverage is measured
-with `pytest-cov`.
-
-## Project layout
-
-```
-src/lintle/
-  tle.py          # core: defines a "perfect" TLE record (pure, no I/O)
-  diagnostics.py  # stable RuleID registry + structured Diagnostic dataclass
-  categories.py   # FixClass enum + FixSpec registry — the repair taxonomy
-  explain_examples.py # validator-verified examples + citations backing `explain`
-  repair.py       # speculative, validated repairs
-  pipeline.py     # streaming reader, prefix-driven pairing, per-file routing
-  report.py       # FileStats + dataclasses, validate summaries, run report
-  report_writers.py # structured-file writers: .broken.txt sidecar, report.jsonl, broken-noradids.ndjson, shard concat
-  fsutil.py       # durable_replace — the one atomic+fsync commit path
-  term.py         # shared stderr Console + error/warning/note/prompt helpers
-  resume.py       # single-run checkpoint for `clean --resume`
-  diff.py         # read-only: per-rule delta between two runs (`lintle diff`)
-  explain.py      # read-only: renders rule/fix documentation (`lintle explain`)
-  cli.py          # argument parsing, parallelism, exit codes
-tests/            # pytest suite
-ARCHITECTURE.md   # the living design reference
-docs/superpowers/
-  archive/        # historical design specs, plans, and corpus-run summaries
-```
-
-`diagnostics.py` and `categories.py` are pure-data leaves of the dependency
-graph — they hold enums and frozen dataclasses, no logic; `explain_examples.py`
-is pure data too, composing those leaves into documented examples. `repair`,
-`pipeline`, and `report` depend on them; `report_writers.py` is the
-structured-file writers leaf (the `.broken.txt` sidecar, the `report.jsonl`
-findings shards, the corpus `broken-noradids.ndjson`, and the shard concat)
-used by `pipeline` and `cli`, importing the dataclasses and the shared
-`_format_diagnostic` renderer from `report.py` one-way — never the reverse, so
-no cycle; `fsutil.py` is a stdlib-only I/O leaf
-(the durable file-commit helper) that `pipeline`, `report`, `report_writers`,
-and `resume` route every output through; `term.py` is a rich-only leaf owning the single stderr
-Console and the `error:`/`warning:` emitters that `cli.py` and `diff.py` share;
-`diff.py` and `explain.py` are read-only consumers reached only through `cli.py`;
-`tle.py` remains the single source of truth for what counts as a valid TLE record.
+The suite includes per-module unit tests, an asymmetric cross-check against the trusted
+`sgp4` parser (a known-good TLE must be accepted by both), and end-to-end integration tests
+(golden output, idempotence, re-validation). See
+[`CONTRIBUTING.md`](CONTRIBUTING.md) for setup, testing, and the git workflow.
 
 ## Further reading
 
 [`ARCHITECTURE.md`](ARCHITECTURE.md) is the living design reference — the validator
-definition, the repair model, streaming/durability/resume, the machine-readable output-format
-contracts (`--report json`, `report.jsonl`, the `.broken.txt` sidecar, the checkpoint), and the
-runtime-dependency policy. The dated design specs, implementation plans, and corpus-run
-summaries are kept for historical rationale under
+definition, the module map and data flow, the repair model, streaming/durability/resume, the
+machine-readable output-format contracts, and the runtime-dependency policy. Dated design
+specs, plans, and corpus-run summaries are kept for historical rationale under
 [`docs/superpowers/archive/`](docs/superpowers/archive/).

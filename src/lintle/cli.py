@@ -15,8 +15,18 @@ import threading
 import time
 
 from rich import box
-from rich.progress import BarColumn, Progress, TaskProgressColumn, TextColumn
+from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    ProgressColumn,
+    TaskProgressColumn,
+    TextColumn,
+    TimeRemainingColumn,
+    TransferSpeedColumn,
+)
 from rich.table import Table
+from rich.text import Text
 
 from lintle import (
     __version__,
@@ -388,10 +398,25 @@ def _signal_exit_code(signo):
 
 
 def _format_cancel_message(*, done, total):
+    # Resume granularity is a whole file: the checkpoint is written only as
+    # files complete, so the file interrupted mid-stream is never resumable and
+    # always restarts. With nothing completed there is no checkpoint at all, so
+    # the re-run simply starts over — say so, rather than promise a continuation
+    # the design can't deliver (issue #56 field report: a single-file Ctrl-C
+    # looked like a broken resume).
+    if done == 0:
+        return (
+            f"interrupted — workers stopped (0/{total} files done).\n"
+            "No file finished, so nothing was checkpointed — re-running starts "
+            "over from the beginning.\n"
+            "Resume only skips fully-completed files; a file interrupted "
+            "mid-stream always restarts."
+        )
     return (
         f"interrupted — workers stopped ({done}/{total} files done).\n"
-        "Re-run the same command (same --out-dir) to continue where it stopped; "
-        "inputs must be unchanged.\n"
+        f"Re-run the same command (same --out-dir) to skip the {done} completed "
+        "file(s) and finish the rest; inputs must be unchanged. The file "
+        "interrupted mid-stream restarts.\n"
         "Pass --no-resume to start over."
     )
 
@@ -443,6 +468,36 @@ def _format_elapsed(seconds):
     return f"{minutes}:{secs:02d}"
 
 
+class _ForKind(ProgressColumn):
+    """Render the wrapped column only for tasks of a given ``kind``; every other
+    task gets an empty cell. One ``Progress`` drives two task shapes — the
+    overall row (``total`` = file count) and the per-file rows (``total`` =
+    bytes) — so a byte column (speed, ETA) would render a misleading value on the
+    count row, and the files-done/total counter would render raw byte numbers on
+    a per-file row. Gating by ``kind`` keeps each column on the rows it fits."""
+
+    def __init__(self, kind, inner):
+        super().__init__()
+        self._kind = kind
+        self._inner = inner
+
+    def render(self, task):
+        if task.fields.get("kind") == self._kind:
+            return self._inner.render(task)
+        return Text("")
+
+
+def _status(message):
+    """A transient ``rich`` spinner on stderr for an otherwise-silent phase (e.g.
+    concatenating the per-worker findings shards into ``report.jsonl``), or a
+    no-op context off a TTY so nothing leaks to a pipe. MUST NOT be entered
+    inside the live progress block — both wrap ``rich.live.Live``, which cannot
+    nest — but report finalization runs after that block has exited."""
+    if term.stderr_console.is_terminal:
+        return term.stderr_console.status(message)
+    return contextlib.nullcontext()
+
+
 class _ProgressDisplay:
     """Live multi-file progress for a parallel run, driven by ``rich``.
 
@@ -480,13 +535,22 @@ class _ProgressDisplay:
                 TextColumn("{task.fields[label]}"),
                 BarColumn(bar_width=None),
                 TaskProgressColumn(),
+                # Overall row: files done / total. Per-file rows: byte
+                # throughput + ETA, computed from the byte total set per task.
+                _ForKind("overall", MofNCompleteColumn()),
+                _ForKind("file", TransferSpeedColumn()),
+                _ForKind("file", TimeRemainingColumn(compact=True)),
                 TextColumn("{task.fields[detail]}"),
                 console=self._console,
                 transient=True,
             )
             self._progress.start()
             self._overall = self._progress.add_task(
-                "overall", label="overall", total=self._total_files, detail=""
+                "overall",
+                label="overall",
+                kind="overall",
+                total=self._total_files,
+                detail="",
             )
         self._thread.start()
         return self
@@ -560,6 +624,7 @@ class _ProgressDisplay:
                         self._tasks[name] = self._progress.add_task(
                             name,
                             label=name,
+                            kind="file",
                             total=self._sizes.get(name),
                             detail="0 rec",
                         )
@@ -913,14 +978,18 @@ def main(argv=None):
         noradids_path = None
         findings_path = None
         if args.command == "clean" and all_stats:
-            report_path = os.path.join(args.out_dir, "report.md")
-            report.write_run_report(report_path, all_stats)
-            noradids_path = os.path.join(args.out_dir, "broken-noradids.ndjson")
-            report_writers.write_broken_noradids_ndjson(noradids_path, all_stats)
-            findings_path = os.path.join(args.out_dir, "report.jsonl")
-            report_writers.concat_findings_shards(
-                args.out_dir, findings_path, all_stats
-            )
+            # A spinner over the silent finalization (the per-worker shard
+            # concat into report.jsonl dominates on a large corpus); a no-op off
+            # a TTY. Runs after the progress block has exited, so no Live nesting.
+            with _status("finalizing report…"):
+                report_path = os.path.join(args.out_dir, "report.md")
+                report.write_run_report(report_path, all_stats)
+                noradids_path = os.path.join(args.out_dir, "broken-noradids.ndjson")
+                report_writers.write_broken_noradids_ndjson(noradids_path, all_stats)
+                findings_path = os.path.join(args.out_dir, "report.jsonl")
+                report_writers.concat_findings_shards(
+                    args.out_dir, findings_path, all_stats
+                )
 
         if args.report == "json":
             # Issue #20: top-level versioned envelope; replaces the prior

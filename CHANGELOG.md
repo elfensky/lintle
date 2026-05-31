@@ -6,6 +6,54 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-05-31
+
+### Added
+
+- The `clean` live progress block now shows, per in-flight file, a **byte
+  throughput** (`rich.progress.TransferSpeedColumn`) and a **time-remaining ETA**
+  (`TimeRemainingColumn`) — derived from the per-file byte total already supplied,
+  so a multi-hour 30 GB run shows real per-file speed and ETA. The overall row
+  gains a **files-done/total counter** (`MofNCompleteColumn`). These columns are
+  gated by task kind (a small `_ForKind` wrapper) so the byte columns never render
+  on the file-count overall row and the counter never renders raw bytes on a
+  per-file row. TTY-only, additive UX — off a TTY the plain per-file summary lines
+  are unchanged, and stdout / structured output are untouched.
+- A **spinner** (`rich` status) now covers the otherwise-silent report
+  finalization after the progress block exits — writing `report.md`,
+  `broken-noradids.ndjson`, and concatenating the per-worker shards into
+  `report.jsonl` (the slow part on a large corpus). TTY-only; a no-op context off
+  a TTY, so piped/structured output is unaffected.
+
+### Changed
+
+- Upgraded the `rich` runtime dependency from the 13.x series to **15.x**
+  (`rich>=15,<16`). No behavioural change — the stderr-only progress UI, roster,
+  and `error:`/`warning:` rendering are unchanged (verified by the byte-exact
+  `term` tests and the progress/roster suite); stdout and structured outputs
+  never touched `rich`.
+- **Dependency pinning policy:** every dependency (runtime and dev) is now pinned
+  `>=current_major,<next_major` — minor/patch releases resolve automatically, but
+  major upgrades are deliberate and manual, one at a time. Caps added to the dev
+  group (`pytest<10`, `pytest-cov<8`, `ruff<0.16`, `sgp4<3`). See `ARCHITECTURE.md` §7.
+
+### Fixed
+
+- The `clean` cancel message no longer claims it will "continue where it stopped".
+  Resume granularity is a whole file: re-running skips fully-completed files and
+  restarts the file interrupted mid-stream, so a single-file run that is cancelled
+  starts over from the beginning. The message now says so, and drops the dangling
+  `--no-resume` hint when nothing had completed (there is no checkpoint to ignore).
+
+### Documentation
+
+- **README restructured for newcomers/evaluators** — it now leads with the pitch
+  and the common commands, with the deeper design rationale moved to
+  `ARCHITECTURE.md`. Reorganised for faster onboarding; no content lost.
+- README "Cancelling and resuming" and ARCHITECTURE §5 now state the per-file
+  resume granularity (completed files skipped, in-progress file restarted) upfront,
+  rather than leaving it to be inferred.
+
 ## [0.4.0] - 2026-05-31
 
 ### Added

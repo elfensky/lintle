@@ -1,6 +1,6 @@
 [project]
 name = "lintle"
-version = "0.4.0"
+version = "0.4.1"
 description = "Validate and clean Two-Line Element (TLE) satellite-tracking files"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -27,7 +27,7 @@ classifiers = [
     "Topic :: Utilities",
 ]
 dependencies = [
-    "rich>=13,<14",
+    "rich>=15,<16",
 ]
 
 [project.urls]
@@ -40,7 +40,7 @@ Changelog = "https://github.com/elfensky/lintle/blob/main/CHANGELOG.md"
 lintle = "lintle.cli:main"
 
 [dependency-groups]
-dev = ["pytest>=9.0", "pytest-cov>=7.1", "ruff>=0.15", "sgp4>=2.25"]
+dev = ["pytest>=9.0,<10", "pytest-cov>=7.1,<8", "ruff>=0.15,<0.16", "sgp4>=2.25,<3"]
 
 [build-system]
 requires = ["hatchling"]

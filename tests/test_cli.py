@@ -1124,6 +1124,82 @@ class TestProgressDisplayRendering:
             assert "a" not in disp._tasks
 
 
+class TestProgressColumns:
+    """Per-file ETA + throughput and an overall files-done/total counter, gated
+    by task ``kind`` so byte-only columns never render on the file-count overall
+    row and the count-only column never renders raw bytes on a per-file row."""
+
+    class _Inner:
+        def render(self, task):
+            from rich.text import Text
+
+            return Text("INNER")
+
+    def test_for_kind_renders_inner_only_for_the_matching_kind(self):
+        col = cli._ForKind("file", self._Inner())
+
+        class _Task:
+            def __init__(self, kind):
+                self.fields = {"kind": kind}
+
+        assert col.render(_Task("file")).plain == "INNER"
+        assert col.render(_Task("overall")).plain == ""
+
+    def test_overall_and_per_file_tasks_are_kind_tagged(self):
+        q = queue.Queue()
+        console = Console(file=io.StringIO(), force_terminal=True, width=120)
+        disp = cli._ProgressDisplay(1, q, console, sizes={"a": 1000})
+        with disp:
+            disp._stop.set()
+            disp._thread.join()
+            assert {t.fields.get("kind") for t in disp._progress.tasks} == {"overall"}
+            q.put(("start", "a"))
+            disp._drain()
+            assert {t.fields.get("kind") for t in disp._progress.tasks} == {
+                "overall",
+                "file",
+            }
+
+    def test_progress_wires_speed_eta_per_file_and_mofn_overall(self):
+        console = Console(file=io.StringIO(), force_terminal=True, width=120)
+        disp = cli._ProgressDisplay(1, queue.Queue(), console, sizes={})
+        with disp:
+            disp._stop.set()
+            disp._thread.join()
+            wrapped = {
+                (c._kind, type(c._inner).__name__)
+                for c in disp._progress.columns
+                if isinstance(c, cli._ForKind)
+            }
+        assert ("file", "TransferSpeedColumn") in wrapped
+        assert ("file", "TimeRemainingColumn") in wrapped
+        assert ("overall", "MofNCompleteColumn") in wrapped
+
+
+class TestStatusSpinner:
+    """_status wraps an otherwise-silent finalization phase (shard concat) in a
+    rich spinner on a TTY, and is a no-op context off a TTY so nothing leaks to a
+    pipe/structured output."""
+
+    def test_status_is_a_spinner_on_a_tty(self, monkeypatch):
+        from rich.status import Status
+
+        monkeypatch.setattr(
+            "lintle.term.stderr_console",
+            Console(file=io.StringIO(), force_terminal=True),
+        )
+        assert isinstance(cli._status("working…"), Status)
+
+    def test_status_is_a_noop_context_off_a_tty(self, monkeypatch):
+        import contextlib
+
+        monkeypatch.setattr(
+            "lintle.term.stderr_console",
+            Console(file=io.StringIO(), force_terminal=False),
+        )
+        assert isinstance(cli._status("working…"), contextlib.nullcontext)
+
+
 class TestExplainCommand:
     """`lintle explain <TAG>` is a read-only documentation lookup."""
 
@@ -1512,11 +1588,27 @@ class TestScrubOutputs:
 
 
 class TestSignalHandling:
-    def test_cancel_message_names_counts_and_flag(self):
+    def test_cancel_message_some_done_skips_completed_not_continues(self):
+        # With some files completed, the re-run skips them and reprocesses the
+        # rest; the file interrupted mid-stream restarts. The message must not
+        # promise to "continue where it stopped" — resume has no intra-file
+        # granularity, and that wording read as a broken resume.
         msg = cli._format_cancel_message(done=12, total=29)
         assert "12/29" in msg
         assert "--no-resume" in msg
         assert "same --out-dir" in msg
+        assert "continue where it stopped" not in msg
+        assert "restart" in msg.lower()
+
+    def test_cancel_message_zero_done_says_it_restarts(self):
+        # No file finished -> no checkpoint is written -> the re-run starts over
+        # from the beginning. The message must say so rather than imply
+        # resumable progress (the single-file Ctrl-C field report). It also must
+        # not dangle --no-resume, since there is no checkpoint to ignore.
+        msg = cli._format_cancel_message(done=0, total=1)
+        assert "0/1" in msg
+        assert "continue where it stopped" not in msg
+        assert "starts over" in msg.lower()
 
     def test_signal_exit_code(self):
         assert cli._signal_exit_code(signal.SIGINT) == 130

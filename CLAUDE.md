@@ -31,7 +31,7 @@ invariants**: one validator definition (Critical Rule #4), constant-memory strea
 commit + host-aware lock. The canonical rule and the considered/deferred table live in
 [`ARCHITECTURE.md` §7](ARCHITECTURE.md#7-runtime-dependency-policy); the original rationale is
 archived under `docs/superpowers/archive/specs/2026-05-28-runtime-dependency-policy-design.md`.
-**Current runtime deps: `rich>=13,<14`** (terminal rendering for `clean`) — a relaxed-bar audit
+**Current runtime deps: `rich>=15,<16`** (terminal rendering for `clean`) — a relaxed-bar audit
 re-evaluated every
 candidate and still adopted none, since each trips a hard invariant or removes ~0 code. `sgp4`
 and `pytest` are dev-only; `sgp4` is a test oracle and must never be imported at runtime.
