@@ -7,7 +7,7 @@ import re
 
 import pytest
 
-from lintle import report
+from lintle import report, report_writers
 from lintle.categories import FixClass
 from lintle.diagnostics import RepairTier, RuleID, diagnostic
 
@@ -112,7 +112,9 @@ class TestEntryToJsonlDict:
             ),
             norad_id=25544,
         )
-        out = report.entry_to_jsonl_dict(entry, file="tle2022.txt", norad_id=25544)
+        out = report_writers.entry_to_jsonl_dict(
+            entry, file="tle2022.txt", norad_id=25544
+        )
         expected_keys = {
             "schema_version",
             "outcome",
@@ -148,7 +150,7 @@ class TestEntryToJsonlDict:
             diagnostic(RuleID.NON_ASCII_BYTE, source_line_nos=(11,)),
         )
         entry = report.RejectEntry([b"1", b"2"], [10, 11], primary, related)
-        out = report.entry_to_jsonl_dict(entry, file="x.txt", norad_id=None)
+        out = report_writers.entry_to_jsonl_dict(entry, file="x.txt", norad_id=None)
         assert len(out["related"]) == 2
         # Nested entries carry no envelope fields (no schema_version, outcome,
         # file, or norad_id).
@@ -179,7 +181,7 @@ class TestEntryToJsonlDict:
                 tier_attempted=RepairTier.NORMALIZATION,
             ),
         )
-        out = report.entry_to_jsonl_dict(entry, file="x.txt", norad_id=None)
+        out = report_writers.entry_to_jsonl_dict(entry, file="x.txt", norad_id=None)
         assert out["rule_id"] == "TLE-COL-003"
         assert out["tier_attempted"] == "tier-1"
         # And these must be plain JSON-serializable strings — round-tripping
@@ -198,7 +200,7 @@ class TestEntryToJsonlDict:
                 column_range=(69, 69),
             ),
         )
-        out = report.entry_to_jsonl_dict(entry, file="x.txt", norad_id=None)
+        out = report_writers.entry_to_jsonl_dict(entry, file="x.txt", norad_id=None)
         assert isinstance(out["source_lines"], list)
         assert isinstance(out["column_range"], list)
 
@@ -210,7 +212,7 @@ class TestEntryToJsonlDict:
             [1],
             diagnostic(RuleID.BAD_PREFIX, source_line_nos=(1,)),
         )
-        out = report.entry_to_jsonl_dict(entry, file="x.txt", norad_id=None)
+        out = report_writers.entry_to_jsonl_dict(entry, file="x.txt", norad_id=None)
         assert out["column_range"] is None
         assert out["observed"] is None
         assert out["expected"] is None
@@ -223,7 +225,7 @@ class TestEntryToJsonlDict:
             diagnostic(RuleID.ORPHAN_LINE, source_line_nos=(42,)),
             norad_id=None,
         )
-        out = report.entry_to_jsonl_dict(entry, file="x.txt", norad_id=None)
+        out = report_writers.entry_to_jsonl_dict(entry, file="x.txt", norad_id=None)
         assert out["norad_id"] is None
 
 
@@ -245,7 +247,7 @@ class TestReportJsonlSchemaLock:
     def test_schema_version_is_pinned(self, tmp_path):
         # Every line of a synthesized report.jsonl carries schema_version="1".
         path = str(tmp_path / "x.findings.jsonl")
-        with report.JsonlFindingsWriter(path, src_name="x.txt") as writer:
+        with report_writers.JsonlFindingsWriter(path, src_name="x.txt") as writer:
             for src in (10, 20, 30):
                 writer.write_entry(self._entry(src=src))
             writer.finalize()
@@ -259,7 +261,7 @@ class TestReportJsonlSchemaLock:
         # Future additions of "fixed" outcomes will require updating
         # this test along with the spec.
         path = str(tmp_path / "x.findings.jsonl")
-        with report.JsonlFindingsWriter(path, src_name="x.txt") as writer:
+        with report_writers.JsonlFindingsWriter(path, src_name="x.txt") as writer:
             writer.write_entry(self._entry())
             writer.finalize()
         with open(path, encoding="utf-8") as handle:
@@ -270,7 +272,9 @@ class TestReportJsonlSchemaLock:
         # The exact set of top-level keys is the spec contract; both
         # accidental additions and accidental removals fail here.
         entry = self._entry()
-        out = report.entry_to_jsonl_dict(entry, file="x.txt", norad_id=entry.norad_id)
+        out = report_writers.entry_to_jsonl_dict(
+            entry, file="x.txt", norad_id=entry.norad_id
+        )
         expected = {
             "schema_version",
             "outcome",
@@ -311,7 +315,7 @@ class TestWriteBrokenFile:
         )
         out = tmp_path / "tle2099.broken.txt"
 
-        report.write_broken_file(str(out), "tle2099.txt", stats)
+        report_writers.write_broken_file(str(out), "tle2099.txt", stats)
 
         text = out.read_bytes()
         assert b"# source: tle2099.txt" in text
@@ -341,7 +345,7 @@ class TestWriteBrokenFile:
         )
         out = tmp_path / "x.broken.txt"
 
-        report.write_broken_file(str(out), "x.txt", stats)
+        report_writers.write_broken_file(str(out), "x.txt", stats)
 
         assert b"\xff\xfe" in out.read_bytes()
 
@@ -369,7 +373,7 @@ class TestWriteBrokenFile:
         )
         out = tmp_path / "x.broken.txt"
 
-        report.write_broken_file(str(out), "x.txt", stats)
+        report_writers.write_broken_file(str(out), "x.txt", stats)
 
         text = out.read_bytes()
         assert b"source lines 14820-14821" in text
@@ -409,7 +413,7 @@ class TestWriteBrokenFile:
             },
         )
         out = tmp_path / "x.broken.txt"
-        report.write_broken_file(str(out), "x.txt", stats)
+        report_writers.write_broken_file(str(out), "x.txt", stats)
         text = out.read_bytes()
         assert b"rule: TLE-CHK-001" in text
         assert b"    and: rule: TLE-COL-001" in text
@@ -440,7 +444,7 @@ class TestWriteBrokenFile:
         )
 
         out = tmp_path / "x.broken.txt"
-        report.write_broken_file(str(out), "x.txt", stats)
+        report_writers.write_broken_file(str(out), "x.txt", stats)
 
         text = out.read_bytes()
         for s in (10, 20, 30, 40, 50, 60):
@@ -471,7 +475,7 @@ class TestWriteBrokenFile:
         )
 
         out = tmp_path / "x.broken.txt"
-        report.write_broken_file(str(out), "x.txt", stats)
+        report_writers.write_broken_file(str(out), "x.txt", stats)
         text = out.read_text("ascii")
 
         # Order of appearance must follow source_lines, not dict insertion
@@ -1024,7 +1028,7 @@ class TestBrokenNoradIdsNdjson:
         stats = report.FileStats(
             src_name="tle2099.txt", quarantined_norad_ids=report.NoradTracker(counts={})
         )
-        out = report.format_broken_noradids_ndjson([stats])
+        out = report_writers.format_broken_noradids_ndjson([stats])
         assert out == ""
 
     def test_format_sorts_ids_ascending(self):
@@ -1039,7 +1043,7 @@ class TestBrokenNoradIdsNdjson:
             src_name="tle2009.txt",
             quarantined_norad_ids=report.NoradTracker(counts={42: {}}),
         )
-        out = report.format_broken_noradids_ndjson([a, b])
+        out = report_writers.format_broken_noradids_ndjson([a, b])
         assert out == '{"noradId":5}\n{"noradId":42}\n{"noradId":26125}\n'
 
     def test_format_uses_compact_json(self):
@@ -1049,7 +1053,9 @@ class TestBrokenNoradIdsNdjson:
         stats = report.FileStats(
             src_name="x.txt", quarantined_norad_ids=report.NoradTracker(counts={5: {}})
         )
-        assert report.format_broken_noradids_ndjson([stats]) == '{"noradId":5}\n'
+        assert (
+            report_writers.format_broken_noradids_ndjson([stats]) == '{"noradId":5}\n'
+        )
 
     def test_format_dedupes_across_files(self):
         # A NORAD ID seen in two files appears once — the deduplication is
@@ -1062,7 +1068,7 @@ class TestBrokenNoradIdsNdjson:
             src_name="tle2009.txt",
             quarantined_norad_ids=report.NoradTracker(counts={5678: {}, 9999: {}}),
         )
-        out = report.format_broken_noradids_ndjson([a, b])
+        out = report_writers.format_broken_noradids_ndjson([a, b])
         assert out == '{"noradId":1234}\n{"noradId":5678}\n{"noradId":9999}\n'
 
     def test_format_each_line_is_parseable_json(self):
@@ -1074,7 +1080,7 @@ class TestBrokenNoradIdsNdjson:
                 counts={5: {}, 42: {}, 26125: {}}
             ),
         )
-        out = report.format_broken_noradids_ndjson([stats])
+        out = report_writers.format_broken_noradids_ndjson([stats])
         ids = [json.loads(line)["noradId"] for line in out.splitlines()]
         assert ids == [5, 42, 26125]
 
@@ -1086,7 +1092,7 @@ class TestBrokenNoradIdsNdjson:
             quarantined_norad_ids=report.NoradTracker(counts={1: {}, 2: {}}),
         )
         out = tmp_path / "broken-noradids.ndjson"
-        report.write_broken_noradids_ndjson(str(out), [stats])
+        report_writers.write_broken_noradids_ndjson(str(out), [stats])
         assert out.read_bytes() == b'{"noradId":1}\n{"noradId":2}\n'
 
     def test_write_emits_empty_file_when_nothing_quarantined(self, tmp_path):
@@ -1094,7 +1100,7 @@ class TestBrokenNoradIdsNdjson:
             src_name="x.txt", quarantined_norad_ids=report.NoradTracker(counts={})
         )
         out = tmp_path / "broken-noradids.ndjson"
-        report.write_broken_noradids_ndjson(str(out), [stats])
+        report_writers.write_broken_noradids_ndjson(str(out), [stats])
         assert out.read_bytes() == b""
 
     def test_aggregate_returns_sorted_unique_ids(self):
@@ -1106,7 +1112,7 @@ class TestBrokenNoradIdsNdjson:
             src_name="b.txt",
             quarantined_norad_ids=report.NoradTracker(counts={2: {}, 1: {}}),
         )
-        assert report.aggregate_broken_norad_ids([a, b]) == [1, 2, 3]
+        assert report_writers.aggregate_broken_norad_ids([a, b]) == [1, 2, 3]
 
 
 class TestConcatFindingsShards:
@@ -1136,7 +1142,7 @@ class TestConcatFindingsShards:
             report.FileStats(src_name="tle2022.txt"),
         ]
         dest = tmp_path / "report.jsonl"
-        report.concat_findings_shards(str(tmp_path), str(dest), all_stats)
+        report_writers.concat_findings_shards(str(tmp_path), str(dest), all_stats)
         lines = dest.read_text(encoding="utf-8").splitlines()
         files = [json.loads(line)["file"] for line in lines]
         assert files == ["tle2004.txt", "tle2013.txt", "tle2022.txt"]
@@ -1146,7 +1152,7 @@ class TestConcatFindingsShards:
         # (matches broken-noradids.ndjson's zero-quarantine contract).
         (tmp_path / ".shards").mkdir()
         dest = tmp_path / "report.jsonl"
-        report.concat_findings_shards(str(tmp_path), str(dest), [])
+        report_writers.concat_findings_shards(str(tmp_path), str(dest), [])
         assert dest.exists()
         assert dest.read_text(encoding="utf-8") == ""
 
@@ -1161,7 +1167,7 @@ class TestConcatFindingsShards:
             report.FileStats(src_name="tle2099.txt"),  # no shard for this one
         ]
         dest = tmp_path / "report.jsonl"
-        report.concat_findings_shards(str(tmp_path), str(dest), all_stats)
+        report_writers.concat_findings_shards(str(tmp_path), str(dest), all_stats)
         lines = dest.read_text(encoding="utf-8").splitlines()
         assert len(lines) == 1
         assert json.loads(lines[0])["file"] == "tle2022.txt"
@@ -1174,7 +1180,7 @@ class TestConcatFindingsShards:
         shard_dir = tmp_path / ".shards"
         shard_dir.mkdir()
         self._make_shard(shard_dir, "tle2022", ['{"file":"tle2022.txt"}'])
-        report.concat_findings_shards(
+        report_writers.concat_findings_shards(
             str(tmp_path),
             str(tmp_path / "report.jsonl"),
             [report.FileStats(src_name="tle2022.txt")],
@@ -1189,7 +1195,7 @@ class TestConcatFindingsShards:
         shard_dir.mkdir()
         self._make_shard(shard_dir, "tle2022", ['{"file":"tle2022.txt"}'])
         dest = tmp_path / "report.jsonl"
-        report.concat_findings_shards(
+        report_writers.concat_findings_shards(
             str(tmp_path),
             str(dest),
             [report.FileStats(src_name="tle2022.txt")],
@@ -1212,7 +1218,7 @@ class TestConcatFindingsShards:
 
         monkeypatch.setattr("os.replace", boom)
         with pytest.raises(OSError, match="simulated concat rename failure"):
-            report.concat_findings_shards(
+            report_writers.concat_findings_shards(
                 str(tmp_path),
                 str(dest),
                 [report.FileStats(src_name="tle2022.txt")],
@@ -1609,7 +1615,7 @@ class TestJsonlFindingsWriter:
 
     def test_writes_one_line_per_entry(self, tmp_path):
         path = str(tmp_path / "tle2022.findings.jsonl")
-        with report.JsonlFindingsWriter(path, src_name="tle2022.txt") as writer:
+        with report_writers.JsonlFindingsWriter(path, src_name="tle2022.txt") as writer:
             writer.write_entry(self._entry(src=10))
             writer.write_entry(self._entry(src=20))
             writer.write_entry(self._entry(src=30))
@@ -1627,7 +1633,7 @@ class TestJsonlFindingsWriter:
         # No spaces around JSON separators — grep can count lines, byte
         # count is minimal, downstream tooling can rely on one record per line.
         path = str(tmp_path / "x.findings.jsonl")
-        with report.JsonlFindingsWriter(path, src_name="x.txt") as writer:
+        with report_writers.JsonlFindingsWriter(path, src_name="x.txt") as writer:
             writer.write_entry(self._entry())
             writer.finalize()
         with open(path, encoding="utf-8") as handle:
@@ -1640,7 +1646,7 @@ class TestJsonlFindingsWriter:
 
     def test_finalize_atomic_rename(self, tmp_path):
         path = str(tmp_path / "x.findings.jsonl")
-        with report.JsonlFindingsWriter(path, src_name="x.txt") as writer:
+        with report_writers.JsonlFindingsWriter(path, src_name="x.txt") as writer:
             writer.write_entry(self._entry())
             writer.finalize()
         assert os.path.exists(path)
@@ -1649,7 +1655,7 @@ class TestJsonlFindingsWriter:
     def test_interrupted_run_leaves_no_partial(self, tmp_path):
         # Context-manager exit without finalize unlinks the .partial.
         path = str(tmp_path / "x.findings.jsonl")
-        with report.JsonlFindingsWriter(path, src_name="x.txt") as writer:
+        with report_writers.JsonlFindingsWriter(path, src_name="x.txt") as writer:
             writer.write_entry(self._entry())
             # exit without finalize
         assert not os.path.exists(path)
@@ -1657,7 +1663,7 @@ class TestJsonlFindingsWriter:
 
     def test_empty_finalize_creates_empty_file(self, tmp_path):
         path = str(tmp_path / "x.findings.jsonl")
-        with report.JsonlFindingsWriter(path, src_name="x.txt") as writer:
+        with report_writers.JsonlFindingsWriter(path, src_name="x.txt") as writer:
             writer.finalize()
         assert os.path.exists(path)
         with open(path, encoding="utf-8") as handle:
@@ -1669,7 +1675,7 @@ class TestJsonlFindingsWriter:
         path_a = str(tmp_path / "a.findings.jsonl")
         path_b = str(tmp_path / "b.findings.jsonl")
         for path in (path_a, path_b):
-            with report.JsonlFindingsWriter(path, src_name="x.txt") as writer:
+            with report_writers.JsonlFindingsWriter(path, src_name="x.txt") as writer:
                 writer.write_entry(self._entry())
                 writer.finalize()
         with open(path_a, "rb") as a, open(path_b, "rb") as b:
@@ -1684,7 +1690,7 @@ class TestJsonlFindingsWriter:
         def boom(*args, **kwargs):
             raise OSError("simulated rename failure")
 
-        with report.JsonlFindingsWriter(path, src_name="x.txt") as writer:
+        with report_writers.JsonlFindingsWriter(path, src_name="x.txt") as writer:
             writer.write_entry(self._entry())
             monkeypatch.setattr("os.replace", boom)
             with pytest.raises(OSError, match="simulated rename failure"):
@@ -1713,7 +1719,7 @@ class TestRejectSink:
 
     def test_add_under_cap_accepts(self):
         # Three entries, one rule — all three survive to the sample.
-        sink = report.RejectSink(cap=5)
+        sink = report_writers.RejectSink(cap=5)
         for i in range(3):
             sink.add(self._stub(i))
         sample = sink.finalize(entries=3)
@@ -1723,7 +1729,7 @@ class TestRejectSink:
         # Six entries, cap of 5 — the 6th drops silently. Matches today's
         # pipeline._record_reject behaviour; reject_counts retains the truth
         # so no information is lost at the operator level.
-        sink = report.RejectSink(cap=5)
+        sink = report_writers.RejectSink(cap=5)
         for i in range(6):
             sink.add(self._stub(i))  # must not raise
         sample = sink.finalize(entries=6)
@@ -1732,7 +1738,7 @@ class TestRejectSink:
     def test_cap_holds_under_skew(self):
         # 1000 of one rule, then 1 of another. With per-rule buckets, the
         # noisy rule cannot crowd the rare rule out of the sample.
-        sink = report.RejectSink(cap=5)
+        sink = report_writers.RejectSink(cap=5)
         for i in range(1000):
             sink.add(self._stub(i, RuleID.CHECKSUM_MISMATCH))
         sink.add(self._stub(9999, RuleID.BAD_PREFIX))
@@ -1748,7 +1754,7 @@ class TestRejectSink:
 
         rng = random.Random(42)
         rules = list(RuleID)
-        sink = report.RejectSink(cap=5)
+        sink = report_writers.RejectSink(cap=5)
         for i in range(1000):
             sink.add(self._stub(i, rng.choice(rules)))
         sample = sink.finalize(entries=1000)
@@ -1757,13 +1763,13 @@ class TestRejectSink:
 
     def test_finalize_returns_filesample_with_matching_cap(self):
         # The cap travels with the sample so renderers can show truncation.
-        sink = report.RejectSink(cap=5)
+        sink = report_writers.RejectSink(cap=5)
         sample = sink.finalize(entries=0)
         assert sample.cap == 5
 
     def test_validate_mode_skips_writer(self, tmp_path):
         # No broken_path -> sink is purely in-memory; no temp file leakage.
-        sink = report.RejectSink(cap=5)  # no broken_path
+        sink = report_writers.RejectSink(cap=5)  # no broken_path
         with sink:
             sink.add(self._stub(1))
             sink.finalize(entries=1)
@@ -1778,7 +1784,7 @@ class TestRejectSink:
         # volatile so we don't compare full bytes).
         path = tmp_path / "x.broken.txt"
         entries = [self._stub(i) for i in range(3)]
-        sink = report.RejectSink(broken_path=str(path), src_name="x.txt", cap=5)
+        sink = report_writers.RejectSink(broken_path=str(path), src_name="x.txt", cap=5)
         with sink:
             for entry in entries:
                 sink.add(entry)
@@ -1787,7 +1793,7 @@ class TestRejectSink:
         assert b"# source: x.txt" in body
         assert b"# 3 quarantined of 3 entries" in body
         for idx, entry in enumerate(entries, start=1):
-            assert report._render_entry(idx, entry) in body
+            assert report_writers._render_entry(idx, entry) in body
 
     def test_exit_without_finalize_cleans_partials(self, tmp_path):
         # An exception inside the `with` block leaves no debris. The
@@ -1796,7 +1802,9 @@ class TestRejectSink:
         path = tmp_path / "x.broken.txt"
         with (
             pytest.raises(RuntimeError, match="simulated"),
-            report.RejectSink(broken_path=str(path), src_name="x.txt", cap=5) as sink,
+            report_writers.RejectSink(
+                broken_path=str(path), src_name="x.txt", cap=5
+            ) as sink,
         ):
             sink.add(self._stub(1))
             raise RuntimeError("simulated mid-file failure")
@@ -1808,7 +1816,7 @@ class TestRejectSink:
         # semantics. RuntimeError surfaces the misuse loudly. Locks the
         # spec §4.5 contract so future contributors don't accidentally
         # turn the sink into a reusable container.
-        sink = report.RejectSink(cap=5)
+        sink = report_writers.RejectSink(cap=5)
         sink.finalize(entries=0)
         with pytest.raises(RuntimeError, match="already finalized"):
             sink.add(self._stub(1))
@@ -1816,7 +1824,7 @@ class TestRejectSink:
     def test_dropped_count_zero_when_under_cap(self):
         # Three entries under a cap of 5 — no drops, dropped_count stays
         # empty so renderers (issue #46) can omit the "K dropped" hint.
-        sink = report.RejectSink(cap=5)
+        sink = report_writers.RejectSink(cap=5)
         for i in range(3):
             sink.add(self._stub(i))
         sample = sink.finalize(entries=3)
@@ -1825,7 +1833,7 @@ class TestRejectSink:
     def test_dropped_count_increments_per_drop(self):
         # Seven entries one rule, cap of 5 — two drops accrue to that
         # rule's slot in the finalized sample.
-        sink = report.RejectSink(cap=5)
+        sink = report_writers.RejectSink(cap=5)
         for i in range(7):
             sink.add(self._stub(i))
         sample = sink.finalize(entries=7)
@@ -1835,7 +1843,7 @@ class TestRejectSink:
         # Mixed traffic: one rule overflows, another stays under cap.
         # Drops are accounted per-rule so the operator can tell which
         # rule lost evidence and which did not.
-        sink = report.RejectSink(cap=5)
+        sink = report_writers.RejectSink(cap=5)
         for i in range(8):  # 3 drops
             sink.add(self._stub(i, RuleID.CHECKSUM_MISMATCH))
         for i in range(2):  # no drops
@@ -1854,7 +1862,7 @@ class TestRejectSink:
         rng = random.Random(42)
         rules = list(RuleID)
         seen = collections.Counter()
-        sink = report.RejectSink(cap=5)
+        sink = report_writers.RejectSink(cap=5)
         for i in range(1000):
             rule = rng.choice(rules)
             seen[rule] += 1
@@ -1871,7 +1879,7 @@ class TestRejectSink:
         # When jsonl_path is set, every add() call appends a well-formed
         # JSON line to the shard.
         jsonl_path = str(tmp_path / "tle.findings.jsonl")
-        with report.RejectSink(
+        with report_writers.RejectSink(
             cap=5, jsonl_path=jsonl_path, src_name="tle.txt"
         ) as sink:
             sink.add(self._stub(10))
@@ -1888,7 +1896,7 @@ class TestRejectSink:
 
     def test_sink_skips_jsonl_when_no_path(self, tmp_path):
         # No jsonl_path -> no shard artifact. Validate-mode contract.
-        with report.RejectSink(cap=5) as sink:
+        with report_writers.RejectSink(cap=5) as sink:
             sink.add(self._stub(1))
             sink.finalize(entries=1)
         assert os.listdir(tmp_path) == []
@@ -1898,13 +1906,13 @@ class TestRejectSink:
         # the JSONL writer needs the per-file ``file`` field value.
         jsonl_path = str(tmp_path / "x.findings.jsonl")
         with pytest.raises(ValueError, match="src_name"):
-            report.RejectSink(cap=5, jsonl_path=jsonl_path)
+            report_writers.RejectSink(cap=5, jsonl_path=jsonl_path)
 
     def test_dropped_from_sample_still_in_jsonl(self, tmp_path):
         # Cap governs the in-memory sample, NOT the on-disk JSONL.
         # 10 entries with cap 3 -> sample has 3, JSONL has all 10.
         jsonl_path = str(tmp_path / "tle.findings.jsonl")
-        with report.RejectSink(
+        with report_writers.RejectSink(
             cap=3, jsonl_path=jsonl_path, src_name="tle.txt"
         ) as sink:
             for i in range(10):

@@ -25,6 +25,7 @@ from lintle import (
     fsutil,
     pipeline,
     report,
+    report_writers,
     resume,
     stem,
     term,
@@ -915,9 +916,11 @@ def main(argv=None):
             report_path = os.path.join(args.out_dir, "report.md")
             report.write_run_report(report_path, all_stats)
             noradids_path = os.path.join(args.out_dir, "broken-noradids.ndjson")
-            report.write_broken_noradids_ndjson(noradids_path, all_stats)
+            report_writers.write_broken_noradids_ndjson(noradids_path, all_stats)
             findings_path = os.path.join(args.out_dir, "report.jsonl")
-            report.concat_findings_shards(args.out_dir, findings_path, all_stats)
+            report_writers.concat_findings_shards(
+                args.out_dir, findings_path, all_stats
+            )
 
         if args.report == "json":
             # Issue #20: top-level versioned envelope; replaces the prior

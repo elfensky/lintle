@@ -352,7 +352,8 @@ src/lintle/
   explain_examples.py # validator-verified examples + citations backing `explain`
   repair.py       # speculative, validated repairs
   pipeline.py     # streaming reader, prefix-driven pairing, per-file routing
-  report.py       # quarantine sidecar + run-summary rendering
+  report.py       # FileStats + dataclasses, validate summaries, run report
+  report_writers.py # structured-file writers: .broken.txt sidecar, report.jsonl, broken-noradids.ndjson, shard concat
   fsutil.py       # durable_replace — the one atomic+fsync commit path
   term.py         # shared stderr Console + error/warning/note/prompt helpers
   resume.py       # single-run checkpoint for `clean --resume`
@@ -369,9 +370,14 @@ docs/superpowers/
 `diagnostics.py` and `categories.py` are pure-data leaves of the dependency
 graph — they hold enums and frozen dataclasses, no logic; `explain_examples.py`
 is pure data too, composing those leaves into documented examples. `repair`,
-`pipeline`, and `report` depend on them; `fsutil.py` is a stdlib-only I/O leaf
-(the durable file-commit helper) that `pipeline`, `report`, and `resume` route
-every output through; `term.py` is a rich-only leaf owning the single stderr
+`pipeline`, and `report` depend on them; `report_writers.py` is the
+structured-file writers leaf (the `.broken.txt` sidecar, the `report.jsonl`
+findings shards, the corpus `broken-noradids.ndjson`, and the shard concat)
+used by `pipeline` and `cli`, importing the dataclasses and the shared
+`_format_diagnostic` renderer from `report.py` one-way — never the reverse, so
+no cycle; `fsutil.py` is a stdlib-only I/O leaf
+(the durable file-commit helper) that `pipeline`, `report`, `report_writers`,
+and `resume` route every output through; `term.py` is a rich-only leaf owning the single stderr
 Console and the `error:`/`warning:` emitters that `cli.py` and `diff.py` share;
 `diff.py` and `explain.py` are read-only consumers reached only through `cli.py`;
 `tle.py` remains the single source of truth for what counts as a valid TLE record.
