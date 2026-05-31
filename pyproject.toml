@@ -40,7 +40,7 @@ Changelog = "https://github.com/elfensky/lintle/blob/main/CHANGELOG.md"
 lintle = "lintle.cli:main"
 
 [dependency-groups]
-dev = ["pytest>=8.0", "pytest-cov", "ruff", "sgp4>=2.23"]
+dev = ["pytest>=9.0", "pytest-cov>=7.1", "ruff>=0.15", "sgp4>=2.25"]
 
 [build-system]
 requires = ["hatchling"]
