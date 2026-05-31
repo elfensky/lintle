@@ -6,6 +6,8 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-05-31
+
 ### Added
 
 - The `clean` live progress block now shows, per in-flight file, a **byte
@@ -45,6 +47,9 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Documentation
 
+- **README restructured for newcomers/evaluators** — it now leads with the pitch
+  and the common commands, with the deeper design rationale moved to
+  `ARCHITECTURE.md`. Reorganised for faster onboarding; no content lost.
 - README "Cancelling and resuming" and ARCHITECTURE §5 now state the per-file
   resume granularity (completed files skipped, in-progress file restarted) upfront,
   rather than leaving it to be inferred.
