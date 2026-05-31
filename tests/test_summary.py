@@ -1,0 +1,70 @@
+"""Tests for lintle.summary — pure helpers, responsive renderer, and run entry."""
+
+from lintle import summary
+
+
+def _demo_envelope():
+    return {
+        "schema_version": "2",
+        "run": {
+            "command": "clean",
+            "timestamp": "2026-05-31T12:00:00Z",
+            "elapsed_seconds": 124.0,
+        },
+        "environment": {"tool_version": "0.5.0", "python_version": "3.14.0"},
+        "summary": {
+            "files_processed": 3,
+            "paired_records": 232378271,
+            "orphan_entries": 0,
+            "input_lines_seen": 463615084,
+            "clean_count": 232275043,
+            "quarantined_count": 103228,
+            "fix_counts": {
+                "reconstructed-checksum": 108304512,
+                "trailing-backslash": 167594304,
+                "crlf": 1805,
+            },
+            "quarantine_counts": {
+                "TLE-COL-004": 48481,
+                "TLE-CHK-001": 47465,
+                "TLE-PAIR-001": 4572,
+                "TLE-PAIR-002": 2283,
+                "TLE-COL-001": 424,
+                "TLE-COL-002": 4,
+                "TLE-PAIR-003": 1,
+            },
+        },
+        "files": [],
+    }
+
+
+class TestHelpers:
+    def test_humanize_duration(self):
+        assert summary._humanize_duration(45.2) == "45.2s"
+        assert summary._humanize_duration(124.0) == "2m 04s"
+        assert summary._humanize_duration(3661.0) == "1h 01m 01s"
+
+    def test_format_pct_honest_tiny_rate(self):
+        assert summary._format_pct(0, 1000) == "0%"
+        assert summary._format_pct(4, 1000000) == "<0.01%"
+        assert summary._format_pct(103228, 232378271) == "0.04%"
+        assert summary._format_pct(5, 0) == "—"
+
+    def test_can_encode(self):
+        assert summary._can_encode("utf-8", "█") is True
+        assert summary._can_encode(None, "█") is True
+        assert summary._can_encode("ascii", "█") is False
+
+    def test_pick_tier(self):
+        pt = summary._pick_tier
+        assert pt(is_terminal=False, width=200, unicode_ok=True) == "plain"
+        assert pt(is_terminal=True, width=60, unicode_ok=True) == "plain"
+        assert pt(is_terminal=True, width=120, unicode_ok=False) == "plain"
+        assert pt(is_terminal=True, width=80, unicode_ok=True) == "medium"
+        assert pt(is_terminal=True, width=120, unicode_ok=True) == "wide"
+
+    def test_bar_caps_and_fallback(self):
+        assert summary._bar(10, 10, width=10, use_unicode=True) == "█" * 10
+        assert summary._bar(10, 10, width=10, use_unicode=False) == "#" * 10
+        assert summary._bar(1, 2, width=10, use_unicode=False) == "#####     "
+        assert summary._bar(3, 0, width=4, use_unicode=False) == "    "
