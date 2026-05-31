@@ -1,6 +1,20 @@
 """Tests for lintle.summary — pure helpers, responsive renderer, and run entry."""
 
+import io
+
+from rich.console import Console
+
 from lintle import summary
+
+
+def _console(width, *, terminal):
+    return Console(
+        file=io.StringIO(),
+        width=width,
+        force_terminal=terminal,
+        color_system=None,
+        legacy_windows=False,
+    )
 
 
 def _demo_envelope():
@@ -68,3 +82,24 @@ class TestHelpers:
         assert summary._bar(10, 10, width=10, use_unicode=False) == "#" * 10
         assert summary._bar(1, 2, width=10, use_unicode=False) == "#####     "
         assert summary._bar(3, 0, width=4, use_unicode=False) == "    "
+
+
+class TestRender:
+    def test_wide_has_bars_and_totals(self):
+        con = _console(120, terminal=True)
+        summary.render(_demo_envelope(), console=con)
+        out = con.file.getvalue()
+        assert "clean" in out and "quarantined" in out
+        assert "█" in out
+
+    def test_medium_has_no_bars(self):
+        con = _console(80, terminal=True)
+        summary.render(_demo_envelope(), console=con)
+        assert "█" not in con.file.getvalue()
+
+    def test_plain_when_piped_is_ascii(self):
+        con = _console(120, terminal=False)
+        summary.render(_demo_envelope(), console=con)
+        out = con.file.getvalue()
+        assert "█" not in out and "─" not in out and "→" not in out
+        assert "clean" in out
