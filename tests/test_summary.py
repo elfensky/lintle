@@ -137,3 +137,43 @@ class TestRun:
         rc = summary.run(str(tmp_path), "text")
         assert rc == 2
         assert "schema" in capsys.readouterr().err.lower()
+
+
+class TestEdgeCases:
+    def test_pick_tier_boundary_72(self):
+        pt = summary._pick_tier
+        assert pt(is_terminal=True, width=71, unicode_ok=True) == "plain"
+        assert pt(is_terminal=True, width=72, unicode_ok=True) == "medium"
+
+    def test_zero_records_run_renders_without_sections(self):
+        import io
+
+        from rich.console import Console
+
+        env = {
+            "schema_version": "2",
+            "run": {
+                "command": "clean",
+                "timestamp": "2026-01-01T00:00:00Z",
+                "elapsed_seconds": 0.1,
+            },
+            "environment": {"tool_version": "0.5.0", "python_version": "3.14.0"},
+            "summary": {
+                "files_processed": 1,
+                "paired_records": 0,
+                "orphan_entries": 0,
+                "input_lines_seen": 0,
+                "clean_count": 0,
+                "quarantined_count": 0,
+                "fix_counts": {},
+                "quarantine_counts": {},
+            },
+            "files": [],
+        }
+        con = Console(
+            file=io.StringIO(), width=120, force_terminal=True, color_system=None
+        )
+        summary.render(env, console=con)  # must not raise
+        out = con.file.getvalue()
+        assert "clean" in out  # totals still render
+        assert "—" in out  # honest pct for the 0/0 case

@@ -8,6 +8,8 @@ renderer and one input shape."""
 import json
 import os
 
+from rich import box
+from rich.table import Table
 from rich.text import Text
 
 from lintle import term
@@ -85,11 +87,16 @@ def _totals_lines(run, s):
     ]
 
 
+def _print_totals(console, run, s):
+    """Print one totals field per line to ``console``."""
+    for k, v in _totals_lines(run, s):
+        console.print(Text(f"  {k:<12} {v}"), highlight=False)
+
+
 def _render_plain(console, label, run, s):
     """Render a plain ASCII-only summary line block (no box, no bars, no arrows)."""
     console.print(Text(f"lintle {label} - {run['timestamp']}"), highlight=False)
-    for k, v in _totals_lines(run, s):
-        console.print(Text(f"  {k:<12} {v}"), highlight=False)
+    _print_totals(console, run, s)
     if s["fix_counts"]:
         console.print(
             Text(
@@ -112,14 +119,8 @@ def _render_plain(console, label, run, s):
 
 def _render_sections(console, label, run, s, *, bars):
     """Render a rich-styled section panel (medium: no bars; wide: with bars)."""
-    from rich import box
-    from rich.table import Table
-
     console.rule(f"lintle {label} · {run['timestamp']}")
-    console.print(
-        Text("  " + "   ".join(f"{k} {v}" for k, v in _totals_lines(run, s))),
-        highlight=False,
-    )
+    _print_totals(console, run, s)
 
     def _section(title, counts, with_bars):
         t = Table(title=title, box=box.SIMPLE, pad_edge=False, title_justify="left")
@@ -169,7 +170,8 @@ def run(out_dir, fmt):
     Missing file or unexpected ``schema_version`` -> ``term.error`` + exit 2."""
     path = os.path.join(out_dir, "report.json")
     try:
-        raw = open(path, encoding="utf-8").read()  # noqa: SIM115
+        with open(path, encoding="utf-8") as fh:
+            raw = fh.read()
     except OSError:
         term.error(f"no run found in {out_dir!r} — run `lintle clean` first")
         return 2
