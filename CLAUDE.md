@@ -6,20 +6,35 @@ repository.
 `lintle` validates and cleans a ~30 GB corpus of Two-Line Element (TLE)
 satellite-tracking files exported from space-track.org.
 
-## Authoritative spec
+## Design reference
 
-The design doc at `docs/superpowers/specs/2026-05-21-tle-corpus-cleaner-design.md` is the
-authoritative specification — read it before changing validation, repair, or pipeline
-behaviour. It carries a revision log in its header; keep that current when the design
-changes.
+[`ARCHITECTURE.md`](ARCHITECTURE.md) is the living design reference — read it before changing
+validation, repair, pipeline, or output-format behaviour, and keep it current when the design
+changes. The dated design specs, implementation plans, and corpus-run summaries are archived
+under `docs/superpowers/archive/` (`specs/`, `plans/`, `runs/`) as historical rationale only;
+they are point-in-time records and are no longer maintained — `ARCHITECTURE.md` and the code
+are the current truth.
 
 ## Tech Stack
 
-Python 3.11 · uv · standard library only at runtime · `sgp4` (dev-only test oracle) ·
-`pytest` · `pytest-cov` · `ruff`
+Python 3.14 · uv · lean runtime (**`rich`** — the one third-party dep) · `sgp4` (dev-only
+test oracle) · `pytest` · `pytest-cov` · `ruff`
 
-The runtime is **pure standard library**. `sgp4` and `pytest` are dev-only dependencies;
-`sgp4` is a test oracle and must never be imported at runtime.
+**Runtime dependencies** are governed by a *relaxed* policy (revised 2026-05-31): a popular,
+actively-maintained library that genuinely reduces the code we'd otherwise own should be
+adopted where it makes sense. The old four-MUST gate and its "aim is a veto" clause are
+retired — those four (popular · maintained · reduces-our-burden · sensible shape) are now
+*favourable signals*, not necessary conditions. The **only vetoes are the hard correctness
+invariants**: one validator definition (Critical Rule #4), constant-memory streaming (#3),
+`sgp4`-never-at-runtime, byte-deterministic *unstyled* structured/stdout output (#1/#2 —
+`report.*`, NDJSON, sidecar, `--report json`, checkpoint, `cleaned/*`), and the atomic-durable
+commit + host-aware lock. The canonical rule and the considered/deferred table live in
+[`ARCHITECTURE.md` §7](ARCHITECTURE.md#7-runtime-dependency-policy); the original rationale is
+archived under `docs/superpowers/archive/specs/2026-05-28-runtime-dependency-policy-design.md`.
+**Current runtime deps: `rich>=13,<14`** (terminal rendering for `clean`) — a relaxed-bar audit
+re-evaluated every
+candidate and still adopted none, since each trips a hard invariant or removes ~0 code. `sgp4`
+and `pytest` are dev-only; `sgp4` is a test oracle and must never be imported at runtime.
 
 ## Critical Rules — principles that must not be violated
 
@@ -51,7 +66,7 @@ output shows failures.
 
 ## Code Style
 
-- Python 3.11. Concise one-paragraph docstrings on every public module, function, and
+- Python 3.14. Concise one-paragraph docstrings on every public module, function, and
   class — match that established style; do not expand to Args/Returns/Raises blocks.
 - `ruff` for linting and formatting, configured in `pyproject.toml` (rule sets `E`, `F`,
   `I`, `UP`, `B`, `SIM`; 88-column lines).
@@ -67,8 +82,11 @@ src/lintle/
 ├── cli.py         # argparse, globbing, parallel workers, live progress, Ctrl-C handling
 ├── pipeline.py    # streams a file in binary, pairs 1/2 lines into records, routes them
 ├── repair.py      # speculative fixes, each confirmed by tle.py before commit
-├── report.py      # FileStats, the .broken.txt sidecar writer, the run report
+├── report.py      # FileStats + dataclasses, the validate summaries, the run report
+├── report_writers.py # structured-file writers: .broken.txt sidecar, report.jsonl findings, broken-noradids.ndjson, shard concat
 ├── resume.py      # single-run checkpoint for `clean --resume` (issue #56)
+├── fsutil.py      # durable_replace — the one atomic+fsync commit path (issue #58)
+├── term.py        # shared stderr Console + error/warning/note/prompt helpers (rich)
 ├── diff.py        # read-only: per-rule delta between two runs' report.jsonl (lintle diff)
 ├── explain.py     # read-only: renders rule/fix documentation (lintle explain)
 ├── tle.py         # the validator — column layout, checksum, semantic ranges, pairing
@@ -82,8 +100,18 @@ with the read-only `cli.py → diff.py` and `cli.py → explain.py → explain_e
 consumers and the `cli.py → resume.py` single-run checkpoint (`resume.py` depends only
 on `__version__`) alongside. `diagnostics.py` and `categories.py` are pure-data leaves
 depended on by `repair`, `pipeline`, `report`, and `explain`; `explain_examples.py`
-is also pure data, composing those two leaves into documented examples. `tle.py`
-and the data modules carry no I/O, so cycles are structurally impossible.
+is also pure data, composing those two leaves into documented examples.
+`report_writers.py` is the structured-file writers leaf (the `.broken.txt`
+sidecar, the `report.jsonl` findings shards, the corpus `broken-noradids.ndjson`,
+and the shard concat) depended on by `pipeline` and `cli`; it imports the
+dataclasses and the shared `_format_diagnostic` renderer from `report.py` —
+one-way, never the reverse, so no cycle. `fsutil.py`
+is a stdlib-only I/O leaf (the durable-commit helper) depended on by `pipeline`,
+`report`, `report_writers`, and `resume`. `term.py` is a rich-only stderr-output leaf (the shared
+Console plus the `error`/`warning`/`note`/`prompt` emitters) depended on by `cli`
+and `diff` — so the styled `error:`/`warning:` prefix lives in one place without a
+`diff → cli` cycle. `tle.py` and the data modules carry no I/O, so cycles are
+structurally impossible.
 
 → See [`README.md`](README.md) for the architecture, usage, and data flow.
 → See [`CONTRIBUTING.md`](CONTRIBUTING.md) for setup, testing, and the git workflow.
@@ -196,8 +224,10 @@ If any fail, report the actual output — do not suppress or simplify failures.
 
 ## Conventions
 
-- Design docs live in `docs/superpowers/specs/`, named `YYYY-MM-DD-topic.md`. The design
-  doc carries a revision log in its header — keep it current when the design changes.
+- The living design reference is `ARCHITECTURE.md` (repo root) — keep it current when the
+  design changes. Historical design docs, implementation plans, and run summaries are archived
+  under `docs/superpowers/archive/{specs,plans,runs}/` (dated `YYYY-MM-DD-topic.md`, point-in-time
+  records, not maintained).
 - Tests are grouped into `Test*` classes, one per unit or behaviour under test.
 - Git: `develop` is the trunk; `main` carries one merge commit per release and
   never receives direct commits. On `develop`: chores and bugfixes (`chore:`,

@@ -6,6 +6,126 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-05-31
+
+### Added
+
+- `clean` gains a redesigned live progress UI (issue #53): a one-shot
+  **size-only roster** of the files to be processed (printed instantly from
+  `os.stat` — no pre-read of the corpus), a **multi-file per-worker progress
+  block** showing each active file's byte progress and running record count,
+  and exact per-file counts at completion. The `--jobs` default is now
+  *CPU count − 1, capped at the file count* (reserving a core during the long
+  run; an explicit `--jobs` is still honoured as-is). This adopts **`rich`**
+  (`>=13,<14`) as the first runtime dependency, clearing the four-bar policy
+  (authoritative spec §3.1): it replaces ~150 lines of hand-rolled ANSI in
+  `cli.py`, is the de-facto standard live-display library (`pip`, `uv`, `pdm`),
+  is pure-Python with a small transitive surface (`markdown-it-py`, `pygments`),
+  and is confined to terminal rendering in `cli.py`.
+
+- `clean` now prints a **borderline disk-space warning** when free space on
+  the `--out-dir` volume sits between the 2× input-size abort floor and a
+  2.5× ceiling. The abort path is unchanged — exit `2` below 2×, message
+  unchanged — but a run that previously fell silent above the floor now
+  surfaces a `warning:` line on stderr (`free space in <out-dir> is close to
+  the 2× safety guard: N bytes free of ~M recommended; the run will proceed
+  but may exhaust the disk`) when free is in the 2×-to-2.5× band, so users
+  know they are cutting it close before commits start exhausting the disk.
+  Internal: `cli._check_disk_space` now returns a `(severity, message)`
+  tuple — `"error"` (caller aborts) or `"warn"` (caller prints and
+  proceeds) — or `None` when free is comfortably above the warn ceiling.
+
+- `--max-quarantined` (on both `validate` and `clean`) now accepts a trailing
+  `%` to express the exit-code threshold as a **rate** rather than an absolute
+  count. `--max-quarantined 1%` exits non-zero if more than 1% of routed
+  records (`clean_count + quarantined_count`) were quarantined; the integer
+  form (`--max-quarantined 100`) is unchanged and the default `0` still means
+  "any quarantine fails". The two modes are mutually exclusive by construction
+  — a single value is either a count or a rate, never both — which sidesteps
+  the combination semantics that a separate `--max-quarantined-pct` flag would
+  have forced. Comparison is strictly greater (`100*q > p*r`,
+  cross-multiplied to avoid divide-by-zero on an empty corpus and float drift
+  at the boundary); `0%` ≡ `0` and `100%` effectively never trips. Design at
+  `docs/superpowers/archive/specs/2026-05-27-max-quarantined-percentage-design.md`.
+
+- Host-aware out-dir lock: refuses to start a second concurrent `clean` against
+  the same `--out-dir`.
+
+### Changed
+
+- **Terminology unified on "quarantine".** The codebase and outputs used "reject"
+  and "quarantine" interchangeably; everything now says **quarantine** (the act of
+  setting a bad record aside). The stdout summary label `rejects:` is now
+  `quarantined:`, and `lintle explain` calls a rule a "quarantine rule". Internals
+  renamed to match (`QuarantineSink`, `QuarantineEntry`, `Quarantined`, etc.).
+  **Breaking change** to two machine-readable surfaces:
+  - `--report json`: the per-rule map `reject_counts` is renamed `quarantine_counts`
+    (in both `summary` and `files[]`), and `schema_version` bumps **`"1"` → `"2"`**.
+    Consumers keying on `schema_version == "1"` or `reject_counts` must update.
+  - The `clean --resume` checkpoint `SCHEMA_VERSION` bumps **`2` → `3`**; a checkpoint
+    written by an older `lintle` is refused and the run restarts fresh (the existing
+    refuse-on-change behaviour — no data loss, the prior outputs are archived).
+
+  The `report.jsonl` findings stream and `lintle diff` are **unaffected** (they never
+  carried `reject_counts`; their `schema_version` stays `"1"`). Stable `RuleID` wire
+  tokens (`TLE-CHK-001`, …) are unchanged.
+- All CLI stderr messages now route through `rich`: `error:` lines render
+  bold-red and `warning:` lines yellow on a terminal, while status, prompt, and
+  cancel notices share the one stderr `Console`. Output is unchanged off a TTY
+  (pipes, CI, redirects) — no ANSI, no wrapping — so machine-readable stderr and
+  stdout/result data stay plain. Internally a new `term.py` leaf owns the shared
+  Console and the `error`/`warning`/`note`/`prompt` emitters, so the styled
+  prefix lives in one place (used by both `cli.py` and `diff.py`).
+- `clean` now resumes by default after an interruption: re-run the same command
+  (same `--out-dir`, unchanged inputs) to continue where it stopped. Interactive
+  terminals prompt; CI/non-TTY auto-resumes with a notice. `--no-resume` starts
+  fresh (clearing prior outputs); `--resume` resumes without prompting.
+- Cancelling (`Ctrl-C`, or `SIGTERM`/`SIGHUP` from a scheduler) prints how to
+  continue or start over.
+- **Breaking change.** Minimum Python is now **3.14** (was 3.11). `requires-python`,
+  `tool.ruff.target-version`, `.python-version`, and the trove classifiers all
+  bumped together; drops 3.11 / 3.12 / 3.13 support. Aligns lintle with the
+  drunik-org Python stack standard (drunik / lintle / descent-engine all on
+  Python 3.14, `line-length = 88`, `target-version = "py314"`, ruff rule set
+  `["E","F","I","UP","B","SIM"]`, `pytest-cov` in the dev group).
+- Every output file `clean` commits — the `cleaned/` files, `.broken.txt`
+  sidecars, findings shards, `report.jsonl`/`report.md`/`broken-noradids.ndjson`,
+  and the `--resume` checkpoint — is now committed **durably**, not just
+  atomically: a new `lintle.fsutil.durable_replace` helper `fsync`s the file's
+  data, `os.replace`s it into place, then `fsync`s the containing directory, so
+  a committed file survives a hard power loss or kernel panic rather than only a
+  clean Ctrl-C / sleep / crash. On macOS the true power-loss barrier is
+  `F_FULLFSYNC` (plain `fsync` does not flush the drive's write cache); `fsutil`
+  uses it there and plain `os.fsync` on Linux/other platforms. This closes the
+  gap that mattered most for `clean --resume` (#56), which trusts a
+  previously-committed output without reprocessing it: the worker now makes its
+  outputs durable before the parent records the file `completed`, so the
+  checkpoint can never name a file whose bytes are not yet on disk. Durability
+  is always-on (no flag) — measured at roughly 1 second of overhead across a
+  full ~120-commit run on the 30 GB corpus. Closes #58.
+- **Breaking change.** `lintle validate` and `lintle clean` now accept exactly
+  one positional input — a single file *or* a single directory — instead of
+  zero-or-more. The default remains `data/source`. Scripts invoking
+  `lintle clean dirA dirB` (or multiple explicit files) will now fail at
+  argparse with a usage error. Run the tool once per input directory
+  (`for d in dirA dirB; do lintle clean "$d"; done`), or stage the inputs
+  into a single directory first (e.g. `mkdir merged && cp dirA/* dirB/*
+  merged/ && lintle clean merged`). This trims speculative flexibility
+  the documented workflow never exercised: the per-file output names are
+  derived from each input's basename alone, so multi-input runs needed a
+  defensive collision check whose existence was the only reason multi-input
+  was risky in the first place. With single-input, basenames within one
+  directory are unique by filesystem guarantee, so the failure mode and its
+  guard disappear together.
+
+### Removed
+
+- `cli._detect_basename_collisions` and its `TestDetectBasenameCollisions`
+  tests — no callers after the single-input `validate`/`clean` change above.
+- The realpath dedup loop inside `cli.discover_paths` (a single input has
+  nothing to dedup against). `discover_paths` and `check_paths` now take a
+  single path string rather than a list.
+
 ## [0.3.0] - 2026-05-27
 
 ### Added
@@ -98,8 +218,9 @@ All notable changes to this project are documented in this file. The format is b
   `summary` aggregates are NOT summed worker durations (`--jobs N`
   parallelism would inflate that), so `run.elapsed_seconds` is the
   authoritative end-to-end duration. The contract is locked by
-  `docs/superpowers/specs/2026-05-25-report-json-envelope.md` and the
-  golden fixture at `tests/fixtures/report-envelope-v1.golden.json`.
+  `docs/superpowers/archive/specs/2026-05-25-report-json-envelope.md` and the
+  golden fixture at `tests/fixtures/report-envelope-v1.golden.json` (the envelope was
+  later bumped to schema `"2"` and the fixture renamed `-v2`; see the Unreleased section).
   Closes #20.
 - New `lintle.diagnostics` module defines a stable, citable rule-ID registry
   (`TLE-COL-001`, `TLE-CHK-001`, `TLE-PAIR-001`, …) and a structured

@@ -10,8 +10,7 @@ except PackageNotFoundError:  # source checkout that was never installed
 
 
 def stem(filename):
-    """Return a filename without its trailing ``.txt`` extension.
-
-    ``"tle2022.txt"`` -> ``"tle2022"``; other names are returned unchanged.
+    """Return a filename without its trailing ``.txt`` extension
+    (``"tle2022.txt"`` -> ``"tle2022"``); names without it are returned unchanged.
     """
     return filename[:-4] if filename.endswith(".txt") else filename

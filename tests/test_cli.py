@@ -1,10 +1,13 @@
 """Tests for lintle.cli — argument parsing, path discovery, exit codes."""
 
+import io
 import json
 import os
 import queue
 import signal
-import time
+
+import pytest
+from rich.console import Console
 
 from lintle import cli, pipeline, report, resume
 
@@ -17,33 +20,172 @@ class TestDiscoverPaths:
         (tmp_path / "tle2001.broken.txt").write_text("x")  # tool output — excluded
         (tmp_path / "notes.md").write_text("x")  # not a TLE file
 
-        found = cli.discover_paths([str(tmp_path)])
+        found = cli.discover_paths(str(tmp_path))
 
         names = sorted(os.path.basename(p) for p in found)
         assert names == ["tle2001.txt", "tle2002.txt"]
 
-    def test_discover_passes_through_explicit_files(self, tmp_path):
+    def test_discover_passes_through_explicit_file(self, tmp_path):
         explicit = tmp_path / "tle2001.txt"
         explicit.write_text("x")
-        assert cli.discover_paths([str(explicit)]) == [str(explicit)]
+        assert cli.discover_paths(str(explicit)) == [str(explicit)]
+
+
+class TestResolveJobs:
+    """cli.resolve_jobs — default worker count (issue #53 §2.3/§3.4)."""
+
+    def test_default_reserves_one_core(self):
+        # Plenty of files, 8 cores: reserve one for the OS during the long run.
+        assert cli.resolve_jobs(None, 8, 100) == 7
+
+    def test_default_caps_at_file_count(self):
+        # 16 cores but only 4 files: no point spawning idle workers.
+        assert cli.resolve_jobs(None, 16, 4) == 4
+
+    def test_default_floor_is_one(self):
+        # Few cores must never resolve below a single worker.
+        assert cli.resolve_jobs(None, 2, 30) == 1
+        assert cli.resolve_jobs(None, 1, 30) == 1
+
+    def test_explicit_jobs_passthrough_not_capped(self):
+        # An explicit --jobs is the user's deliberate choice; never capped.
+        assert cli.resolve_jobs(16, 16, 4) == 16
+        assert cli.resolve_jobs(4, 8, 100) == 4
+
+
+class TestFormatSize:
+    """cli._format_size — human-readable byte counts for the roster (#53)."""
+
+    def test_bytes_below_one_kib(self):
+        assert cli._format_size(0) == "0 B"
+        assert cli._format_size(512) == "512 B"
+
+    def test_kilobytes(self):
+        assert cli._format_size(1024) == "1.0 KB"
+        assert cli._format_size(1536) == "1.5 KB"
+
+    def test_gigabytes(self):
+        assert cli._format_size(1024**3) == "1.0 GB"
+        assert cli._format_size(3 * 1024**3) == "3.0 GB"
+
+
+class TestRenderRoster:
+    """cli._render_roster — the size-only pre-run roster (#53 §2.1)."""
+
+    def test_lists_files_with_sizes_and_total(self, tmp_path):
+        f1 = tmp_path / "tle2001.txt"
+        f1.write_bytes(b"x" * 1536)  # 1.5 KB
+        f2 = tmp_path / "tle2002.txt"
+        f2.write_bytes(b"y" * 512)  # 512 B
+        console = Console(file=io.StringIO(), width=80)
+
+        cli._render_roster(console, {str(f1): 1536, str(f2): 512})
+
+        out = console.file.getvalue()
+        assert "tle2001.txt" in out
+        assert "tle2002.txt" in out
+        assert "1.5 KB" in out
+        assert "512 B" in out
+        assert "total" in out
+        assert "2.0 KB" in out  # 1536 + 512 = 2048 bytes
+
+    def test_renders_the_sizes_it_is_given(self, tmp_path):
+        # The roster renders the caller-supplied sizes verbatim — it never
+        # reads file contents (the caller stats once; the roster just displays).
+        f1 = tmp_path / "tle2001.txt"
+        f1.write_bytes(b"ignored")  # 7 bytes on disk, irrelevant
+        console = Console(file=io.StringIO(), width=80)
+
+        cli._render_roster(console, {str(f1): 2048})
+
+        # 2.0 KB proves the passed size (2048) was used, not the 7-byte content.
+        assert "2.0 KB" in console.file.getvalue()
+
+
+class TestProgressDisplayDrain:
+    """_ProgressDisplay folds the queue into running state (issue #53 §6).
+
+    These exercise the mode-independent tally/lifecycle logic (not rich's
+    rendering), so they run with a non-terminal console.
+    """
+
+    def _display(self, q):
+        console = Console(file=io.StringIO(), force_terminal=False, width=100)
+        return cli._ProgressDisplay(
+            total_files=2,
+            progress_queue=q,
+            console=console,
+            sizes={"a": 1000, "b": 500},
+        )
+
+    def test_progress_accumulates_overall_and_per_file_records(self):
+        q = queue.Queue()
+        disp = self._display(q)
+        for msg in [
+            ("start", "a"),
+            ("progress", "a", 100, 5),
+            ("progress", "a", 50, 3),
+        ]:
+            q.put(msg)
+        disp._drain()
+        assert disp._records == 8
+        assert disp._file_records["a"] == 8
+
+    def test_records_sum_across_files(self):
+        q = queue.Queue()
+        disp = self._display(q)
+        for msg in [
+            ("start", "a"),
+            ("start", "b"),
+            ("progress", "a", 10, 4),
+            ("progress", "b", 20, 6),
+        ]:
+            q.put(msg)
+        disp._drain()
+        assert disp._records == 10
+        assert disp._file_records == {"a": 4, "b": 6}
+
+    def test_end_clears_per_file_state_but_keeps_overall(self):
+        q = queue.Queue()
+        disp = self._display(q)
+        for msg in [("start", "a"), ("progress", "a", 10, 4), ("end", "a")]:
+            q.put(msg)
+        disp._drain()
+        assert "a" not in disp._file_records
+        assert disp._records == 4  # overall tally survives the file ending
+
+    def test_file_done_counts_and_logs_in_non_tty(self):
+        q = queue.Queue()
+        console = Console(file=io.StringIO(), force_terminal=False, width=100)
+        disp = cli._ProgressDisplay(2, q, console, sizes={})
+        stats = report.FileStats(src_name="tle2001.txt")
+        stats.clean_count = 7
+        stats.quarantined_count = 2
+
+        disp.file_done(stats)
+
+        out = console.file.getvalue()
+        assert disp._files_done == 1
+        assert "tle2001.txt" in out
+        assert "7" in out and "2" in out
 
 
 class TestBuildParser:
     def test_parser_defaults(self):
         args = cli.build_parser().parse_args(["validate"])
         assert args.command == "validate"
-        # paths defaults to None so main() can tell "user passed nothing"
+        # path defaults to None so main() can tell "user passed nothing"
         # apart from "user explicitly passed the default" for error wording.
-        assert args.paths == []
+        assert args.path is None
         assert args.out_dir == "data/output"
         assert args.report == "text"
 
-    def test_parser_accepts_jobs_and_paths(self):
+    def test_parser_accepts_jobs_and_path(self):
         args = cli.build_parser().parse_args(
-            ["clean", "a.txt", "b.txt", "--jobs", "4", "--report", "json"]
+            ["clean", "a.txt", "--jobs", "4", "--report", "json"]
         )
         assert args.command == "clean"
-        assert args.paths == ["a.txt", "b.txt"]
+        assert args.path == "a.txt"
         assert args.jobs == 4
         assert args.report == "json"
 
@@ -65,32 +207,34 @@ class TestBuildParser:
         assert "Examples:" in out
         assert "Exit codes:" in out
 
+    def test_parser_rejects_multiple_positional_inputs(self):
+        # Single-input contract: only one positional allowed.
+        import pytest
+
+        with pytest.raises(SystemExit) as exc:
+            cli.build_parser().parse_args(["clean", "a.txt", "b.txt"])
+        assert exc.value.code == 2  # argparse usage error
+
 
 class TestCheckPaths:
     def test_missing_default_yields_friendly_hint(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)  # no data/source here
-        err = cli.check_paths(["data/source"], using_default=True)
+        err = cli.check_paths("data/source", using_default=True)
         assert err is not None
         assert "data/source" in err
         assert "lintle --help" in err
+        assert "or create" in err  # pins the multi-line hint branch
 
     def test_missing_explicit_path_yields_plain_message(self, tmp_path):
-        err = cli.check_paths([str(tmp_path / "nope.txt")], using_default=False)
+        err = cli.check_paths(str(tmp_path / "nope.txt"), using_default=False)
         assert err is not None
         assert "no such file or directory" in err
         assert "data/source" not in err  # not the default-hint variant
 
-    def test_multiple_missing_paths_are_listed(self, tmp_path):
-        a = tmp_path / "a.txt"
-        b = tmp_path / "b.txt"
-        err = cli.check_paths([str(a), str(b)], using_default=False)
-        assert err is not None
-        assert str(a) in err and str(b) in err
-
-    def test_existing_paths_return_none(self, tmp_path):
+    def test_existing_path_returns_none(self, tmp_path):
         f = tmp_path / "x.txt"
         f.write_text("x")
-        assert cli.check_paths([str(f), str(tmp_path)], using_default=False) is None
+        assert cli.check_paths(str(f), using_default=False) is None
 
     def test_os_access_false_negative_does_not_refuse_run(self, tmp_path, monkeypatch):
         # os.access() consults POSIX mode bits and is a false-negative on
@@ -100,80 +244,13 @@ class TestCheckPaths:
         f = tmp_path / "readable.txt"
         f.write_text("x")
         monkeypatch.setattr(cli.os, "access", lambda _p, _m: False)
-        assert cli.check_paths([str(f)], using_default=False) is None
+        assert cli.check_paths(str(f), using_default=False) is None
 
 
 class TestDiscoverPathsEdgeCases:
-    def test_nonexistent_path_is_dropped(self, tmp_path):
-        # main() validates first, but discover_paths must be robust on its own:
-        # a missing entry no longer silently masquerades as a file.
-        assert cli.discover_paths([str(tmp_path / "missing")]) == []
-
-    def test_duplicate_explicit_paths_are_deduped(self, tmp_path):
-        # Passing the same file twice on the CLI is harmless; discover_paths
-        # collapses duplicates so process_file isn't invoked on the same path
-        # twice (its outputs would otherwise overwrite themselves).
-        f = tmp_path / "tle2099.txt"
-        f.write_text("x")
-        assert cli.discover_paths([str(f), str(f)]) == [str(f)]
-
-    def test_dir_and_explicit_file_inside_it_are_deduped(self, tmp_path):
-        # `lintle clean dirA dirA/tle2099.txt` should process the file once,
-        # not twice. Dedup is by canonical realpath so this works for plain
-        # paths and symlinks alike.
-        f = tmp_path / "tle2099.txt"
-        f.write_text("x")
-        found = cli.discover_paths([str(tmp_path), str(f)])
-        # One canonical entry, regardless of which spelling won the race.
-        canonical = {os.path.realpath(p) for p in found}
-        assert canonical == {os.path.realpath(f)}
-        assert len(found) == 1
-
-    def test_symlinked_path_is_deduped(self, tmp_path):
-        real = tmp_path / "tle2099.txt"
-        real.write_text("x")
-        link = tmp_path / "tle2099-link.txt"
-        link.symlink_to(real)
-        found = cli.discover_paths([str(real), str(link)])
-        # The link and its target are the same file; only one survives.
-        assert len(found) == 1
-
-
-class TestDetectBasenameCollisions:
-    def test_no_collisions_returns_none(self, tmp_path):
-        a = tmp_path / "tle2001.txt"
-        b = tmp_path / "tle2002.txt"
-        assert cli._detect_basename_collisions([str(a), str(b)]) is None
-
-    def test_returns_error_with_each_colliding_path(self, tmp_path):
-        # Two inputs with the same basename would write to the same
-        # cleaned/broken sidecar — silently overwriting each other.
-        dir_a = tmp_path / "a"
-        dir_a.mkdir()
-        dir_b = tmp_path / "b"
-        dir_b.mkdir()
-        a = dir_a / "tle2022.txt"
-        b = dir_b / "tle2022.txt"
-        err = cli._detect_basename_collisions([str(a), str(b)])
-        assert err is not None
-        assert "tle2022.txt" in err
-        assert str(a) in err and str(b) in err
-
-    def test_lists_all_collision_groups(self, tmp_path):
-        # Multiple distinct basename collisions all surface in one message.
-        dir_a = tmp_path / "a"
-        dir_a.mkdir()
-        dir_b = tmp_path / "b"
-        dir_b.mkdir()
-        files = [
-            str(dir_a / "tle2001.txt"),
-            str(dir_b / "tle2001.txt"),
-            str(dir_a / "tle2002.txt"),
-            str(dir_b / "tle2002.txt"),
-        ]
-        err = cli._detect_basename_collisions(files)
-        assert err is not None
-        assert "tle2001.txt" in err and "tle2002.txt" in err
+    def test_nonexistent_path_yields_empty(self, tmp_path):
+        # main() validates first, but discover_paths must be robust on its own.
+        assert cli.discover_paths(str(tmp_path / "missing")) == []
 
 
 class TestMain:
@@ -196,6 +273,29 @@ class TestMain:
         # broken-noradids.ndjson is always emitted on clean — empty when
         # nothing was quarantined, so downstream sees a stable artifact.
         assert (out / "broken-noradids.ndjson").read_bytes() == b""
+
+    def test_main_routes_default_jobs_through_resolve_jobs(
+        self, tmp_path, monkeypatch, line1, line2
+    ):
+        # With no --jobs, main() resolves the worker count via resolve_jobs,
+        # passing explicit=None and the count of files to process (issue #53).
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "tle2099.txt").write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
+        out = tmp_path / "out"
+        seen = {}
+        real = cli.resolve_jobs
+
+        def spy(explicit, cpu_count, n_files):
+            seen["explicit"] = explicit
+            seen["n_files"] = n_files
+            return real(explicit, cpu_count, n_files)
+
+        monkeypatch.setattr(cli, "resolve_jobs", spy)
+        rc = cli.main(["clean", str(src), "--out-dir", str(out)])
+
+        assert rc == 0
+        assert seen == {"explicit": None, "n_files": 1}
 
     def test_main_clean_writes_norad_ids_for_quarantined_records(
         self, tmp_path, line1, line2
@@ -269,6 +369,59 @@ class TestMain:
         assert "no such file or directory" in err
         assert "Traceback" not in err  # no stack trace leaks to the user
 
+    def test_main_returns_two_when_a_worker_raises(
+        self, tmp_path, line1, line2, monkeypatch
+    ):
+        # A worker exception (e.g. I/O error mid-stream) is an operational
+        # failure → exit 2 (spec §2.7). Exit 1 is the quarantine quality gate.
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "tle2099.txt").write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
+
+        _sentinel = object()
+
+        class _RaisingFuture:
+            def result(self):
+                raise RuntimeError("worker boom")
+
+        class _FakeExecutor:
+            def __init__(self, *_args, **_kwargs):
+                self._processes = {}
+                self._f = _RaisingFuture()
+
+            def submit(self, fn, *args, **kwargs):
+                return self._f
+
+            def shutdown(self, **_kwargs):
+                pass
+
+        fake_executor = None
+
+        def _capture_executor(*args, **kwargs):
+            nonlocal fake_executor
+            fake_executor = _FakeExecutor(*args, **kwargs)
+            return fake_executor
+
+        monkeypatch.setattr(
+            cli.concurrent.futures, "ProcessPoolExecutor", _capture_executor
+        )
+
+        def _as_completed_one(futures):
+            # Yield the one fake future so the collection loop can call result()
+            yield list(futures.keys())[0]
+
+        monkeypatch.setattr(cli.concurrent.futures, "as_completed", _as_completed_one)
+
+        original_sigint = signal.getsignal(signal.SIGINT)
+        try:
+            rc = cli.main(
+                ["clean", str(src), "--out-dir", str(tmp_path / "out"), "--jobs", "1"]
+            )
+        finally:
+            signal.signal(signal.SIGINT, original_sigint)
+
+        assert rc == 2
+
     def test_main_friendly_error_when_default_source_missing(
         self, tmp_path, monkeypatch, capsys
     ):
@@ -301,49 +454,6 @@ class TestMain:
         assert rc == 2
         assert "--jobs must be >= 1" in capsys.readouterr().err
 
-    def test_main_returns_two_on_basename_collision(self, tmp_path, capsys):
-        # Two input dirs each contain a file named tle2022.txt — their cleaned
-        # and broken outputs would silently overwrite each other under
-        # data/output/. main() must catch this upfront and refuse the run.
-        dir_a = tmp_path / "a"
-        dir_a.mkdir()
-        dir_b = tmp_path / "b"
-        dir_b.mkdir()
-        (dir_a / "tle2022.txt").write_text("x")
-        (dir_b / "tle2022.txt").write_text("x")
-
-        rc = cli.main(["validate", str(dir_a), str(dir_b), "--jobs", "1"])
-
-        assert rc == 2
-        err = capsys.readouterr().err
-        assert "tle2022.txt" in err
-        assert "collision" in err.lower() or "overwrite" in err.lower()
-        assert "Traceback" not in err
-
-    def test_main_does_not_collide_when_same_file_listed_twice(
-        self, tmp_path, line1, line2
-    ):
-        # `lintle clean dirA dirA/tle.txt` resolves to one file via
-        # discover_paths' realpath dedup — there's no collision to report.
-        src = tmp_path / "src"
-        src.mkdir()
-        f = src / "tle2099.txt"
-        f.write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
-
-        rc = cli.main(
-            [
-                "clean",
-                str(src),
-                str(f),
-                "--out-dir",
-                str(tmp_path / "out"),
-                "--jobs",
-                "1",
-            ]
-        )
-
-        assert rc == 0
-
     def test_main_returns_two_on_disk_shortfall(
         self, tmp_path, line1, line2, monkeypatch
     ):
@@ -358,6 +468,33 @@ class TestMain:
         monkeypatch.setattr(cli.shutil, "disk_usage", lambda _path: _Usage())
         rc = cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
         assert rc == 2
+
+    def test_main_warns_on_disk_borderline(
+        self, tmp_path, line1, line2, monkeypatch, capsys
+    ):
+        # Free space between 2x and 2.5x input lands in the borderline band:
+        # the run proceeds (exit 0 on a clean corpus) but lintle prints a
+        # warning to stderr so the user knows they are close to the guard.
+        src = tmp_path / "src"
+        src.mkdir()
+        input_file = src / "tle2099.txt"
+        input_file.write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
+        out = tmp_path / "out"
+        input_size = input_file.stat().st_size
+
+        class _Usage:
+            # 2.25x input — between the 2x abort floor and the 2.5x warn
+            # ceiling. Sits squarely in the borderline band.
+            free = int(input_size * 2.25)
+
+        monkeypatch.setattr(cli.shutil, "disk_usage", lambda _path: _Usage())
+        rc = cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
+
+        assert rc == 0
+        err = capsys.readouterr().err
+        assert "warning" in err.lower()
+        assert "free space" in err.lower()
+        assert "error" not in err.lower().split("\n")[0]  # not the abort path
 
     def test_main_prints_progress_to_stderr(self, tmp_path, line1, line2, capsys):
         src = tmp_path / "src"
@@ -386,7 +523,7 @@ class TestMain:
         data = json.loads(capsys.readouterr().out)
         # Top-level envelope shape (issue #20 spec §3).
         assert isinstance(data, dict)
-        assert data["schema_version"] == "1"
+        assert data["schema_version"] == "2"
         assert data["run"]["command"] == "validate"
         assert data["run"]["timestamp"].endswith("Z")
         assert isinstance(data["run"]["elapsed_seconds"], float)
@@ -403,7 +540,9 @@ class TestMain:
         assert isinstance(data["files"][0]["records_per_sec"], float)
         assert data["files"][0]["bytes"] > 0
 
-    def test_main_validate_lists_reject_locations(self, tmp_path, line1, line2, capsys):
+    def test_main_validate_lists_quarantine_locations(
+        self, tmp_path, line1, line2, capsys
+    ):
         src = tmp_path / "src"
         src.mkdir()
         bad_line1 = line1[:68] + "9"  # wrong checksum — the record is quarantined
@@ -520,7 +659,9 @@ class TestMain:
 class TestMaxQuarantinedThreshold:
     """Issue #13: ``--max-quarantined N`` allows CI to tolerate up to N
     quarantined records before the exit code flips to non-zero. Default
-    ``N=0`` preserves the legacy "any quarantine fails" behaviour.
+    ``N=0`` preserves the legacy "any quarantine fails" behaviour. Also
+    covers the trailing-``%`` rate form: ``--max-quarantined 1%`` fails the
+    run when more than 1% of routed records were quarantined.
     """
 
     def _write_one_bad_record(self, tmp_path, line1, line2):
@@ -530,6 +671,19 @@ class TestMaxQuarantinedThreshold:
         (src / "tle2099.txt").write_bytes(
             (bad_line1 + "\n" + line2 + "\n").encode("ascii")
         )
+        return src
+
+    def _write_n_good_and_one_bad(self, tmp_path, line1, line2, n_good):
+        # n_good copies of a valid 2-line record + one wrong-checksum pair.
+        # The bad pair is quarantined under TLE-CHK-001; the n_good pairs
+        # route to clean. Total routed = n_good + 1; quarantined = 1; rate
+        # = 1 / (n_good + 1).
+        src = tmp_path / "src"
+        src.mkdir()
+        bad_line1 = line1[:68] + "9"
+        body = (line1 + "\n" + line2 + "\n") * n_good
+        body += bad_line1 + "\n" + line2 + "\n"
+        (src / "tle2099.txt").write_bytes(body.encode("ascii"))
         return src
 
     def test_max_quarantined_one_allows_single_quarantined_record(
@@ -620,6 +774,119 @@ class TestMaxQuarantinedThreshold:
 
         assert rc == 2
         assert "--max-quarantined must be >= 0" in capsys.readouterr().err
+
+    def test_pct_under_threshold_passes(self, tmp_path, line1, line2):
+        # 1 bad of 100 routed records = 1.0%. `--max-quarantined 5%` is
+        # well above that, so the run exits 0.
+        src = self._write_n_good_and_one_bad(tmp_path, line1, line2, n_good=99)
+        out = tmp_path / "out"
+
+        rc = cli.main(
+            [
+                "clean",
+                str(src),
+                "--out-dir",
+                str(out),
+                "--jobs",
+                "1",
+                "--max-quarantined",
+                "5%",
+            ]
+        )
+
+        assert rc == 0
+
+    def test_pct_over_threshold_fails(self, tmp_path, line1, line2):
+        # 1 bad of 100 routed = 1.0%. `--max-quarantined 0.5%` is below
+        # that, so the run exits 1.
+        src = self._write_n_good_and_one_bad(tmp_path, line1, line2, n_good=99)
+        out = tmp_path / "out"
+
+        rc = cli.main(
+            [
+                "clean",
+                str(src),
+                "--out-dir",
+                str(out),
+                "--jobs",
+                "1",
+                "--max-quarantined",
+                "0.5%",
+            ]
+        )
+
+        assert rc == 1
+
+    def test_pct_at_exact_boundary_passes(self, tmp_path, line1, line2):
+        # 1 bad of 100 routed = exactly 1.0%. Strictly-greater semantics
+        # (matching count mode) mean exactly-at-boundary passes.
+        src = self._write_n_good_and_one_bad(tmp_path, line1, line2, n_good=99)
+        out = tmp_path / "out"
+
+        rc = cli.main(
+            [
+                "clean",
+                str(src),
+                "--out-dir",
+                str(out),
+                "--jobs",
+                "1",
+                "--max-quarantined",
+                "1%",
+            ]
+        )
+
+        assert rc == 0
+
+    def test_pct_hundred_percent_never_fails(self, tmp_path, line1, line2):
+        # 100% is the upper bound. The cross-multiplied comparison
+        # `100*q > 100*r` reduces to `q > r`, which is structurally
+        # impossible (quarantined <= routed). Even an all-bad input
+        # passes a 100% gate.
+        src = self._write_one_bad_record(tmp_path, line1, line2)
+        out = tmp_path / "out"
+
+        rc = cli.main(
+            [
+                "clean",
+                str(src),
+                "--out-dir",
+                str(out),
+                "--jobs",
+                "1",
+                "--max-quarantined",
+                "100%",
+            ]
+        )
+
+        assert rc == 0
+
+    def test_pct_applies_to_validate(self, tmp_path, line1, line2):
+        src = self._write_n_good_and_one_bad(tmp_path, line1, line2, n_good=99)
+
+        rc = cli.main(["validate", str(src), "--jobs", "1", "--max-quarantined", "5%"])
+
+        assert rc == 0
+
+    def test_pct_malformed_returns_2(self, tmp_path, line1, line2, capsys):
+        src = self._write_one_bad_record(tmp_path, line1, line2)
+
+        rc = cli.main(
+            ["validate", str(src), "--jobs", "1", "--max-quarantined", "1.2.3%"]
+        )
+
+        assert rc == 2
+        assert "invalid percentage" in capsys.readouterr().err
+
+    def test_pct_out_of_range_returns_2(self, tmp_path, line1, line2, capsys):
+        src = self._write_one_bad_record(tmp_path, line1, line2)
+
+        rc = cli.main(
+            ["validate", str(src), "--jobs", "1", "--max-quarantined", "150%"]
+        )
+
+        assert rc == 2
+        assert "percentage must be in 0..100" in capsys.readouterr().err
 
 
 class TestReportJsonl:
@@ -806,188 +1073,55 @@ class TestShutdownHelpers:
         assert "_processes" in err
 
 
-class TestProgressDisplay:
-    def test_drain_folds_queued_deltas_into_total(self):
-        progress = queue.Queue()
-        progress.put(10)
-        progress.put(5)
-        display = cli._ProgressDisplay(total_files=3, progress_queue=progress)
+class TestProgressDisplayRendering:
+    """_ProgressDisplay output and TTY/non-TTY modes (issue #53)."""
 
-        display._drain()
+    def test_file_failed_counts_and_logs_error(self):
+        console = Console(file=io.StringIO(), force_terminal=False, width=100)
+        disp = cli._ProgressDisplay(1, queue.Queue(), console, sizes={})
 
-        assert display._records == 15
+        disp.file_failed("bad.txt", RuntimeError("boom"))
 
-    def test_render_writes_a_status_line(self, capsys):
-        display = cli._ProgressDisplay(total_files=3, progress_queue=queue.Queue())
-        display._live = True
-        display._records = 1234
+        out = console.file.getvalue()
+        assert disp._files_done == 1
+        assert "[1/1]" in out and "bad.txt" in out and "boom" in out
 
-        display._render()
+    def test_non_tty_emits_no_ansi(self):
+        # Off a TTY the live block is suppressed and the per-file completion
+        # line is plain text — no ANSI escape sequences.
+        console = Console(file=io.StringIO(), force_terminal=False, width=100)
+        disp = cli._ProgressDisplay(1, queue.Queue(), console, sizes={"a": 100})
+        assert disp._live is False
+        stats = report.FileStats(src_name="a")
+        stats.clean_count = 1
+        stats.quarantined_count = 0
 
-        err = capsys.readouterr().err
-        assert "0/3 files" in err
-        assert "1,234 records" in err
+        disp.file_done(stats)
 
-    def test_render_includes_records_per_second(self, capsys, monkeypatch):
-        # Long runs are easier to monitor with a throughput number. Stubbing
-        # cli.time.monotonic pins elapsed to exactly 4 seconds so the rate
-        # is exactly 2,500 rec/s, not 2,499 (real-clock drift between the
-        # _start assignment and the _render call would otherwise floor it).
-        display = cli._ProgressDisplay(total_files=1, progress_queue=queue.Queue())
-        display._live = True
-        display._records = 10_000
-        display._start = 0.0
-        monkeypatch.setattr(cli.time, "monotonic", lambda: 4.0)
+        out = console.file.getvalue()
+        assert "\x1b[" not in out  # no ANSI escapes
+        assert "a — 1 clean, 0 quarantined" in out
 
-        display._render()
+    def test_live_mode_tracks_per_file_tasks(self):
+        # On a (forced) TTY, entering starts the rich live block; a per-file
+        # task appears on "start", advances on "progress", and is removed on
+        # "end". The drain thread is halted so the assertions are deterministic.
+        q = queue.Queue()
+        console = Console(file=io.StringIO(), force_terminal=True, width=100)
+        disp = cli._ProgressDisplay(1, q, console, sizes={"a": 1000})
+        with disp:
+            disp._stop.set()  # halt the drain thread; drive _drain ourselves
+            disp._thread.join()
 
-        err = capsys.readouterr().err
-        assert "2,500 rec/s" in err
+            q.put(("start", "a"))
+            q.put(("progress", "a", 200, 9))
+            disp._drain()
+            assert "a" in disp._tasks
+            assert disp._records == 9
 
-    def test_render_rps_handles_zero_elapsed_without_dividing(
-        self, capsys, monkeypatch
-    ):
-        # On the first frame elapsed is sub-second — never raise
-        # ZeroDivisionError, just show 0 rec/s until a second has passed.
-        display = cli._ProgressDisplay(total_files=1, progress_queue=queue.Queue())
-        display._live = True
-        display._records = 100
-        display._start = 0.0
-        monkeypatch.setattr(cli.time, "monotonic", lambda: 0.0)
-
-        display._render()
-
-        err = capsys.readouterr().err
-        assert "0 rec/s" in err
-
-    def test_render_shows_the_active_filename(self, capsys):
-        display = cli._ProgressDisplay(total_files=2, progress_queue=queue.Queue())
-        display._live = True
-        display._active["tle2024.txt"] = 0.0
-
-        display._render()
-
-        assert "tle2024.txt" in capsys.readouterr().err
-
-    def test_render_collapses_multiple_active_files(self, capsys):
-        # With --jobs N, several files run in parallel. Show the
-        # earliest-started one (the candidate slow file once peers finish)
-        # plus a count of the others so the line stays readable.
-        display = cli._ProgressDisplay(total_files=3, progress_queue=queue.Queue())
-        display._live = True
-        # Insertion order doubles as start-order: tle_first is the oldest.
-        display._active["tle_first.txt"] = 0.0
-        display._active["tle_second.txt"] = 1.0
-        display._active["tle_third.txt"] = 2.0
-
-        display._render()
-
-        err = capsys.readouterr().err
-        assert "tle_first.txt" in err
-        assert "+2 more" in err
-        # The other two names aren't spelled out — only the oldest is shown.
-        assert "tle_second.txt" not in err
-        assert "tle_third.txt" not in err
-
-    def test_drain_handles_start_event(self):
-        progress = queue.Queue()
-        progress.put(("start", "tle2024.txt"))
-        display = cli._ProgressDisplay(total_files=1, progress_queue=progress)
-
-        display._drain()
-
-        assert "tle2024.txt" in display._active
-
-    def test_drain_handles_end_event(self):
-        progress = queue.Queue()
-        progress.put(("end", "tle2024.txt"))
-        display = cli._ProgressDisplay(total_files=1, progress_queue=progress)
-        display._active["tle2024.txt"] = 0.0
-
-        display._drain()
-
-        assert "tle2024.txt" not in display._active
-
-    def test_drain_handles_mixed_int_and_event_messages(self):
-        # The queue interleaves record deltas with lifecycle events; drain
-        # must fold all of them in one pass without dropping any.
-        progress = queue.Queue()
-        progress.put(("start", "tle_a.txt"))
-        progress.put(100)
-        progress.put(("start", "tle_b.txt"))
-        progress.put(50)
-        progress.put(("end", "tle_a.txt"))
-        display = cli._ProgressDisplay(total_files=2, progress_queue=progress)
-
-        display._drain()
-
-        assert display._records == 150
-        assert "tle_a.txt" not in display._active
-        assert "tle_b.txt" in display._active
-
-    def test_drain_preserves_active_insertion_order(self):
-        # Showing the earliest-still-active file relies on dict insertion
-        # order — verify it survives a drain.
-        progress = queue.Queue()
-        progress.put(("start", "tle_first.txt"))
-        progress.put(("start", "tle_second.txt"))
-        display = cli._ProgressDisplay(total_files=2, progress_queue=progress)
-
-        display._drain()
-
-        assert list(display._active) == ["tle_first.txt", "tle_second.txt"]
-
-    def test_log_prints_the_message(self, capsys):
-        display = cli._ProgressDisplay(total_files=1, progress_queue=queue.Queue())
-        display.log("hello")
-        assert "hello" in capsys.readouterr().err
-
-    def test_log_clears_the_live_line_first(self, capsys):
-        display = cli._ProgressDisplay(total_files=1, progress_queue=queue.Queue())
-        display._live = True  # pretend stderr is a TTY
-        display.log("hello")
-        err = capsys.readouterr().err
-        assert "\x1b[K" in err  # the live line is cleared before the message
-        assert "hello" in err
-
-    def test_file_done_logs_a_summary_off_a_tty(self, capsys):
-        display = cli._ProgressDisplay(total_files=2, progress_queue=queue.Queue())
-        stats = report.FileStats(src_name="tle2099.txt")
-        stats.clean_count = 5
-        stats.quarantined_count = 1
-
-        display.file_done(stats)
-
-        err = capsys.readouterr().err
-        assert "[1/2] tle2099.txt" in err
-        assert "5 clean" in err and "1 quarantined" in err
-
-    def test_file_done_is_silent_on_a_tty(self, capsys):
-        display = cli._ProgressDisplay(total_files=2, progress_queue=queue.Queue())
-        display._live = True  # on a TTY the spinner shows progress instead
-        display.file_done(report.FileStats(src_name="tle2099.txt"))
-
-        assert "tle2099.txt" not in capsys.readouterr().err
-        assert display._files_done == 1
-
-    def test_file_failed_logs_the_error(self, capsys):
-        display = cli._ProgressDisplay(total_files=1, progress_queue=queue.Queue())
-        display.file_failed("bad.txt", RuntimeError("boom"))
-        err = capsys.readouterr().err
-        assert "[1/1]" in err and "bad.txt" in err and "boom" in err
-
-    def test_context_manager_runs_a_thread_and_clears_the_line(self, capsys):
-        progress = queue.Queue()
-        display = cli._ProgressDisplay(total_files=1, progress_queue=progress)
-        display._live = True  # exercise the repaint thread and the exit clear
-
-        with display:
-            progress.put(7)
-            time.sleep(0.15)  # let the repaint thread tick at least once
-
-        err = capsys.readouterr().err
-        assert "\x1b[K" in err  # the live line was painted, then cleared on exit
-        assert display._records == 7  # the queued delta was drained
+            q.put(("end", "a"))
+            disp._drain()
+            assert "a" not in disp._tasks
 
 
 class TestExplainCommand:
@@ -1029,21 +1163,38 @@ def _strip_generated(path):
     )
 
 
-def _simulate_interrupted_clean(src_paths, out_dir, *, completed_count):
+def _simulate_interrupted_clean(
+    src_paths, out_dir, *, completed_count, run_identity=None
+):
     """Leave `out_dir` looking exactly like a clean run interrupted partway:
     the first `completed_count` files fully processed (their cleaned/broken
     outputs and findings shards committed, as a worker leaves them — no
     end-of-run concat), plus a checkpoint that lists them complete with every
     input fingerprinted. Mirrors the real interrupted state without needing to
-    actually kill a parallel run."""
+    actually kill a parallel run. ``run_identity`` defaults to the schema-v2
+    shape used by ``main()`` (``{"max_quarantined": "0"}``)."""
+    if run_identity is None:
+        run_identity = {"max_quarantined": "0"}
     os.makedirs(out_dir, exist_ok=True)
     inputs = {p: resume.input_fingerprint(p) for p in src_paths}
     completed = {}
     for path in src_paths[:completed_count]:
         stats = pipeline.process_file(path, out_dir, "clean")
-        completed[path] = report.summary_dict(stats)
+        cleaned_name = os.path.splitext(os.path.basename(path))[0] + ".cleaned.txt"
+        sizes = {}
+        cleaned_path = os.path.join(out_dir, "cleaned", cleaned_name)
+        if os.path.exists(cleaned_path):
+            sizes[cleaned_name] = os.path.getsize(cleaned_path)
+        broken_name = os.path.splitext(os.path.basename(path))[0] + ".broken.txt"
+        broken_path = os.path.join(out_dir, "broken", broken_name)
+        if os.path.exists(broken_path):
+            sizes[broken_name] = os.path.getsize(broken_path)
+        completed[path] = {"summary": report.summary_dict(stats), "outputs": sizes}
     resume.write_checkpoint(
-        out_dir, resume.build_checkpoint(inputs=inputs, completed=completed)
+        out_dir,
+        resume.build_checkpoint(
+            inputs=inputs, completed=completed, run_identity=run_identity
+        ),
     )
 
 
@@ -1071,6 +1222,8 @@ class TestResume:
         assert not (out / resume.CHECKPOINT_NAME).exists()
 
     def test_resume_without_checkpoint_errors(self, tmp_path, line1, line2, capsys):
+        # --resume (explicit force-resume) with no checkpoint: ABSENT + resume
+        # → ABORT with exit_code=2 (operational error, not the quarantine gate).
         src = self._two_file_src(tmp_path, line1, line2)
         out = tmp_path / "out"
         out.mkdir()
@@ -1083,7 +1236,7 @@ class TestResume:
 
     def test_resume_finishes_and_matches_full_run(self, tmp_path, line1, line2):
         src = self._two_file_src(tmp_path, line1, line2)
-        paths = cli.discover_paths([str(src)])
+        paths = cli.discover_paths(str(src))
         out_full = tmp_path / "full"
         rc_full = cli.main(
             ["clean", str(src), "--out-dir", str(out_full), "--jobs", "1"]
@@ -1129,6 +1282,8 @@ class TestResume:
         assert not (out_partial / ".shards").exists()
 
     def test_fresh_run_clears_stale_checkpoint(self, tmp_path, line1, line2):
+        # --no-resume discards an incompatible checkpoint and starts fresh
+        # (archives it, scrubs output trees, reprocesses everything).
         src = self._two_file_src(tmp_path, line1, line2)
         out = tmp_path / "out"
         out.mkdir()
@@ -1144,17 +1299,22 @@ class TestResume:
                     }
                 },
                 completed={},
+                run_identity={},
             ),
         )
-        rc = cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
+        rc = cli.main(
+            ["clean", str(src), "--out-dir", str(out), "--no-resume", "--jobs", "1"]
+        )
         assert rc == 1  # quarantines present
         assert not (out / resume.CHECKPOINT_NAME).exists()
         assert (out / "cleaned" / "tle2098.cleaned.txt").exists()
         assert (out / "cleaned" / "tle2099.cleaned.txt").exists()
 
     def test_resume_refuses_when_input_changed(self, tmp_path, line1, line2, capsys):
+        # --resume (explicit force-resume) with a stale checkpoint (input changed)
+        # → STALE + resume flag → ABORT with exit_code=2.
         src = self._two_file_src(tmp_path, line1, line2)
-        paths = cli.discover_paths([str(src)])
+        paths = cli.discover_paths(str(src))
         out_partial = tmp_path / "partial"
         _simulate_interrupted_clean(paths, str(out_partial), completed_count=1)
         # The not-yet-processed input changes between "office" and "home".
@@ -1209,6 +1369,7 @@ class TestResume:
         self, tmp_path, line1, line2, capsys
     ):
         # A present-but-corrupt checkpoint must not be reported as "not found".
+        # CORRUPT + any flag (or no flag) → ABORT with exit_code=2 unless --no-resume.
         src = self._two_file_src(tmp_path, line1, line2)
         out = tmp_path / "out"
         out.mkdir()
@@ -1220,3 +1381,356 @@ class TestResume:
         assert rc == 2
         assert "corrupt" in err.lower() or "unreadable" in err.lower()
         assert "no interrupted run" not in err.lower()
+
+
+class TestParseQuarantineThreshold:
+    """The ``--max-quarantined`` value parser. A bare integer is an absolute
+    count; a trailing ``%`` switches to a percentage of routed records. The
+    two modes are mutually exclusive by construction (a single value is one
+    or the other, never both).
+    """
+
+    def test_bare_integer_is_count_mode(self):
+        assert cli.parse_quarantine_threshold("100") == ("count", 100)
+
+    def test_zero_is_count_zero(self):
+        assert cli.parse_quarantine_threshold("0") == ("count", 0)
+
+    def test_trailing_percent_is_pct_mode(self):
+        assert cli.parse_quarantine_threshold("1%") == ("pct", 1.0)
+
+    def test_zero_percent_is_valid(self):
+        assert cli.parse_quarantine_threshold("0%") == ("pct", 0.0)
+
+    def test_hundred_percent_is_valid(self):
+        assert cli.parse_quarantine_threshold("100%") == ("pct", 100.0)
+
+    def test_fractional_percent(self):
+        assert cli.parse_quarantine_threshold("1.5%") == ("pct", 1.5)
+
+    def test_surrounding_whitespace_tolerated(self):
+        assert cli.parse_quarantine_threshold("  100  ") == ("count", 100)
+        assert cli.parse_quarantine_threshold("  1%  ") == ("pct", 1.0)
+
+    def test_negative_count_rejected_with_legacy_message(self):
+        # Preserves the issue-#13 substring required by the existing
+        # negative-value integration test in TestMaxQuarantinedThreshold.
+        with pytest.raises(ValueError, match=r"--max-quarantined must be >= 0"):
+            cli.parse_quarantine_threshold("-1")
+
+    def test_non_integer_count_rejected(self):
+        # Counts are whole records; "1.5" with no `%` is not a count.
+        with pytest.raises(ValueError, match="invalid value"):
+            cli.parse_quarantine_threshold("1.5")
+
+    def test_non_numeric_rejected(self):
+        with pytest.raises(ValueError, match="invalid value"):
+            cli.parse_quarantine_threshold("abc")
+
+    def test_bare_percent_rejected(self):
+        with pytest.raises(ValueError, match="invalid percentage"):
+            cli.parse_quarantine_threshold("%")
+
+    def test_pct_over_one_hundred_rejected(self):
+        with pytest.raises(ValueError, match=r"percentage must be in 0\.\.100"):
+            cli.parse_quarantine_threshold("150%")
+
+    def test_pct_negative_rejected(self):
+        with pytest.raises(ValueError, match=r"percentage must be in 0\.\.100"):
+            cli.parse_quarantine_threshold("-1%")
+
+    def test_pct_malformed_rejected(self):
+        with pytest.raises(ValueError, match="invalid percentage"):
+            cli.parse_quarantine_threshold("1.2.3%")
+
+    def test_inner_whitespace_around_percent_tolerated(self):
+        # A space between the number and the `%` is accepted: the helper
+        # strips the inner whitespace before parsing the float, so the
+        # value still resolves to the same percentage.
+        assert cli.parse_quarantine_threshold("1 %") == ("pct", 1.0)
+        assert cli.parse_quarantine_threshold("  1.5 %  ") == ("pct", 1.5)
+
+
+class TestIsInteractive:
+    def test_requires_stdin_tty_and_no_ci(self, monkeypatch):
+        monkeypatch.setattr(cli.sys, "stdin", io.StringIO())  # not a tty
+        monkeypatch.delenv("CI", raising=False)
+        monkeypatch.delenv("NONINTERACTIVE", raising=False)
+        assert cli._is_interactive() is False
+
+    def test_ci_env_forces_non_interactive(self, monkeypatch):
+        class _TTY(io.StringIO):
+            def isatty(self):
+                return True
+
+        monkeypatch.setattr(cli.sys, "stdin", _TTY())
+        monkeypatch.setenv("CI", "true")
+        assert cli._is_interactive() is False
+
+    def test_interactive_when_stdin_tty_and_no_ci(self, monkeypatch):
+        class _TTY(io.StringIO):
+            def isatty(self):
+                return True
+
+        monkeypatch.setattr(cli.sys, "stdin", _TTY())
+        monkeypatch.delenv("CI", raising=False)
+        monkeypatch.delenv("NONINTERACTIVE", raising=False)
+        assert cli._is_interactive() is True
+
+
+class TestPromptYesNo:
+    def test_enter_takes_default(self, monkeypatch):
+        monkeypatch.setattr(cli.sys, "stdin", io.StringIO("\n"))
+        assert cli._prompt_yes_no("go? ", default=True) is True
+
+    def test_explicit_no(self, monkeypatch):
+        monkeypatch.setattr(cli.sys, "stdin", io.StringIO("n\n"))
+        assert cli._prompt_yes_no("go? ", default=True) is False
+
+    def test_eof_returns_none(self, monkeypatch):
+        monkeypatch.setattr(cli.sys, "stdin", io.StringIO(""))
+        assert cli._prompt_yes_no("go? ", default=True) is None
+
+    def test_garbage_then_abort(self, monkeypatch):
+        monkeypatch.setattr(cli.sys, "stdin", io.StringIO("maybe\nhuh\nwhat\n"))
+        assert cli._prompt_yes_no("go? ", default=True) is None
+
+
+class TestScrubOutputs:
+    def test_removes_output_trees(self, tmp_path):
+        out = tmp_path
+        for sub in ("cleaned", "broken", ".shards"):
+            d = out / sub
+            d.mkdir()
+            (d / "stale.txt").write_text("old")
+        cli._scrub_outputs(str(out))
+        for sub in ("cleaned", "broken", ".shards"):
+            assert not (out / sub).exists()
+
+    def test_noop_on_empty_dir(self, tmp_path):
+        cli._scrub_outputs(str(tmp_path))  # must not raise
+
+
+class TestSignalHandling:
+    def test_cancel_message_names_counts_and_flag(self):
+        msg = cli._format_cancel_message(done=12, total=29)
+        assert "12/29" in msg
+        assert "--no-resume" in msg
+        assert "same --out-dir" in msg
+
+    def test_signal_exit_code(self):
+        assert cli._signal_exit_code(signal.SIGINT) == 130
+        assert cli._signal_exit_code(signal.SIGTERM) == 143
+
+    def test_sigterm_sighup_traps_installed_and_raise(
+        self, tmp_path, line1, line2, monkeypatch
+    ):
+        # A clean run must trap SIGTERM and SIGHUP (not just SIGINT) so a
+        # scheduler/preemption kill stops gracefully and exits 128+signo. We
+        # don't deliver a real signal (flaky); we capture what main() registers
+        # and confirm the installed trap raises KeyboardInterrupt — which the
+        # executor's except-path converts to the signal exit code (§3.2).
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "tle2000.txt").write_bytes((line1 + "\n" + line2 + "\n").encode())
+        out = tmp_path / "out"
+
+        registered = {}
+        real_signal = cli.signal.signal
+
+        def recording_signal(signum, handler):
+            registered.setdefault(signum, []).append(handler)
+            return real_signal(signum, handler)
+
+        monkeypatch.setattr(cli.signal, "signal", recording_signal)
+        rc = cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
+        assert rc == 0
+
+        assert signal.SIGTERM in registered, "SIGTERM was never trapped"
+        assert signal.SIGHUP in registered, "SIGHUP was never trapped"
+        # The first handler installed for SIGTERM during the run is the trap;
+        # invoking it must raise KeyboardInterrupt (the graceful-stop trigger).
+        trap = registered[signal.SIGTERM][0]
+        with pytest.raises(KeyboardInterrupt):
+            trap(signal.SIGTERM, None)
+
+
+class TestLockWiring:
+    def test_refuses_when_locked(self, tmp_path, line1, line2):
+        from lintle import fsutil
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "tle2000.txt").write_bytes((line1 + "\n" + line2 + "\n").encode())
+        out = tmp_path / "out"
+        out.mkdir()
+        with fsutil.out_dir_lock(str(out)):  # simulate a concurrent run
+            rc = cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
+        assert rc == 2  # operational refusal — lock held
+
+
+class TestResumeWiring:
+    """Task 11: --no-resume flag + decision-core wiring in main() (spec §2)."""
+
+    def _make_src(self, tmp_path, line1, line2, n=2):
+        src = tmp_path / "src"
+        src.mkdir()
+        for i in range(n):
+            (src / f"tle20{i:02d}.txt").write_bytes(
+                (line1 + "\n" + line2 + "\n").encode()
+            )
+        return src
+
+    def test_no_resume_and_resume_are_mutually_exclusive(
+        self, tmp_path, line1, line2, capsys
+    ):
+        src = self._make_src(tmp_path, line1, line2)
+        out = tmp_path / "out"
+        with pytest.raises(SystemExit) as exc:
+            cli.main(
+                [
+                    "clean",
+                    str(src),
+                    "--out-dir",
+                    str(out),
+                    "--resume",
+                    "--no-resume",
+                    "--jobs",
+                    "1",
+                ]
+            )
+        assert exc.value.code == 2  # argparse usage error
+
+    def test_default_run_with_no_checkpoint_is_fresh_and_succeeds(
+        self, tmp_path, line1, line2
+    ):
+        src = self._make_src(tmp_path, line1, line2)
+        out = tmp_path / "out"
+        rc = cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
+        assert rc == 0
+        # checkpoint deleted on success
+        assert not (out / ".clean-state.json").exists()
+
+    def test_auto_resume_when_checkpoint_valid(self, tmp_path, line1, line2):
+        # DEFAULT behavior (no --resume flag, no --no-resume flag, non-interactive
+        # environment — pytest has no TTY): a valid checkpoint is picked up
+        # automatically and the completed files are skipped.
+        src = self._make_src(tmp_path, line1, line2)
+        paths = cli.discover_paths(str(src))
+        out_full = tmp_path / "full"
+        rc_full = cli.main(
+            ["clean", str(src), "--out-dir", str(out_full), "--jobs", "1"]
+        )
+
+        out_partial = tmp_path / "partial"
+        _simulate_interrupted_clean(paths, str(out_partial), completed_count=1)
+        # Note the mtime of the already-completed file so we can confirm it
+        # was NOT reprocessed.
+        first_name = os.path.basename(paths[0])
+        first_stem = os.path.splitext(first_name)[0]
+        first_cleaned = out_partial / "cleaned" / f"{first_stem}.cleaned.txt"
+        mtime_before = first_cleaned.stat().st_mtime_ns
+
+        # No --resume flag — auto-resume is the default in non-interactive mode.
+        rc_auto = cli.main(
+            ["clean", str(src), "--out-dir", str(out_partial), "--jobs", "1"]
+        )
+
+        assert rc_auto == rc_full
+        # The already-completed file was skipped, not reprocessed.
+        assert first_cleaned.stat().st_mtime_ns == mtime_before
+        # report.jsonl output matches the full run.
+        assert (out_partial / "report.jsonl").read_bytes() == (
+            out_full / "report.jsonl"
+        ).read_bytes()
+        # A successful auto-resume tears down the checkpoint and shards.
+        assert not (out_partial / resume.CHECKPOINT_NAME).exists()
+        assert not (out_partial / ".shards").exists()
+
+
+class TestFreshRunOrphanScrub:
+    """Gap 1 (spec §3.4): a true-fresh run wipes cleaned/ + broken/ so outputs
+    from a prior run whose input is no longer in the input set do not linger."""
+
+    def test_no_resume_scrubs_orphaned_outputs(self, tmp_path, line1, line2):
+        # Step 1 — run on two inputs; both cleaned outputs are written.
+        src = tmp_path / "src"
+        src.mkdir()
+        content = (line1 + "\n" + line2 + "\n").encode("ascii")
+        (src / "tle2000.txt").write_bytes(content)
+        (src / "tle2001.txt").write_bytes(content)
+        out = tmp_path / "out"
+
+        rc1 = cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
+        assert rc1 == 0
+        assert (out / "cleaned" / "tle2000.cleaned.txt").exists()
+        assert (out / "cleaned" / "tle2001.cleaned.txt").exists()
+        # A completed run deletes the checkpoint.
+        assert not (out / resume.CHECKPOINT_NAME).exists()
+
+        # Step 2 — remove tle2001.txt from the input set; its cleaned output is
+        # now an orphan in the out-dir.
+        (src / "tle2001.txt").unlink()
+        assert (out / "cleaned" / "tle2001.cleaned.txt").exists()  # orphan present
+
+        # Step 3 — fresh run (--no-resume) on the now-one-file dir.
+        rc2 = cli.main(
+            ["clean", str(src), "--out-dir", str(out), "--no-resume", "--jobs", "1"]
+        )
+        assert rc2 == 0
+
+        # The output for the surviving input must exist.
+        assert (out / "cleaned" / "tle2000.cleaned.txt").exists()
+
+        # The orphan from the prior run must be gone — spec §3.4 guarantees
+        # the fresh run scrubs the whole cleaned/ tree before processing.
+        assert not (out / "cleaned" / "tle2001.cleaned.txt").exists()
+
+
+class TestStaleCheckpointNonInteractive:
+    """Gap 2 (spec §2.3): STALE checkpoint + no flag + non-interactive mode
+    must exit 2 and print the change reason plus a --no-resume hint.
+
+    ``test_resume_refuses_when_input_changed`` in TestResume covers the
+    STALE + *explicit --resume flag* cell.  This class covers the
+    STALE + *no flag* + non-interactive cell — a different branch in
+    resolve_resume_action — so both are independently tested."""
+
+    def _make_stale_setup(self, tmp_path, line1, line2):
+        """Return (src, out_partial) with a valid checkpoint whose fingerprint
+        will not match after we mutate the input."""
+        src = tmp_path / "src"
+        src.mkdir()
+        content = (line1 + "\n" + line2 + "\n").encode("ascii")
+        (src / "tle2000.txt").write_bytes(content)
+        (src / "tle2001.txt").write_bytes(content)
+        paths = cli.discover_paths(str(src))
+        out_partial = tmp_path / "partial"
+        _simulate_interrupted_clean(paths, str(out_partial), completed_count=1)
+        return src, out_partial
+
+    def test_stale_checkpoint_non_interactive_errors(
+        self, tmp_path, line1, line2, capsys, monkeypatch
+    ):
+        # Ensure non-interactive mode regardless of the test runner environment.
+        monkeypatch.setenv("CI", "true")
+
+        src, out_partial = self._make_stale_setup(tmp_path, line1, line2)
+
+        # Mutate tle2001.txt so its fingerprint no longer matches the checkpoint.
+        with open(src / "tle2001.txt", "ab") as fh:
+            fh.write(b"extra junk\n")
+
+        # No --resume and no --no-resume: the default path.
+        rc = cli.main(["clean", str(src), "--out-dir", str(out_partial), "--jobs", "1"])
+        err = capsys.readouterr().err
+
+        # spec §2.3: STALE + no flag + non-interactive → exit 2 + guidance.
+        assert rc == 2
+        # The error message must name the change reason.
+        assert "input changed" in err.lower() or "cannot resume" in err.lower()
+        # The guidance hint directs the operator to --no-resume.
+        assert "--no-resume" in err
+        # The checkpoint must survive (not silently discarded) so the operator
+        # can inspect what changed before choosing to discard or investigate.
+        assert (out_partial / resume.CHECKPOINT_NAME).exists()

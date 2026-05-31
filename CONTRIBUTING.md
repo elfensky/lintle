@@ -25,7 +25,13 @@ uv add --group dev <pkg>   # Add a dev-only dependency
 uv sync                    # Reinstall from the lock file (after a pull)
 ```
 
-The **runtime has no third-party dependencies** — `lintle` is pure standard library.
+The runtime's one third-party dependency is **`rich`** (`>=13,<14`, terminal rendering for
+`clean`). Further additions are governed by a *relaxed* policy (2026-05-31): a popular,
+actively-maintained library that genuinely reduces the code we'd otherwise own may be adopted
+where it makes sense — gated only by the hard correctness invariants (one validator,
+constant-memory streaming, byte-deterministic *unstyled* structured/stdout output, the
+atomic-durable commit + host-aware lock, `sgp4`-never-at-runtime). The canonical rule and
+considered/deferred table live in [`ARCHITECTURE.md` §7](ARCHITECTURE.md#7-runtime-dependency-policy).
 `sgp4` is a dev-only test oracle and must never be imported at runtime.
 
 ## Running

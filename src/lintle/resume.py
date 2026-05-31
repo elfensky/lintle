@@ -5,32 +5,38 @@ and deletes it on full success, so the checkpoint's *presence* marks an
 interrupted run. ``--resume`` consults it: validate (refuse on any change to the
 lintle version or the input set's identity), skip files already committed, and
 finish the job. The checkpoint is scoped to *completing one run* — not a
-cross-run skip cache (contrast the rejected manifest, design §13). Pure standard
+cross-run skip cache (contrast the declined manifest, design §13). Pure standard
 library.
 """
 
 import contextlib
+import dataclasses
+import enum
 import hashlib
 import json
 import os
 
-from lintle import __version__
+from lintle import __version__, fsutil
 
 CHECKPOINT_NAME = ".clean-state.json"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 3
 # Head+tail window hashed for input identity — large enough that any append
 # (tail changes) or truncation (size changes) is caught in one seek, small
 # enough to stay O(1) regardless of file size. A one-time correctness gate on
-# resume, not a per-run skip cache (issue #56; contrast the rejected §13 manifest).
+# resume, not a per-run skip cache (issue #56; contrast the declined §13 manifest).
 _HASH_WINDOW = 65536
 
 
 def input_fingerprint(path):
-    """Return a cheap identity for ``path``: size, integer ``mtime_ns``, and the
-    SHA-256 of its first and last 64 KB. Integer ``mtime_ns`` (not the float
-    ``st_mtime``) avoids JSON round-trip precision loss and cross-filesystem
-    granularity skew. Files at or below the window hash their whole content for
-    both windows. Constant memory — the interior is never read.
+    """Return a cheap identity for ``path``: size, integer ``mtime_ns``,
+    ``ctime_ns``, inode number, and SHA-256 of its first and last 64 KB.
+    Integer nanosecond timestamps avoid JSON round-trip precision loss and
+    cross-filesystem granularity skew. ``ctime_ns`` + inode catch
+    metadata-preserving copies (``cp -p``, ``rsync -t``, ``touch -r``) and
+    replace-by-rename; residual: an interior edit that also preserves
+    size+mtime+ctime+inode is not detected (spec §3.5/§7). Files at or below
+    the window hash their whole content for both windows. Constant memory —
+    the interior is never read.
     """
     st = os.stat(path)
     with open(path, "rb") as handle:
@@ -43,20 +49,25 @@ def input_fingerprint(path):
     return {
         "size": st.st_size,
         "mtime_ns": st.st_mtime_ns,
+        "ctime_ns": st.st_ctime_ns,
+        "inode": st.st_ino,
         "head_sha256": hashlib.sha256(head).hexdigest(),
         "tail_sha256": hashlib.sha256(tail).hexdigest(),
     }
 
 
-def build_checkpoint(*, inputs, completed):
-    """Assemble the checkpoint payload, pinning the current schema and lintle
-    version. ``inputs`` maps each discovered input path to its
-    :func:`input_fingerprint`; ``completed`` maps each fully-processed path to
-    its :func:`report.summary_dict` snapshot.
+def build_checkpoint(*, inputs, completed, run_identity):
+    """Assemble the checkpoint payload, pinning schema, lintle version, and the
+    run identity (spec §3.1). ``inputs`` maps each discovered input path to its
+    :func:`input_fingerprint`; ``completed`` maps each fully-processed path to a
+    ``{"summary": summary_dict, "outputs": {name: size}}`` record (output sizes
+    back the integrity re-verification of a resumed run). ``run_identity`` pins
+    output-affecting configuration beyond version+inputs.
     """
     return {
         "schema_version": SCHEMA_VERSION,
         "lintle_version": __version__,
+        "run_identity": run_identity,
         "inputs": inputs,
         "completed": completed,
     }
@@ -67,15 +78,17 @@ def _checkpoint_path(out_dir):
 
 
 def write_checkpoint(out_dir, checkpoint):
-    """Write ``checkpoint`` to ``<out_dir>/.clean-state.json`` atomically via a
-    ``.partial`` temp + ``os.replace``, so a reader — or a crash mid-write —
-    never sees a half-written file. Returns the destination path.
+    """Write ``checkpoint`` to ``<out_dir>/.clean-state.json`` atomically and
+    durably via a ``.partial`` temp + :func:`fsutil.durable_replace`, so a
+    reader — or a crash mid-write — never sees a half-written file, and the
+    committed checkpoint survives a hard power loss (issue #58). Returns the
+    destination path.
     """
     dest = _checkpoint_path(out_dir)
     tmp = dest + ".partial"
     with open(tmp, "w", encoding="utf-8", newline="\n") as handle:
         json.dump(checkpoint, handle, separators=(",", ":"), sort_keys=True)
-    os.replace(tmp, dest)
+    fsutil.durable_replace(tmp, dest)
     return dest
 
 
@@ -87,8 +100,63 @@ def load_checkpoint(out_dir):
     try:
         with open(_checkpoint_path(out_dir), encoding="utf-8") as handle:
             return json.load(handle)
-    except (OSError, json.JSONDecodeError):
+    except OSError, json.JSONDecodeError:
         return None
+
+
+class CheckpointStatus(enum.Enum):
+    """Outcome of inspecting an on-disk checkpoint: absent, corrupt (unreadable
+    or malformed), valid (matches the current run), or stale (present but no
+    longer matching this run's identity)."""
+
+    ABSENT = "absent"
+    CORRUPT = "corrupt"
+    VALID = "valid"
+    STALE = "stale"
+
+
+@dataclasses.dataclass
+class Classification:
+    """Result of :func:`classify_checkpoint` — bundles status, optional reason string
+    (populated for STALE), and the parsed payload (populated for VALID and STALE).
+    """
+
+    status: CheckpointStatus
+    reason: str | None = None
+    checkpoint: dict | None = None
+
+
+def classify_checkpoint(out_dir, current_inputs, current_run_identity):
+    """Classify the checkpoint in ``out_dir`` against the current run (spec §2.3).
+    Distinguishes ABSENT (no file), CORRUPT (present but unparseable — never
+    treated as absent, so a damaged interrupted run is surfaced, not silently
+    discarded), VALID, and STALE(reason).
+    """
+    if not os.path.exists(_checkpoint_path(out_dir)):
+        return Classification(CheckpointStatus.ABSENT)
+    checkpoint = load_checkpoint(out_dir)
+    if checkpoint is None:
+        return Classification(CheckpointStatus.CORRUPT)
+    reason = validate_run_identity(checkpoint, current_inputs, current_run_identity)
+    if reason is not None:
+        return Classification(
+            CheckpointStatus.STALE, reason=reason, checkpoint=checkpoint
+        )
+    return Classification(CheckpointStatus.VALID, checkpoint=checkpoint)
+
+
+def archive_checkpoint(out_dir, *, timestamp):
+    """Rename the checkpoint to ``.clean-state.json.stale-<timestamp>`` so a fresh
+    run never silently destroys a recoverable interrupted run (spec §2.3): the
+    operator can downgrade/revert and recover it. Returns the archived basename,
+    or None if there was no checkpoint. ``timestamp`` is supplied by the caller
+    (clock access is forbidden in pure helpers)."""
+    src = _checkpoint_path(out_dir)
+    if not os.path.exists(src):
+        return None
+    archived = f"{CHECKPOINT_NAME}.stale-{timestamp}"
+    os.replace(src, os.path.join(out_dir, archived))
+    return archived
 
 
 def delete_checkpoint(out_dir):
@@ -99,15 +167,116 @@ def delete_checkpoint(out_dir):
         os.remove(_checkpoint_path(out_dir))
 
 
-def validate_resumable(checkpoint, current_inputs):
-    """Return a human-readable reason the ``checkpoint`` cannot be resumed against
-    ``current_inputs`` (``{path: input_fingerprint}``), or ``None`` if it can.
+# The output trees a `clean` run writes into, under ``--out-dir``. The
+# filename→tree mapping (``.cleaned.txt`` vs ``.broken.txt``) is owned by
+# report.py; the resume verifier just searches these rather than re-encoding it.
+_OUTPUT_DIRS = ("cleaned", "broken")
 
-    Refuse-on-change (issue #56): a resume is valid only against the exact code
-    and inputs that produced it. Any drift — unknown schema, a different lintle
-    version, an added or removed input, or a changed file identity — invalidates
-    the whole checkpoint, so the operator re-runs a clean full pass rather than
-    silently mixing outputs from two states.
+
+def _locate_output(out_dir, name):
+    """Return the on-disk path of output basename ``name`` under ``out_dir``'s
+    output trees, or None if it is in none of them. Searching the known trees
+    (rather than inferring the directory from the filename suffix) keeps the
+    output-naming convention in one place — report.py — not duplicated here."""
+    for sub in _OUTPUT_DIRS:
+        candidate = os.path.join(out_dir, sub, name)
+        if os.path.exists(candidate):
+            return candidate
+    return None
+
+
+def verify_completed_outputs(completed, out_dir):
+    """Return the list of input paths whose recorded outputs are missing or do
+    not match their recorded size (spec §3.6). A checkpoint entry is trusted only
+    when every output file it named still exists on disk at the exact byte size
+    captured at completion — guarding against a SIGKILL/disk-full truncation that
+    ``os.stat``-existence alone would not catch. Flagged files are reprocessed."""
+    reprocess = []
+    for path, entry in completed.items():
+        for name, expected_size in entry.get("outputs", {}).items():
+            actual = _locate_output(out_dir, name)
+            if actual is None or os.path.getsize(actual) != expected_size:
+                reprocess.append(path)
+                break
+    return reprocess
+
+
+class ResumeAction(enum.Enum):
+    """The action :func:`resolve_resume_action` chose for a run: start FRESH,
+    RESUME the existing checkpoint, or ABORT (with an exit code)."""
+
+    FRESH = "fresh"
+    RESUME = "resume"
+    ABORT = "abort"
+
+
+@dataclasses.dataclass
+class Decision:
+    """Result of :func:`resolve_resume_action` — bundles the chosen action, an
+    optional human-readable message for the caller to surface, and the process
+    exit code (set only for ABORT).
+    """
+
+    action: ResumeAction
+    message: str | None = None
+    exit_code: int | None = None
+
+
+def resolve_resume_action(classification, *, resume, no_resume, interactive, prompt):
+    """Pure decision for the §2.3 matrix. ``resume``/``no_resume`` are the explicit
+    flags (authoritative); ``interactive`` is the detected mode; ``prompt`` is a
+    callable ``(message, *, default) -> bool | None`` (None = EOF/no-answer) used
+    only when a decision needs the operator. Returns a Decision."""
+    status = classification.status
+    St = CheckpointStatus
+    if status is St.ABSENT:
+        if resume:
+            return Decision(ResumeAction.ABORT, "no interrupted run to resume", 2)
+        return Decision(ResumeAction.FRESH)
+    if status is St.CORRUPT:
+        if no_resume:
+            return Decision(ResumeAction.FRESH)
+        return Decision(
+            ResumeAction.ABORT,
+            "checkpoint is unreadable; pass --no-resume to start fresh",
+            2,
+        )
+    if status is St.VALID:
+        if resume:
+            return Decision(ResumeAction.RESUME)
+        if no_resume:
+            return Decision(ResumeAction.FRESH)
+        if not interactive:
+            return Decision(ResumeAction.RESUME)
+        answer = prompt("Resume interrupted run? [Y/n] ", default=True)
+        if answer is None:
+            return Decision(ResumeAction.ABORT, "aborted", 2)
+        return Decision(ResumeAction.RESUME if answer else ResumeAction.FRESH)
+    # STALE
+    reason = classification.reason or "inputs changed"
+    if no_resume:
+        return Decision(ResumeAction.FRESH)
+    if resume:
+        return Decision(ResumeAction.ABORT, f"cannot resume: {reason}", 2)
+    if not interactive:
+        return Decision(
+            ResumeAction.ABORT,
+            f"cannot resume: {reason}. Pass --no-resume to start fresh",
+            2,
+        )
+    answer = prompt(
+        f"Can't resume ({reason}). Reprocess all from scratch? [y/N] ", default=False
+    )
+    if answer:
+        return Decision(ResumeAction.FRESH)
+    return Decision(ResumeAction.ABORT, "aborted", 2)
+
+
+def validate_run_identity(checkpoint, current_inputs, current_run_identity):
+    """Return a human-readable reason the checkpoint cannot be resumed against the
+    current run, or None if it can. Refuse-on-change (spec §3.1, all-or-nothing):
+    schema, lintle version, output-affecting configuration, or any input identity
+    drift invalidates the whole checkpoint.
     """
     schema = checkpoint.get("schema_version")
     if schema != SCHEMA_VERSION:
@@ -121,6 +290,8 @@ def validate_resumable(checkpoint, current_inputs):
             f"lintle version changed since the interrupted run "
             f"({recorded_version} -> {__version__})"
         )
+    if checkpoint.get("run_identity") != current_run_identity:
+        return "run configuration changed since the interrupted run"
     recorded = checkpoint.get("inputs", {})
     added = sorted(set(current_inputs) - set(recorded))
     if added:

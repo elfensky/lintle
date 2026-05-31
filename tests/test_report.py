@@ -7,7 +7,7 @@ import re
 
 import pytest
 
-from lintle import report
+from lintle import report, report_writers
 from lintle.categories import FixClass
 from lintle.diagnostics import RepairTier, RuleID, diagnostic
 
@@ -28,7 +28,7 @@ def _stats_with_counts():
         FixClass.TRAILING_BACKSLASH: 50,
         FixClass.RECONSTRUCTED_CHECKSUM: 7,
     }
-    stats.reject_counts = {RuleID.CHECKSUM_MISMATCH: 2}
+    stats.quarantine_counts = {RuleID.CHECKSUM_MISMATCH: 2}
     return stats
 
 
@@ -40,7 +40,7 @@ def _two_file_stats():
     a.clean_count = 990
     a.quarantined_count = 10
     a.fix_counts = {FixClass.TRAILING_BACKSLASH: 990}
-    a.reject_counts = {RuleID.CHECKSUM_MISMATCH: 10}
+    a.quarantine_counts = {RuleID.CHECKSUM_MISMATCH: 10}
     b = report.FileStats(src_name="tle2005.txt")
     b.paired_records = 3000
     b.orphan_entries = 0
@@ -54,8 +54,8 @@ def _two_file_stats():
     return [a, b]
 
 
-class TestRejectEntryConstructorContract:
-    """Lock the RejectEntry field order so pipeline._record_reject's positional
+class TestQuarantineEntryConstructorContract:
+    """Lock the QuarantineEntry field order so pipeline._record_quarantine's positional
     construction (pipeline.py:299) stays correct. norad_id MUST be the trailing
     field — see issue #9 spec §4.5.
     """
@@ -63,7 +63,7 @@ class TestRejectEntryConstructorContract:
     def test_existing_keyword_construction_unchanged(self):
         # Locks the default-value contract for the 18 existing test-fixture
         # call sites that omit norad_id.
-        entry = report.RejectEntry(
+        entry = report.QuarantineEntry(
             raw_lines=[b"1 garbage"],
             source_lines=[42],
             primary=_diag(RuleID.BAD_PREFIX, src=42),
@@ -73,10 +73,10 @@ class TestRejectEntryConstructorContract:
 
     def test_positional_construction_pins_field_order(self):
         # Locks the (raw_lines, source_lines, primary, related) positional
-        # contract used by pipeline._record_reject.
+        # contract used by pipeline._record_quarantine.
         primary = _diag(RuleID.CHECKSUM_MISMATCH, src=10)
         related = (_diag(RuleID.LINE_LENGTH, src=10),)
-        entry = report.RejectEntry([b"1 x"], [10], primary, related)
+        entry = report.QuarantineEntry([b"1 x"], [10], primary, related)
         assert entry.raw_lines == [b"1 x"]
         assert entry.source_lines == [10]
         assert entry.primary is primary
@@ -84,10 +84,10 @@ class TestRejectEntryConstructorContract:
         assert entry.norad_id is None  # appended trailing default
 
     def test_norad_id_must_be_keyword_to_avoid_corruption(self):
-        # Documents the construction pattern that pipeline._record_reject
-        # MUST use after adding norad_id to RejectEntry.
+        # Documents the construction pattern that pipeline._record_quarantine
+        # MUST use after adding norad_id to QuarantineEntry.
         primary = _diag(RuleID.CHECKSUM_MISMATCH, src=10)
-        entry = report.RejectEntry([b"1 x"], [10], primary, (), norad_id=12345)
+        entry = report.QuarantineEntry([b"1 x"], [10], primary, (), norad_id=12345)
         assert entry.norad_id == 12345
 
 
@@ -99,7 +99,7 @@ class TestEntryToJsonlDict:
     """
 
     def test_envelope_carries_required_fields(self):
-        entry = report.RejectEntry(
+        entry = report.QuarantineEntry(
             raw_lines=[b"1 x", b"2 x"],
             source_lines=[12345, 12346],
             primary=diagnostic(
@@ -112,7 +112,9 @@ class TestEntryToJsonlDict:
             ),
             norad_id=25544,
         )
-        out = report.entry_to_jsonl_dict(entry, file="tle2022.txt", norad_id=25544)
+        out = report_writers.entry_to_jsonl_dict(
+            entry, file="tle2022.txt", norad_id=25544
+        )
         expected_keys = {
             "schema_version",
             "outcome",
@@ -147,8 +149,8 @@ class TestEntryToJsonlDict:
             diagnostic(RuleID.LINE_LENGTH, source_line_nos=(10,), note="too long"),
             diagnostic(RuleID.NON_ASCII_BYTE, source_line_nos=(11,)),
         )
-        entry = report.RejectEntry([b"1", b"2"], [10, 11], primary, related)
-        out = report.entry_to_jsonl_dict(entry, file="x.txt", norad_id=None)
+        entry = report.QuarantineEntry([b"1", b"2"], [10, 11], primary, related)
+        out = report_writers.entry_to_jsonl_dict(entry, file="x.txt", norad_id=None)
         assert len(out["related"]) == 2
         # Nested entries carry no envelope fields (no schema_version, outcome,
         # file, or norad_id).
@@ -170,7 +172,7 @@ class TestEntryToJsonlDict:
     def test_strenum_values_render_as_strings(self):
         # rule_id and tier_attempted are StrEnum members internally; the
         # output MUST be their stable wire token, not the enum repr.
-        entry = report.RejectEntry(
+        entry = report.QuarantineEntry(
             [b"1"],
             [1],
             diagnostic(
@@ -179,7 +181,7 @@ class TestEntryToJsonlDict:
                 tier_attempted=RepairTier.NORMALIZATION,
             ),
         )
-        out = report.entry_to_jsonl_dict(entry, file="x.txt", norad_id=None)
+        out = report_writers.entry_to_jsonl_dict(entry, file="x.txt", norad_id=None)
         assert out["rule_id"] == "TLE-COL-003"
         assert out["tier_attempted"] == "tier-1"
         # And these must be plain JSON-serializable strings — round-tripping
@@ -189,7 +191,7 @@ class TestEntryToJsonlDict:
     def test_tuples_become_lists(self):
         # source_line_nos is a tuple internally; JSON has no tuple type, so
         # the renderer MUST coerce to list. Same for column_range.
-        entry = report.RejectEntry(
+        entry = report.QuarantineEntry(
             [b"1"],
             [10],
             diagnostic(
@@ -198,32 +200,32 @@ class TestEntryToJsonlDict:
                 column_range=(69, 69),
             ),
         )
-        out = report.entry_to_jsonl_dict(entry, file="x.txt", norad_id=None)
+        out = report_writers.entry_to_jsonl_dict(entry, file="x.txt", norad_id=None)
         assert isinstance(out["source_lines"], list)
         assert isinstance(out["column_range"], list)
 
     def test_none_fields_stay_none(self):
         # Diagnostic fields that are absent (column_range, observed, expected)
         # render as JSON null. note coerces "" -> null.
-        entry = report.RejectEntry(
+        entry = report.QuarantineEntry(
             [b"x"],
             [1],
             diagnostic(RuleID.BAD_PREFIX, source_line_nos=(1,)),
         )
-        out = report.entry_to_jsonl_dict(entry, file="x.txt", norad_id=None)
+        out = report_writers.entry_to_jsonl_dict(entry, file="x.txt", norad_id=None)
         assert out["column_range"] is None
         assert out["observed"] is None
         assert out["expected"] is None
         assert out["note"] is None
 
     def test_norad_id_null_when_unreadable(self):
-        entry = report.RejectEntry(
+        entry = report.QuarantineEntry(
             [b"2 something"],
             [42],
             diagnostic(RuleID.ORPHAN_LINE, source_line_nos=(42,)),
             norad_id=None,
         )
-        out = report.entry_to_jsonl_dict(entry, file="x.txt", norad_id=None)
+        out = report_writers.entry_to_jsonl_dict(entry, file="x.txt", norad_id=None)
         assert out["norad_id"] is None
 
 
@@ -235,7 +237,7 @@ class TestReportJsonlSchemaLock:
     """
 
     def _entry(self, src=10, norad_id=None):
-        return report.RejectEntry(
+        return report.QuarantineEntry(
             raw_lines=[b"1 x"],
             source_lines=[src],
             primary=diagnostic(RuleID.CHECKSUM_MISMATCH, source_line_nos=(src,)),
@@ -245,7 +247,7 @@ class TestReportJsonlSchemaLock:
     def test_schema_version_is_pinned(self, tmp_path):
         # Every line of a synthesized report.jsonl carries schema_version="1".
         path = str(tmp_path / "x.findings.jsonl")
-        with report.JsonlFindingsWriter(path, src_name="x.txt") as writer:
+        with report_writers.JsonlFindingsWriter(path, src_name="x.txt") as writer:
             for src in (10, 20, 30):
                 writer.write_entry(self._entry(src=src))
             writer.finalize()
@@ -259,7 +261,7 @@ class TestReportJsonlSchemaLock:
         # Future additions of "fixed" outcomes will require updating
         # this test along with the spec.
         path = str(tmp_path / "x.findings.jsonl")
-        with report.JsonlFindingsWriter(path, src_name="x.txt") as writer:
+        with report_writers.JsonlFindingsWriter(path, src_name="x.txt") as writer:
             writer.write_entry(self._entry())
             writer.finalize()
         with open(path, encoding="utf-8") as handle:
@@ -270,7 +272,9 @@ class TestReportJsonlSchemaLock:
         # The exact set of top-level keys is the spec contract; both
         # accidental additions and accidental removals fail here.
         entry = self._entry()
-        out = report.entry_to_jsonl_dict(entry, file="x.txt", norad_id=entry.norad_id)
+        out = report_writers.entry_to_jsonl_dict(
+            entry, file="x.txt", norad_id=entry.norad_id
+        )
         expected = {
             "schema_version",
             "outcome",
@@ -293,11 +297,11 @@ class TestWriteBrokenFile:
         stats = report.FileStats(src_name="tle2099.txt")
         stats.paired_records = 5
         stats.quarantined_count = 1
-        stats.reject_sample = report.FileSample.from_bounded(
+        stats.quarantine_sample = report.FileSample.from_bounded(
             cap=5,
             entries_by_rule={
                 RuleID.BAD_PREFIX: [
-                    report.RejectEntry(
+                    report.QuarantineEntry(
                         raw_lines=[b"1 garbage"],
                         source_lines=[42],
                         primary=_diag(
@@ -311,7 +315,7 @@ class TestWriteBrokenFile:
         )
         out = tmp_path / "tle2099.broken.txt"
 
-        report.write_broken_file(str(out), "tle2099.txt", stats)
+        report_writers.write_broken_file(str(out), "tle2099.txt", stats)
 
         text = out.read_bytes()
         assert b"# source: tle2099.txt" in text
@@ -327,11 +331,11 @@ class TestWriteBrokenFile:
         # A line quarantined for a non-ASCII byte must appear verbatim.
         stats = report.FileStats(src_name="x.txt")
         stats.quarantined_count = 1
-        stats.reject_sample = report.FileSample.from_bounded(
+        stats.quarantine_sample = report.FileSample.from_bounded(
             cap=5,
             entries_by_rule={
                 RuleID.NON_ASCII_BYTE: [
-                    report.RejectEntry(
+                    report.QuarantineEntry(
                         raw_lines=[b"1 \xff\xfe non-ascii"],
                         source_lines=[7],
                         primary=_diag(RuleID.NON_ASCII_BYTE, src=7),
@@ -341,18 +345,18 @@ class TestWriteBrokenFile:
         )
         out = tmp_path / "x.broken.txt"
 
-        report.write_broken_file(str(out), "x.txt", stats)
+        report_writers.write_broken_file(str(out), "x.txt", stats)
 
         assert b"\xff\xfe" in out.read_bytes()
 
     def test_two_line_record_location(self, tmp_path):
         stats = report.FileStats(src_name="x.txt")
         stats.quarantined_count = 1
-        stats.reject_sample = report.FileSample.from_bounded(
+        stats.quarantine_sample = report.FileSample.from_bounded(
             cap=5,
             entries_by_rule={
                 RuleID.CHECKSUM_MISMATCH: [
-                    report.RejectEntry(
+                    report.QuarantineEntry(
                         raw_lines=[b"1 aaa", b"2 bbb"],
                         source_lines=[14820, 14821],
                         primary=diagnostic(
@@ -369,7 +373,7 @@ class TestWriteBrokenFile:
         )
         out = tmp_path / "x.broken.txt"
 
-        report.write_broken_file(str(out), "x.txt", stats)
+        report_writers.write_broken_file(str(out), "x.txt", stats)
 
         text = out.read_bytes()
         assert b"source lines 14820-14821" in text
@@ -384,11 +388,11 @@ class TestWriteBrokenFile:
         # lines failed), the related ones fold onto indented "and: ..." lines.
         stats = report.FileStats(src_name="x.txt")
         stats.quarantined_count = 1
-        stats.reject_sample = report.FileSample.from_bounded(
+        stats.quarantine_sample = report.FileSample.from_bounded(
             cap=5,
             entries_by_rule={
                 RuleID.CHECKSUM_MISMATCH: [
-                    report.RejectEntry(
+                    report.QuarantineEntry(
                         raw_lines=[b"1 aaa", b"2 bbb"],
                         source_lines=[5, 6],
                         primary=diagnostic(
@@ -409,7 +413,7 @@ class TestWriteBrokenFile:
             },
         )
         out = tmp_path / "x.broken.txt"
-        report.write_broken_file(str(out), "x.txt", stats)
+        report_writers.write_broken_file(str(out), "x.txt", stats)
         text = out.read_bytes()
         assert b"rule: TLE-CHK-001" in text
         assert b"    and: rule: TLE-COL-001" in text
@@ -428,19 +432,19 @@ class TestWriteBrokenFile:
             (RuleID.NON_ASCII_BYTE, [30, 60]),
         ):
             buckets[rule] = [
-                report.RejectEntry(
+                report.QuarantineEntry(
                     raw_lines=[f"row-{s}".encode("ascii")],
                     source_lines=[s],
                     primary=_diag(rule, src=s),
                 )
                 for s in srcs
             ]
-        stats.reject_sample = report.FileSample.from_bounded(
+        stats.quarantine_sample = report.FileSample.from_bounded(
             cap=5, entries_by_rule=buckets
         )
 
         out = tmp_path / "x.broken.txt"
-        report.write_broken_file(str(out), "x.txt", stats)
+        report_writers.write_broken_file(str(out), "x.txt", stats)
 
         text = out.read_bytes()
         for s in (10, 20, 30, 40, 50, 60):
@@ -459,19 +463,19 @@ class TestWriteBrokenFile:
             (RuleID.NON_ASCII_BYTE, [30, 60]),
         ):
             buckets[rule] = [
-                report.RejectEntry(
+                report.QuarantineEntry(
                     raw_lines=[f"row-{s}".encode("ascii")],
                     source_lines=[s],
                     primary=_diag(rule, src=s),
                 )
                 for s in srcs
             ]
-        stats.reject_sample = report.FileSample.from_bounded(
+        stats.quarantine_sample = report.FileSample.from_bounded(
             cap=5, entries_by_rule=buckets
         )
 
         out = tmp_path / "x.broken.txt"
-        report.write_broken_file(str(out), "x.txt", stats)
+        report_writers.write_broken_file(str(out), "x.txt", stats)
         text = out.read_text("ascii")
 
         # Order of appearance must follow source_lines, not dict insertion
@@ -510,9 +514,9 @@ class TestSummaries:
         assert data["orphan_entries"] == 0
         assert data["input_lines_seen"] == 200
         assert data["fix_counts"]["trailing-backslash"] == 50
-        # reject_counts is keyed by stable rule IDs — TLE-CHK-001, not the
+        # quarantine_counts is keyed by stable rule IDs — TLE-CHK-001, not the
         # old free-form "checksum-mismatch" string.
-        assert data["reject_counts"]["TLE-CHK-001"] == 2
+        assert data["quarantine_counts"]["TLE-CHK-001"] == 2
         json.dumps(data)  # must not raise — cli.py serialises this in json mode
 
     def test_summary_dict_surfaces_quarantined_norad_ids(self):
@@ -535,7 +539,7 @@ class TestSummaries:
         data = report.summary_dict(stats)
         assert data["quarantined_norad_ids"][25544][RuleID.CHECKSUM_MISMATCH] == 3
         # Shallow-copy: mutating the returned dict must not leak back to
-        # the live FileStats (mirrors fix_counts / reject_counts).
+        # the live FileStats (mirrors fix_counts / quarantine_counts).
         data["quarantined_norad_ids"].pop(42)
         assert 42 in stats.quarantined_norad_ids.counts
         # JSON round-trip: int keys auto-stringify, RuleID keys coerce to
@@ -556,7 +560,7 @@ class TestSummaries:
         # rule-ID key, so programmatic consumers can show "K of N
         # examples retained" without recomputing (issue #46).
         stats = _stats_with_counts()
-        stats.reject_sample = report.FileSample.from_bounded(
+        stats.quarantine_sample = report.FileSample.from_bounded(
             cap=5,
             entries_by_rule={},
             dropped_count={RuleID.CHECKSUM_MISMATCH: 995},
@@ -569,23 +573,23 @@ class TestSummaries:
 
     def test_summary_dict_dropped_counts_empty_by_default(self):
         # A run with no truncation produces an empty dict, not a missing
-        # key — same contract as fix_counts / reject_counts. JSON
+        # key — same contract as fix_counts / quarantine_counts. JSON
         # consumers can rely on the field always being present.
         data = report.summary_dict(_stats_with_counts())
         assert data["dropped_counts"] == {}
 
     def test_summary_dict_dropped_counts_is_shallow_copy(self):
         # Mutating the returned dict must not leak back to the live
-        # FileSample (mirrors fix_counts / reject_counts contract).
+        # FileSample (mirrors fix_counts / quarantine_counts contract).
         stats = report.FileStats(src_name="x.txt")
-        stats.reject_sample = report.FileSample.from_bounded(
+        stats.quarantine_sample = report.FileSample.from_bounded(
             cap=5,
             entries_by_rule={},
             dropped_count={RuleID.CHECKSUM_MISMATCH: 42},
         )
         data = report.summary_dict(stats)
         data["dropped_counts"].pop(RuleID.CHECKSUM_MISMATCH)
-        assert RuleID.CHECKSUM_MISMATCH in stats.reject_sample.dropped_count
+        assert RuleID.CHECKSUM_MISMATCH in stats.quarantine_sample.dropped_count
 
     def test_summary_dict_key_set_pins_envelope_per_file_contract(self):
         # Issue #20 spec: the exact set of keys returned by summary_dict
@@ -606,7 +610,7 @@ class TestSummaries:
             "clean_count",
             "quarantined_count",
             "fix_counts",
-            "reject_counts",
+            "quarantine_counts",
             "dropped_counts",
             "quarantined_norad_ids",
         }
@@ -617,7 +621,7 @@ class TestStatsFromSummary:
     """`stats_from_summary` is the inverse of `summary_dict` — it rebuilds a
     `FileStats` from a JSON-deserialised summary so a resumed run (#56) can
     include files completed in an earlier session in the final report without
-    re-reading them. The `reject_sample` exemplars (raw bytes) are not stored,
+    re-reading them. The `quarantine_sample` exemplars (raw bytes) are not stored,
     so they reconstruct empty; every counter and tally must round-trip exactly.
     """
 
@@ -628,7 +632,7 @@ class TestStatsFromSummary:
         original.quarantined_norad_ids = report.NoradTracker(
             counts={25544: {RuleID.CHECKSUM_MISMATCH: 2, RuleID.NON_ASCII_BYTE: 1}}
         )
-        original.reject_sample = report.FileSample.from_bounded(
+        original.quarantine_sample = report.FileSample.from_bounded(
             cap=5, entries_by_rule={}, dropped_count={RuleID.CHECKSUM_MISMATCH: 3}
         )
         # Through a real JSON round-trip, exactly as the checkpoint persists it.
@@ -645,30 +649,30 @@ class TestStatsFromSummary:
         assert isinstance(restored, report.FileStats)
         assert FixClass.TRAILING_BACKSLASH in restored.fix_counts
         assert restored.fix_counts[FixClass.TRAILING_BACKSLASH] == 50
-        assert restored.reject_counts[RuleID.CHECKSUM_MISMATCH] == 2
+        assert restored.quarantine_counts[RuleID.CHECKSUM_MISMATCH] == 2
 
-    def test_reject_sample_reconstructs_without_exemplars(self):
+    def test_quarantine_sample_reconstructs_without_exemplars(self):
         restored = report.stats_from_summary(
             json.loads(json.dumps(report.summary_dict(_stats_with_counts())))
         )
         # No raw-byte exemplars are stored; the sample comes back empty of
         # buckets but is a valid FileSample renderers can consume.
-        assert restored.reject_sample.buckets == {}
+        assert restored.quarantine_sample.buckets == {}
 
 
-class TestFormatRejectLines:
-    def test_format_reject_lines_groups_by_rule(self):
+class TestFormatQuarantineLines:
+    def test_format_quarantine_lines_groups_by_rule(self):
         stats = report.FileStats(src_name="x.txt")
         stats.quarantined_count = 4
-        stats.reject_counts = {
+        stats.quarantine_counts = {
             RuleID.CHECKSUM_MISMATCH: 2,
             RuleID.BAD_PREFIX: 2,
         }
-        stats.reject_sample = report.FileSample.from_bounded(
+        stats.quarantine_sample = report.FileSample.from_bounded(
             cap=5,
             entries_by_rule={
                 RuleID.CHECKSUM_MISMATCH: [
-                    report.RejectEntry(
+                    report.QuarantineEntry(
                         raw_lines=[b"1 a", b"2 b"],
                         source_lines=[10, 11],
                         primary=diagnostic(
@@ -679,7 +683,7 @@ class TestFormatRejectLines:
                     )
                 ],
                 RuleID.BAD_PREFIX: [
-                    report.RejectEntry(
+                    report.QuarantineEntry(
                         raw_lines=[b"x"],
                         source_lines=[20],
                         primary=_diag(
@@ -690,7 +694,7 @@ class TestFormatRejectLines:
             },
         )
 
-        out = report.format_reject_lines(stats)
+        out = report.format_quarantine_lines(stats)
 
         # Two rule-heading blocks appear, each with their count.
         assert "TLE-CHK-001 (2):" in out
@@ -700,19 +704,19 @@ class TestFormatRejectLines:
         assert "line 10-11: rule: TLE-CHK-001" in out
         assert "line 20: rule: TLE-PAIR-002" in out
 
-    def test_format_reject_lines_sorts_by_descending_count(self):
+    def test_format_quarantine_lines_sorts_by_descending_count(self):
         stats = report.FileStats(src_name="x.txt")
         stats.quarantined_count = 115
-        stats.reject_counts = {
+        stats.quarantine_counts = {
             RuleID.NON_ASCII_BYTE: 5,
             RuleID.CHECKSUM_MISMATCH: 100,
             RuleID.BAD_PREFIX: 10,
         }
-        stats.reject_sample = report.FileSample.from_bounded(
+        stats.quarantine_sample = report.FileSample.from_bounded(
             cap=5,
             entries_by_rule={
                 rule: [
-                    report.RejectEntry(
+                    report.QuarantineEntry(
                         raw_lines=[b"x"],
                         source_lines=[1],
                         primary=_diag(rule, src=1),
@@ -726,7 +730,7 @@ class TestFormatRejectLines:
             },
         )
 
-        out = report.format_reject_lines(stats)
+        out = report.format_quarantine_lines(stats)
 
         # CHECKSUM (100) → BAD_PREFIX (10) → NON_ASCII (5)
         # rule_ids: TLE-CHK-001, TLE-PAIR-002, TLE-COL-003
@@ -735,20 +739,20 @@ class TestFormatRejectLines:
         pos_col = out.index("TLE-COL-003 (5)")
         assert pos_chk < pos_pair < pos_col
 
-    def test_format_reject_lines_ties_break_alphabetically(self):
+    def test_format_quarantine_lines_ties_break_alphabetically(self):
         stats = report.FileStats(src_name="x.txt")
         stats.quarantined_count = 14
         # Same count — alphabetic tiebreak on rule_id string value.
         # TLE-CHK-001 < TLE-PAIR-002 alphabetically.
-        stats.reject_counts = {
+        stats.quarantine_counts = {
             RuleID.BAD_PREFIX: 7,  # "TLE-PAIR-002"
             RuleID.CHECKSUM_MISMATCH: 7,  # "TLE-CHK-001"
         }
-        stats.reject_sample = report.FileSample.from_bounded(
+        stats.quarantine_sample = report.FileSample.from_bounded(
             cap=5,
             entries_by_rule={
                 rule: [
-                    report.RejectEntry(
+                    report.QuarantineEntry(
                         raw_lines=[b"x"],
                         source_lines=[1],
                         primary=_diag(rule, src=1),
@@ -758,23 +762,23 @@ class TestFormatRejectLines:
             },
         )
 
-        out = report.format_reject_lines(stats)
+        out = report.format_quarantine_lines(stats)
 
         assert out.index("TLE-CHK-001") < out.index("TLE-PAIR-002")
 
-    def test_format_reject_lines_emits_per_rule_remainder(self):
+    def test_format_quarantine_lines_emits_per_rule_remainder(self):
         stats = report.FileStats(src_name="x.txt")
         stats.quarantined_count = 1003
-        stats.reject_counts = {
+        stats.quarantine_counts = {
             RuleID.CHECKSUM_MISMATCH: 1000,
             RuleID.BAD_PREFIX: 3,
         }
-        stats.reject_sample = report.FileSample.from_bounded(
+        stats.quarantine_sample = report.FileSample.from_bounded(
             cap=5,
             entries_by_rule={
                 # Full bucket of 5 for the noisy rule.
                 RuleID.CHECKSUM_MISMATCH: [
-                    report.RejectEntry(
+                    report.QuarantineEntry(
                         raw_lines=[b"x"],
                         source_lines=[i],
                         primary=_diag(RuleID.CHECKSUM_MISMATCH, src=i),
@@ -783,7 +787,7 @@ class TestFormatRejectLines:
                 ],
                 # Bucket equal to the rule's total count — no remainder.
                 RuleID.BAD_PREFIX: [
-                    report.RejectEntry(
+                    report.QuarantineEntry(
                         raw_lines=[b"x"],
                         source_lines=[100 + i],
                         primary=_diag(RuleID.BAD_PREFIX, src=100 + i),
@@ -794,28 +798,28 @@ class TestFormatRejectLines:
             dropped_count={RuleID.CHECKSUM_MISMATCH: 995},
         )
 
-        out = report.format_reject_lines(stats)
+        out = report.format_quarantine_lines(stats)
 
         assert "...and 995 more" in out
         # Only the noisy rule has a remainder; "...and" appears exactly once.
         assert out.count("...and") == 1
 
-    def test_format_reject_lines_heading_shows_drop_count_when_truncated(self):
+    def test_format_quarantine_lines_heading_shows_drop_count_when_truncated(self):
         # When the sink had to drop entries, the rule heading switches to
         # the explicit "(N of M hits, K dropped)" form so an operator sees
         # the truncation at a glance, not just via the trailing
         # "...and X more" hint (issue #46).
         stats = report.FileStats(src_name="x.txt")
         stats.quarantined_count = 1003
-        stats.reject_counts = {
+        stats.quarantine_counts = {
             RuleID.CHECKSUM_MISMATCH: 1000,
             RuleID.BAD_PREFIX: 3,
         }
-        stats.reject_sample = report.FileSample.from_bounded(
+        stats.quarantine_sample = report.FileSample.from_bounded(
             cap=5,
             entries_by_rule={
                 RuleID.CHECKSUM_MISMATCH: [
-                    report.RejectEntry(
+                    report.QuarantineEntry(
                         raw_lines=[b"x"],
                         source_lines=[i],
                         primary=_diag(RuleID.CHECKSUM_MISMATCH, src=i),
@@ -823,7 +827,7 @@ class TestFormatRejectLines:
                     for i in range(5)
                 ],
                 RuleID.BAD_PREFIX: [
-                    report.RejectEntry(
+                    report.QuarantineEntry(
                         raw_lines=[b"x"],
                         source_lines=[100 + i],
                         primary=_diag(RuleID.BAD_PREFIX, src=100 + i),
@@ -834,7 +838,7 @@ class TestFormatRejectLines:
             dropped_count={RuleID.CHECKSUM_MISMATCH: 995},
         )
 
-        out = report.format_reject_lines(stats)
+        out = report.format_quarantine_lines(stats)
 
         # Truncated rule uses the explicit form.
         assert "TLE-CHK-001 (5 of 1,000 hits, 995 dropped):" in out
@@ -842,19 +846,19 @@ class TestFormatRejectLines:
         # for the common, well-bounded case.
         assert "TLE-PAIR-002 (3):" in out
 
-    def test_format_reject_lines_empty_when_no_rejects(self):
+    def test_format_quarantine_lines_empty_when_no_quarantines(self):
         stats = report.FileStats(src_name="x.txt")
-        assert report.format_reject_lines(stats) == ""
+        assert report.format_quarantine_lines(stats) == ""
 
-    def test_format_reject_lines_indentation_contract(self):
+    def test_format_quarantine_lines_indentation_contract(self):
         stats = report.FileStats(src_name="x.txt")
         stats.quarantined_count = 1
-        stats.reject_counts = {RuleID.CHECKSUM_MISMATCH: 1}
-        stats.reject_sample = report.FileSample.from_bounded(
+        stats.quarantine_counts = {RuleID.CHECKSUM_MISMATCH: 1}
+        stats.quarantine_sample = report.FileSample.from_bounded(
             cap=5,
             entries_by_rule={
                 RuleID.CHECKSUM_MISMATCH: [
-                    report.RejectEntry(
+                    report.QuarantineEntry(
                         raw_lines=[b"x"],
                         source_lines=[10, 11],
                         primary=diagnostic(
@@ -874,7 +878,7 @@ class TestFormatRejectLines:
             },
         )
 
-        out = report.format_reject_lines(stats)
+        out = report.format_quarantine_lines(stats)
         lines = out.splitlines()
 
         # Rule heading is 2-space indented.
@@ -887,16 +891,16 @@ class TestFormatRejectLines:
         assert lines[2].startswith("      and: ")
         assert not lines[2].startswith("       ")
 
-    def test_format_reject_lines_surfaces_related_diagnostics(self):
+    def test_format_quarantine_lines_surfaces_related_diagnostics(self):
         # Dual-failure record: primary + related, both must render.
         stats = report.FileStats(src_name="x.txt")
         stats.quarantined_count = 1
-        stats.reject_counts = {RuleID.CHECKSUM_MISMATCH: 1}
-        stats.reject_sample = report.FileSample.from_bounded(
+        stats.quarantine_counts = {RuleID.CHECKSUM_MISMATCH: 1}
+        stats.quarantine_sample = report.FileSample.from_bounded(
             cap=5,
             entries_by_rule={
                 RuleID.CHECKSUM_MISMATCH: [
-                    report.RejectEntry(
+                    report.QuarantineEntry(
                         raw_lines=[b"1 a", b"2 b"],
                         source_lines=[10, 11],
                         primary=diagnostic(
@@ -915,7 +919,7 @@ class TestFormatRejectLines:
                 ]
             },
         )
-        out = report.format_reject_lines(stats)
+        out = report.format_quarantine_lines(stats)
         assert "TLE-CHK-001" in out
         assert "      and:" in out  # 6-space indent for related under a group
         assert "TLE-COL-003" in out
@@ -935,7 +939,7 @@ class TestRunReport:
         assert "trailing-backslash | 1,990" in out  # 990 + 1000, summed
         assert "reconstructed-checksum | 500" in out
         # Quarantined-by-rule table has a Dropped column (issue #46);
-        # _two_file_stats does not set reject_sample so every rule's
+        # _two_file_stats does not set quarantine_sample so every rule's
         # dropped count is the zero default.
         assert "TLE-CHK-001 | 10 | 0" in out
         # Per-file rows present.
@@ -951,8 +955,8 @@ class TestRunReport:
         a.paired_records = 1000
         a.clean_count = 0
         a.quarantined_count = 1000
-        a.reject_counts = {RuleID.CHECKSUM_MISMATCH: 1000}
-        a.reject_sample = report.FileSample.from_bounded(
+        a.quarantine_counts = {RuleID.CHECKSUM_MISMATCH: 1000}
+        a.quarantine_sample = report.FileSample.from_bounded(
             cap=5,
             entries_by_rule={},
             dropped_count={RuleID.CHECKSUM_MISMATCH: 995},
@@ -961,8 +965,8 @@ class TestRunReport:
         b.paired_records = 500
         b.clean_count = 0
         b.quarantined_count = 500
-        b.reject_counts = {RuleID.CHECKSUM_MISMATCH: 500}
-        b.reject_sample = report.FileSample.from_bounded(
+        b.quarantine_counts = {RuleID.CHECKSUM_MISMATCH: 500}
+        b.quarantine_sample = report.FileSample.from_bounded(
             cap=5,
             entries_by_rule={},
             dropped_count={RuleID.CHECKSUM_MISMATCH: 495},
@@ -990,7 +994,7 @@ class TestRunReport:
         a.input_lines_seen = 210
         a.clean_count = 99
         a.quarantined_count = 6  # 1 paired-failure + 5 orphans
-        a.reject_counts = {
+        a.quarantine_counts = {
             RuleID.ORPHAN_LINE: 5,
             RuleID.CHECKSUM_MISMATCH: 1,
         }
@@ -1024,7 +1028,7 @@ class TestBrokenNoradIdsNdjson:
         stats = report.FileStats(
             src_name="tle2099.txt", quarantined_norad_ids=report.NoradTracker(counts={})
         )
-        out = report.format_broken_noradids_ndjson([stats])
+        out = report_writers.format_broken_noradids_ndjson([stats])
         assert out == ""
 
     def test_format_sorts_ids_ascending(self):
@@ -1039,7 +1043,7 @@ class TestBrokenNoradIdsNdjson:
             src_name="tle2009.txt",
             quarantined_norad_ids=report.NoradTracker(counts={42: {}}),
         )
-        out = report.format_broken_noradids_ndjson([a, b])
+        out = report_writers.format_broken_noradids_ndjson([a, b])
         assert out == '{"noradId":5}\n{"noradId":42}\n{"noradId":26125}\n'
 
     def test_format_uses_compact_json(self):
@@ -1049,7 +1053,9 @@ class TestBrokenNoradIdsNdjson:
         stats = report.FileStats(
             src_name="x.txt", quarantined_norad_ids=report.NoradTracker(counts={5: {}})
         )
-        assert report.format_broken_noradids_ndjson([stats]) == '{"noradId":5}\n'
+        assert (
+            report_writers.format_broken_noradids_ndjson([stats]) == '{"noradId":5}\n'
+        )
 
     def test_format_dedupes_across_files(self):
         # A NORAD ID seen in two files appears once — the deduplication is
@@ -1062,7 +1068,7 @@ class TestBrokenNoradIdsNdjson:
             src_name="tle2009.txt",
             quarantined_norad_ids=report.NoradTracker(counts={5678: {}, 9999: {}}),
         )
-        out = report.format_broken_noradids_ndjson([a, b])
+        out = report_writers.format_broken_noradids_ndjson([a, b])
         assert out == '{"noradId":1234}\n{"noradId":5678}\n{"noradId":9999}\n'
 
     def test_format_each_line_is_parseable_json(self):
@@ -1074,7 +1080,7 @@ class TestBrokenNoradIdsNdjson:
                 counts={5: {}, 42: {}, 26125: {}}
             ),
         )
-        out = report.format_broken_noradids_ndjson([stats])
+        out = report_writers.format_broken_noradids_ndjson([stats])
         ids = [json.loads(line)["noradId"] for line in out.splitlines()]
         assert ids == [5, 42, 26125]
 
@@ -1086,7 +1092,7 @@ class TestBrokenNoradIdsNdjson:
             quarantined_norad_ids=report.NoradTracker(counts={1: {}, 2: {}}),
         )
         out = tmp_path / "broken-noradids.ndjson"
-        report.write_broken_noradids_ndjson(str(out), [stats])
+        report_writers.write_broken_noradids_ndjson(str(out), [stats])
         assert out.read_bytes() == b'{"noradId":1}\n{"noradId":2}\n'
 
     def test_write_emits_empty_file_when_nothing_quarantined(self, tmp_path):
@@ -1094,7 +1100,7 @@ class TestBrokenNoradIdsNdjson:
             src_name="x.txt", quarantined_norad_ids=report.NoradTracker(counts={})
         )
         out = tmp_path / "broken-noradids.ndjson"
-        report.write_broken_noradids_ndjson(str(out), [stats])
+        report_writers.write_broken_noradids_ndjson(str(out), [stats])
         assert out.read_bytes() == b""
 
     def test_aggregate_returns_sorted_unique_ids(self):
@@ -1106,7 +1112,7 @@ class TestBrokenNoradIdsNdjson:
             src_name="b.txt",
             quarantined_norad_ids=report.NoradTracker(counts={2: {}, 1: {}}),
         )
-        assert report.aggregate_broken_norad_ids([a, b]) == [1, 2, 3]
+        assert report_writers.aggregate_broken_norad_ids([a, b]) == [1, 2, 3]
 
 
 class TestConcatFindingsShards:
@@ -1136,7 +1142,7 @@ class TestConcatFindingsShards:
             report.FileStats(src_name="tle2022.txt"),
         ]
         dest = tmp_path / "report.jsonl"
-        report.concat_findings_shards(str(tmp_path), str(dest), all_stats)
+        report_writers.concat_findings_shards(str(tmp_path), str(dest), all_stats)
         lines = dest.read_text(encoding="utf-8").splitlines()
         files = [json.loads(line)["file"] for line in lines]
         assert files == ["tle2004.txt", "tle2013.txt", "tle2022.txt"]
@@ -1146,7 +1152,7 @@ class TestConcatFindingsShards:
         # (matches broken-noradids.ndjson's zero-quarantine contract).
         (tmp_path / ".shards").mkdir()
         dest = tmp_path / "report.jsonl"
-        report.concat_findings_shards(str(tmp_path), str(dest), [])
+        report_writers.concat_findings_shards(str(tmp_path), str(dest), [])
         assert dest.exists()
         assert dest.read_text(encoding="utf-8") == ""
 
@@ -1161,7 +1167,7 @@ class TestConcatFindingsShards:
             report.FileStats(src_name="tle2099.txt"),  # no shard for this one
         ]
         dest = tmp_path / "report.jsonl"
-        report.concat_findings_shards(str(tmp_path), str(dest), all_stats)
+        report_writers.concat_findings_shards(str(tmp_path), str(dest), all_stats)
         lines = dest.read_text(encoding="utf-8").splitlines()
         assert len(lines) == 1
         assert json.loads(lines[0])["file"] == "tle2022.txt"
@@ -1174,7 +1180,7 @@ class TestConcatFindingsShards:
         shard_dir = tmp_path / ".shards"
         shard_dir.mkdir()
         self._make_shard(shard_dir, "tle2022", ['{"file":"tle2022.txt"}'])
-        report.concat_findings_shards(
+        report_writers.concat_findings_shards(
             str(tmp_path),
             str(tmp_path / "report.jsonl"),
             [report.FileStats(src_name="tle2022.txt")],
@@ -1189,7 +1195,7 @@ class TestConcatFindingsShards:
         shard_dir.mkdir()
         self._make_shard(shard_dir, "tle2022", ['{"file":"tle2022.txt"}'])
         dest = tmp_path / "report.jsonl"
-        report.concat_findings_shards(
+        report_writers.concat_findings_shards(
             str(tmp_path),
             str(dest),
             [report.FileStats(src_name="tle2022.txt")],
@@ -1212,7 +1218,7 @@ class TestConcatFindingsShards:
 
         monkeypatch.setattr("os.replace", boom)
         with pytest.raises(OSError, match="simulated concat rename failure"):
-            report.concat_findings_shards(
+            report_writers.concat_findings_shards(
                 str(tmp_path),
                 str(dest),
                 [report.FileStats(src_name="tle2022.txt")],
@@ -1497,9 +1503,9 @@ class TestFileSample:
     """The immutable per-file bounded sample (issue #19 refactor)."""
 
     def _stub_entries(self, count, rule=RuleID.CHECKSUM_MISMATCH):
-        """Build N minimal RejectEntry stubs for cap-bound tests."""
+        """Build N minimal QuarantineEntry stubs for cap-bound tests."""
         return [
-            report.RejectEntry(
+            report.QuarantineEntry(
                 raw_lines=[b"1 stub"],
                 source_lines=[i],
                 primary=_diag(rule, src=i),
@@ -1535,7 +1541,7 @@ class TestFileSample:
         assert len(sample.buckets[RuleID.CHECKSUM_MISMATCH]) == 5
 
     def test_empty_default_has_zero_buckets(self):
-        # The sentinel for files with no rejects — no None-checks needed
+        # The sentinel for files with no quarantines — no None-checks needed
         # in renderers, and the cap survives so renderers can show
         # truncation against it.
         sample = report.FileSample.empty(cap=5)
@@ -1550,7 +1556,7 @@ class TestFileSample:
             sample.cap = 99
 
     def test_empty_default_dropped_count_is_zero(self):
-        # No rejects → no drops. The sentinel must initialise the per-rule
+        # No quarantines → no drops. The sentinel must initialise the per-rule
         # drop counter cleanly so renderers and aggregators do not need to
         # special-case the empty case.
         sample = report.FileSample.empty(cap=5)
@@ -1559,7 +1565,7 @@ class TestFileSample:
     def test_from_bounded_default_dropped_count_is_empty(self):
         # When the caller does not pass dropped_count, the field defaults
         # to an empty dict — matches how existing TestWriteBrokenFile and
-        # TestFormatRejectLines fixtures invoke from_bounded (issue #46
+        # TestFormatQuarantineLines fixtures invoke from_bounded (issue #46
         # backwards compat).
         sample = report.FileSample.from_bounded(
             cap=5,
@@ -1569,7 +1575,7 @@ class TestFileSample:
 
     def test_from_bounded_round_trips_dropped_count(self):
         # The drop counter passes through and is keyed by RuleID so
-        # programmatic consumers can join it against reject_counts /
+        # programmatic consumers can join it against quarantine_counts /
         # buckets without translation.
         sample = report.FileSample.from_bounded(
             cap=5,
@@ -1600,7 +1606,7 @@ class TestJsonlFindingsWriter:
     """
 
     def _entry(self, src=10, rule=RuleID.CHECKSUM_MISMATCH, norad_id=None):
-        return report.RejectEntry(
+        return report.QuarantineEntry(
             raw_lines=[b"1 x"],
             source_lines=[src],
             primary=diagnostic(rule, source_line_nos=(src,)),
@@ -1609,7 +1615,7 @@ class TestJsonlFindingsWriter:
 
     def test_writes_one_line_per_entry(self, tmp_path):
         path = str(tmp_path / "tle2022.findings.jsonl")
-        with report.JsonlFindingsWriter(path, src_name="tle2022.txt") as writer:
+        with report_writers.JsonlFindingsWriter(path, src_name="tle2022.txt") as writer:
             writer.write_entry(self._entry(src=10))
             writer.write_entry(self._entry(src=20))
             writer.write_entry(self._entry(src=30))
@@ -1627,7 +1633,7 @@ class TestJsonlFindingsWriter:
         # No spaces around JSON separators — grep can count lines, byte
         # count is minimal, downstream tooling can rely on one record per line.
         path = str(tmp_path / "x.findings.jsonl")
-        with report.JsonlFindingsWriter(path, src_name="x.txt") as writer:
+        with report_writers.JsonlFindingsWriter(path, src_name="x.txt") as writer:
             writer.write_entry(self._entry())
             writer.finalize()
         with open(path, encoding="utf-8") as handle:
@@ -1640,7 +1646,7 @@ class TestJsonlFindingsWriter:
 
     def test_finalize_atomic_rename(self, tmp_path):
         path = str(tmp_path / "x.findings.jsonl")
-        with report.JsonlFindingsWriter(path, src_name="x.txt") as writer:
+        with report_writers.JsonlFindingsWriter(path, src_name="x.txt") as writer:
             writer.write_entry(self._entry())
             writer.finalize()
         assert os.path.exists(path)
@@ -1649,7 +1655,7 @@ class TestJsonlFindingsWriter:
     def test_interrupted_run_leaves_no_partial(self, tmp_path):
         # Context-manager exit without finalize unlinks the .partial.
         path = str(tmp_path / "x.findings.jsonl")
-        with report.JsonlFindingsWriter(path, src_name="x.txt") as writer:
+        with report_writers.JsonlFindingsWriter(path, src_name="x.txt") as writer:
             writer.write_entry(self._entry())
             # exit without finalize
         assert not os.path.exists(path)
@@ -1657,7 +1663,7 @@ class TestJsonlFindingsWriter:
 
     def test_empty_finalize_creates_empty_file(self, tmp_path):
         path = str(tmp_path / "x.findings.jsonl")
-        with report.JsonlFindingsWriter(path, src_name="x.txt") as writer:
+        with report_writers.JsonlFindingsWriter(path, src_name="x.txt") as writer:
             writer.finalize()
         assert os.path.exists(path)
         with open(path, encoding="utf-8") as handle:
@@ -1669,7 +1675,7 @@ class TestJsonlFindingsWriter:
         path_a = str(tmp_path / "a.findings.jsonl")
         path_b = str(tmp_path / "b.findings.jsonl")
         for path in (path_a, path_b):
-            with report.JsonlFindingsWriter(path, src_name="x.txt") as writer:
+            with report_writers.JsonlFindingsWriter(path, src_name="x.txt") as writer:
                 writer.write_entry(self._entry())
                 writer.finalize()
         with open(path_a, "rb") as a, open(path_b, "rb") as b:
@@ -1684,7 +1690,7 @@ class TestJsonlFindingsWriter:
         def boom(*args, **kwargs):
             raise OSError("simulated rename failure")
 
-        with report.JsonlFindingsWriter(path, src_name="x.txt") as writer:
+        with report_writers.JsonlFindingsWriter(path, src_name="x.txt") as writer:
             writer.write_entry(self._entry())
             monkeypatch.setattr("os.replace", boom)
             with pytest.raises(OSError, match="simulated rename failure"):
@@ -1696,7 +1702,7 @@ class TestJsonlFindingsWriter:
         assert not os.path.exists(path + ".partial")
 
 
-class TestRejectSink:
+class TestQuarantineSink:
     """The single-mutation entry point that enforces the per-rule cap
     by construction (issue #19). Owns ``BrokenFileWriter`` in clean mode;
     skips it in validate mode; on ``finalize`` hands out an immutable
@@ -1704,8 +1710,8 @@ class TestRejectSink:
     """
 
     def _stub(self, src, rule=RuleID.CHECKSUM_MISMATCH):
-        """One minimal RejectEntry for cap-bound tests."""
-        return report.RejectEntry(
+        """One minimal QuarantineEntry for cap-bound tests."""
+        return report.QuarantineEntry(
             raw_lines=[f"1 stub-{src}".encode("ascii")],
             source_lines=[src],
             primary=_diag(rule, src=src),
@@ -1713,7 +1719,7 @@ class TestRejectSink:
 
     def test_add_under_cap_accepts(self):
         # Three entries, one rule — all three survive to the sample.
-        sink = report.RejectSink(cap=5)
+        sink = report_writers.QuarantineSink(cap=5)
         for i in range(3):
             sink.add(self._stub(i))
         sample = sink.finalize(entries=3)
@@ -1721,9 +1727,9 @@ class TestRejectSink:
 
     def test_add_over_cap_silently_drops(self):
         # Six entries, cap of 5 — the 6th drops silently. Matches today's
-        # pipeline._record_reject behaviour; reject_counts retains the truth
+        # pipeline._record_quarantine behaviour; quarantine_counts retains the truth
         # so no information is lost at the operator level.
-        sink = report.RejectSink(cap=5)
+        sink = report_writers.QuarantineSink(cap=5)
         for i in range(6):
             sink.add(self._stub(i))  # must not raise
         sample = sink.finalize(entries=6)
@@ -1732,7 +1738,7 @@ class TestRejectSink:
     def test_cap_holds_under_skew(self):
         # 1000 of one rule, then 1 of another. With per-rule buckets, the
         # noisy rule cannot crowd the rare rule out of the sample.
-        sink = report.RejectSink(cap=5)
+        sink = report_writers.QuarantineSink(cap=5)
         for i in range(1000):
             sink.add(self._stub(i, RuleID.CHECKSUM_MISMATCH))
         sink.add(self._stub(9999, RuleID.BAD_PREFIX))
@@ -1748,7 +1754,7 @@ class TestRejectSink:
 
         rng = random.Random(42)
         rules = list(RuleID)
-        sink = report.RejectSink(cap=5)
+        sink = report_writers.QuarantineSink(cap=5)
         for i in range(1000):
             sink.add(self._stub(i, rng.choice(rules)))
         sample = sink.finalize(entries=1000)
@@ -1757,13 +1763,13 @@ class TestRejectSink:
 
     def test_finalize_returns_filesample_with_matching_cap(self):
         # The cap travels with the sample so renderers can show truncation.
-        sink = report.RejectSink(cap=5)
+        sink = report_writers.QuarantineSink(cap=5)
         sample = sink.finalize(entries=0)
         assert sample.cap == 5
 
     def test_validate_mode_skips_writer(self, tmp_path):
         # No broken_path -> sink is purely in-memory; no temp file leakage.
-        sink = report.RejectSink(cap=5)  # no broken_path
+        sink = report_writers.QuarantineSink(cap=5)  # no broken_path
         with sink:
             sink.add(self._stub(1))
             sink.finalize(entries=1)
@@ -1773,12 +1779,14 @@ class TestRejectSink:
     def test_clean_mode_writes_byte_faithful_sidecar(self, tmp_path):
         # Each added entry's _render_entry bytes appear verbatim in the
         # finalized file; the header preamble names the source and the
-        # quarantine count. Matches the existing TestStreamingRejects
+        # quarantine count. Matches the existing TestStreamingQuarantines
         # assertion pattern (substring checks; the header timestamp is
         # volatile so we don't compare full bytes).
         path = tmp_path / "x.broken.txt"
         entries = [self._stub(i) for i in range(3)]
-        sink = report.RejectSink(broken_path=str(path), src_name="x.txt", cap=5)
+        sink = report_writers.QuarantineSink(
+            broken_path=str(path), src_name="x.txt", cap=5
+        )
         with sink:
             for entry in entries:
                 sink.add(entry)
@@ -1787,7 +1795,7 @@ class TestRejectSink:
         assert b"# source: x.txt" in body
         assert b"# 3 quarantined of 3 entries" in body
         for idx, entry in enumerate(entries, start=1):
-            assert report._render_entry(idx, entry) in body
+            assert report_writers._render_entry(idx, entry) in body
 
     def test_exit_without_finalize_cleans_partials(self, tmp_path):
         # An exception inside the `with` block leaves no debris. The
@@ -1796,7 +1804,9 @@ class TestRejectSink:
         path = tmp_path / "x.broken.txt"
         with (
             pytest.raises(RuntimeError, match="simulated"),
-            report.RejectSink(broken_path=str(path), src_name="x.txt", cap=5) as sink,
+            report_writers.QuarantineSink(
+                broken_path=str(path), src_name="x.txt", cap=5
+            ) as sink,
         ):
             sink.add(self._stub(1))
             raise RuntimeError("simulated mid-file failure")
@@ -1808,7 +1818,7 @@ class TestRejectSink:
         # semantics. RuntimeError surfaces the misuse loudly. Locks the
         # spec §4.5 contract so future contributors don't accidentally
         # turn the sink into a reusable container.
-        sink = report.RejectSink(cap=5)
+        sink = report_writers.QuarantineSink(cap=5)
         sink.finalize(entries=0)
         with pytest.raises(RuntimeError, match="already finalized"):
             sink.add(self._stub(1))
@@ -1816,7 +1826,7 @@ class TestRejectSink:
     def test_dropped_count_zero_when_under_cap(self):
         # Three entries under a cap of 5 — no drops, dropped_count stays
         # empty so renderers (issue #46) can omit the "K dropped" hint.
-        sink = report.RejectSink(cap=5)
+        sink = report_writers.QuarantineSink(cap=5)
         for i in range(3):
             sink.add(self._stub(i))
         sample = sink.finalize(entries=3)
@@ -1825,7 +1835,7 @@ class TestRejectSink:
     def test_dropped_count_increments_per_drop(self):
         # Seven entries one rule, cap of 5 — two drops accrue to that
         # rule's slot in the finalized sample.
-        sink = report.RejectSink(cap=5)
+        sink = report_writers.QuarantineSink(cap=5)
         for i in range(7):
             sink.add(self._stub(i))
         sample = sink.finalize(entries=7)
@@ -1835,7 +1845,7 @@ class TestRejectSink:
         # Mixed traffic: one rule overflows, another stays under cap.
         # Drops are accounted per-rule so the operator can tell which
         # rule lost evidence and which did not.
-        sink = report.RejectSink(cap=5)
+        sink = report_writers.QuarantineSink(cap=5)
         for i in range(8):  # 3 drops
             sink.add(self._stub(i, RuleID.CHECKSUM_MISMATCH))
         for i in range(2):  # no drops
@@ -1854,7 +1864,7 @@ class TestRejectSink:
         rng = random.Random(42)
         rules = list(RuleID)
         seen = collections.Counter()
-        sink = report.RejectSink(cap=5)
+        sink = report_writers.QuarantineSink(cap=5)
         for i in range(1000):
             rule = rng.choice(rules)
             seen[rule] += 1
@@ -1871,7 +1881,7 @@ class TestRejectSink:
         # When jsonl_path is set, every add() call appends a well-formed
         # JSON line to the shard.
         jsonl_path = str(tmp_path / "tle.findings.jsonl")
-        with report.RejectSink(
+        with report_writers.QuarantineSink(
             cap=5, jsonl_path=jsonl_path, src_name="tle.txt"
         ) as sink:
             sink.add(self._stub(10))
@@ -1888,7 +1898,7 @@ class TestRejectSink:
 
     def test_sink_skips_jsonl_when_no_path(self, tmp_path):
         # No jsonl_path -> no shard artifact. Validate-mode contract.
-        with report.RejectSink(cap=5) as sink:
+        with report_writers.QuarantineSink(cap=5) as sink:
             sink.add(self._stub(1))
             sink.finalize(entries=1)
         assert os.listdir(tmp_path) == []
@@ -1898,13 +1908,13 @@ class TestRejectSink:
         # the JSONL writer needs the per-file ``file`` field value.
         jsonl_path = str(tmp_path / "x.findings.jsonl")
         with pytest.raises(ValueError, match="src_name"):
-            report.RejectSink(cap=5, jsonl_path=jsonl_path)
+            report_writers.QuarantineSink(cap=5, jsonl_path=jsonl_path)
 
     def test_dropped_from_sample_still_in_jsonl(self, tmp_path):
         # Cap governs the in-memory sample, NOT the on-disk JSONL.
         # 10 entries with cap 3 -> sample has 3, JSONL has all 10.
         jsonl_path = str(tmp_path / "tle.findings.jsonl")
-        with report.RejectSink(
+        with report_writers.QuarantineSink(
             cap=3, jsonl_path=jsonl_path, src_name="tle.txt"
         ) as sink:
             for i in range(10):
@@ -2059,11 +2069,11 @@ class TestBuildRunEnvelope:
             "files",
         }
 
-    def test_schema_version_is_string_one(self):
-        # String, not int — leaves room for "1.1" tags in additive
+    def test_schema_version_is_string_two(self):
+        # String, not int — leaves room for "2.1" tags in additive
         # minor revisions without changing the field's JSON type.
         env = self._envelope()
-        assert env["schema_version"] == "1"
+        assert env["schema_version"] == "2"
         assert isinstance(env["schema_version"], str)
 
     def test_run_block_shape(self):
@@ -2117,7 +2127,7 @@ class TestBuildRunEnvelope:
             "clean_count",
             "quarantined_count",
             "fix_counts",
-            "reject_counts",
+            "quarantine_counts",
         }
         # _two_file_stats: 1000 + 3000 paired = 4000 records, 10 quarantined.
         assert summary["files_processed"] == 2
@@ -2131,19 +2141,17 @@ class TestBuildRunEnvelope:
         # have drifted, which the issue explicitly warns against.
         stats_list = _two_file_stats()
         env = self._envelope(all_stats=stats_list)
-        paired, orphans, lines_seen, clean, quarantined, fixes, rejects, _ = (
-            report._aggregate(stats_list)
-        )
-        assert env["summary"]["paired_records"] == paired
-        assert env["summary"]["orphan_entries"] == orphans
-        assert env["summary"]["input_lines_seen"] == lines_seen
-        assert env["summary"]["clean_count"] == clean
-        assert env["summary"]["quarantined_count"] == quarantined
-        # fix_counts / reject_counts use StrEnum keys that serialize to
+        totals = report._aggregate(stats_list)
+        assert env["summary"]["paired_records"] == totals.paired
+        assert env["summary"]["orphan_entries"] == totals.orphans
+        assert env["summary"]["input_lines_seen"] == totals.lines_seen
+        assert env["summary"]["clean_count"] == totals.clean
+        assert env["summary"]["quarantined_count"] == totals.quarantined
+        # fix_counts / quarantine_counts use StrEnum keys that serialize to
         # their stable wire tokens once JSON-encoded.
         assert (
             env["summary"]["fix_counts"]["trailing-backslash"]
-            == fixes[FixClass.TRAILING_BACKSLASH]
+            == totals.fixes[FixClass.TRAILING_BACKSLASH]
         )
 
     def test_files_array_preserves_summary_dict_shape(self):
@@ -2162,7 +2170,7 @@ class TestBuildRunEnvelope:
         assert env["summary"]["files_processed"] == 0
         assert env["summary"]["paired_records"] == 0
         assert env["summary"]["fix_counts"] == {}
-        assert env["summary"]["reject_counts"] == {}
+        assert env["summary"]["quarantine_counts"] == {}
 
     def test_full_envelope_is_json_serialisable(self):
         # The whole envelope must round-trip through json.dumps without
@@ -2172,7 +2180,7 @@ class TestBuildRunEnvelope:
         env = self._envelope()
         encoded = json.dumps(env)
         decoded = json.loads(encoded)
-        assert decoded["schema_version"] == "1"
+        assert decoded["schema_version"] == "2"
         assert decoded["run"]["command"] == "validate"
         assert decoded["summary"]["paired_records"] == 4000
         # StrEnum keys serialise as their stable wire tokens.
@@ -2191,7 +2199,7 @@ class TestBuildRunEnvelope:
 class TestEnvelopeGoldenFixture:
     """Gate R7: a checked-in JSON fixture locks the wire format.
 
-    The fixture (``tests/fixtures/report-envelope-v1.golden.json``) is
+    The fixture (``tests/fixtures/report-envelope-v2.golden.json``) is
     the contract a downstream consumer can copy verbatim and parse —
     any accidental drift in field names, types, or ordering shows up
     as a diff in the test output.
@@ -2199,7 +2207,7 @@ class TestEnvelopeGoldenFixture:
 
     def test_envelope_matches_golden_fixture(self):
         fixture_path = os.path.join(
-            os.path.dirname(__file__), "fixtures", "report-envelope-v1.golden.json"
+            os.path.dirname(__file__), "fixtures", "report-envelope-v2.golden.json"
         )
         with open(fixture_path, encoding="utf-8") as handle:
             golden = json.load(handle)
@@ -2212,7 +2220,7 @@ class TestEnvelopeGoldenFixture:
         stats.clean_count = 9
         stats.quarantined_count = 1
         stats.fix_counts = {FixClass.TRAILING_BACKSLASH: 9}
-        stats.reject_counts = {RuleID.CHECKSUM_MISMATCH: 1}
+        stats.quarantine_counts = {RuleID.CHECKSUM_MISMATCH: 1}
         stats.elapsed_seconds = 0.5
         stats.bytes = 2_048
         env = report.build_run_envelope(

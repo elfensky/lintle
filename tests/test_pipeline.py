@@ -6,8 +6,62 @@ import queue
 
 import pytest
 
-from lintle import pipeline, report
+from lintle import pipeline, report, report_writers
 from lintle.diagnostics import RuleID
+
+
+class TestProgressQueue:
+    """process_file's progress-queue protocol (issue #53 §6)."""
+
+    def test_emits_unified_progress_messages(self, tmp_path, line1, line2):
+        # With a queue, process_file emits start, then
+        # ("progress", name, bytes_delta, records_delta), then end.
+        src = tmp_path / "tle2099.txt"
+        src.write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
+        out = tmp_path / "out"
+        q = queue.Queue()
+
+        pipeline.process_file(str(src), str(out), "clean", q, progress_every=1)
+
+        msgs = []
+        while not q.empty():
+            msgs.append(q.get_nowait())
+
+        assert msgs[0] == ("start", "tle2099.txt")
+        assert msgs[-1] == ("end", "tle2099.txt")
+        progress = [m for m in msgs if m[0] == "progress"]
+        assert progress, "expected at least one progress message"
+        assert all(
+            name == "tle2099.txt" and b > 0 and r > 0
+            for (_kind, name, b, r) in progress
+        )
+        assert sum(m[3] for m in progress) == 1  # one record processed
+        assert sum(m[2] for m in progress) == src.stat().st_size  # bytes == file
+
+    def test_byte_deltas_sum_to_st_size_with_dropped_lines(
+        self, tmp_path, line1, line2
+    ):
+        # Byte deltas track the true file offset, so dropped blank/CR-only
+        # separator lines and a missing final newline are all accounted for:
+        # the reported bytes still sum to st_size exactly (issue #53).
+        src = tmp_path / "tle2099.txt"
+        # Blank + CR-only separators between records, no trailing newline.
+        src.write_bytes(
+            (line1 + "\n\n\r\n" + line2 + "\n" + line1 + "\n\n" + line2).encode("ascii")
+        )
+        out = tmp_path / "out"
+        q = queue.Queue()
+
+        pipeline.process_file(str(src), str(out), "clean", q, progress_every=1)
+
+        progress = []
+        while not q.empty():
+            msg = q.get_nowait()
+            if msg[0] == "progress":
+                progress.append(msg)
+
+        assert sum(m[2] for m in progress) == src.stat().st_size
+        assert sum(m[3] for m in progress) == 2  # two records processed
 
 
 class TestIterRecords:
@@ -43,15 +97,15 @@ class TestIterRecords:
         records = list(pipeline.iter_records(str(src)))
         assert len(records) == 1
         assert isinstance(records[0], pipeline.Orphan)
-        assert records[0].diagnostic.rule_id == RuleID.ORPHAN_LINE
-        assert records[0].diagnostic.note == "orphan line 1 at end of file"
+        assert records[0].diag.rule_id == RuleID.ORPHAN_LINE
+        assert records[0].diag.note == "orphan line 1 at end of file"
 
     def test_two_line1s_orphan_the_first(self, tmp_path, line1):
         src = tmp_path / "in.txt"
         src.write_bytes((line1 + "\n" + line1 + "\n").encode("ascii"))
         records = list(pipeline.iter_records(str(src)))
         assert all(isinstance(r, pipeline.Orphan) for r in records)
-        assert records[0].diagnostic.rule_id == RuleID.ORPHAN_LINE
+        assert records[0].diag.rule_id == RuleID.ORPHAN_LINE
 
     def test_orphan_line2(self, tmp_path, line2):
         src = tmp_path / "in.txt"
@@ -64,7 +118,7 @@ class TestIterRecords:
         src.write_bytes(("garbage\n" + line1 + "\n" + line2 + "\n").encode("ascii"))
         records = list(pipeline.iter_records(str(src)))
         orphans = [r for r in records if isinstance(r, pipeline.Orphan)]
-        assert any(o.diagnostic.rule_id == RuleID.BAD_PREFIX for o in orphans)
+        assert any(o.diag.rule_id == RuleID.BAD_PREFIX for o in orphans)
         # The valid record after the garbage line still pairs.
         assert any(isinstance(r, pipeline.RecordCandidate) for r in records)
 
@@ -107,7 +161,7 @@ class TestProcessFile:
         assert stats.input_lines_seen == 3
         assert stats.clean_count == 1
         assert stats.quarantined_count == 1
-        assert stats.reject_counts.get(RuleID.ORPHAN_LINE) == 1
+        assert stats.quarantine_counts.get(RuleID.ORPHAN_LINE) == 1
 
     def test_input_lines_seen_counts_blank_lines(self, tmp_path, line1, line2):
         # ``input_lines_seen`` is the count of physical lines read — including
@@ -136,7 +190,7 @@ class TestProcessFile:
         stats = pipeline.process_file(str(src), str(out), "clean")
 
         assert stats.quarantined_count == 1
-        assert stats.reject_counts.get(RuleID.CHECKSUM_MISMATCH) == 1
+        assert stats.quarantine_counts.get(RuleID.CHECKSUM_MISMATCH) == 1
         broken_bytes = (out / "broken" / "tle2099.broken.txt").read_bytes()
         assert b"TLE-CHK-001" in broken_bytes
 
@@ -196,7 +250,7 @@ class TestProcessFile:
         def boom(self, entry):
             raise OSError("simulated jsonl write failure")
 
-        monkeypatch.setattr(report.JsonlFindingsWriter, "write_entry", boom)
+        monkeypatch.setattr(report_writers.JsonlFindingsWriter, "write_entry", boom)
 
         with pytest.raises(OSError, match="simulated jsonl write failure"):
             pipeline.process_file(str(src), str(out), "clean")
@@ -220,7 +274,7 @@ class TestProcessFile:
         stats = pipeline.process_file(str(src), str(tmp_path / "out"), "clean")
 
         assert stats.quarantined_count == 1
-        assert stats.reject_counts.get(RuleID.INTERNAL_ERROR) == 1
+        assert stats.quarantine_counts.get(RuleID.INTERNAL_ERROR) == 1
 
     def test_clean_run_leaves_no_temp_file(self, tmp_path, line1, line2):
         src = tmp_path / "tle2099.txt"
@@ -243,9 +297,9 @@ class TestProcessFile:
         assert not list(out.rglob("*.partial"))  # but no partial temp file leaked
 
     def test_process_file_pushes_progress_to_queue(self, tmp_path, line1, line2):
-        # With a queue, process_file streams record-count deltas to it; the
-        # deltas sum to the exact record total — a partial trailing batch
-        # included — so the caller can render an accurate live count.
+        # With a queue, process_file streams ("progress", name, bytes, records)
+        # deltas; the record deltas sum to the exact total — a partial trailing
+        # batch included — so the caller can render an accurate live count.
         src = tmp_path / "tle2099.txt"
         src.write_bytes(
             ((line1 + "\n" + line2 + "\n") * 3).encode("ascii")
@@ -261,9 +315,10 @@ class TestProcessFile:
         messages = []
         while not progress.empty():
             messages.append(progress.get_nowait())
-        # Tuples are lifecycle events; ints are record-count deltas.
-        deltas = [m for m in messages if isinstance(m, int)]
-        assert sum(deltas) == 3
+        # ("progress", name, bytes_delta, records_delta): record deltas sum to
+        # the exact total (one flush of 2 records + a trailing flush of 1).
+        record_deltas = [m[3] for m in messages if m[0] == "progress"]
+        assert sum(record_deltas) == 3
 
     def test_process_file_emits_start_and_end_events(self, tmp_path, line1, line2):
         # The display needs to know which files are in flight to surface
@@ -326,11 +381,11 @@ class TestProcessFile:
         assert progress.empty()
 
 
-class TestStreamingRejects:
+class TestStreamingQuarantines:
     """The constant-memory invariant: each ``RuleID`` bucket in
-    ``stats.reject_sample.buckets`` stays bounded even on reject-heavy
+    ``stats.quarantine_sample.buckets`` stays bounded even on quarantine-heavy
     files, while the on-disk ``.broken.txt`` catalog is complete. The
-    bound is now enforced structurally by :class:`report.RejectSink`
+    bound is now enforced structurally by :class:`report_writers.QuarantineSink`
     (issue #19) — these tests exercise the invariant end-to-end through
     ``process_file``.
     """
@@ -345,12 +400,12 @@ class TestStreamingRejects:
 
         stats = pipeline.process_file(str(src), str(out), "clean")
 
-        # Full counters reflect every reject…
+        # Full counters reflect every quarantine…
         assert stats.quarantined_count == n
-        assert stats.reject_counts.get(RuleID.BAD_PREFIX) == n
+        assert stats.quarantine_counts.get(RuleID.BAD_PREFIX) == n
         # …but the in-memory bucket for that rule is capped at the bound.
         assert (
-            len(stats.reject_sample.buckets[RuleID.BAD_PREFIX])
+            len(stats.quarantine_sample.buckets[RuleID.BAD_PREFIX])
             == report._PER_RULE_EXEMPLAR_BOUND
         )
         # The on-disk catalog header and trailing entry both reflect every
@@ -362,7 +417,7 @@ class TestStreamingRejects:
 
     def test_validate_mode_bucket_caps_per_rule(self, tmp_path):
         # In validate mode no sidecar is written, but each per-rule bucket
-        # still caps so peak memory does not grow with reject count.
+        # still caps so peak memory does not grow with quarantine count.
         n = report._PER_RULE_EXEMPLAR_BOUND + 500
         src = tmp_path / "tle2099.txt"
         src.write_bytes(b"\n".join(f"junk {i:08d}".encode("ascii") for i in range(n)))
@@ -371,13 +426,13 @@ class TestStreamingRejects:
 
         assert stats.quarantined_count == n
         assert (
-            len(stats.reject_sample.buckets[RuleID.BAD_PREFIX])
+            len(stats.quarantine_sample.buckets[RuleID.BAD_PREFIX])
             == report._PER_RULE_EXEMPLAR_BOUND
         )
 
     def test_rare_rules_preserved_under_skew(self, tmp_path):
-        # Feed 1000 bad-prefix rejects then a smaller batch of a different
-        # rule. With per-rule buckets, both appear in stats.reject_sample.
+        # Feed 1000 bad-prefix quarantines then a smaller batch of a different
+        # rule. With per-rule buckets, both appear in stats.quarantine_sample.
         many = 1000
         few = 3
         lines = [f"junk {i:08d}".encode("ascii") for i in range(many)]
@@ -394,16 +449,16 @@ class TestStreamingRejects:
 
         # Both rules appear in the sample — the old flat buffer's failure
         # mode is gone.
-        assert RuleID.BAD_PREFIX in stats.reject_sample.buckets
-        assert RuleID.ORPHAN_LINE in stats.reject_sample.buckets
+        assert RuleID.BAD_PREFIX in stats.quarantine_sample.buckets
+        assert RuleID.ORPHAN_LINE in stats.quarantine_sample.buckets
         # The rare rule has all its occurrences (well under the cap).
-        assert len(stats.reject_sample.buckets[RuleID.ORPHAN_LINE]) == few
+        assert len(stats.quarantine_sample.buckets[RuleID.ORPHAN_LINE]) == few
 
     def test_internal_error_rule_bucketed_like_data_defects(
         self, tmp_path, monkeypatch
     ):
         # Force ``repair.process_record`` to raise so every paired record
-        # lands in RuleID.INTERNAL_ERROR. With many more rejects than the
+        # lands in RuleID.INTERNAL_ERROR. With many more quarantines than the
         # cap, the bucket caps just like a data-defect rule.
         n = report._PER_RULE_EXEMPLAR_BOUND + 5
         line1_tmpl = (
@@ -428,9 +483,9 @@ class TestStreamingRejects:
 
         stats = pipeline.process_file(str(src), str(tmp_path / "out"), "validate")
 
-        assert stats.reject_counts.get(RuleID.INTERNAL_ERROR) == n
+        assert stats.quarantine_counts.get(RuleID.INTERNAL_ERROR) == n
         assert (
-            len(stats.reject_sample.buckets[RuleID.INTERNAL_ERROR])
+            len(stats.quarantine_sample.buckets[RuleID.INTERNAL_ERROR])
             == report._PER_RULE_EXEMPLAR_BOUND
         )
 
@@ -441,7 +496,7 @@ class TestQuarantinedNoradIds:
     line 1, when that line is readable, and bucket them by rule ID.
     """
 
-    def test_extracts_id_from_record_reject(self, tmp_path, line1, line2):
+    def test_extracts_id_from_record_quarantine(self, tmp_path, line1, line2):
         # A 2-line record with a wrong checksum gets quarantined; line 1 is
         # otherwise intact, so the catalog number must be recovered.
         src = tmp_path / "tle2099.txt"
@@ -496,7 +551,9 @@ class TestQuarantinedNoradIds:
         assert stats.clean_count == 1
         assert stats.quarantined_norad_ids.counts == {}
 
-    def test_multiple_rejects_for_same_id_accrue_per_rule(self, tmp_path, line1, line2):
+    def test_multiple_quarantines_for_same_id_accrue_per_rule(
+        self, tmp_path, line1, line2
+    ):
         # Two checksum-mismatched records for the same NORAD ID should
         # surface as one entry with a count of 2 under the same rule,
         # confirming the per-rule accumulator advances rather than

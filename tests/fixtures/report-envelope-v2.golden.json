@@ -1,5 +1,5 @@
 {
-  "schema_version": "1",
+  "schema_version": "2",
   "run": {
     "command": "validate",
     "timestamp": "2026-05-25T13:00:00Z",
@@ -17,7 +17,7 @@
     "clean_count": 9,
     "quarantined_count": 1,
     "fix_counts": {"trailing-backslash": 9},
-    "reject_counts": {"TLE-CHK-001": 1}
+    "quarantine_counts": {"TLE-CHK-001": 1}
   },
   "files": [
     {
@@ -31,7 +31,7 @@
       "clean_count": 9,
       "quarantined_count": 1,
       "fix_counts": {"trailing-backslash": 9},
-      "reject_counts": {"TLE-CHK-001": 1},
+      "quarantine_counts": {"TLE-CHK-001": 1},
       "dropped_counts": {},
       "quarantined_norad_ids": {}
     }

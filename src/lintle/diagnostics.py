@@ -15,7 +15,7 @@ Three concepts:
   (family, short title, version introduced, deprecation chain). Kept off the
   enum members so policy questions don't force enum imports across the
   codebase.
-* :class:`Diagnostic` — the structured rejection unit, built via
+* :class:`Diagnostic` — the structured quarantine unit, built via
   :func:`diagnostic`. ``frozen`` + ``slots`` keep it hashable and cheap at
   millions-per-run scale; the helper bounds free-text fields so corrupt input
   cannot blow constant memory.
@@ -57,11 +57,11 @@ class RepairTier(enum.StrEnum):
     """Which repair tier was attempted before a diagnostic fired.
 
     A tier-2 checksum-reconstruct that still failed is a stronger corruption
-    signal than a record rejected at first read; consumers can downgrade trust
+    signal than a record quarantined at first read; consumers can downgrade trust
     accordingly.
     """
 
-    NONE = "none"  # rejected without any repair attempt
+    NONE = "none"  # quarantined without any repair attempt
     NORMALIZATION = "tier-1"  # CRLF / whitespace / trailing backslash
     CHECKSUM_RECONSTRUCT = "tier-2"  # missing-checksum reconstruction
 
@@ -75,11 +75,11 @@ class RuleSpec:
     remain readable by downstream parsers indefinitely.
     """
 
-    rule_id: "RuleID"
+    rule_id: RuleID
     family: str
     short_title: str
     introduced: str
-    deprecated_for: tuple["RuleID", ...] = ()
+    deprecated_for: tuple[RuleID, ...] = ()
 
 
 RULES: dict[RuleID, RuleSpec] = {
@@ -162,7 +162,7 @@ _ELLIPSIS = "..."
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class Diagnostic:
-    """One structured rejection — the unit cited in reports and the sidecar.
+    """One structured quarantine — the unit cited in reports and the sidecar.
 
     Construct via :func:`diagnostic`, which silently truncates oversized
     strings to the bounds below. Direct construction is supported (tests,
@@ -197,7 +197,7 @@ class Diagnostic:
             )
 
 
-def _bound(value: str | None, limit: int) -> str | None:
+def _bound(value, limit):
     """Truncate ``value`` to ``limit`` chars, appending ``...`` if cut.
 
     ``None`` passes through. The ellipsis is included *within* the limit so
@@ -208,7 +208,7 @@ def _bound(value: str | None, limit: int) -> str | None:
     return value[: limit - len(_ELLIPSIS)] + _ELLIPSIS
 
 
-def _sanitize_note(value: str) -> str:
+def _sanitize_note(value):
     """Replace non-printable characters in a note with ``?``.
 
     Defense-in-depth: ``note`` content comes from validator error strings
@@ -222,15 +222,15 @@ def _sanitize_note(value: str) -> str:
 
 
 def diagnostic(
-    rule_id: RuleID,
+    rule_id,
     *,
-    source_line_nos: tuple[int, ...],
-    tier_attempted: RepairTier = RepairTier.NONE,
-    column_range: tuple[int, int] | None = None,
-    observed: str | None = None,
-    expected: str | None = None,
-    note: str = "",
-) -> Diagnostic:
+    source_line_nos,
+    tier_attempted=RepairTier.NONE,
+    column_range=None,
+    observed=None,
+    expected=None,
+    note="",
+):
     """Construct a :class:`Diagnostic` with size-bounded, sanitized strings.
 
     ``observed`` and ``expected`` cap at 16 chars; ``note`` is sanitized

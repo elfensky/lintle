@@ -1,17 +1,17 @@
 """Compute and render the delta between two lintle run outputs (issue #10).
 
 Reads each run's ``report.jsonl`` and aggregates per-rule counts using only
-the *primary* diagnostic — mirroring ``pipeline._record_reject``, which tallies
-``stats.reject_counts[primary.rule_id]`` and never the ``related[]`` array. That
+the *primary* diagnostic — mirroring ``pipeline._record_quarantine``, which tallies
+``stats.quarantine_counts[primary.rule_id]`` and never the ``related[]`` array. That
 shared counting rule is what keeps ``lintle diff``'s numbers in agreement with
 each run's own ``report.md``. Output is a deterministic plain-text report: a
 corpus-level per-rule delta, then a per-file (per-basename) breakdown.
 
 The per-file breakdown is keyed by ``report.jsonl``'s ``file`` field, which is
 a basename (``pipeline.py``: ``os.path.basename``). That key is unambiguous
-because ``clean`` refuses to run on inputs with colliding basenames
-(``cli._detect_basename_collisions``), so within any producible run each
-basename names exactly one file. A basename present in only one run, however,
+because ``clean`` accepts only a single positional input, so within any
+producible run each basename names exactly one file. A basename present in
+only one run, however,
 may have been fixed, removed, or renamed — so one-sided files are flagged, not
 attributed. Memory is bounded by (distinct files × distinct RuleIDs) — tens of
 files × ≤9 rules for a real corpus — never the number of findings. A new leaf
@@ -22,8 +22,8 @@ import collections
 import dataclasses
 import json
 import os
-import sys
 
+from lintle import term
 from lintle.diagnostics import RULES, RuleID
 
 _SCHEMA_VERSION = "1"
@@ -88,14 +88,14 @@ def _finding_from_line(path, lineno, line):
 def aggregate(run_dir):
     """Return a :class:`collections.Counter` mapping primary ``rule_id`` →
     number of findings in ``run_dir``. Counts the primary diagnostic only,
-    matching the producer's ``stats.reject_counts`` semantics."""
+    matching the producer's ``stats.quarantine_counts`` semantics."""
     return collections.Counter(iter_primary_rule_ids(run_dir))
 
 
 def aggregate_by_file(run_dir):
     """Return ``{basename: Counter(rule_id → count)}`` for ``run_dir``. Keyed by
     the ``report.jsonl`` ``file`` basename, which uniquely names one file within
-    a run (``clean`` rejects colliding basenames). Memory is bounded by
+    a run (``clean`` accepts only a single positional input). Memory is bounded by
     (distinct files × distinct RuleIDs), not the number of findings."""
     by_file = collections.defaultdict(collections.Counter)
     for file, rule_id in iter_findings(run_dir):
@@ -186,7 +186,10 @@ def compute_file_delta(by_file_a, by_file_b):
             presence = _A_ONLY
         else:
             presence = _BOTH
-        per_rule = compute_delta(a or collections.Counter(), b or collections.Counter())
+        per_rule = compute_delta(
+            a if a is not None else collections.Counter(),
+            b if b is not None else collections.Counter(),
+        )
         # Everything except unchanged is a change worth showing; re-sort the
         # union by rule_id so the file's rule lines read in stable order.
         changed = sorted(
@@ -213,7 +216,7 @@ def _title(rule_id):
     in the current registry (e.g. a retired ID in an older run)."""
     try:
         spec = RULES[RuleID(rule_id)]
-    except (ValueError, KeyError):
+    except ValueError, KeyError:
         return ""
     return spec.short_title
 
@@ -307,7 +310,7 @@ def run(run_a, run_b):
         by_file_a = aggregate_by_file(run_a)
         by_file_b = aggregate_by_file(run_b)
     except DiffError as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        term.error(str(exc))
         return 2
     delta = compute_delta(_totals(by_file_a), _totals(by_file_b))
     file_deltas = compute_file_delta(by_file_a, by_file_b)

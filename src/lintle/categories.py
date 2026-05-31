@@ -10,9 +10,9 @@ definition — the repair-side mirror of ``RuleSpec``/``RULES`` in
 :mod:`lintle.diagnostics`. Kept as pure data here so ``lintle explain`` can
 single-source a fix's definition instead of re-describing it.
 
-Rejection taxonomy lives in :mod:`lintle.diagnostics` as the stable
+Quarantine taxonomy lives in :mod:`lintle.diagnostics` as the stable
 :class:`~lintle.diagnostics.RuleID` enum (``TLE-COL-001``, ``TLE-CHK-001``,
-…) — replacing the former ``RejectCategory`` enum removed in v0.3.0.
+…) — replacing the former category enum removed in v0.3.0.
 """
 
 import dataclasses
@@ -40,7 +40,7 @@ class FixSpec:
     :class:`FixClass`. The repair-side counterpart to ``RuleSpec``.
     """
 
-    fix_class: "FixClass"
+    fix_class: FixClass
     short_title: str
     introduced: str
 

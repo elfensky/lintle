@@ -5,7 +5,7 @@ import dataclasses
 import os
 import time
 
-from lintle import repair, report, stem, tle
+from lintle import fsutil, repair, report, report_writers, stem, tle
 from lintle.diagnostics import Diagnostic, RuleID, diagnostic
 
 
@@ -21,14 +21,15 @@ class RecordCandidate:
 
 @dataclasses.dataclass
 class Orphan:
-    """A line that could not be paired into a record. The diagnostic carries
-    the rule ID and source line; the raw bytes survive verbatim for the
-    quarantine sidecar.
+    """A line that could not be paired into a record. ``diag`` carries the
+    rule ID and source line; the raw bytes survive verbatim for the
+    quarantine sidecar. (Named ``diag``, not ``diagnostic``, so it does not
+    shadow the imported :func:`diagnostic` constructor used in this module.)
     """
 
     raw_line: bytes
     src: int
-    diagnostic: Diagnostic
+    diag: Diagnostic
 
 
 def _orphan(raw_line, src, rule_id, note):
@@ -45,8 +46,10 @@ def iter_records(path, stats=None):
     one missing line cannot cascade into a run of mispaired records.
 
     When ``stats`` is given, ``stats.input_lines_seen`` is updated to the
-    1-indexed lineno of the line just consumed — including blanks the
-    pairing loop drops, so the counter reflects every physical line read.
+    1-indexed lineno of the line just consumed and ``stats.bytes_consumed``
+    accumulates each line's raw byte length — both including blanks the
+    pairing loop drops, so the counters reflect every physical line and byte
+    read (``bytes_consumed`` reaches ``st_size`` at EOF).
     """
     held = None  # (raw_bytes, line_number) of a line-1 awaiting its line-2
 
@@ -54,6 +57,7 @@ def iter_records(path, stats=None):
         for lineno, raw in enumerate(handle, start=1):
             if stats is not None:
                 stats.input_lines_seen = lineno
+                stats.bytes_consumed += len(raw)
             line = raw.rstrip(b"\n")
             if line.strip(b" \t\r") == b"":
                 continue  # blank, whitespace-only, or CR-only line — dropped
@@ -113,13 +117,15 @@ def process_file(src_path, out_dir, mode, progress_queue=None, progress_every=25
     written to a temp file and atomically renamed, so an interrupted run
     never leaves a half-written output.
 
-    When ``progress_queue`` is given, the count of newly processed records
-    is pushed to it every ``progress_every`` records — and once more when
-    the file ends — so the caller can render live progress. The queue also
-    receives ``("start", src_name)`` before processing begins and
-    ``("end", src_name)`` in a ``finally`` (so failures still emit it),
-    letting the caller track which files are currently in flight. With no
-    queue (or ``progress_every`` set to 0) no progress is reported.
+    When ``progress_queue`` is given, a per-file delta message
+    ``("progress", src_name, bytes_delta, records_delta)`` is pushed every
+    ``progress_every`` records — and once more when the file ends — so the
+    caller can render live byte + record progress; the byte deltas sum to the
+    file's size. The queue also receives ``("start", src_name)`` before
+    processing begins and ``("end", src_name)`` in a ``finally`` (so failures
+    still emit it), letting the caller track which files are currently in
+    flight. With no queue (or ``progress_every`` set to 0) no progress is
+    reported.
     """
     src_name = os.path.basename(src_path)
     stats = report.FileStats(src_name=src_name)
@@ -191,10 +197,10 @@ def _run(src_path, out_dir, mode, stats, progress_queue, progress_every):
     # The sink owns the BrokenFileWriter lifecycle in clean mode and the
     # bounded in-memory sample in both modes. Issue #19: cap-enforcement
     # is now a structural property of the sink, not a convention spread
-    # across pipeline._record_reject. Issue #9: the sink also owns the
+    # across pipeline._record_quarantine. Issue #9: the sink also owns the
     # optional JsonlFindingsWriter, which streams structured findings to
     # the per-file shard alongside the .broken.txt byte-faithful catalog.
-    sink = report.RejectSink(
+    sink = report_writers.QuarantineSink(
         broken_path=broken_path, src_name=src_name, jsonl_path=jsonl_path
     )
 
@@ -204,6 +210,8 @@ def _run(src_path, out_dir, mode, stats, progress_queue, progress_every):
     # split: paired_records and orphan_entries each advance on their own
     # branch below, but progress is an aggregate signal.
     entries_processed = 0
+    bytes_flushed = 0  # bytes already reported via the progress queue
+    records_since_flush = 0
     with sink:
         try:
             # Input size for the v1 envelope (issue #20). Captured inside
@@ -217,19 +225,32 @@ def _run(src_path, out_dir, mode, stats, progress_queue, progress_every):
             for candidate in iter_records(src_path, stats):
                 entries_processed += 1
 
-                if (
-                    progress_queue is not None
-                    and progress_every
-                    and entries_processed % progress_every == 0
-                ):
-                    progress_queue.put(progress_every)
+                # Flush one ``("progress", name, bytes, records)`` message every
+                # ``progress_every`` records (issue #53 §6). The byte delta is
+                # the advance in ``stats.bytes_consumed`` — the true file offset
+                # tracked by ``iter_records``, counting dropped blank lines and
+                # exact newline widths — so the deltas sum to st_size exactly.
+                if progress_queue is not None and progress_every:
+                    records_since_flush += 1
+                    if entries_processed % progress_every == 0:
+                        byte_delta = stats.bytes_consumed - bytes_flushed
+                        progress_queue.put(
+                            (
+                                "progress",
+                                stats.src_name,
+                                byte_delta,
+                                records_since_flush,
+                            )
+                        )
+                        bytes_flushed += byte_delta
+                        records_since_flush = 0
 
                 if isinstance(candidate, Orphan):
                     stats.orphan_entries += 1
-                    _record_reject(
+                    _record_quarantine(
                         stats,
                         sink,
-                        candidate.diagnostic,
+                        candidate.diag,
                         (),
                         [candidate.raw_line],
                         [candidate.src],
@@ -246,7 +267,7 @@ def _run(src_path, out_dir, mode, stats, progress_queue, progress_every):
                         candidate.src2,
                     )
                 except Exception as exc:  # one bad record must not kill the run
-                    _record_reject(
+                    _record_quarantine(
                         stats,
                         sink,
                         diagnostic(
@@ -268,7 +289,7 @@ def _run(src_path, out_dir, mode, stats, progress_queue, progress_every):
                         cleaned_handle.write(result.line1 + "\n")
                         cleaned_handle.write(result.line2 + "\n")
                 else:
-                    _record_reject(
+                    _record_quarantine(
                         stats,
                         sink,
                         result.primary,
@@ -277,10 +298,15 @@ def _run(src_path, out_dir, mode, stats, progress_queue, progress_every):
                         result.source_lines,
                     )
             # Push the trailing partial batch so the caller's tally is exact.
+            # ``byte_delta`` can be non-zero with zero records when the file
+            # ends in dropped blank lines — still flush it so the byte bar
+            # reaches st_size.
             if progress_queue is not None and progress_every:
-                remainder = entries_processed % progress_every
-                if remainder:
-                    progress_queue.put(remainder)
+                byte_delta = stats.bytes_consumed - bytes_flushed
+                if byte_delta or records_since_flush:
+                    progress_queue.put(
+                        ("progress", stats.src_name, byte_delta, records_since_flush)
+                    )
             completed = True
         finally:
             if cleaned_handle is not None:
@@ -298,31 +324,31 @@ def _run(src_path, out_dir, mode, stats, progress_queue, progress_every):
         # and deletes the body partial before finalize can stitch it. Two
         # adversarial-review voices caught this bug in the original spec.
         if completed and mode == "clean":
-            os.replace(cleaned_tmp, cleaned_path)
-        stats.reject_sample = sink.finalize(
+            fsutil.durable_replace(cleaned_tmp, cleaned_path)
+        stats.quarantine_sample = sink.finalize(
             entries=stats.paired_records + stats.orphan_entries
         )
 
     return stats
 
 
-def _record_reject(stats, sink, primary, related, raw_lines, source_lines):
+def _record_quarantine(stats, sink, primary, related, raw_lines, source_lines):
     """Tally one quarantined record; hand it to the sink for sampling + streaming.
 
     ``primary`` is the headline :class:`Diagnostic`; its ``rule_id`` (string
     value, e.g. ``"TLE-CHK-001"``) is the aggregation key written to
-    ``stats.reject_counts``. ``related`` carries supporting diagnostics, if
+    ``stats.quarantine_counts``. ``related`` carries supporting diagnostics, if
     any, and is rendered as indented continuation lines in ``.broken.txt``.
 
-    :class:`RejectSink` owns the bounded-sample insert (cap enforced by
+    :class:`QuarantineSink` owns the bounded-sample insert (cap enforced by
     construction, issue #19) and — in clean mode — the byte-faithful
     sidecar stream via its owned :class:`BrokenFileWriter`. The sample
-    surfaces on ``stats.reject_sample`` once ``sink.finalize`` runs at
+    surfaces on ``stats.quarantine_sample`` once ``sink.finalize`` runs at
     end of file in :func:`_run`.
 
-    Note: ``stats.reject_counts`` and ``stats.quarantined_count`` are
+    Note: ``stats.quarantine_counts`` and ``stats.quarantined_count`` are
     incremented up front, so on an exception mid-file these counters
-    will reflect every reject encountered while ``stats.reject_sample``
+    will reflect every quarantine encountered while ``stats.quarantine_sample``
     stays at its empty default (the ``with sink:`` exit discards the
     in-flight sample). That counter/sample divergence is observable
     only on the abnormal-exit path and matches today's behaviour.
@@ -331,25 +357,25 @@ def _record_reject(stats, sink, primary, related, raw_lines, source_lines):
     # primary.rule_id is a StrEnum — equal to and hashable as its string
     # value, so the dict key is the stable wire token ("TLE-CHK-001") and
     # downstream JSON / sort orders are deterministic.
-    stats.reject_counts[primary.rule_id] = (
-        stats.reject_counts.get(primary.rule_id, 0) + 1
+    stats.quarantine_counts[primary.rule_id] = (
+        stats.quarantine_counts.get(primary.rule_id, 0) + 1
     )
-    # Decode the NORAD ID once, before constructing RejectEntry, so the
+    # Decode the NORAD ID once, before constructing QuarantineEntry, so the
     # structured ``report.jsonl`` emitter sees the same value the per-NORAD
-    # breakdown does (issue #9). Orphan-line-2 and bad-prefix rejects
+    # breakdown does (issue #9). Orphan-line-2 and bad-prefix quarantines
     # expose no line-1 catalog field and yield ``None``.
     norad_id = tle.extract_norad_id(raw_lines[0])
-    # Pass norad_id as a kwarg — RejectEntry's positional contract is
+    # Pass norad_id as a kwarg — QuarantineEntry's positional contract is
     # (raw_lines, source_lines, primary, related), and norad_id is the
     # trailing optional. The kwarg makes the intent explicit at the only
     # production construction site (spec §4.5).
-    entry = report.RejectEntry(
+    entry = report.QuarantineEntry(
         raw_lines, source_lines, primary, related, norad_id=norad_id
     )
     sink.add(entry)  # cap-checked, streamed if writer is open (issue #19)
     # The per-NORAD bucket records which rules the satellite hit, feeding
     # the human-facing per-NORAD breakdown section in report.md; ``record``
-    # accrues a +1 to that satellite's per-rule total across all rejects
+    # accrues a +1 to that satellite's per-rule total across all quarantines
     # in this file. Single typed mutation entry point per issue #47 — any
     # future writer that wants to populate the tracker must go through it.
     if norad_id is not None:

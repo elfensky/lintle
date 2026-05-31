@@ -68,6 +68,47 @@
   validation against `lintle_version` + per-input identity, reused-file `FileStats`
   reconstruction for a complete report, and `.shards` preservation so `report.jsonl` stays
   complete. The correctness-preserving replacement for the rejected §13 (issue #56).
+  **2026-05-27:** §15.4 — the durability *limit* is resolved (issue #58): every committed
+  file routes through `fsutil.durable_replace` (fsync data → `os.replace` → fsync directory),
+  with `F_FULLFSYNC` as the macOS power-loss barrier and `os.fsync` elsewhere. Durability is
+  always-on (no flag) — measured at ~1 s over a ~120-commit, multi-minute run on the 30 GB
+  corpus — and the worker fsyncs its outputs before the parent records `completed`, so
+  `--resume` can never trust a non-durable output. §15.4 retitled "Durability limit" →
+  "Durability".
+  **2026-05-28:** §10 — `clean`'s preflight disk-space check gains a
+  borderline-warning band: free space below 2× input still aborts with exit
+  `2` (unchanged); 2× to 2.5× now prints a warning to stderr and proceeds;
+  above 2.5× is silent (unchanged). Internal: `cli._check_disk_space` returns
+  `(severity, message) | None` instead of `string | None` (PR #64).
+  **2026-05-28:** §3 — added §3.1 "Runtime dependency policy & considered
+  dependencies": the flat pure-stdlib runtime rule becomes a goal-led
+  four-MUST-bar test (earns-its-weight · mature · small surface · operational
+  fit; the aim is veto-only) with a canonical considered/deferred table. This
+  spec is the canonical home; `CLAUDE.md` / `CONTRIBUTING.md` point here. Runtime
+  stays zero-dependency. Companion:
+  [`2026-05-28-runtime-dependency-policy-design.md`](2026-05-28-runtime-dependency-policy-design.md).
+  **2026-05-31:** §3.1 — the runtime-dependency policy is **relaxed**. The four-MUST gate and
+  the "aim is a veto, never a waiver" clause are retired; the four bars become *favourable
+  signals* (popular · maintained · reduces-our-burden · sensible shape) that tilt toward
+  adoption, and the **hard correctness invariants** (one validator #4, constant memory #3,
+  `sgp4`-never-at-runtime, byte-deterministic unstyled structured/stdout output #1/#2, atomic
+  durability + host-aware lock, validated transformation) become the *only* vetoes. A
+  relaxed-bar audit re-evaluated every considered library (adding `filelock`, atomic-write,
+  `tabulate`, and file-hashing rows) and adopted none — each is blocked by a hard invariant or
+  removes ~0 code — so the runtime stays `rich`-only. Companion design doc and `CLAUDE.md`
+  updated in lockstep.
+  **2026-05-31:** terminology unified on **"quarantine"** (the act of setting a bad record
+  aside) — retiring the mixed "reject" vocabulary. Code identifiers renamed
+  (`RejectSink`→`QuarantineSink`, `RejectEntry`→`QuarantineEntry`, `Rejected`→`Quarantined`,
+  `_record_reject`→`_record_quarantine`, `format_reject_lines`→`format_quarantine_lines`,
+  `FileStats.reject_sample`→`quarantine_sample`), the stdout summary label `rejects:` →
+  `quarantined:`, and `explain`'s "rejection rule" → "quarantine rule". **BREAKING:** the
+  per-rule map `FileStats.reject_counts` → `quarantine_counts`, which also renames the
+  serialized key in the `--report json` envelope (`schema_version` `"1"`→`"2"`, see
+  [`2026-05-25-report-json-envelope.md`](2026-05-25-report-json-envelope.md)) and the resume
+  checkpoint (`SCHEMA_VERSION` `2`→`3`; pre-upgrade checkpoints refuse-and-restart by design).
+  The `report.jsonl` findings stream and `lintle diff` are unaffected (no `reject_counts`
+  there — their `schema_version` stays `"1"`). RuleID wire tokens unchanged.
 - **Topic:** A tool to validate and clean a multi-gigabyte corpus of Two-Line Element (TLE) files exported from space-track.org
 
 ## 1. Problem statement
@@ -173,13 +214,120 @@ Two adjustments taken from the survey:
   not guessed.
 - **Use an existing parser as a test oracle.** `sgp4` (and optionally `tletools`) are added as
   **dev-only** dependencies and used in the test suite to cross-check our validation against a
-  trusted implementation. The runtime stays pure-stdlib.
+  trusted implementation. The runtime carries no third-party dependencies today; when that
+  changes it is governed by the policy in §3.1.
+
+### 3.1 Runtime dependency policy & considered dependencies
+
+The runtime is lean by policy, not by dogma. **This subsection is the canonical source for
+the runtime-dependency rule** — `CLAUDE.md` and `CONTRIBUTING.md` carry only a pointer to it,
+and the rationale + the four-model debate behind it are in
+[`2026-05-28-runtime-dependency-policy-design.md`](2026-05-28-runtime-dependency-policy-design.md).
+
+The aim is a stable, maintainable, easy-to-understand app. A third-party **runtime**
+dependency may be added when it advances that aim: when it is **popular, actively
+maintained, and genuinely reduces the code we would otherwise own**, *and* it violates none
+of the hard correctness invariants below. The four signals that follow **favour** adoption —
+they tilt the decision; they are **not** necessary conditions, and none of them is a veto.
+The hard correctness invariants are the *only* vetoes.
+
+> **Policy note (2026-05-31):** this is a deliberate relaxation of the prior gate. The old
+> rule treated all four signals as MUSTs (necessary conditions) and made the
+> stable/maintainable/understandable aim a *veto-never-a-waiver*. That veto and the MUST
+> framing are **retired**. A mature, popular, well-supported library that reduces our
+> maintenance burden should be adopted where it makes sense even if it would have failed a
+> strict MUST (e.g. a slightly-larger-than-3 transitive tree). What stays immovable are the
+> correctness invariants — see below.
+
+**Favourable signals (a relaxed bar — preferences, not MUSTs):**
+
+1. **Popular / widely deployed** — broadly depended on across the ecosystem (used by major
+   CLIs and well-known projects). Low popularity alone no longer blocks a dependency, but a
+   `left-pad` one-liner earns no tilt.
+2. **Actively maintained & mature** — recent commits, a healthy release history, a responsive
+   upstream, no abandonment signals.
+3. **Reduces our maintenance burden** — deletes or avoids real code we would otherwise own
+   (~100 lines, rule of thumb, *or* a gotcha-prone domain: terminal control, parsing,
+   compression). A parity-only swap that nets ~0 lines is a weak case that barely tilts — but
+   it is no longer auto-disqualified.
+4. **Sensible operational shape** — pure-Python or widely-prebuilt wheels preferred (no
+   surprise native toolchain at install), a small/well-known transitive surface, an acceptable
+   license, a clean `pip-audit` history, no heavy import-time side effects. Imperfect fit tilts
+   against but never auto-rejects.
+
+**Hard correctness invariants (the only vetoes — immovable however popular or well-maintained
+a library is).** A dependency is rejected, no matter how attractive, if it would:
+
+- form a **second validation path** — "perfect" is defined once in `tle.py` (Critical Rule #4;
+  this is *why* an orbital lib like `sgp4` is a dev-only oracle);
+- **load a file whole**, or make any per-file structure grow with record count — files stream
+  and the largest input is ~3.2 GB (Critical Rule #3);
+- import **`sgp4` (or another orbital parser) at runtime**;
+- make any **structured/machine-readable output or stdout-pipeable data non-byte-deterministic
+  or styled** (Critical Rules #1/#2) — `report.md`, `report.jsonl`, `broken-noradids.ndjson`,
+  the `.broken.txt` sidecar, the `--report json` envelope, the `.clean-state.json` checkpoint,
+  and `cleaned/*.txt` all stay exactly as their contracts assert; `rich` styling is confined to
+  stderr ephemera;
+- weaken the **atomic + durable commit** (`fsutil.durable_replace`: fsync data → `os.replace` →
+  fsync directory, with `F_FULLFSYNC` on macOS) or the **host-aware out-dir lock** semantics
+  (cross-host refuse; same-host dead-PID reclaim only); or
+- violate **validated transformation / correctness over recovery** (Critical Rules #1/#2).
+
+These invariants gate a dependency's *behaviour*, not its file location — there is deliberately
+**no layering rule**.
+
+**Recording requirement (not a bar):** adoption lands with a `CHANGELOG.md` entry beside the
+`pyproject.toml` edit. **Maintenance:** pin to exclude the next major (e.g. `rich>=13,<14`);
+`uv.lock` is the lockfile of record; re-review on any major-version bump. **Dev-only** deps
+(test oracles, tooling) are exempt and record purpose/scope if nontrivial.
+
+**Current runtime dependencies: `rich>=13,<14`** — terminal rendering for the `clean` progress
+UI (issue #53). A 2026-05-31 audit re-evaluated every considered library under this relaxed bar
+and adopted **none**: each is blocked by a hard correctness invariant above, or removes ~0 real
+code. The relaxed bar is the right policy going forward; it simply does not change today's
+runtime, which stays `rich`-only.
+
+#### Considered & deferred (canonical record)
+
+Two reject grades: **Reject (hard invariant)** is immovable — the library would break a
+correctness invariant and will not be revisited; **Reject (not worth it)** is a judgement
+under the relaxed bar that can be revisited if circumstances change. The 2026-05-31 relaxed-bar
+re-evaluation (audit) updated the reasons and added the lock / atomic-write / table / hashing
+rows; the dispositions did not change — relaxing the bar unlocked no adoptions because the
+hand-rolled subsystems exist to honour invariants no library can express.
+
+| Tool | Disposition | Reason |
+|---|---|---|
+| TLE/orbital libs (`sgp4`, `Skyfield`, `tletools`, `astropy`) | **Reject (hard invariant)** | Using one as a parser/validator is a second validation path (**Critical Rule #4**) — this is *why* `sgp4` is a test-oracle dev dep. Dev-only oracle use is fine. |
+| `pydantic` | **Reject (hard invariant)** | A second coercion/validation path collides with the one-validator rule (#4); it would also drift the byte-deterministic `report.jsonl` / checkpoint outputs (#1/#2), and `pydantic-core` is native at millions-of-records scale. (`attrs` would be a ~parity swap — see `click`.) |
+| `orjson` / `ujson` / `msgspec` | **Reject (hard invariant)** | Changes the on-disk bytes (`sort_keys`, compact separators, `ensure_ascii=False`, LF) that the `report.jsonl` diff contract and resume round-trip assert (#1/#2); native build for zero needed perf. |
+| `tabulate` | **Reject (hard invariant)** | `report.md` is a byte-deterministic artifact asserted byte-for-byte; `tabulate`'s width/padding rules rewrite every byte (#1/#2). The stderr roster already uses `rich`. |
+| `filelock` | **Reject (hard invariant)** | Cannot express the host-aware out-dir lock (cross-host refuse + same-host dead-PID reclaim via `hostname`+`boot_id`); adopting it would be *unsafe* on a shared network `--out-dir`. |
+| atomic-write libs (`atomicwrites`, `boltons`) | **Reject (hard invariant)** | None implements the macOS `F_FULLFSYNC` + directory-fsync ordering `durable_replace` needs for power-loss durability; `atomicwrites` is archived/unmaintained besides. |
+| file-hashing libs (`dirhash`, `xxhash`) | **Reject (hard invariant)** | The resume input fingerprint is a bounded head+tail 64 KB window hash; every whole-file hashing lib would read the full 3.2 GB file (Critical Rule #3). |
+| `click` / `typer` | **Reject (not worth it)** | `argparse` is stdlib with zero supply-chain surface; the real complexity (divergent subcommand shapes, the N/N% threshold parser, the exit-code epilog) is almost none of what they would delete (~0 net lines, plus changed `--help`/error text the e2e tests assert on). `typer` would also tempt a *second* `rich` pathway. |
+| `polars` / `pandas` | **Reject (not worth it)** | `diff` is per-rule counters; a `dict[str,int]` does it; huge native tree. |
+| `structlog` / `loguru` | **Reject (not worth it)** | No logging; the strict 3-channel output covers it; net-negative LOC. |
+| `joblib` / `loky` / `tenacity` | **Reject (not worth it)** | The bespoke exact-cancel, `128+signo` exit codes, and checkpoint-ordering are `lintle` policy no executor library deletes. |
+| `platformdirs` | **Reject (not worth it)** | Wrong-tool mismatch — `lintle` has no user config/cache dirs to resolve. |
+| config parsing (`tomli`, …) | **Reject (not worth it)** | `tomllib` is stdlib (3.11+); `configparser` / `json` / `argparse` cover the rest. |
+| caching (`diskcache`, `cachetools`) | **Reject (not worth it)** | One-pass streaming tool; a `dict` suffices for bounded state. |
+| `tqdm` | **Reject (not worth it)** | Can't render a dynamic block of N concurrent bars whose set changes, and `rich` already covers progress; it would duplicate the adopted dep. |
+| `textual` | **Reject (not worth it)** | Full TUI framework; we want a progress block, not an app. |
+| `blessed` / `prompt_toolkit` | **Reject (not worth it)** | Lower-level; still ~50 lines of layout glue. `rich` fits better. |
+| `rich` | **Adopted (issue #53)** | The popular, well-maintained terminal-rendering library (`pip`/`uv`/`pdm`/`typer` depend on it); drives the `clean` stderr progress UI (multi-file live block + size-only roster), replacing ~150 lines of hand-rolled ANSI. Pure-Python; transitive `markdown-it-py` + `pygments`. Confined to `cli.py` stderr — no streaming-path, memory, or structured-output impact. |
+| `zstandard` | **Defer (trigger-gated)** | Only if output size / transfer time becomes a *measured* bottleneck (compressing sidecars/shards). Trigger: file a ticket with the measurement; until then stdlib `gzip`. Native ext → re-check the operational-shape signal. |
+
+Dev-only (exempt from the bars; record purpose/scope; land any time): `hypothesis`
+(property-based tests for `tle.py` / `repair.py` — strongest candidate), `pytest-xdist`
+(parallel test runs).
 
 ## 4. Architecture (Approach B)
 
-A single `uv`-managed Python project, **pure standard library at runtime**. The two user-facing
-asks become **one validator** used in two modes: the validator defines "perfect"; the cleaner
-reuses it and emits only records that pass it.
+A single `uv`-managed Python project with a **lean runtime** — one third-party dependency,
+`rich`, for the `clean` terminal UI; everything else is standard library (governed by §3.1).
+The two user-facing asks become **one validator** used in two modes: the validator defines
+"perfect"; the cleaner reuses it and emits only records that pass it.
 
 ### 4.1 The validated-transformation principle
 
@@ -227,7 +375,7 @@ TLEs/
 | `tle.py` | Defines validity: checksum, column layout, record pairing. Pure functions. Single source of truth. | nothing |
 | `repair.py` | Conservative transformations. Each applied speculatively, confirmed by `tle.py`; committed only if valid. | `tle.py` |
 | `pipeline.py` | Streams a file in **binary**, pairs `1 `/`2 ` lines into record candidates, routes each to cleaned/broken, tallies stats. | `tle.py`, `repair.py` |
-| `report.py` | Renders the `.broken.txt` reject file and the run summary. Owns the `RejectSink` (single mutation entry point, per-rule cap enforced by construction, streaming sidecar lifecycle) and the immutable `FileSample` value object handed back to `FileStats` (issue #19). | nothing |
+| `report.py` | Renders the `.broken.txt` quarantine sidecar and the run summary. Owns the `QuarantineSink` (single mutation entry point, per-rule cap enforced by construction, streaming sidecar lifecycle) and the immutable `FileSample` value object handed back to `FileStats` (issue #19). | nothing |
 | `cli.py` | Globs paths, dispatches `validate` vs `clean`, drives parallelism, prints summary. | all of the above |
 
 Dependencies point one way (`cli → pipeline → repair → tle`); each layer is testable without the
@@ -448,9 +596,9 @@ read bytes ─▶ line state-machine ─▶ pair into record candidates ─▶ r
    cannot be paired (orphans) are yielded as orphan candidates.
 2. `repair.process_record(line1, src1, line2, src2)` decodes, applies cosmetic strips
    speculatively, runs `tle.validate_record`, and returns either `Accepted(line1, line2,
-   fixes_applied)` or a `Rejected` value carrying a primary `Diagnostic` (issue #8).
-3. `pipeline` routes Accepted records to `<name>.cleaned.txt` and Rejected records into a
-   per-file `report.RejectSink`. The sink owns the byte-faithful `BrokenFileWriter` (in
+   fixes_applied)` or a `Quarantined` value carrying a primary `Diagnostic` (issue #8).
+3. `pipeline` routes Accepted records to `<name>.cleaned.txt` and Quarantined records into a
+   per-file `report_writers.QuarantineSink`. The sink owns the byte-faithful `BrokenFileWriter` (in
    `clean` mode) and the bounded in-memory sample used by the `validate` summary; its per-rule
    cap is enforced by construction so over-cap entries cannot be inserted (issue #19). On
    finalize, the sink yields an immutable `FileSample` attached to the file's `FileStats`.
@@ -536,7 +684,7 @@ Printed to stdout (and as JSON with `--report json`):
 ```
 tle2022.txt   8,412,066 records   8,412,064 clean   3 quarantined   (1 orphan, 16,824,135 lines)
   fixes:   trailing-backslash 8,412,064 | reconstructed-checksum 195,293 | crlf 0 | trailing-ws 0
-  rejects: TLE-CHK-001 1 | TLE-PAIR-001 1 | TLE-COL-001 1
+  quarantined: TLE-CHK-001 1 | TLE-PAIR-001 1 | TLE-COL-001 1
 ```
 
 Reject counts key by the stable `RuleID` registry (`TLE-CHK-001` for checksum
@@ -581,6 +729,8 @@ Built so that a 20-minute run does not die on one bad byte:
   leaves a half-written `.cleaned.txt` that looks complete.
 - `clean` checks free space on `--out-dir` before starting (cleaned + broken output ≈ input size,
   plus transient headroom for the temp file), so a 20-minute run does not fail late on a full disk.
+  Free below the 2× input-size floor aborts with exit `2`; free in the 2× to 2.5× borderline
+  band prints a warning to stderr and proceeds; above 2.5× is silent.
 - Exit codes: `0` = clean (no defects, or — for `clean` — every defect was repaired and every
   emitted record is valid); `1` = **unrepairable** records exist (`validate`: at least one record
   *would* be quarantined; `clean`: records were routed to `.broken.txt`); `2` = operational error
@@ -604,7 +754,7 @@ Test-driven, dev dependencies `pytest` and `sgp4` (optionally `tletools`).
   the layout and semantic checks, and quarantined otherwise (interior character missing); and the
   speculative-reject path — a `\`-terminated line whose columns 1–69 still fail the checksum must
   be quarantined, not "fixed."
-- **`report.py` structural invariants:** `RejectSink.add` honours the per-rule cap by
+- **`report_writers.py` structural invariants:** `QuarantineSink.add` honours the per-rule cap by
   construction — verified under adversarial input order, a deterministic randomized sequence,
   and a finalize-then-add `RuntimeError` lock; `FileSample.from_bounded` raises on over-cap
   input; context-manager exit without `finalize` discards `.broken.txt` partials. These tests
@@ -875,14 +1025,34 @@ keeps *both*, so a later `--resume` re-reads the surviving shards and rebuilds a
 at start as before. The Ctrl-C handler is otherwise unchanged; the on-disk checkpoint already
 reflects the files completed before the interruption.
 
-### 15.4 Durability limit
+### 15.4 Durability
 
-The checkpoint and the per-file outputs are committed with `os.replace` (namespace
-atomicity) but are **not** `fsync`'d — the same I/O posture as the rest of `lintle`
-(`pipeline._run`, `concat_findings_shards`, the report writers). The ordinary interruptions
-this feature targets — Ctrl-C, a closed/slept laptop, a process crash — preserve the OS page
-cache, so the data is flushed normally and resume is safe. A *hard* power loss or kernel panic
-mid-run could, in principle, leave the checkpoint rename durable while a just-committed
-output's data is not yet flushed, so `--resume` would trust an output whose bytes are
-incomplete on disk. This is an accepted limit, not unique to resume (any `os.replace` in the
-codebase has the same exposure); a project-wide `fsync` durability pass is tracked in #58.
+Every committed file — the checkpoint, the per-file `cleaned/` output, the `.broken.txt`
+sidecar, each findings shard, and the end-of-run `report.jsonl` / `report.md` /
+`broken-noradids.ndjson` — is committed through one helper, `fsutil.durable_replace`
+(issue #58). It `fsync`s the temp file's data, `os.replace`s it onto the destination, then
+`fsync`s the containing directory so the rename itself is durable. `os.replace` alone gives
+*atomicity* (a reader sees the old name or the new one, never a half-written file); the added
+`fsync`s give *durability* — the committed bytes survive a hard power loss or kernel panic,
+not just the ordinary Ctrl-C / sleep / crash that the page cache already covers.
+
+**Platform barrier.** On macOS `os.fsync` flushes to the drive but not the drive's own write
+cache, so it is *not* a true power-loss barrier; `fcntl(fd, F_FULLFSYNC)` is. On Linux and
+other platforms `os.fsync` is the real barrier. `fsutil` selects the correct one per platform.
+
+**`--resume` ordering invariant.** Because a worker routes all of its outputs through
+`durable_replace`, those bytes are durable before the worker returns its stats — and only
+*then* does the parent record the file `completed` in the checkpoint (also via
+`durable_replace`). So the checkpoint can never name a file whose data is not yet on disk,
+which is what `--resume`'s "trust a committed output without reprocessing" guarantee requires
+(Critical Rule #2).
+
+**Always-on, no flag.** Measured on the 30 GB corpus's APFS/SSD: a full run commits ~120
+files (≈4 per input + 3 final reports — bounded by *file* count, not record count), and the
+`F_FULLFSYNC` barrier costs ~9 ms/call (~1 s/run total); the data-flush portion is dominated
+by writes that must reach disk anyway and overlaps the CPU-bound parsing. The overhead is far
+under 1 % of a multi-minute run, so durability is unconditional — a flag would only add a
+foot-gun (disable it and `--resume` silently loses its guarantee) for no measurable benefit.
+
+**Out of scope:** cross-filesystem / network-FS durability beyond what `fsync` + directory
+`fsync` provide on local disks.

@@ -1,7 +1,7 @@
 """Tests for lintle.diff — the per-rule delta between two run outputs (issue #10).
 
 Fixtures are built through the real producer serializer
-``report.entry_to_jsonl_dict`` so the test corpus tracks the actual
+``report_writers.entry_to_jsonl_dict`` so the test corpus tracks the actual
 ``report.jsonl`` wire schema rather than a hand-rolled copy that rots.
 """
 
@@ -10,7 +10,7 @@ import json
 
 import pytest
 
-from lintle import cli, diff, report
+from lintle import cli, diff, report, report_writers
 from lintle.diagnostics import RuleID, diagnostic
 
 
@@ -20,8 +20,8 @@ def _diag(rule_id, src=1, **kwargs):
 
 
 def _entry(primary_rule, related_rules=(), *, norad_id=25544):
-    """Build a RejectEntry with a primary rule and optional related rules."""
-    return report.RejectEntry(
+    """Build a QuarantineEntry with a primary rule and optional related rules."""
+    return report.QuarantineEntry(
         raw_lines=[b"1 x", b"2 x"],
         source_lines=[1, 2],
         primary=_diag(primary_rule),
@@ -31,14 +31,14 @@ def _entry(primary_rule, related_rules=(), *, norad_id=25544):
 
 
 def _write_run(run_dir, entries, *, file="tle.txt"):
-    """Write a report.jsonl into ``run_dir`` from a list of RejectEntry,
+    """Write a report.jsonl into ``run_dir`` from a list of QuarantineEntry,
     serialized through the real producer renderer.
     """
     run_dir.mkdir(parents=True, exist_ok=True)
     path = run_dir / "report.jsonl"
     with path.open("w", encoding="utf-8") as fh:
         for entry in entries:
-            payload = report.entry_to_jsonl_dict(
+            payload = report_writers.entry_to_jsonl_dict(
                 entry, file=file, norad_id=entry.norad_id
             )
             fh.write(json.dumps(payload, separators=(",", ":"), sort_keys=True) + "\n")
@@ -53,7 +53,7 @@ def _write_run_files(run_dir, file_rules):
     with path.open("w", encoding="utf-8") as fh:
         for filename, rule in file_rules:
             entry = _entry(rule)
-            payload = report.entry_to_jsonl_dict(
+            payload = report_writers.entry_to_jsonl_dict(
                 entry, file=filename, norad_id=entry.norad_id
             )
             fh.write(json.dumps(payload, separators=(",", ":"), sort_keys=True) + "\n")
@@ -100,7 +100,7 @@ class TestDiffReader:
     def test_schema_version_mismatch_raises(self, tmp_path):
         run = tmp_path / "run"
         run.mkdir()
-        payload = report.entry_to_jsonl_dict(
+        payload = report_writers.entry_to_jsonl_dict(
             _entry(RuleID.CHECKSUM_MISMATCH), file="tle.txt", norad_id=25544
         )
         payload["schema_version"] = "2"  # forge a future envelope
@@ -113,7 +113,7 @@ class TestDiffReader:
         # one — it must not be silently treated as v1.
         run = tmp_path / "run"
         run.mkdir()
-        payload = report.entry_to_jsonl_dict(
+        payload = report_writers.entry_to_jsonl_dict(
             _entry(RuleID.CHECKSUM_MISMATCH), file="tle.txt", norad_id=25544
         )
         del payload["schema_version"]
@@ -126,7 +126,7 @@ class TestDiffReader:
         # be aggregated; fail loudly rather than count a phantom None.
         run = tmp_path / "run"
         run.mkdir()
-        payload = report.entry_to_jsonl_dict(
+        payload = report_writers.entry_to_jsonl_dict(
             _entry(RuleID.CHECKSUM_MISMATCH), file="tle.txt", norad_id=25544
         )
         del payload["rule_id"]
@@ -146,7 +146,7 @@ class TestDiffReader:
         # envelope and must not be accepted by loose equality.
         run = tmp_path / "run"
         run.mkdir()
-        payload = report.entry_to_jsonl_dict(
+        payload = report_writers.entry_to_jsonl_dict(
             _entry(RuleID.CHECKSUM_MISMATCH), file="tle.txt", norad_id=25544
         )
         payload["schema_version"] = 1  # int, not "1"
@@ -191,7 +191,7 @@ class TestDiffReader:
 
 class TestAggregate:
     """``aggregate`` collapses a run into a Counter of primary rule_id → count,
-    mirroring pipeline._record_reject (primary only; related[] ignored).
+    mirroring pipeline._record_quarantine (primary only; related[] ignored).
     """
 
     def test_counts_primary_rule_ids(self, tmp_path):
@@ -383,7 +383,7 @@ class TestDiffCli:
         run_a = _write_run(tmp_path / "a", [_entry(RuleID.CHECKSUM_MISMATCH)])
         run_b = tmp_path / "b"
         run_b.mkdir()
-        payload = report.entry_to_jsonl_dict(
+        payload = report_writers.entry_to_jsonl_dict(
             _entry(RuleID.CHECKSUM_MISMATCH), file="tle.txt", norad_id=25544
         )
         payload["schema_version"] = "99"
@@ -396,17 +396,17 @@ class TestDiffCli:
 
 class TestDiffSemanticAlignment:
     """The contract test: the diff's per-rule counts must equal what the
-    producer's own ``stats.reject_counts`` records on the same findings —
+    producer's own ``stats.quarantine_counts`` records on the same findings —
     primary rule_id only, related[] never counted (pipeline.py:334-336).
     """
 
-    def test_aggregate_matches_producer_reject_counts(self, tmp_path):
+    def test_aggregate_matches_producer_quarantine_counts(self, tmp_path):
         entries = [
             _entry(RuleID.CHECKSUM_MISMATCH, related_rules=(RuleID.LINE_LENGTH,)),
             _entry(RuleID.CHECKSUM_MISMATCH),
             _entry(RuleID.BAD_PREFIX, related_rules=(RuleID.NON_ASCII_BYTE,)),
         ]
-        # Mirror pipeline._record_reject's tally: primary rule_id only.
+        # Mirror pipeline._record_quarantine's tally: primary rule_id only.
         producer_counts = collections.Counter(e.primary.rule_id.value for e in entries)
         run = _write_run(tmp_path / "run", entries)
         assert diff.aggregate(str(run)) == producer_counts
@@ -432,8 +432,8 @@ class TestIterFindings:
 
 class TestAggregateByFile:
     """``aggregate_by_file`` returns ``{basename: Counter(rule_id)}``. Because
-    clean refuses colliding basenames, each basename is a unique file within a
-    run, so the grouping is unambiguous."""
+    clean accepts only a single positional input, each basename is a unique file
+    within a run, so the grouping is unambiguous."""
 
     def test_groups_counts_by_file(self, tmp_path):
         run = _write_run_files(
@@ -452,7 +452,7 @@ class TestAggregateByFile:
         entry = _entry(RuleID.CHECKSUM_MISMATCH, related_rules=(RuleID.LINE_LENGTH,))
         run = tmp_path / "run"
         run.mkdir()
-        payload = report.entry_to_jsonl_dict(
+        payload = report_writers.entry_to_jsonl_dict(
             entry, file="a.txt", norad_id=entry.norad_id
         )
         (run / "report.jsonl").write_text(json.dumps(payload) + "\n")

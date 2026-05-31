@@ -32,7 +32,7 @@ def _classify_line(line, lineno):
 
 
 class TestRuleExplainCoverage:
-    """Every rejection rule is documented; entries are self-consistent."""
+    """Every quarantine rule is documented; entries are self-consistent."""
 
     def test_every_ruleid_has_an_entry(self):
         assert set(RULE_EXPLAIN) == set(RuleID)
@@ -43,7 +43,7 @@ class TestRuleExplainCoverage:
 
 
 class TestRuleExamplesMatchValidator:
-    """The keystone for the rejection vocabulary."""
+    """The keystone for the quarantine vocabulary."""
 
     def test_good_line_examples_pass_validation(self):
         for entry in RULE_EXPLAIN.values():
@@ -57,7 +57,7 @@ class TestRuleExamplesMatchValidator:
                 (bad,) = entry.bad_lines
                 assert _classify_line(bad, entry.lineno) is entry.rule_id
 
-    def test_record_examples_reject_with_this_rule(self):
+    def test_record_examples_quarantine_with_this_rule(self):
         for entry in RULE_EXPLAIN.values():
             if entry.verify is VerifyKind.RECORD:
                 good1, good2 = entry.good_lines
@@ -67,7 +67,7 @@ class TestRuleExamplesMatchValidator:
                 )
                 bad1, bad2 = entry.bad_lines
                 result = repair.process_record(bad1.encode(), 1, bad2.encode(), 2)
-                assert isinstance(result, repair.Rejected)
+                assert isinstance(result, repair.Quarantined)
                 assert result.primary.rule_id is entry.rule_id
 
     def test_pairing_examples_orphan_with_this_rule(self, tmp_path):
@@ -76,7 +76,7 @@ class TestRuleExamplesMatchValidator:
                 src = tmp_path / f"{entry.rule_id}.txt"
                 src.write_bytes(("\n".join(entry.bad_lines) + "\n").encode("latin-1"))
                 fired = {
-                    item.diagnostic.rule_id
+                    item.diag.rule_id
                     for item in pipeline.iter_records(str(src))
                     if isinstance(item, pipeline.Orphan)
                 }
@@ -144,7 +144,7 @@ class TestCitationsResolve:
 
 
 class TestRenderRule:
-    """``render`` of a rejection rule surfaces every required element."""
+    """``render`` of a quarantine rule surfaces every required element."""
 
     def test_includes_id_definition_examples_and_citation(self):
         entry = RULE_EXPLAIN[RuleID.CHECKSUM_MISMATCH]
