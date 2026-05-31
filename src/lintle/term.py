@@ -1,5 +1,7 @@
-"""Shared terminal-output helpers: the single stderr ``Console`` and the
-styled ``error:`` / ``warning:`` emitters used across the CLI surface.
+"""Shared terminal-output helpers: the two shared ``Console`` instances
+(``stderr_console`` for styled ephemera; ``stdout_console`` for the ``report``
+command's rendered view) and the styled ``error:`` / ``warning:`` emitters
+used across the CLI surface.
 
 rich styling is confined to stderr and only when it is a TTY; off a TTY (pipes,
 ``capsys``, ``NO_COLOR``) the Console strips styling and the output is plain,
@@ -16,6 +18,7 @@ from rich.console import Console
 from rich.text import Text
 
 stderr_console = Console(stderr=True)
+stdout_console = Console()
 
 
 class Severity(enum.Enum):

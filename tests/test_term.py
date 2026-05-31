@@ -66,3 +66,13 @@ class TestPrompt:
         out = capsys.readouterr()
         assert out.err == "resume this run? [Y/n] "
         assert out.out == ""
+
+
+class TestConsoles:
+    """Structural checks on the two shared Console instances."""
+
+    def test_stdout_console_targets_stdout(self):
+        from lintle import term
+
+        assert term.stdout_console.stderr is False
+        assert term.stderr_console.stderr is True
