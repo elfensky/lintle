@@ -6,6 +6,18 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Added
+
+- The `clean` live progress block now shows, per in-flight file, a **byte
+  throughput** (`rich.progress.TransferSpeedColumn`) and a **time-remaining ETA**
+  (`TimeRemainingColumn`) — derived from the per-file byte total already supplied,
+  so a multi-hour 30 GB run shows real per-file speed and ETA. The overall row
+  gains a **files-done/total counter** (`MofNCompleteColumn`). These columns are
+  gated by task kind (a small `_ForKind` wrapper) so the byte columns never render
+  on the file-count overall row and the counter never renders raw bytes on a
+  per-file row. TTY-only, additive UX — off a TTY the plain per-file summary lines
+  are unchanged, and stdout / structured output are untouched.
+
 ### Changed
 
 - Upgraded the `rich` runtime dependency from the 13.x series to **15.x**
