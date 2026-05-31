@@ -1893,5 +1893,7 @@ class TestReportArtifactAndCommand:
         cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
         capsys.readouterr()  # discard the clean run's output
         rc = cli.main(["report", str(out)])
+        cap = capsys.readouterr()
         assert rc == 0
-        assert "quarantined" in capsys.readouterr().out
+        assert "quarantined" in cap.out
+        assert cap.err == ""  # the report panel must go to stdout, not stderr

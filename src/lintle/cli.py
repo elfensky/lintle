@@ -994,9 +994,6 @@ def main(argv=None):
         # from the per-worker shards. All three are always written on a
         # successful clean run — empty when nothing was quarantined — so
         # downstream consumers see a stable artifact set.
-        report_path = None
-        noradids_path = None
-        findings_path = None
         envelope = None
         if args.command == "clean" and all_stats:
             # Build the envelope once here so it can be persisted to report.json
