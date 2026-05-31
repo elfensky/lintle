@@ -143,18 +143,36 @@ deliverable (like `git log`); it still degrades to plain text when piped.
   is removed with its 2 tests (`test_report.py:488,497`); add the `report` subparser → `summary.run`.
 - `fsutil.durable_replace` reused for `report.json`.
 
-## 8. Removing `validate`
+## 8. Removing `validate` (CLI-only)
 
-- **Delete:** the `validate` subparser (help/description); its dispatch; the validate-only terminal
-  branch (`cli.py:1011–1012`); `report.format_quarantine_lines` **and its ~10 tests**
-  (`TestFormatQuarantineLines`, `tests/test_report.py:664–922` — verified); and update the two
-  docstrings in `report.py` that reference it (lines 54, 383).
-- **Keep (shared with `clean`):** `quarantine_sample` / `FileSample` / `_PER_RULE_EXEMPLAR_BOUND`,
-  `dropped_counts` (envelope + `report.md`), `_format_diagnostic` (the sidecar's renderer), and all
-  pipeline internals. **Envelope `schema_version` stays `"2"`** — verified these are populated by
-  `pipeline.py:328` and serialised at `report.py:271`, so they are not validate-only.
-- `run.command` is now always `"clean"`; keep the field (string); update docs that say
-  "validate or clean".
+`validate` is a **pipeline mode**, not merely a subcommand: `pipeline.process_file(src, out, mode)`
+takes `mode ∈ {"validate","clean"}` and the `"validate"` branch suppresses every write (no out-dir,
+no sidecar, no JSONL shard). **Decision (2026-05-31): CLI-only removal** — drop the user-facing
+command and its renderer, but leave `process_file`'s mode plumbing untouched (it is internal wiring
+`clean` depends on via `mode="clean"`; the `"validate"` branch simply becomes CLI-unreachable, still
+covered by its direct `process_file` unit tests). A later cleanup may strip the now-unexposed mode —
+out of scope here.
+
+- **Delete (CLI surface + its renderer):**
+  - the `validate` entry in the subparser loop (`cli.py:173–187`) and the `{validate,…}` metavar
+    (`cli.py:170`) → argparse now rejects `validate`;
+  - the validate-only terminal exemplar branch (`cli.py:1011–1012`);
+  - `report.format_quarantine_lines` (`report.py:407–452`) and its tests (`TestFormatQuarantineLines`,
+    `tests/test_report.py:664–922` — verified); fix the two docstrings referencing it
+    (`report.py:54, 383`);
+  - the ~20 `cli.main(["validate", …])` tests in `test_cli.py` — **delete** those asserting
+    validate-specific behaviour (read-only/no-output, exemplar listing, no-checkpoint, envelope
+    `command=="validate"`); **retarget to `clean`** those that merely exercise shared argument
+    surface (`--jobs` validation, `--max-quarantined` parsing, missing/empty path) when no equivalent
+    `clean` test already exists, else delete as a duplicate. Enumerated in the plan (Phase 1).
+- **Keep untouched (internal wiring / not validate-only):** `process_file`'s `mode` parameter and
+  its `"validate"` branch; ALL `test_pipeline.py` / `test_pipeline_throughput.py` validate-mode
+  tests; the report-envelope tests and `tests/fixtures/report-envelope-v2.golden.json` (they
+  exercise `build_run_envelope(command=…)` at the API level, where any command string is valid);
+  `quarantine_sample` / `FileSample` / `_PER_RULE_EXEMPLAR_BOUND`, `dropped_counts`,
+  `_format_diagnostic`. **Envelope `schema_version` stays `"2"`** (populated by `pipeline.py:328`,
+  serialised at `report.py:271` — not validate-only).
+- From the CLI, `run.command` is now always `"clean"` (the API still accepts any string).
 - Breaking change → CHANGELOG + v0.5.0.
 
 ## 9. Testing (TDD — Claude writes tests + implementation; multi-LLM is review-only)
