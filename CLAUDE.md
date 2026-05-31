@@ -82,6 +82,7 @@ src/lintle/
 ├── report.py      # FileStats, the .broken.txt sidecar writer, the run report
 ├── resume.py      # single-run checkpoint for `clean --resume` (issue #56)
 ├── fsutil.py      # durable_replace — the one atomic+fsync commit path (issue #58)
+├── term.py        # shared stderr Console + error/warning/note/prompt helpers (rich)
 ├── diff.py        # read-only: per-rule delta between two runs' report.jsonl (lintle diff)
 ├── explain.py     # read-only: renders rule/fix documentation (lintle explain)
 ├── tle.py         # the validator — column layout, checksum, semantic ranges, pairing
@@ -97,7 +98,10 @@ on `__version__`) alongside. `diagnostics.py` and `categories.py` are pure-data 
 depended on by `repair`, `pipeline`, `report`, and `explain`; `explain_examples.py`
 is also pure data, composing those two leaves into documented examples. `fsutil.py`
 is a stdlib-only I/O leaf (the durable-commit helper) depended on by `pipeline`,
-`report`, and `resume`. `tle.py` and the data modules carry no I/O, so cycles are
+`report`, and `resume`. `term.py` is a rich-only stderr-output leaf (the shared
+Console plus the `error`/`warning`/`note`/`prompt` emitters) depended on by `cli`
+and `diff` — so the styled `error:`/`warning:` prefix lives in one place without a
+`diff → cli` cycle. `tle.py` and the data modules carry no I/O, so cycles are
 structurally impossible.
 
 → See [`README.md`](README.md) for the architecture, usage, and data flow.
