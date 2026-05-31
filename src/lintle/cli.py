@@ -15,8 +15,18 @@ import threading
 import time
 
 from rich import box
-from rich.progress import BarColumn, Progress, TaskProgressColumn, TextColumn
+from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    ProgressColumn,
+    TaskProgressColumn,
+    TextColumn,
+    TimeRemainingColumn,
+    TransferSpeedColumn,
+)
 from rich.table import Table
+from rich.text import Text
 
 from lintle import (
     __version__,
@@ -458,6 +468,25 @@ def _format_elapsed(seconds):
     return f"{minutes}:{secs:02d}"
 
 
+class _ForKind(ProgressColumn):
+    """Render the wrapped column only for tasks of a given ``kind``; every other
+    task gets an empty cell. One ``Progress`` drives two task shapes — the
+    overall row (``total`` = file count) and the per-file rows (``total`` =
+    bytes) — so a byte column (speed, ETA) would render a misleading value on the
+    count row, and the files-done/total counter would render raw byte numbers on
+    a per-file row. Gating by ``kind`` keeps each column on the rows it fits."""
+
+    def __init__(self, kind, inner):
+        super().__init__()
+        self._kind = kind
+        self._inner = inner
+
+    def render(self, task):
+        if task.fields.get("kind") == self._kind:
+            return self._inner.render(task)
+        return Text("")
+
+
 class _ProgressDisplay:
     """Live multi-file progress for a parallel run, driven by ``rich``.
 
@@ -495,13 +524,22 @@ class _ProgressDisplay:
                 TextColumn("{task.fields[label]}"),
                 BarColumn(bar_width=None),
                 TaskProgressColumn(),
+                # Overall row: files done / total. Per-file rows: byte
+                # throughput + ETA, computed from the byte total set per task.
+                _ForKind("overall", MofNCompleteColumn()),
+                _ForKind("file", TransferSpeedColumn()),
+                _ForKind("file", TimeRemainingColumn(compact=True)),
                 TextColumn("{task.fields[detail]}"),
                 console=self._console,
                 transient=True,
             )
             self._progress.start()
             self._overall = self._progress.add_task(
-                "overall", label="overall", total=self._total_files, detail=""
+                "overall",
+                label="overall",
+                kind="overall",
+                total=self._total_files,
+                detail="",
             )
         self._thread.start()
         return self
@@ -575,6 +613,7 @@ class _ProgressDisplay:
                         self._tasks[name] = self._progress.add_task(
                             name,
                             label=name,
+                            kind="file",
                             total=self._sizes.get(name),
                             detail="0 rec",
                         )

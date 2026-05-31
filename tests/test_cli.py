@@ -1124,6 +1124,58 @@ class TestProgressDisplayRendering:
             assert "a" not in disp._tasks
 
 
+class TestProgressColumns:
+    """Per-file ETA + throughput and an overall files-done/total counter, gated
+    by task ``kind`` so byte-only columns never render on the file-count overall
+    row and the count-only column never renders raw bytes on a per-file row."""
+
+    class _Inner:
+        def render(self, task):
+            from rich.text import Text
+
+            return Text("INNER")
+
+    def test_for_kind_renders_inner_only_for_the_matching_kind(self):
+        col = cli._ForKind("file", self._Inner())
+
+        class _Task:
+            def __init__(self, kind):
+                self.fields = {"kind": kind}
+
+        assert col.render(_Task("file")).plain == "INNER"
+        assert col.render(_Task("overall")).plain == ""
+
+    def test_overall_and_per_file_tasks_are_kind_tagged(self):
+        q = queue.Queue()
+        console = Console(file=io.StringIO(), force_terminal=True, width=120)
+        disp = cli._ProgressDisplay(1, q, console, sizes={"a": 1000})
+        with disp:
+            disp._stop.set()
+            disp._thread.join()
+            assert {t.fields.get("kind") for t in disp._progress.tasks} == {"overall"}
+            q.put(("start", "a"))
+            disp._drain()
+            assert {t.fields.get("kind") for t in disp._progress.tasks} == {
+                "overall",
+                "file",
+            }
+
+    def test_progress_wires_speed_eta_per_file_and_mofn_overall(self):
+        console = Console(file=io.StringIO(), force_terminal=True, width=120)
+        disp = cli._ProgressDisplay(1, queue.Queue(), console, sizes={})
+        with disp:
+            disp._stop.set()
+            disp._thread.join()
+            wrapped = {
+                (c._kind, type(c._inner).__name__)
+                for c in disp._progress.columns
+                if isinstance(c, cli._ForKind)
+            }
+        assert ("file", "TransferSpeedColumn") in wrapped
+        assert ("file", "TimeRemainingColumn") in wrapped
+        assert ("overall", "MofNCompleteColumn") in wrapped
+
+
 class TestExplainCommand:
     """`lintle explain <TAG>` is a read-only documentation lookup."""
 
