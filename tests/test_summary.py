@@ -103,3 +103,37 @@ class TestRender:
         out = con.file.getvalue()
         assert "█" not in out and "─" not in out and "→" not in out
         assert "clean" in out
+
+
+class TestRun:
+    def _write(self, tmp_path):
+        from lintle import report
+
+        report.write_run_json(str(tmp_path / "report.json"), _demo_envelope())
+
+    def test_text_renders_to_stdout(self, tmp_path, capsys):
+        self._write(tmp_path)
+        rc = summary.run(str(tmp_path), "text")
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "clean" in out and "quarantined" in out
+
+    def test_json_emits_bytes_verbatim(self, tmp_path, capsys):
+        self._write(tmp_path)
+        raw = (tmp_path / "report.json").read_text(encoding="utf-8")
+        rc = summary.run(str(tmp_path), "json")
+        assert rc == 0
+        assert capsys.readouterr().out == raw
+
+    def test_missing_report_is_exit_2(self, tmp_path, capsys):
+        rc = summary.run(str(tmp_path), "text")
+        assert rc == 2
+        assert "no run found" in capsys.readouterr().err
+
+    def test_bad_schema_is_exit_2(self, tmp_path, capsys):
+        (tmp_path / "report.json").write_text(
+            '{"schema_version": "99"}', encoding="utf-8"
+        )
+        rc = summary.run(str(tmp_path), "text")
+        assert rc == 2
+        assert "schema" in capsys.readouterr().err.lower()
