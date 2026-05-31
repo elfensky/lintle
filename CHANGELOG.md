@@ -51,6 +51,22 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Changed
 
+- **Terminology unified on "quarantine".** The codebase and outputs used "reject"
+  and "quarantine" interchangeably; everything now says **quarantine** (the act of
+  setting a bad record aside). The stdout summary label `rejects:` is now
+  `quarantined:`, and `lintle explain` calls a rule a "quarantine rule". Internals
+  renamed to match (`QuarantineSink`, `QuarantineEntry`, `Quarantined`, etc.).
+  **Breaking change** to two machine-readable surfaces:
+  - `--report json`: the per-rule map `reject_counts` is renamed `quarantine_counts`
+    (in both `summary` and `files[]`), and `schema_version` bumps **`"1"` → `"2"`**.
+    Consumers keying on `schema_version == "1"` or `reject_counts` must update.
+  - The `clean --resume` checkpoint `SCHEMA_VERSION` bumps **`2` → `3`**; a checkpoint
+    written by an older `lintle` is refused and the run restarts fresh (the existing
+    refuse-on-change behaviour — no data loss, the prior outputs are archived).
+
+  The `report.jsonl` findings stream and `lintle diff` are **unaffected** (they never
+  carried `reject_counts`; their `schema_version` stays `"1"`). Stable `RuleID` wire
+  tokens (`TLE-CHK-001`, …) are unchanged.
 - All CLI stderr messages now route through `rich`: `error:` lines render
   bold-red and `warning:` lines yellow on a terminal, while status, prompt, and
   cancel notices share the one stderr `Console`. Output is unchanged off a TTY
