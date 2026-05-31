@@ -2131,19 +2131,17 @@ class TestBuildRunEnvelope:
         # have drifted, which the issue explicitly warns against.
         stats_list = _two_file_stats()
         env = self._envelope(all_stats=stats_list)
-        paired, orphans, lines_seen, clean, quarantined, fixes, rejects, _ = (
-            report._aggregate(stats_list)
-        )
-        assert env["summary"]["paired_records"] == paired
-        assert env["summary"]["orphan_entries"] == orphans
-        assert env["summary"]["input_lines_seen"] == lines_seen
-        assert env["summary"]["clean_count"] == clean
-        assert env["summary"]["quarantined_count"] == quarantined
+        totals = report._aggregate(stats_list)
+        assert env["summary"]["paired_records"] == totals.paired
+        assert env["summary"]["orphan_entries"] == totals.orphans
+        assert env["summary"]["input_lines_seen"] == totals.lines_seen
+        assert env["summary"]["clean_count"] == totals.clean
+        assert env["summary"]["quarantined_count"] == totals.quarantined
         # fix_counts / reject_counts use StrEnum keys that serialize to
         # their stable wire tokens once JSON-encoded.
         assert (
             env["summary"]["fix_counts"]["trailing-backslash"]
-            == fixes[FixClass.TRAILING_BACKSLASH]
+            == totals.fixes[FixClass.TRAILING_BACKSLASH]
         )
 
     def test_files_array_preserves_summary_dict_shape(self):

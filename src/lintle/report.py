@@ -37,7 +37,9 @@ class RejectEntry:
     ``report.jsonl`` emitter, not rendered into ``.broken.txt``. ``norad_id``
     MUST stay the trailing field: the pipeline call site constructs this
     dataclass positionally, so any reorder would silently corrupt the
-    per-call arguments.
+    per-call arguments. This is the report-layer twin of
+    :class:`repair.Rejected`; ``pipeline._record_reject`` unpacks a
+    ``Rejected`` (or an orphan's fields) and rebuilds it here.
     """
 
     raw_lines: list
@@ -630,7 +632,8 @@ def summary_dict(stats):
         # FileSample. Parallels reject_counts in shape and key vocabulary.
         "dropped_counts": dict(stats.reject_sample.dropped_count),
         "quarantined_norad_ids": {
-            nid: dict(cats) for nid, cats in stats.quarantined_norad_ids.counts.items()
+            nid: dict(rule_counts)
+            for nid, rule_counts in stats.quarantined_norad_ids.counts.items()
         },
     }
 
@@ -667,8 +670,8 @@ def stats_from_summary(data):
         ),
         quarantined_norad_ids=NoradTracker(
             counts={
-                int(nid): {RuleID(rule): count for rule, count in cats.items()}
-                for nid, cats in data["quarantined_norad_ids"].items()
+                int(nid): {RuleID(rule): count for rule, count in rule_counts.items()}
+                for nid, rule_counts in data["quarantined_norad_ids"].items()
             }
         ),
     )
@@ -696,9 +699,14 @@ def build_run_envelope(all_stats, *, command, started_at, elapsed_seconds):
     ``all_stats``, preserving order so consumers see deterministic file
     ordering matching ``report.md``.
     """
-    paired, orphans, lines_seen, clean, quarantined, fixes, rejects, _ = _aggregate(
-        all_stats
-    )
+    totals = _aggregate(all_stats)
+    paired = totals.paired
+    orphans = totals.orphans
+    lines_seen = totals.lines_seen
+    clean = totals.clean
+    quarantined = totals.quarantined
+    fixes = totals.fixes
+    rejects = totals.rejects
     return {
         "schema_version": _ENVELOPE_SCHEMA_VERSION,
         "run": {
@@ -775,19 +783,32 @@ def format_reject_lines(stats):
     return "\n".join(blocks)
 
 
+@dataclasses.dataclass(frozen=True)
+class _Totals:
+    """Corpus-wide totals summed across every file's stats by :func:`_aggregate`.
+
+    Consumed by attribute (not positional unpacking) at the two call sites —
+    the ``--report json`` envelope and ``report.md`` — so the field set can
+    change without silently misassigning a renumbered tuple.
+    """
+
+    paired: int
+    orphans: int
+    lines_seen: int
+    clean: int
+    quarantined: int
+    fixes: dict
+    rejects: dict
+    dropped: dict
+
+
 def _aggregate(all_stats):
     """Sum every file's stats into corpus-wide totals and count dicts.
 
-    Returns ``(paired, orphans, lines_seen, clean, quarantined, fixes,
-    rejects, dropped)`` — the trailing ``dropped`` map (issue #46) sums
-    each file's ``reject_sample.dropped_count`` so ``report.md`` can show
-    a corpus-wide Dropped column alongside the per-rule reject totals.
+    Returns a :class:`_Totals`; its ``dropped`` map (issue #46) sums each
+    file's ``reject_sample.dropped_count`` so ``report.md`` can show a
+    corpus-wide Dropped column alongside the per-rule reject totals.
     """
-    paired = sum(s.paired_records for s in all_stats)
-    orphans = sum(s.orphan_entries for s in all_stats)
-    lines_seen = sum(s.input_lines_seen for s in all_stats)
-    clean = sum(s.clean_count for s in all_stats)
-    quarantined = sum(s.quarantined_count for s in all_stats)
     fixes = {}
     rejects = {}
     dropped = {}
@@ -798,7 +819,16 @@ def _aggregate(all_stats):
             rejects[key] = rejects.get(key, 0) + value
         for key, value in stats.reject_sample.dropped_count.items():
             dropped[key] = dropped.get(key, 0) + value
-    return paired, orphans, lines_seen, clean, quarantined, fixes, rejects, dropped
+    return _Totals(
+        paired=sum(s.paired_records for s in all_stats),
+        orphans=sum(s.orphan_entries for s in all_stats),
+        lines_seen=sum(s.input_lines_seen for s in all_stats),
+        clean=sum(s.clean_count for s in all_stats),
+        quarantined=sum(s.quarantined_count for s in all_stats),
+        fixes=fixes,
+        rejects=rejects,
+        dropped=dropped,
+    )
 
 
 # How many filenames to enumerate before collapsing the trailing tail into
@@ -814,41 +844,38 @@ def _aggregate_per_norad(all_stats):
     """Roll the per-file per-NORAD breakdowns up into a corpus-wide view.
 
     Returns a ``dict[int, dict]`` keyed by NORAD ID; each value has
-    ``"total"`` (int), ``"categories"`` (``{RuleID: count}`` summed across
-    files — the dict key is kept named ``categories`` since the column
-    header in ``report.md`` reads "Defect categories" to stay readable),
-    and ``"files"`` (set of source filenames where the ID had at least one
-    quarantine). Memory is O(unique IDs × (|RuleID| + |source files|)) —
-    bounded by the satellite catalog (~tens of thousands) and the small
-    fixed number of source files in a corpus run, so the rollup stays
+    ``"total"`` (int), ``"rules"`` (``{RuleID: count}`` summed across files —
+    the ``report.md`` column header still reads "Defect categories" for
+    readability), and ``"files"`` (set of source filenames where the ID had
+    at least one quarantine). Memory is O(unique IDs × (|RuleID| + |source
+    files|)) — bounded by the satellite catalog (~tens of thousands) and the
+    small fixed number of source files in a corpus run, so the rollup stays
     constant-memory regardless of total reject count.
     """
     rollup = {}
     for stats in all_stats:
-        for nid, categories in stats.quarantined_norad_ids.counts.items():
-            if not categories:
+        for nid, rule_counts in stats.quarantined_norad_ids.counts.items():
+            if not rule_counts:
                 continue
-            entry = rollup.setdefault(
-                nid, {"total": 0, "categories": {}, "files": set()}
-            )
+            entry = rollup.setdefault(nid, {"total": 0, "rules": {}, "files": set()})
             entry["files"].add(stats.src_name)
-            for cat, count in categories.items():
+            for rule, count in rule_counts.items():
                 entry["total"] += count
-                entry["categories"][cat] = entry["categories"].get(cat, 0) + count
+                entry["rules"][rule] = entry["rules"].get(rule, 0) + count
     return rollup
 
 
-def _format_per_norad_categories(categories):
-    """Render a per-NORAD ``categories`` mapping as ``"a (2), b (1)"`` text.
+def _format_per_norad_rules(rule_counts):
+    """Render a per-NORAD ``{RuleID: count}`` mapping as ``"a (2), b (1)"`` text.
 
     Sorted by count descending then rule-ID ascending so the order is
-    deterministic and the dominant defect surfaces first. ``str(cat)``
+    deterministic and the dominant defect surfaces first. ``str(rule)``
     coerces ``RuleID`` enum members via their ``StrEnum`` value, so the
     output matches the stable wire tokens (``"TLE-CHK-001"``, etc.) used
     elsewhere in the report.
     """
-    items = sorted(categories.items(), key=lambda kv: (-kv[1], str(kv[0])))
-    return ", ".join(f"{cat} ({count})" for cat, count in items)
+    items = sorted(rule_counts.items(), key=lambda kv: (-kv[1], str(kv[0])))
+    return ", ".join(f"{rule} ({count})" for rule, count in items)
 
 
 def _format_per_norad_files(files):
@@ -892,9 +919,9 @@ def _format_per_norad_section(all_stats, top_n):
         "|---------:|--------------------:|-------------------|-------|",
     ]
     for nid, entry in shown:
-        cats = _format_per_norad_categories(entry["categories"])
+        rules = _format_per_norad_rules(entry["rules"])
         files = _format_per_norad_files(entry["files"])
-        lines.append(f"| {nid} | {entry['total']:,} | {cats} | {files} |")
+        lines.append(f"| {nid} | {entry['total']:,} | {rules} | {files} |")
     if top_n is not None and len(items) > top_n:
         remaining = len(items) - top_n
         lines += [
@@ -920,9 +947,15 @@ def format_run_report(all_stats, top_n=100):
     present.
     """
     timestamp = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    paired, orphans, lines_seen, clean, quarantined, fixes, rejects, dropped = (
-        _aggregate(all_stats)
-    )
+    totals = _aggregate(all_stats)
+    paired = totals.paired
+    orphans = totals.orphans
+    lines_seen = totals.lines_seen
+    clean = totals.clean
+    quarantined = totals.quarantined
+    fixes = totals.fixes
+    rejects = totals.rejects
+    dropped = totals.dropped
     denominator = paired + orphans
 
     def pct(count):
