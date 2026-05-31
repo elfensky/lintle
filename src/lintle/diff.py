@@ -186,7 +186,10 @@ def compute_file_delta(by_file_a, by_file_b):
             presence = _A_ONLY
         else:
             presence = _BOTH
-        per_rule = compute_delta(a or collections.Counter(), b or collections.Counter())
+        per_rule = compute_delta(
+            a if a is not None else collections.Counter(),
+            b if b is not None else collections.Counter(),
+        )
         # Everything except unchanged is a change worth showing; re-sort the
         # union by rule_id so the file's rule lines read in stable order.
         changed = sorted(

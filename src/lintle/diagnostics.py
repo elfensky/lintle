@@ -197,7 +197,7 @@ class Diagnostic:
             )
 
 
-def _bound(value: str | None, limit: int) -> str | None:
+def _bound(value, limit):
     """Truncate ``value`` to ``limit`` chars, appending ``...`` if cut.
 
     ``None`` passes through. The ellipsis is included *within* the limit so
@@ -208,7 +208,7 @@ def _bound(value: str | None, limit: int) -> str | None:
     return value[: limit - len(_ELLIPSIS)] + _ELLIPSIS
 
 
-def _sanitize_note(value: str) -> str:
+def _sanitize_note(value):
     """Replace non-printable characters in a note with ``?``.
 
     Defense-in-depth: ``note`` content comes from validator error strings
@@ -222,15 +222,15 @@ def _sanitize_note(value: str) -> str:
 
 
 def diagnostic(
-    rule_id: RuleID,
+    rule_id,
     *,
-    source_line_nos: tuple[int, ...],
-    tier_attempted: RepairTier = RepairTier.NONE,
-    column_range: tuple[int, int] | None = None,
-    observed: str | None = None,
-    expected: str | None = None,
-    note: str = "",
-) -> Diagnostic:
+    source_line_nos,
+    tier_attempted=RepairTier.NONE,
+    column_range=None,
+    observed=None,
+    expected=None,
+    note="",
+):
     """Construct a :class:`Diagnostic` with size-bounded, sanitized strings.
 
     ``observed`` and ``expected`` cap at 16 chars; ``note`` is sanitized

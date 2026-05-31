@@ -105,6 +105,10 @@ def load_checkpoint(out_dir):
 
 
 class CheckpointStatus(enum.Enum):
+    """Outcome of inspecting an on-disk checkpoint: absent, corrupt (unreadable
+    or malformed), valid (matches the current run), or stale (present but no
+    longer matching this run's identity)."""
+
     ABSENT = "absent"
     CORRUPT = "corrupt"
     VALID = "valid"
@@ -198,6 +202,9 @@ def verify_completed_outputs(completed, out_dir):
 
 
 class ResumeAction(enum.Enum):
+    """The action :func:`resolve_resume_action` chose for a run: start FRESH,
+    RESUME the existing checkpoint, or ABORT (with an exit code)."""
+
     FRESH = "fresh"
     RESUME = "resume"
     ABORT = "abort"
