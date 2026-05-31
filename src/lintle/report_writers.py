@@ -34,7 +34,7 @@ def _diagnostic_to_nested(diag):
 
 
 def entry_to_jsonl_dict(entry, *, file, norad_id):
-    """Render one :class:`RejectEntry` as a single ``report.jsonl`` line dict.
+    """Render one :class:`QuarantineEntry` as a single ``report.jsonl`` line dict.
 
     Envelope shape carries ``schema_version`` (``"1"`` for this spec),
     ``outcome`` (always ``"quarantined"`` in v1; reserved for future
@@ -57,7 +57,7 @@ def entry_to_jsonl_dict(entry, *, file, norad_id):
 
 
 def _render_entry(index, entry):
-    """Render one :class:`RejectEntry` as the bytes it occupies in ``.broken.txt``.
+    """Render one :class:`QuarantineEntry` as the bytes it occupies in ``.broken.txt``.
 
     Header line cites the primary diagnostic; any related diagnostics fold
     onto indented continuation lines (``    and: ...``). The original raw
@@ -119,7 +119,7 @@ class BrokenFileWriter:
         return self
 
     def write_entry(self, entry):
-        """Append one ``RejectEntry`` to the sidecar body, byte-faithfully."""
+        """Append one ``QuarantineEntry`` to the sidecar body, byte-faithfully."""
         self._entry_count += 1
         self._handle.write(_render_entry(self._entry_count, entry))
 
@@ -179,7 +179,7 @@ class JsonlFindingsWriter:
         return self
 
     def write_entry(self, entry):
-        """Append one ``RejectEntry`` to the shard as a JSON line."""
+        """Append one ``QuarantineEntry`` to the shard as a JSON line."""
         payload = entry_to_jsonl_dict(
             entry, file=self.src_name, norad_id=entry.norad_id
         )
@@ -210,8 +210,8 @@ class JsonlFindingsWriter:
         return False
 
 
-class RejectSink:
-    """File-scoped reject sink: bounded sample + optional streaming sidecar.
+class QuarantineSink:
+    """File-scoped quarantine sink: bounded sample + optional streaming sidecar.
 
     Single mutation entry point :meth:`add` enforces the per-rule cap by
     construction — there is no other path into the sample. In ``clean``
@@ -270,7 +270,7 @@ class RejectSink:
         """Record one quarantined entry. Silently drops past cap.
 
         Drops are not data loss: the operator-visible totals live in
-        ``stats.reject_counts`` (incremented in the pipeline before this
+        ``stats.quarantine_counts`` (incremented in the pipeline before this
         call), and the byte-faithful catalog reaches disk via the writer
         regardless of the in-memory cap. Likewise the structured JSONL
         shard receives every entry — the cap governs only the in-memory
@@ -326,17 +326,19 @@ class RejectSink:
 def write_broken_file(path, src_name, stats):
     """Write the ``.broken.txt`` sidecar from a populated ``FileStats``.
 
-    Thin wrapper that flattens ``stats.reject_sample.buckets`` (a per-rule
-    immutable mapping built by :class:`RejectSink`) and sorts by
+    Thin wrapper that flattens ``stats.quarantine_sample.buckets`` (a per-rule
+    immutable mapping built by :class:`QuarantineSink`) and sorts by
     ``source_lines[0]`` so the rendered sidecar matches production
     encounter order. Suitable for tests and small-corpus paths where the
     sampled set fits in memory; production cleaning streams entries
-    through :class:`RejectSink` (and its owned :class:`BrokenFileWriter`)
+    through :class:`QuarantineSink` (and its owned :class:`BrokenFileWriter`)
     directly so memory stays bounded.
     """
     with BrokenFileWriter(path, src_name) as writer:
         flattened = [
-            entry for bucket in stats.reject_sample.buckets.values() for entry in bucket
+            entry
+            for bucket in stats.quarantine_sample.buckets.values()
+            for entry in bucket
         ]
         flattened.sort(key=lambda e: e.source_lines[0])
         for entry in flattened:
@@ -387,7 +389,7 @@ def concat_findings_shards(out_dir, dest_path, all_stats):
     """Concatenate per-file findings shards into the corpus ``report.jsonl``.
 
     Per-worker shards live in ``<out_dir>/.shards/<stem>.findings.jsonl``,
-    written by each worker's ``RejectSink`` (issue #9). We walk
+    written by each worker's ``QuarantineSink`` (issue #9). We walk
     ``all_stats`` (already sorted by ``src_name`` in ``cli.py`` before this
     call) so the concatenated order is alphabetical by source filename —
     deterministic and matching ``report.md``'s per-file table. The

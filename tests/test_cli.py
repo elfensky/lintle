@@ -523,7 +523,7 @@ class TestMain:
         data = json.loads(capsys.readouterr().out)
         # Top-level envelope shape (issue #20 spec §3).
         assert isinstance(data, dict)
-        assert data["schema_version"] == "1"
+        assert data["schema_version"] == "2"
         assert data["run"]["command"] == "validate"
         assert data["run"]["timestamp"].endswith("Z")
         assert isinstance(data["run"]["elapsed_seconds"], float)
@@ -540,7 +540,9 @@ class TestMain:
         assert isinstance(data["files"][0]["records_per_sec"], float)
         assert data["files"][0]["bytes"] > 0
 
-    def test_main_validate_lists_reject_locations(self, tmp_path, line1, line2, capsys):
+    def test_main_validate_lists_quarantine_locations(
+        self, tmp_path, line1, line2, capsys
+    ):
         src = tmp_path / "src"
         src.mkdir()
         bad_line1 = line1[:68] + "9"  # wrong checksum — the record is quarantined

@@ -5,7 +5,7 @@ from lintle.categories import FIXES, FixClass, FixSpec
 
 class TestFixRegistry:
     """``FIXES`` gives every repair tag a canonical one-line definition,
-    mirroring ``RULES``/``RuleSpec`` on the rejection side.
+    mirroring ``RULES``/``RuleSpec`` on the quarantine side.
     """
 
     def test_every_fixclass_has_a_spec(self):

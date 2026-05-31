@@ -272,7 +272,7 @@ def build_parser():
         "explain",
         help="print what a rule ID or fix tag means, with examples",
         description=(
-            "Explain one rejection rule (e.g. TLE-CHK-001) or repair tag (e.g. "
+            "Explain one quarantine rule (e.g. TLE-CHK-001) or repair tag (e.g. "
             "reconstructed-checksum): its definition, a verified good/bad or "
             "before/after example, the repair tier, and the source of truth in "
             "the code. Read-only; writes nothing."
@@ -939,8 +939,8 @@ def main(argv=None):
         else:
             for stats in all_stats:
                 print(report.format_summary(stats))
-                if args.command == "validate" and stats.reject_sample.buckets:
-                    print(report.format_reject_lines(stats))
+                if args.command == "validate" and stats.quarantine_sample.buckets:
+                    print(report.format_quarantine_lines(stats))
             if report_path:
                 print(f"\nrun report: {report_path}")
             if noradids_path:

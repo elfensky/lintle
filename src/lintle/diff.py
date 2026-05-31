@@ -1,8 +1,8 @@
 """Compute and render the delta between two lintle run outputs (issue #10).
 
 Reads each run's ``report.jsonl`` and aggregates per-rule counts using only
-the *primary* diagnostic — mirroring ``pipeline._record_reject``, which tallies
-``stats.reject_counts[primary.rule_id]`` and never the ``related[]`` array. That
+the *primary* diagnostic — mirroring ``pipeline._record_quarantine``, which tallies
+``stats.quarantine_counts[primary.rule_id]`` and never the ``related[]`` array. That
 shared counting rule is what keeps ``lintle diff``'s numbers in agreement with
 each run's own ``report.md``. Output is a deterministic plain-text report: a
 corpus-level per-rule delta, then a per-file (per-basename) breakdown.
@@ -88,7 +88,7 @@ def _finding_from_line(path, lineno, line):
 def aggregate(run_dir):
     """Return a :class:`collections.Counter` mapping primary ``rule_id`` →
     number of findings in ``run_dir``. Counts the primary diagnostic only,
-    matching the producer's ``stats.reject_counts`` semantics."""
+    matching the producer's ``stats.quarantine_counts`` semantics."""
     return collections.Counter(iter_primary_rule_ids(run_dir))
 
 

@@ -1,4 +1,4 @@
-"""Render human-readable documentation for one rejection rule or repair tag.
+"""Render human-readable documentation for one quarantine rule or repair tag.
 
 ``lintle explain <TAG>`` resolves a ``RuleID`` or ``FixClass`` — by canonical
 value (``TLE-CHK-001``, ``reconstructed-checksum``) or member-name alias — and
@@ -94,7 +94,7 @@ def _example_block(bad_lines, good_lines, column_range):
 def _render_rule(entry):
     spec = RULES[entry.rule_id]
     out = [
-        f"{entry.rule_id}  (rejection rule · family {spec.family})",
+        f"{entry.rule_id}  (quarantine rule · family {spec.family})",
         f"  {spec.short_title}",
         "",
         f"  Detected during: {_VERIFY_PHRASE[entry.verify]}",

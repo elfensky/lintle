@@ -15,7 +15,7 @@ Three concepts:
   (family, short title, version introduced, deprecation chain). Kept off the
   enum members so policy questions don't force enum imports across the
   codebase.
-* :class:`Diagnostic` — the structured rejection unit, built via
+* :class:`Diagnostic` — the structured quarantine unit, built via
   :func:`diagnostic`. ``frozen`` + ``slots`` keep it hashable and cheap at
   millions-per-run scale; the helper bounds free-text fields so corrupt input
   cannot blow constant memory.
@@ -57,11 +57,11 @@ class RepairTier(enum.StrEnum):
     """Which repair tier was attempted before a diagnostic fired.
 
     A tier-2 checksum-reconstruct that still failed is a stronger corruption
-    signal than a record rejected at first read; consumers can downgrade trust
+    signal than a record quarantined at first read; consumers can downgrade trust
     accordingly.
     """
 
-    NONE = "none"  # rejected without any repair attempt
+    NONE = "none"  # quarantined without any repair attempt
     NORMALIZATION = "tier-1"  # CRLF / whitespace / trailing backslash
     CHECKSUM_RECONSTRUCT = "tier-2"  # missing-checksum reconstruction
 
@@ -162,7 +162,7 @@ _ELLIPSIS = "..."
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class Diagnostic:
-    """One structured rejection — the unit cited in reports and the sidecar.
+    """One structured quarantine — the unit cited in reports and the sidecar.
 
     Construct via :func:`diagnostic`, which silently truncates oversized
     strings to the bounds below. Direct construction is supported (tests,
