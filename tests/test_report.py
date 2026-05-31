@@ -2006,3 +2006,27 @@ class TestEnvelopeBreakingChange:
         assert not isinstance(env, list)
         # And the per-file array lives under the well-known key.
         assert isinstance(env["files"], list)
+
+
+class TestWriteRunJson:
+    def _envelope(self):
+        stats = [_stats_with_counts()]
+        return report.build_run_envelope(
+            stats,
+            command="clean",
+            started_at="2026-05-31T00:00:00Z",
+            elapsed_seconds=1.5,
+        )
+
+    def test_bytes_match_report_json_serialization(self, tmp_path):
+        env = self._envelope()
+        path = tmp_path / "report.json"
+        report.write_run_json(str(path), env)
+        expected = json.dumps(env, indent=2) + "\n"
+        assert path.read_text(encoding="utf-8") == expected
+
+    def test_deterministic_for_same_logical_run(self, tmp_path):
+        a, b = tmp_path / "a.json", tmp_path / "b.json"
+        report.write_run_json(str(a), self._envelope())
+        report.write_run_json(str(b), self._envelope())
+        assert a.read_bytes() == b.read_bytes()

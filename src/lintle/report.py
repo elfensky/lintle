@@ -3,6 +3,7 @@ run-report writer."""
 
 import dataclasses
 import datetime
+import json
 import sys
 
 from lintle import __version__, fsutil
@@ -666,4 +667,15 @@ def write_run_report(path, all_stats):
     tmp = path + ".partial"
     with open(tmp, "w", encoding="utf-8") as handle:
         handle.write(format_run_report(all_stats))
+    fsutil.durable_replace(tmp, path)
+
+
+def write_run_json(path, envelope):
+    """Write the run ``envelope`` (the exact object ``--report json`` prints) to
+    ``path``, atomically and durably via tmp + :func:`fsutil.durable_replace`.
+    Serialised byte-for-byte like the ``--report json`` stdout path: ``indent=2``,
+    insertion order, a trailing newline, UTF-8."""
+    tmp = path + ".partial"
+    with open(tmp, "w", encoding="utf-8") as handle:
+        handle.write(json.dumps(envelope, indent=2) + "\n")
     fsutil.durable_replace(tmp, path)
