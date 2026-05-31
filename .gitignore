@@ -11,12 +11,6 @@
 /cleaned/
 /output/
 
-# Claude Code session state
-/.claude/
-
-# Parallel-development worktrees (see CLAUDE.md § Worktree Workflow)
-/.worktrees/
-
 # Per-machine throughput baseline (hardware variance makes a shared committed
 # baseline lie). See tests/test_pipeline_throughput.py for the write/read flow.
 /tests/.throughput_baseline.json
@@ -36,3 +30,8 @@ venv/
 htmlcov/
 build/
 dist/
+
+#ai
+.desloppify
+.claude
+.worktrees
