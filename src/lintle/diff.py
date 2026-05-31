@@ -22,8 +22,8 @@ import collections
 import dataclasses
 import json
 import os
-import sys
 
+from lintle import term
 from lintle.diagnostics import RULES, RuleID
 
 _SCHEMA_VERSION = "1"
@@ -310,7 +310,7 @@ def run(run_a, run_b):
         by_file_a = aggregate_by_file(run_a)
         by_file_b = aggregate_by_file(run_b)
     except DiffError as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        term.error(str(exc))
         return 2
     delta = compute_delta(_totals(by_file_a), _totals(by_file_b))
     file_deltas = compute_file_delta(by_file_a, by_file_b)

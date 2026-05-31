@@ -354,6 +354,7 @@ src/lintle/
   pipeline.py     # streaming reader, prefix-driven pairing, per-file routing
   report.py       # quarantine sidecar + run-summary rendering
   fsutil.py       # durable_replace — the one atomic+fsync commit path
+  term.py         # shared stderr Console + error/warning/note/prompt helpers
   resume.py       # single-run checkpoint for `clean --resume`
   diff.py         # read-only: per-rule delta between two runs (`lintle diff`)
   explain.py      # read-only: renders rule/fix documentation (`lintle explain`)
@@ -370,9 +371,10 @@ graph — they hold enums and frozen dataclasses, no logic; `explain_examples.py
 is pure data too, composing those leaves into documented examples. `repair`,
 `pipeline`, and `report` depend on them; `fsutil.py` is a stdlib-only I/O leaf
 (the durable file-commit helper) that `pipeline`, `report`, and `resume` route
-every output through; `diff.py` and `explain.py` are read-only consumers reached
-only through `cli.py`; `tle.py` remains the single source of truth for what
-counts as a valid TLE record.
+every output through; `term.py` is a rich-only leaf owning the single stderr
+Console and the `error:`/`warning:` emitters that `cli.py` and `diff.py` share;
+`diff.py` and `explain.py` are read-only consumers reached only through `cli.py`;
+`tle.py` remains the single source of truth for what counts as a valid TLE record.
 
 ## Further reading
 

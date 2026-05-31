@@ -4,7 +4,6 @@ import argparse
 import concurrent.futures
 import contextlib
 import datetime
-import enum
 import json
 import multiprocessing
 import os
@@ -16,11 +15,20 @@ import threading
 import time
 
 from rich import box
-from rich.console import Console
 from rich.progress import BarColumn, Progress, TaskProgressColumn, TextColumn
 from rich.table import Table
 
-from lintle import __version__, diff, explain, fsutil, pipeline, report, resume, stem
+from lintle import (
+    __version__,
+    diff,
+    explain,
+    fsutil,
+    pipeline,
+    report,
+    resume,
+    stem,
+    term,
+)
 
 _DEFAULT_SOURCE = "data/source"
 _DEFAULT_OUTPUT = "data/output"
@@ -297,10 +305,10 @@ def _prompt_yes_no(message, *, default):
     gives up. Returns True/False, or None when the operator gave no usable answer
     (caller treats None as abort)."""
     for _ in range(3):
-        print(message, end="", file=sys.stderr, flush=True)
+        term.prompt(message)
         line = sys.stdin.readline()
         if line == "":  # EOF / Ctrl-D
-            print(file=sys.stderr)
+            term.note("")  # close the prompt line the operator never finished
             return None
         token = line.strip().lower()
         if token == "":
@@ -309,24 +317,16 @@ def _prompt_yes_no(message, *, default):
             return True
         if token in ("n", "no"):
             return False
-        print("  please answer y or n.", file=sys.stderr)
+        term.note("  please answer y or n.")
     return None
 
 
-class Severity(enum.Enum):
-    """Severity of a preflight disk-space finding: ``ERROR`` aborts the run
-    (exit 2), ``WARNING`` proceeds after surfacing the message. The member
-    values double as the stderr prefix word so the two never drift."""
-
-    ERROR = "error"
-    WARNING = "warning"
-
-
 def _check_disk_space(out_dir, input_bytes):
-    """Return a ``(Severity, message)`` tuple when ``out_dir``'s free space
-    is at or near the 2× input-size guard, else ``None``. ``Severity.ERROR``
-    when free is below 2× input (caller aborts with exit 2); ``Severity.WARNING``
-    when free sits in the borderline band 2× to 2.5× (caller proceeds but
+    """Return a ``(term.Severity, message)`` tuple when ``out_dir``'s free
+    space is at or near the 2× input-size guard, else ``None``.
+    ``term.Severity.ERROR`` when free is below 2× input (caller aborts with exit
+    2); ``term.Severity.WARNING`` when free sits in the borderline band 2× to
+    2.5× (caller proceeds but
     surfaces the warning so the user knows they're cutting it close). Cleaned +
     broken output is ~1× input; the 2× guard leaves transient headroom for
     ``.partial`` files coexisting with their final renames mid-run.
@@ -337,13 +337,13 @@ def _check_disk_space(out_dir, input_bytes):
     free = shutil.disk_usage(out_dir).free
     if free < needed:
         return (
-            Severity.ERROR,
+            term.Severity.ERROR,
             f"insufficient disk space in {out_dir}: "
             f"need ~{needed:,} bytes, have {free:,}",
         )
     if free < int(needed * 1.25):
         return (
-            Severity.WARNING,
+            term.Severity.WARNING,
             f"free space in {out_dir} is close to the 2× safety guard: "
             f"{free:,} bytes free of ~{needed:,} recommended; "
             f"the run will proceed but may exhaust the disk",
@@ -423,11 +423,9 @@ def _terminate_workers(executor):
     try:
         processes = executor._processes
     except AttributeError:
-        print(
-            "lintle: ProcessPoolExecutor._processes unavailable; "
-            "falling back to shutdown(cancel_futures=True) — "
-            "Ctrl-C may wait for in-flight tasks.",
-            file=sys.stderr,
+        term.warning(
+            "ProcessPoolExecutor._processes unavailable; falling back to "
+            "shutdown(cancel_futures=True) — Ctrl-C may wait for in-flight tasks."
         )
         executor.shutdown(cancel_futures=True)
         return
@@ -650,10 +648,9 @@ def main(argv=None):
         try:
             print(explain.render(args.tag))
         except explain.UnknownTag:
-            print(
-                f"error: unknown tag {args.tag!r}.\n"
-                f"  valid tags: {', '.join(explain.known_tags())}",
-                file=sys.stderr,
+            term.error(
+                f"unknown tag {args.tag!r}.\n"
+                f"  valid tags: {', '.join(explain.known_tags())}"
             )
             return 2
         return 0
@@ -665,7 +662,7 @@ def main(argv=None):
     path = args.path if args.path is not None else _DEFAULT_SOURCE
 
     if args.jobs is not None and args.jobs < 1:
-        print(f"error: --jobs must be >= 1 (got {args.jobs})", file=sys.stderr)
+        term.error(f"--jobs must be >= 1 (got {args.jobs})")
         return 2
 
     try:
@@ -673,25 +670,24 @@ def main(argv=None):
             args.max_quarantined
         )
     except ValueError as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        term.error(str(exc))
         return 2
 
     path_error = check_paths(path, using_default=using_default)
     if path_error:
-        print(f"error: {path_error}", file=sys.stderr)
+        term.error(path_error)
         return 2
 
     files = discover_paths(path)
     if not files:
         if os.path.isdir(path):
-            print(
-                f"error: no tle*.txt files found in {path!r}.\n"
+            term.error(
+                f"no tle*.txt files found in {path!r}.\n"
                 "  expected one or more files named tle*.txt "
-                "(excluding *.cleaned.txt / *.broken.txt).",
-                file=sys.stderr,
+                "(excluding *.cleaned.txt / *.broken.txt)."
             )
         else:
-            print("error: no input files found", file=sys.stderr)
+            term.error("no input files found")
         return 2
 
     # Stat every input exactly once — the single source of size truth shared by
@@ -721,7 +717,7 @@ def main(argv=None):
             )
         except fsutil.LockHeldError as exc:
             # Stack is still empty — no lock to release.
-            print(f"error: {exc}", file=sys.stderr)
+            term.error(str(exc))
             return 2
 
     # The try/finally guarantees _lock_stack.close() runs on every exit path
@@ -733,8 +729,8 @@ def main(argv=None):
             disk_status = _check_disk_space(args.out_dir, sum(file_sizes.values()))
             if disk_status is not None:
                 severity, msg = disk_status
-                print(f"{severity.value}: {msg}", file=sys.stderr)
-                if severity is Severity.ERROR:
+                term.emit(severity, msg)
+                if severity is term.Severity.ERROR:
                     return 2
             # Per-input identity for the resume checkpoint (spec §3.1): computed
             # once, up front, for every discovered file. Cheap and constant-memory
@@ -758,7 +754,7 @@ def main(argv=None):
                 prompt=_prompt_yes_no,
             )
             if decision.action is resume.ResumeAction.ABORT:
-                print(f"error: {decision.message}", file=sys.stderr)
+                term.error(decision.message)
                 return decision.exit_code
             if decision.action is resume.ResumeAction.RESUME:
                 checkpoint = classification.checkpoint
@@ -773,12 +769,10 @@ def main(argv=None):
                     report.stats_from_summary(e["summary"]) for e in completed.values()
                 ]
                 files_to_process = [f for f in files if f not in completed]
-                print(
+                term.note(
                     f"resuming: {len(completed)}/{len(files)} files already complete, "
                     f"processing {len(files_to_process)}"
-                    " — pass --no-resume for a fresh run",
-                    file=sys.stderr,
-                    flush=True,
+                    " — pass --no-resume for a fresh run"
                 )
             else:  # FRESH
                 # True-fresh slate (spec §3.4): archive any checkpoint (never
@@ -791,19 +785,18 @@ def main(argv=None):
         # capped at the file count and floored at one (issue #53 §2.3).
         jobs = resolve_jobs(args.jobs, os.cpu_count(), len(files_to_process))
 
-        # One rich Console on stderr drives both the roster and the live progress
-        # block; off a TTY each degrades to plain text. Byte-bar denominators come
-        # from os.stat (issue #53 §2.1/§2.2) — no pre-read of the corpus.
-        console = Console(stderr=True)
+        # The shared rich Console on stderr (term.stderr_console) drives both the
+        # roster and the live progress block; off a TTY each degrades to plain
+        # text. Byte-bar denominators come from os.stat (issue #53 §2.1/§2.2) —
+        # no pre-read of the corpus.
+        console = term.stderr_console
         sizes = {os.path.basename(p): file_sizes[p] for p in files_to_process}
         if args.command == "clean":
             _render_roster(console, {p: file_sizes[p] for p in files_to_process})
 
         if not reused_stats:
-            print(
-                f"processing {len(files_to_process)} file(s) with {jobs} worker(s)...",
-                file=sys.stderr,
-                flush=True,
+            term.note(
+                f"processing {len(files_to_process)} file(s) with {jobs} worker(s)..."
             )
         # Run-level timing for the v1 envelope (issue #20). The wall-clock
         # start captures NOW (just before worker dispatch); the corresponding
@@ -897,11 +890,7 @@ def main(argv=None):
                 interrupted_signo = caught["signo"]
                 _terminate_workers(executor)
                 executor.shutdown(wait=False, cancel_futures=True)
-                print(
-                    _format_cancel_message(done=len(completed), total=len(files)),
-                    file=sys.stderr,
-                    flush=True,
-                )
+                term.note(_format_cancel_message(done=len(completed), total=len(files)))
             else:
                 executor.shutdown(wait=True)
             finally:

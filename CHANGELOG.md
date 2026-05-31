@@ -51,6 +51,13 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Changed
 
+- All CLI stderr messages now route through `rich`: `error:` lines render
+  bold-red and `warning:` lines yellow on a terminal, while status, prompt, and
+  cancel notices share the one stderr `Console`. Output is unchanged off a TTY
+  (pipes, CI, redirects) — no ANSI, no wrapping — so machine-readable stderr and
+  stdout/result data stay plain. Internally a new `term.py` leaf owns the shared
+  Console and the `error`/`warning`/`note`/`prompt` emitters, so the styled
+  prefix lives in one place (used by both `cli.py` and `diff.py`).
 - `clean` now resumes by default after an interruption: re-run the same command
   (same `--out-dir`, unchanged inputs) to continue where it stopped. Interactive
   terminals prompt; CI/non-TTY auto-resumes with a notice. `--no-resume` starts
