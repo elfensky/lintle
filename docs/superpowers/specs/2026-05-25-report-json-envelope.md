@@ -1,8 +1,12 @@
 # `--report json` versioned envelope — Design
 
 - **Date:** 2026-05-25
-- **Status:** Implemented (issue #20, PR #52)
-- **Revision:** initial
+- **Status:** Implemented (issue #20, PR #52); **schema bumped to `"2"` 2026-05-31**
+- **Revision:** **2026-05-31 — schema_version `"1"` → `"2"` (BREAKING):** the per-rule
+  quarantine map was renamed `reject_counts` → `quarantine_counts` in both `summary` and
+  `files[]`, as part of the corpus-wide "quarantine" terminology unification. The shape is
+  otherwise unchanged. Consumers keying on `schema_version == "1"` / `reject_counts` must
+  update. · initial.
 - **Topic:** Replace the flat-array `--report json` output with a versioned envelope
   carrying run metadata, environment, corpus summary, and per-file timing.
 
@@ -21,25 +25,26 @@ A single top-level JSON object replaces the flat array. The shape is:
 
 ```json
 {
-  "schema_version": "1",
+  "schema_version": "2",
   "run":   { "command": "...", "timestamp": "...", "elapsed_seconds": 0.0 },
   "environment": { "tool_version": "...", "python_version": "..." },
   "summary": { "files_processed": 0, "paired_records": 0, "clean_count": 0,
-               "quarantined_count": 0, "fix_counts": {}, "reject_counts": {} },
+               "quarantined_count": 0, "fix_counts": {}, "quarantine_counts": {} },
   "files": [ {"src_name": "...", "elapsed_seconds": 0.0, "bytes": 0,
               "records_per_sec": 0.0, ...} ]
 }
 ```
 
-`schema_version` is a string (`"1"`) to leave room for non-numeric tags like `"1.1"`
-in additive minor revisions. Adding optional fields stays under `"1"`; renaming or
-removing a field bumps to `"2"`.
+`schema_version` is a string (now `"2"`) to leave room for non-numeric tags like `"2.1"`
+in additive minor revisions. Adding optional fields stays under the current major; renaming
+or removing a field bumps the major — which is exactly why the `reject_counts` →
+`quarantine_counts` rename took it from `"1"` to `"2"`.
 
 ## 3. Field contract (normative)
 
 | Field | Type | Required | Nullable | Invariants |
 |---|---|---|---|---|
-| `schema_version` | string | yes | no | Exactly `"1"` in this release |
+| `schema_version` | string | yes | no | Exactly `"2"` in this release |
 | `run.command` | string | yes | no | `"validate"` or `"clean"` |
 | `run.timestamp` | string | yes | no | ISO 8601 UTC, suffix `Z` (e.g. `2026-05-25T13:00:00Z`) |
 | `run.elapsed_seconds` | float | yes | no | Parent-process wall-clock; `>= 0` |
@@ -52,7 +57,7 @@ removing a field bumps to `"2"`.
 | `summary.clean_count` | int | yes | no | Corpus-wide sum |
 | `summary.quarantined_count` | int | yes | no | Corpus-wide sum |
 | `summary.fix_counts` | object<str,int> | yes | no | `FixClass` StrEnum keys; empty `{}` when none |
-| `summary.reject_counts` | object<str,int> | yes | no | `RuleID` StrEnum keys; empty `{}` when none |
+| `summary.quarantine_counts` | object<str,int> | yes | no | `RuleID` StrEnum keys; empty `{}` when none |
 | `files[].src_name` | string | yes | no | basename only (already a basename in `FileStats`) |
 | `files[].elapsed_seconds` | float | yes | no | Per-file worker wall-clock; `>= 0` |
 | `files[].bytes` | int | yes | no | `os.path.getsize(src_path)`; `>= 0` |
@@ -63,7 +68,7 @@ removing a field bumps to `"2"`.
 | `files[].clean_count` | int | yes | no | |
 | `files[].quarantined_count` | int | yes | no | |
 | `files[].fix_counts` | object<str,int> | yes | no | |
-| `files[].reject_counts` | object<str,int> | yes | no | |
+| `files[].quarantine_counts` | object<str,int> | yes | no | |
 | `files[].dropped_counts` | object<str,int> | yes | no | issue #46 surface, may be `{}` |
 | `files[].quarantined_norad_ids` | object<str,object<str,int>> | yes | no | issue #47 surface |
 

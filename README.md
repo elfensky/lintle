@@ -247,7 +247,7 @@ A run summary is also printed per file to stdout (and as JSON with
 ```
 tle2022.txt   8,412,066 records   8,412,064 clean   3 quarantined   (1 orphan, 16,824,134 lines)
   fixes:   trailing-backslash 8,412,064 | reconstructed-checksum 195,293
-  rejects: TLE-CHK-001 1 | TLE-PAIR-001 1 | TLE-COL-001 1
+  quarantined: TLE-CHK-001 1 | TLE-PAIR-001 1 | TLE-COL-001 1
 ```
 
 The header line separates three input tallies that an earlier version
@@ -261,7 +261,7 @@ paired records and every orphan (an unpaired line is quarantined as
 pairing loop). The invariant is `records + orphan == clean + quarantined`,
 so `clean + quarantined` can exceed `records` by the orphan count.
 
-Reject counts key by the stable `RuleID` registry (e.g. `TLE-CHK-001` for
+Quarantine counts key by the stable `RuleID` registry (e.g. `TLE-CHK-001` for
 checksum mismatch, `TLE-PAIR-001` for orphan lines, `TLE-COL-001` for wrong
 length) — the same handles cited in `report.md` and the `.broken.txt`
 sidecar so a defect surfaces under one identifier across every artifact a
@@ -321,8 +321,9 @@ A full run over the 29-file corpus (`tle2004`–`tle2025`, ~232 million records)
 
 - **99.96 % cleaned** — 187.9 M trailing-`\` artifacts stripped, 71.3 M missing
   checksums reconstructed
-- **0.044 % quarantined** (103,228 records) as genuinely corrupt — every reject
-  fell into an anticipated category; no unknown defect type surfaced
+- **0.044 % quarantined** (103,228 records) as genuinely corrupt — every
+  quarantined record fell into an anticipated category; no unknown defect type
+  surfaced
 
 ## Development
 

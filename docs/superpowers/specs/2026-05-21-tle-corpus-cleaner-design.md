@@ -97,6 +97,18 @@
   `tabulate`, and file-hashing rows) and adopted none — each is blocked by a hard invariant or
   removes ~0 code — so the runtime stays `rich`-only. Companion design doc and `CLAUDE.md`
   updated in lockstep.
+  **2026-05-31:** terminology unified on **"quarantine"** (the act of setting a bad record
+  aside) — retiring the mixed "reject" vocabulary. Code identifiers renamed
+  (`RejectSink`→`QuarantineSink`, `RejectEntry`→`QuarantineEntry`, `Rejected`→`Quarantined`,
+  `_record_reject`→`_record_quarantine`, `format_reject_lines`→`format_quarantine_lines`,
+  `FileStats.reject_sample`→`quarantine_sample`), the stdout summary label `rejects:` →
+  `quarantined:`, and `explain`'s "rejection rule" → "quarantine rule". **BREAKING:** the
+  per-rule map `FileStats.reject_counts` → `quarantine_counts`, which also renames the
+  serialized key in the `--report json` envelope (`schema_version` `"1"`→`"2"`, see
+  [`2026-05-25-report-json-envelope.md`](2026-05-25-report-json-envelope.md)) and the resume
+  checkpoint (`SCHEMA_VERSION` `2`→`3`; pre-upgrade checkpoints refuse-and-restart by design).
+  The `report.jsonl` findings stream and `lintle diff` are unaffected (no `reject_counts`
+  there — their `schema_version` stays `"1"`). RuleID wire tokens unchanged.
 - **Topic:** A tool to validate and clean a multi-gigabyte corpus of Two-Line Element (TLE) files exported from space-track.org
 
 ## 1. Problem statement
@@ -363,7 +375,7 @@ TLEs/
 | `tle.py` | Defines validity: checksum, column layout, record pairing. Pure functions. Single source of truth. | nothing |
 | `repair.py` | Conservative transformations. Each applied speculatively, confirmed by `tle.py`; committed only if valid. | `tle.py` |
 | `pipeline.py` | Streams a file in **binary**, pairs `1 `/`2 ` lines into record candidates, routes each to cleaned/broken, tallies stats. | `tle.py`, `repair.py` |
-| `report.py` | Renders the `.broken.txt` reject file and the run summary. Owns the `RejectSink` (single mutation entry point, per-rule cap enforced by construction, streaming sidecar lifecycle) and the immutable `FileSample` value object handed back to `FileStats` (issue #19). | nothing |
+| `report.py` | Renders the `.broken.txt` quarantine sidecar and the run summary. Owns the `QuarantineSink` (single mutation entry point, per-rule cap enforced by construction, streaming sidecar lifecycle) and the immutable `FileSample` value object handed back to `FileStats` (issue #19). | nothing |
 | `cli.py` | Globs paths, dispatches `validate` vs `clean`, drives parallelism, prints summary. | all of the above |
 
 Dependencies point one way (`cli → pipeline → repair → tle`); each layer is testable without the
@@ -584,9 +596,9 @@ read bytes ─▶ line state-machine ─▶ pair into record candidates ─▶ r
    cannot be paired (orphans) are yielded as orphan candidates.
 2. `repair.process_record(line1, src1, line2, src2)` decodes, applies cosmetic strips
    speculatively, runs `tle.validate_record`, and returns either `Accepted(line1, line2,
-   fixes_applied)` or a `Rejected` value carrying a primary `Diagnostic` (issue #8).
-3. `pipeline` routes Accepted records to `<name>.cleaned.txt` and Rejected records into a
-   per-file `report.RejectSink`. The sink owns the byte-faithful `BrokenFileWriter` (in
+   fixes_applied)` or a `Quarantined` value carrying a primary `Diagnostic` (issue #8).
+3. `pipeline` routes Accepted records to `<name>.cleaned.txt` and Quarantined records into a
+   per-file `report_writers.QuarantineSink`. The sink owns the byte-faithful `BrokenFileWriter` (in
    `clean` mode) and the bounded in-memory sample used by the `validate` summary; its per-rule
    cap is enforced by construction so over-cap entries cannot be inserted (issue #19). On
    finalize, the sink yields an immutable `FileSample` attached to the file's `FileStats`.
@@ -672,7 +684,7 @@ Printed to stdout (and as JSON with `--report json`):
 ```
 tle2022.txt   8,412,066 records   8,412,064 clean   3 quarantined   (1 orphan, 16,824,135 lines)
   fixes:   trailing-backslash 8,412,064 | reconstructed-checksum 195,293 | crlf 0 | trailing-ws 0
-  rejects: TLE-CHK-001 1 | TLE-PAIR-001 1 | TLE-COL-001 1
+  quarantined: TLE-CHK-001 1 | TLE-PAIR-001 1 | TLE-COL-001 1
 ```
 
 Reject counts key by the stable `RuleID` registry (`TLE-CHK-001` for checksum
@@ -742,7 +754,7 @@ Test-driven, dev dependencies `pytest` and `sgp4` (optionally `tletools`).
   the layout and semantic checks, and quarantined otherwise (interior character missing); and the
   speculative-reject path — a `\`-terminated line whose columns 1–69 still fail the checksum must
   be quarantined, not "fixed."
-- **`report.py` structural invariants:** `RejectSink.add` honours the per-rule cap by
+- **`report_writers.py` structural invariants:** `QuarantineSink.add` honours the per-rule cap by
   construction — verified under adversarial input order, a deterministic randomized sequence,
   and a finalize-then-add `RuntimeError` lock; `FileSample.from_bounded` raises on over-cap
   input; context-manager exit without `finalize` discards `.broken.txt` partials. These tests
