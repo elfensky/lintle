@@ -551,7 +551,7 @@ Python 3.11 · uv · standard library only at runtime · `sgp4` (test oracle, de
 
 ## Documentation
 
-- [Design spec](docs/superpowers/specs/2026-05-21-tle-corpus-cleaner-design.md) — the authoritative specification
+- [Design spec](../specs/2026-05-21-tle-corpus-cleaner-design.md) — the authoritative specification
 - [CONTRIBUTING.md](CONTRIBUTING.md) — setup, testing, linting, and the git workflow
 - [CHANGELOG.md](CHANGELOG.md) — release history
 ````

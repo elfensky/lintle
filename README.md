@@ -362,10 +362,9 @@ src/lintle/
   explain.py      # read-only: renders rule/fix documentation (`lintle explain`)
   cli.py          # argument parsing, parallelism, exit codes
 tests/            # pytest suite
+ARCHITECTURE.md   # the living design reference
 docs/superpowers/
-  specs/          # the design specification
-  plans/          # the implementation plan
-  runs/           # corpus-run summaries
+  archive/        # historical design specs, plans, and corpus-run summaries
 ```
 
 `diagnostics.py` and `categories.py` are pure-data leaves of the dependency
@@ -385,6 +384,9 @@ Console and the `error:`/`warning:` emitters that `cli.py` and `diff.py` share;
 
 ## Further reading
 
-The full design rationale — the defect model, the TLE column specification,
-the fix policy, and the architecture — is in
-[`docs/superpowers/specs/2026-05-21-tle-corpus-cleaner-design.md`](docs/superpowers/specs/2026-05-21-tle-corpus-cleaner-design.md).
+[`ARCHITECTURE.md`](ARCHITECTURE.md) is the living design reference — the validator
+definition, the repair model, streaming/durability/resume, the machine-readable output-format
+contracts (`--report json`, `report.jsonl`, the `.broken.txt` sidecar, the checkpoint), and the
+runtime-dependency policy. The dated design specs, implementation plans, and corpus-run
+summaries are kept for historical rationale under
+[`docs/superpowers/archive/`](docs/superpowers/archive/).

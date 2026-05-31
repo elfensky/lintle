@@ -44,7 +44,7 @@ All notable changes to this project are documented in this file. The format is b
   have forced. Comparison is strictly greater (`100*q > p*r`,
   cross-multiplied to avoid divide-by-zero on an empty corpus and float drift
   at the boundary); `0%` ≡ `0` and `100%` effectively never trips. Design at
-  `docs/superpowers/specs/2026-05-27-max-quarantined-percentage-design.md`.
+  `docs/superpowers/archive/specs/2026-05-27-max-quarantined-percentage-design.md`.
 
 - Host-aware out-dir lock: refuses to start a second concurrent `clean` against
   the same `--out-dir`.
@@ -216,8 +216,9 @@ All notable changes to this project are documented in this file. The format is b
   `summary` aggregates are NOT summed worker durations (`--jobs N`
   parallelism would inflate that), so `run.elapsed_seconds` is the
   authoritative end-to-end duration. The contract is locked by
-  `docs/superpowers/specs/2026-05-25-report-json-envelope.md` and the
-  golden fixture at `tests/fixtures/report-envelope-v1.golden.json`.
+  `docs/superpowers/archive/specs/2026-05-25-report-json-envelope.md` and the
+  golden fixture at `tests/fixtures/report-envelope-v1.golden.json` (the envelope was
+  later bumped to schema `"2"` and the fixture renamed `-v2`; see the Unreleased section).
   Closes #20.
 - New `lintle.diagnostics` module defines a stable, citable rule-ID registry
   (`TLE-COL-001`, `TLE-CHK-001`, `TLE-PAIR-001`, …) and a structured

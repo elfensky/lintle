@@ -229,8 +229,8 @@ def format_summary(stats):
 # the field a stable ``float`` for sub-millisecond runs — typed downstream
 # consumers (Go unmarshalers, strict TypeScript) never see ``null``. Files
 # faster than this floor report an upper-bound rate; the value is
-# documented in ``docs/superpowers/specs/2026-05-25-report-json-envelope.md``
-# §5 so consumers can recognise the saturation case.
+# documented in ``ARCHITECTURE.md`` §6 (Outputs & machine-readable contracts)
+# so consumers can recognise the saturation case.
 _RECORDS_PER_SEC_FLOOR = 0.001
 
 
@@ -326,10 +326,10 @@ _ENVELOPE_SCHEMA_VERSION = "2"
 def build_run_envelope(all_stats, *, command, started_at, elapsed_seconds):
     """Return the top-level versioned ``--report json`` envelope (issue #20).
 
-    The shape is locked in
-    ``docs/superpowers/specs/2026-05-25-report-json-envelope.md``: a single
-    object with ``schema_version``, ``run``, ``environment``, ``summary``,
-    and ``files``. ``run.elapsed_seconds`` is the parent-process wall-clock
+    The shape is locked in ``ARCHITECTURE.md`` §6 (Outputs & machine-readable
+    contracts): a single object with ``schema_version``, ``run``,
+    ``environment``, ``summary``, and ``files``. ``run.elapsed_seconds`` is the
+    parent-process wall-clock
     duration captured by ``cli.main`` — independent of per-file worker
     durations in ``files[i].elapsed_seconds``, which the consumer must NOT
     sum to derive a corpus total. ``environment`` is a strict allowlist

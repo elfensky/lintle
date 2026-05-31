@@ -6,12 +6,14 @@ repository.
 `lintle` validates and cleans a ~30 GB corpus of Two-Line Element (TLE)
 satellite-tracking files exported from space-track.org.
 
-## Authoritative spec
+## Design reference
 
-The design doc at `docs/superpowers/specs/2026-05-21-tle-corpus-cleaner-design.md` is the
-authoritative specification — read it before changing validation, repair, or pipeline
-behaviour. It carries a revision log in its header; keep that current when the design
-changes.
+[`ARCHITECTURE.md`](ARCHITECTURE.md) is the living design reference — read it before changing
+validation, repair, pipeline, or output-format behaviour, and keep it current when the design
+changes. The dated design specs, implementation plans, and corpus-run summaries are archived
+under `docs/superpowers/archive/` (`specs/`, `plans/`, `runs/`) as historical rationale only;
+they are point-in-time records and are no longer maintained — `ARCHITECTURE.md` and the code
+are the current truth.
 
 ## Tech Stack
 
@@ -26,10 +28,11 @@ retired — those four (popular · maintained · reduces-our-burden · sensible 
 invariants**: one validator definition (Critical Rule #4), constant-memory streaming (#3),
 `sgp4`-never-at-runtime, byte-deterministic *unstyled* structured/stdout output (#1/#2 —
 `report.*`, NDJSON, sidecar, `--report json`, checkpoint, `cleaned/*`), and the atomic-durable
-commit + host-aware lock. The canonical rule and the considered/deferred table live in the
-authoritative spec §3.1 (`docs/superpowers/specs/2026-05-21-tle-corpus-cleaner-design.md`);
-rationale in `2026-05-28-runtime-dependency-policy-design.md`. **Current runtime deps:
-`rich>=13,<14`** (terminal rendering for `clean`) — a relaxed-bar audit re-evaluated every
+commit + host-aware lock. The canonical rule and the considered/deferred table live in
+[`ARCHITECTURE.md` §7](ARCHITECTURE.md#7-runtime-dependency-policy); the original rationale is
+archived under `docs/superpowers/archive/specs/2026-05-28-runtime-dependency-policy-design.md`.
+**Current runtime deps: `rich>=13,<14`** (terminal rendering for `clean`) — a relaxed-bar audit
+re-evaluated every
 candidate and still adopted none, since each trips a hard invariant or removes ~0 code. `sgp4`
 and `pytest` are dev-only; `sgp4` is a test oracle and must never be imported at runtime.
 
@@ -221,8 +224,10 @@ If any fail, report the actual output — do not suppress or simplify failures.
 
 ## Conventions
 
-- Design docs live in `docs/superpowers/specs/`, named `YYYY-MM-DD-topic.md`. The design
-  doc carries a revision log in its header — keep it current when the design changes.
+- The living design reference is `ARCHITECTURE.md` (repo root) — keep it current when the
+  design changes. Historical design docs, implementation plans, and run summaries are archived
+  under `docs/superpowers/archive/{specs,plans,runs}/` (dated `YYYY-MM-DD-topic.md`, point-in-time
+  records, not maintained).
 - Tests are grouped into `Test*` classes, one per unit or behaviour under test.
 - Git: `develop` is the trunk; `main` carries one merge commit per release and
   never receives direct commits. On `develop`: chores and bugfixes (`chore:`,

@@ -31,9 +31,8 @@ actively-maintained library that genuinely reduces the code we'd otherwise own m
 where it makes sense — gated only by the hard correctness invariants (one validator,
 constant-memory streaming, byte-deterministic *unstyled* structured/stdout output, the
 atomic-durable commit + host-aware lock, `sgp4`-never-at-runtime). The canonical rule and
-considered/deferred table live in the authoritative spec §3.1
-(`docs/superpowers/specs/2026-05-21-tle-corpus-cleaner-design.md`). `sgp4` is a dev-only
-test oracle and must never be imported at runtime.
+considered/deferred table live in [`ARCHITECTURE.md` §7](ARCHITECTURE.md#7-runtime-dependency-policy).
+`sgp4` is a dev-only test oracle and must never be imported at runtime.
 
 ## Running
 
