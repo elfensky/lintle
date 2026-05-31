@@ -18,6 +18,20 @@ All notable changes to this project are documented in this file. The format is b
   major upgrades are deliberate and manual, one at a time. Caps added to the dev
   group (`pytest<10`, `pytest-cov<8`, `ruff<0.16`, `sgp4<3`). See `ARCHITECTURE.md` §7.
 
+### Fixed
+
+- The `clean` cancel message no longer claims it will "continue where it stopped".
+  Resume granularity is a whole file: re-running skips fully-completed files and
+  restarts the file interrupted mid-stream, so a single-file run that is cancelled
+  starts over from the beginning. The message now says so, and drops the dangling
+  `--no-resume` hint when nothing had completed (there is no checkpoint to ignore).
+
+### Documentation
+
+- README "Cancelling and resuming" and ARCHITECTURE §5 now state the per-file
+  resume granularity (completed files skipped, in-progress file restarted) upfront,
+  rather than leaving it to be inferred.
+
 ## [0.4.0] - 2026-05-31
 
 ### Added

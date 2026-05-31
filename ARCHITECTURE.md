@@ -235,8 +235,11 @@ host B). Host identity is `hostname` plus Linux `boot_id` where available.
 `clean` maintains a `.clean-state.json` checkpoint in `--out-dir`, written via
 `durable_replace` as each file completes and **deleted on full success** — so its *presence*
 marks an interrupted run, and a finished run leaves none behind. `--resume` (or the default
-prompt) consults it. This is scoped to **completing one run**, not a cross-run skip cache: each
-resumed run still re-validates every record it emits. See [§6](#the-checkpoint-clean-statejson-schema_version-3)
+prompt) consults it. **The unit of resumption is a whole file:** completed files are skipped, but
+the file in progress at interruption is reprocessed from the start — there is no intra-file
+checkpoint, since the streaming pairing state machine keeps no rewindable position, so a
+single-file run gains nothing from resume. This is scoped to **completing one run**, not a
+cross-run skip cache: each resumed run still re-validates every record it emits. See [§6](#the-checkpoint-clean-statejson-schema_version-3)
 for the on-disk shape and the resume-decision matrix.
 
 ---

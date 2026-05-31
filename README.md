@@ -177,8 +177,15 @@ re-run **the same command** to resume:
 
 ```bash
 uv run lintle clean data/source --out-dir data/output   # interrupted with Ctrl-C
-uv run lintle clean data/source --out-dir data/output   # picks up where it left off
+uv run lintle clean data/source --out-dir data/output   # skips finished files; resumes the rest
 ```
+
+**Resume granularity is a whole file.** Re-running skips the files that *fully
+completed* before the interruption and reprocesses the rest; the file that was
+in flight when you cancelled restarts from the beginning (there is no intra-file
+checkpoint). So resume pays off on a multi-file corpus run — it skips what's
+already done — but a run over a *single* file gains nothing: there are no
+completed files to skip, and that file starts over.
 
 On an interactive terminal lintle prompts `Resume interrupted run? [Y/n]`; in
 CI or any non-TTY context it auto-resumes and prints a loud notice. Resume is
