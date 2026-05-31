@@ -1176,6 +1176,30 @@ class TestProgressColumns:
         assert ("overall", "MofNCompleteColumn") in wrapped
 
 
+class TestStatusSpinner:
+    """_status wraps an otherwise-silent finalization phase (shard concat) in a
+    rich spinner on a TTY, and is a no-op context off a TTY so nothing leaks to a
+    pipe/structured output."""
+
+    def test_status_is_a_spinner_on_a_tty(self, monkeypatch):
+        from rich.status import Status
+
+        monkeypatch.setattr(
+            "lintle.term.stderr_console",
+            Console(file=io.StringIO(), force_terminal=True),
+        )
+        assert isinstance(cli._status("working…"), Status)
+
+    def test_status_is_a_noop_context_off_a_tty(self, monkeypatch):
+        import contextlib
+
+        monkeypatch.setattr(
+            "lintle.term.stderr_console",
+            Console(file=io.StringIO(), force_terminal=False),
+        )
+        assert isinstance(cli._status("working…"), contextlib.nullcontext)
+
+
 class TestExplainCommand:
     """`lintle explain <TAG>` is a read-only documentation lookup."""
 
