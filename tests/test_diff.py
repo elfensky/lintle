@@ -1,7 +1,7 @@
 """Tests for lintle.diff — the per-rule delta between two run outputs (issue #10).
 
 Fixtures are built through the real producer serializer
-``report.entry_to_jsonl_dict`` so the test corpus tracks the actual
+``report_writers.entry_to_jsonl_dict`` so the test corpus tracks the actual
 ``report.jsonl`` wire schema rather than a hand-rolled copy that rots.
 """
 
@@ -10,7 +10,7 @@ import json
 
 import pytest
 
-from lintle import cli, diff, report
+from lintle import cli, diff, report, report_writers
 from lintle.diagnostics import RuleID, diagnostic
 
 
@@ -38,7 +38,7 @@ def _write_run(run_dir, entries, *, file="tle.txt"):
     path = run_dir / "report.jsonl"
     with path.open("w", encoding="utf-8") as fh:
         for entry in entries:
-            payload = report.entry_to_jsonl_dict(
+            payload = report_writers.entry_to_jsonl_dict(
                 entry, file=file, norad_id=entry.norad_id
             )
             fh.write(json.dumps(payload, separators=(",", ":"), sort_keys=True) + "\n")
@@ -53,7 +53,7 @@ def _write_run_files(run_dir, file_rules):
     with path.open("w", encoding="utf-8") as fh:
         for filename, rule in file_rules:
             entry = _entry(rule)
-            payload = report.entry_to_jsonl_dict(
+            payload = report_writers.entry_to_jsonl_dict(
                 entry, file=filename, norad_id=entry.norad_id
             )
             fh.write(json.dumps(payload, separators=(",", ":"), sort_keys=True) + "\n")
@@ -100,7 +100,7 @@ class TestDiffReader:
     def test_schema_version_mismatch_raises(self, tmp_path):
         run = tmp_path / "run"
         run.mkdir()
-        payload = report.entry_to_jsonl_dict(
+        payload = report_writers.entry_to_jsonl_dict(
             _entry(RuleID.CHECKSUM_MISMATCH), file="tle.txt", norad_id=25544
         )
         payload["schema_version"] = "2"  # forge a future envelope
@@ -113,7 +113,7 @@ class TestDiffReader:
         # one — it must not be silently treated as v1.
         run = tmp_path / "run"
         run.mkdir()
-        payload = report.entry_to_jsonl_dict(
+        payload = report_writers.entry_to_jsonl_dict(
             _entry(RuleID.CHECKSUM_MISMATCH), file="tle.txt", norad_id=25544
         )
         del payload["schema_version"]
@@ -126,7 +126,7 @@ class TestDiffReader:
         # be aggregated; fail loudly rather than count a phantom None.
         run = tmp_path / "run"
         run.mkdir()
-        payload = report.entry_to_jsonl_dict(
+        payload = report_writers.entry_to_jsonl_dict(
             _entry(RuleID.CHECKSUM_MISMATCH), file="tle.txt", norad_id=25544
         )
         del payload["rule_id"]
@@ -146,7 +146,7 @@ class TestDiffReader:
         # envelope and must not be accepted by loose equality.
         run = tmp_path / "run"
         run.mkdir()
-        payload = report.entry_to_jsonl_dict(
+        payload = report_writers.entry_to_jsonl_dict(
             _entry(RuleID.CHECKSUM_MISMATCH), file="tle.txt", norad_id=25544
         )
         payload["schema_version"] = 1  # int, not "1"
@@ -383,7 +383,7 @@ class TestDiffCli:
         run_a = _write_run(tmp_path / "a", [_entry(RuleID.CHECKSUM_MISMATCH)])
         run_b = tmp_path / "b"
         run_b.mkdir()
-        payload = report.entry_to_jsonl_dict(
+        payload = report_writers.entry_to_jsonl_dict(
             _entry(RuleID.CHECKSUM_MISMATCH), file="tle.txt", norad_id=25544
         )
         payload["schema_version"] = "99"
@@ -452,7 +452,7 @@ class TestAggregateByFile:
         entry = _entry(RuleID.CHECKSUM_MISMATCH, related_rules=(RuleID.LINE_LENGTH,))
         run = tmp_path / "run"
         run.mkdir()
-        payload = report.entry_to_jsonl_dict(
+        payload = report_writers.entry_to_jsonl_dict(
             entry, file="a.txt", norad_id=entry.norad_id
         )
         (run / "report.jsonl").write_text(json.dumps(payload) + "\n")

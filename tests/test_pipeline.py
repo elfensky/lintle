@@ -6,7 +6,7 @@ import queue
 
 import pytest
 
-from lintle import pipeline, report
+from lintle import pipeline, report, report_writers
 from lintle.diagnostics import RuleID
 
 
@@ -250,7 +250,7 @@ class TestProcessFile:
         def boom(self, entry):
             raise OSError("simulated jsonl write failure")
 
-        monkeypatch.setattr(report.JsonlFindingsWriter, "write_entry", boom)
+        monkeypatch.setattr(report_writers.JsonlFindingsWriter, "write_entry", boom)
 
         with pytest.raises(OSError, match="simulated jsonl write failure"):
             pipeline.process_file(str(src), str(out), "clean")
@@ -385,7 +385,7 @@ class TestStreamingRejects:
     """The constant-memory invariant: each ``RuleID`` bucket in
     ``stats.reject_sample.buckets`` stays bounded even on reject-heavy
     files, while the on-disk ``.broken.txt`` catalog is complete. The
-    bound is now enforced structurally by :class:`report.RejectSink`
+    bound is now enforced structurally by :class:`report_writers.RejectSink`
     (issue #19) — these tests exercise the invariant end-to-end through
     ``process_file``.
     """

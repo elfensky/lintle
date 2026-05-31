@@ -5,7 +5,7 @@ import dataclasses
 import os
 import time
 
-from lintle import fsutil, repair, report, stem, tle
+from lintle import fsutil, repair, report, report_writers, stem, tle
 from lintle.diagnostics import Diagnostic, RuleID, diagnostic
 
 
@@ -200,7 +200,7 @@ def _run(src_path, out_dir, mode, stats, progress_queue, progress_every):
     # across pipeline._record_reject. Issue #9: the sink also owns the
     # optional JsonlFindingsWriter, which streams structured findings to
     # the per-file shard alongside the .broken.txt byte-faithful catalog.
-    sink = report.RejectSink(
+    sink = report_writers.RejectSink(
         broken_path=broken_path, src_name=src_name, jsonl_path=jsonl_path
     )
 
