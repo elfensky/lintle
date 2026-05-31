@@ -61,7 +61,7 @@ cli.py ──▶ pipeline.py ──▶ repair.py ──▶ tle.py
   ├──▶ diff.py          (read-only consumer of report.jsonl)
   ├──▶ explain.py ──▶ explain_examples.py
   ├──▶ summary.py       (read-only: renders envelope → aggregate panel; backs lintle report)
-  └──▶ term.py          (stderr-only rich Console + error/warning/note/prompt)
+  └──▶ term.py          (stderr rich Console for ephemera + stdout Console for report view + error/warning/note/prompt)
 
 fsutil.py    stdlib-only I/O leaf — durable_replace + out_dir_lock
 diagnostics.py, categories.py, explain_examples.py    pure-data leaves (no I/O)
@@ -81,7 +81,7 @@ diagnostics.py, categories.py, explain_examples.py    pure-data leaves (no I/O)
 | `diagnostics.py` | Stable `RuleID` registry + structured `Diagnostic` dataclass + `RepairTier`. Pure data. |
 | `categories.py` | `FixClass` enum + `FixSpec` registry — the repair taxonomy. Pure data. |
 | `explain_examples.py` | Validator-verified examples + citations backing `explain`. Pure data. |
-| `term.py` | The single stderr `rich` Console and the `error:` / `warning:` / `note` / `prompt` emitters. |
+| `term.py` | The shared stderr + stdout `rich` Consoles and the `error:` / `warning:` / `note` / `prompt` emitters. |
 | `summary.py` | Renders the run envelope dict as the responsive aggregate panel (corpus totals + Fixes / Quarantined-by-rule, width-tiered); backs `lintle report`. Depends on `rich` + `term`. |
 | `cli.py` | argparse, globbing, parallel workers, live progress, Ctrl-C handling, exit codes. |
 
@@ -515,8 +515,9 @@ dependency is rejected if it would:
 - import **`sgp4` or another orbital parser at runtime**;
 - make any **structured/machine-readable output or stdout-pipeable data non-byte-deterministic
   or styled** — `report.md`, `report.jsonl`, `broken-noradids.ndjson`, the `.broken.txt`
-  sidecar, the `--report json` envelope, the `.clean-state.json` checkpoint, and `cleaned/*.txt`
-  all stay exactly as their contracts assert; `rich` styling is confined to stderr ephemera;
+  sidecar, the `--report json` envelope, `report.json`, the `.clean-state.json` checkpoint,
+  and `cleaned/*.txt` all stay exactly as their contracts assert; `rich` styling is confined
+  to stderr ephemera;
 - weaken the **atomic + durable commit** (`durable_replace`) or the **host-aware out-dir lock**
   semantics; or
 - violate **validated transformation / correctness over recovery** (principles #1/#2).
@@ -558,7 +559,7 @@ judgement under the relaxed bar that can be revisited.
 | `tqdm` | Reject (not worth it) | Can't render a dynamic block of N concurrent bars; `rich` already covers progress. |
 | `textual` | Reject (not worth it) | Full TUI framework; we want a progress block, not an app. |
 | `blessed` / `prompt_toolkit` | Reject (not worth it) | Lower-level; still ~50 lines of glue. `rich` fits better. |
-| **`rich`** | **Adopted (issue #53)** | Popular, well-maintained terminal renderer; drives the `clean` stderr progress UI, replacing ~150 lines of hand-rolled ANSI. Pure-Python; confined to `cli.py`/`term.py` stderr — no streaming, memory, or structured-output impact. |
+| **`rich`** | **Adopted (issue #53)** | Popular, well-maintained terminal renderer; drives the `clean` stderr progress UI, replacing ~150 lines of hand-rolled ANSI. Pure-Python; used in `cli.py`/`term.py`/`summary.py` to render styled human output to stderr (clean panel, progress) and stdout (the `report` command's view), degrading to plain when not a TTY. It never touches the byte-deterministic structured outputs — no streaming, memory, or structured-output impact. |
 | `zstandard` | Defer (trigger-gated) | Only on a *measured* output-size / transfer bottleneck; until then stdlib `gzip`. |
 
 Dev-only (exempt; record purpose if nontrivial): `sgp4` (test oracle), `pytest`, `pytest-cov`,

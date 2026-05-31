@@ -86,7 +86,7 @@ src/lintle/
 ├── report_writers.py # structured-file writers: .broken.txt sidecar, report.jsonl findings, broken-noradids.ndjson, shard concat
 ├── resume.py      # single-run checkpoint for `clean --resume` (issue #56)
 ├── fsutil.py      # durable_replace — the one atomic+fsync commit path (issue #58)
-├── term.py        # shared stderr Console + error/warning/note/prompt helpers (rich)
+├── term.py        # shared stderr + stdout Consoles + error/warning/note/prompt helpers (rich)
 ├── summary.py     # responsive aggregate panel (corpus totals + Fixes/Quarantined); backs lintle report
 ├── diff.py        # read-only: per-rule delta between two runs' report.jsonl (lintle diff)
 ├── explain.py     # read-only: renders rule/fix documentation (lintle explain)

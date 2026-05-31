@@ -123,7 +123,10 @@ def _render_plain(console, label, run, s):
 
 
 def _render_sections(console, label, run, s, *, bars):
-    """Render a rich-styled section panel (medium: no bars; wide: with bars)."""
+    """Render a rich-styled section panel (medium: no bars; wide: with bars).
+
+    The ``bars`` flag is forwarded only to the "Quarantined by rule" section;
+    "Fixes applied" is always rendered without bars regardless of tier."""
     console.rule(f"lintle {label} · {run['timestamp']}")
     _print_totals(console, run, s)
 
