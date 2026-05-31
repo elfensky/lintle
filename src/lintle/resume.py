@@ -165,6 +165,24 @@ def delete_checkpoint(out_dir):
         os.remove(_checkpoint_path(out_dir))
 
 
+# The output trees a `clean` run writes into, under ``--out-dir``. The
+# filename→tree mapping (``.cleaned.txt`` vs ``.broken.txt``) is owned by
+# report.py; the resume verifier just searches these rather than re-encoding it.
+_OUTPUT_DIRS = ("cleaned", "broken")
+
+
+def _locate_output(out_dir, name):
+    """Return the on-disk path of output basename ``name`` under ``out_dir``'s
+    output trees, or None if it is in none of them. Searching the known trees
+    (rather than inferring the directory from the filename suffix) keeps the
+    output-naming convention in one place — report.py — not duplicated here."""
+    for sub in _OUTPUT_DIRS:
+        candidate = os.path.join(out_dir, sub, name)
+        if os.path.exists(candidate):
+            return candidate
+    return None
+
+
 def verify_completed_outputs(completed, out_dir):
     """Return the list of input paths whose recorded outputs are missing or do
     not match their recorded size (spec §3.6). A checkpoint entry is trusted only
@@ -173,17 +191,9 @@ def verify_completed_outputs(completed, out_dir):
     ``os.stat``-existence alone would not catch. Flagged files are reprocessed."""
     reprocess = []
     for path, entry in completed.items():
-        for rel_name, expected_size in entry.get("outputs", {}).items():
-            actual = (
-                os.path.join(out_dir, "cleaned", rel_name)
-                if rel_name.endswith(".cleaned.txt")
-                else os.path.join(out_dir, "broken", rel_name)
-            )
-            try:
-                if os.path.getsize(actual) != expected_size:
-                    reprocess.append(path)
-                    break
-            except OSError:
+        for name, expected_size in entry.get("outputs", {}).items():
+            actual = _locate_output(out_dir, name)
+            if actual is None or os.path.getsize(actual) != expected_size:
                 reprocess.append(path)
                 break
     return reprocess

@@ -297,6 +297,17 @@ class TestVerifyCompletedOutputs:
             self._completed("tle2099.txt", 100), str(out)
         ) == ["tle2099.txt"]
 
+    def test_locates_output_without_suffix_inference(self, tmp_path):
+        # The output dir is found by searching the known output trees, not by
+        # inferring it from the filename suffix — so a name that doesn't end in
+        # ``.cleaned.txt`` is still located if it exists. (Old suffix-routing
+        # would look in broken/, miss it, and falsely flag a reprocess.)
+        out = tmp_path
+        (out / "cleaned").mkdir()
+        (out / "cleaned" / "weird.name").write_bytes(b"x" * 50)
+        completed = {"in.txt": {"summary": {}, "outputs": {"weird.name": 50}}}
+        assert resume.verify_completed_outputs(completed, str(out)) == []
+
 
 class TestResolveResumeAction:
     def _c(self, status, reason=None):
