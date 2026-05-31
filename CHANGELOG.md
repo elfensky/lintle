@@ -6,6 +6,18 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Changed
+
+- Upgraded the `rich` runtime dependency from the 13.x series to **15.x**
+  (`rich>=15,<16`). No behavioural change — the stderr-only progress UI, roster,
+  and `error:`/`warning:` rendering are unchanged (verified by the byte-exact
+  `term` tests and the progress/roster suite); stdout and structured outputs
+  never touched `rich`.
+- **Dependency pinning policy:** every dependency (runtime and dev) is now pinned
+  `>=current_major,<next_major` — minor/patch releases resolve automatically, but
+  major upgrades are deliberate and manual, one at a time. Caps added to the dev
+  group (`pytest<10`, `pytest-cov<8`, `ruff<0.16`, `sgp4<3`). See `ARCHITECTURE.md` §7.
+
 ## [0.4.0] - 2026-05-31
 
 ### Added

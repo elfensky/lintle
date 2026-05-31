@@ -81,7 +81,7 @@ worker process.
 - Python 3.14+
 - [`uv`](https://docs.astral.sh/uv/) for environment and dependency management
 
-`lintle`'s only runtime dependency is **`rich`** (`>=13,<14`, terminal rendering for the
+`lintle`'s only runtime dependency is **`rich`** (`>=15,<16`, terminal rendering for the
 `clean` progress UI); everything else is standard library. `sgp4` is a dev-only dependency,
 used as a test oracle.
 

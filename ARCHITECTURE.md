@@ -479,7 +479,7 @@ so no orphans from a differently-scoped prior run linger.
 
 ## 7. Runtime-dependency policy
 
-The runtime is lean by policy, not dogma. The current runtime dependency is **`rich>=13,<14`**
+The runtime is lean by policy, not dogma. The current runtime dependency is **`rich>=15,<16`**
 (terminal rendering for the `clean` progress UI). `sgp4` and `pytest` are dev-only; `sgp4` is a
 test oracle and must never be imported at runtime.
 
@@ -511,8 +511,17 @@ dependency is rejected if it would:
 - violate **validated transformation / correctness over recovery** (principles #1/#2).
 
 These gate a dependency's *behaviour*, not its file location — there is deliberately no layering
-rule. Adoption lands with a `CHANGELOG.md` entry; pin to exclude the next major; re-review on any
-major bump.
+rule. Adoption lands with a `CHANGELOG.md` entry.
+
+**Version-pinning policy (every dependency, runtime *and* dev).** Each dependency is pinned
+`>=current_major,<next_major` (e.g. `rich>=15,<16`, `pytest>=9.0,<10`, `sgp4>=2.25,<3`). Minor and
+patch releases resolve automatically; **major upgrades are deliberate and manual, taken one at a
+time** with a re-review (run the suite — for `rich`, the byte-exact `test_term.py` + the progress
+/roster tests are the tripwire — and skim the upstream changelog for anything tests would miss).
+For a `0.x` dependency the leftmost non-zero component is treated as the major, because that is
+where the breaking changes land: `ruff>=0.15,<0.16` (a `0.16` bump can add rules / reflow code and
+silently fail `ruff format --check`, so it is taken deliberately, not auto). `uv.lock` is the
+lockfile of record and is committed with each change.
 
 ### Considered & deferred (canonical record)
 
