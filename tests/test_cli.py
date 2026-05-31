@@ -1520,6 +1520,38 @@ class TestSignalHandling:
         assert cli._signal_exit_code(signal.SIGINT) == 130
         assert cli._signal_exit_code(signal.SIGTERM) == 143
 
+    def test_sigterm_sighup_traps_installed_and_raise(
+        self, tmp_path, line1, line2, monkeypatch
+    ):
+        # A clean run must trap SIGTERM and SIGHUP (not just SIGINT) so a
+        # scheduler/preemption kill stops gracefully and exits 128+signo. We
+        # don't deliver a real signal (flaky); we capture what main() registers
+        # and confirm the installed trap raises KeyboardInterrupt — which the
+        # executor's except-path converts to the signal exit code (§3.2).
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "tle2000.txt").write_bytes((line1 + "\n" + line2 + "\n").encode())
+        out = tmp_path / "out"
+
+        registered = {}
+        real_signal = cli.signal.signal
+
+        def recording_signal(signum, handler):
+            registered.setdefault(signum, []).append(handler)
+            return real_signal(signum, handler)
+
+        monkeypatch.setattr(cli.signal, "signal", recording_signal)
+        rc = cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
+        assert rc == 0
+
+        assert signal.SIGTERM in registered, "SIGTERM was never trapped"
+        assert signal.SIGHUP in registered, "SIGHUP was never trapped"
+        # The first handler installed for SIGTERM during the run is the trap;
+        # invoking it must raise KeyboardInterrupt (the graceful-stop trigger).
+        trap = registered[signal.SIGTERM][0]
+        with pytest.raises(KeyboardInterrupt):
+            trap(signal.SIGTERM, None)
+
 
 class TestLockWiring:
     def test_refuses_when_locked(self, tmp_path, line1, line2):
