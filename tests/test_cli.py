@@ -9,7 +9,7 @@ import signal
 import pytest
 from rich.console import Console
 
-from lintle import cli, pipeline, report, resume
+from lintle import cli, cli_progress, pipeline, report, resume
 
 
 class TestDiscoverPaths:
@@ -54,23 +54,23 @@ class TestResolveJobs:
 
 
 class TestFormatSize:
-    """cli._format_size — human-readable byte counts for the roster (#53)."""
+    """cli_progress._format_size — human-readable byte counts for the roster (#53)."""
 
     def test_bytes_below_one_kib(self):
-        assert cli._format_size(0) == "0 B"
-        assert cli._format_size(512) == "512 B"
+        assert cli_progress._format_size(0) == "0 B"
+        assert cli_progress._format_size(512) == "512 B"
 
     def test_kilobytes(self):
-        assert cli._format_size(1024) == "1.0 KB"
-        assert cli._format_size(1536) == "1.5 KB"
+        assert cli_progress._format_size(1024) == "1.0 KB"
+        assert cli_progress._format_size(1536) == "1.5 KB"
 
     def test_gigabytes(self):
-        assert cli._format_size(1024**3) == "1.0 GB"
-        assert cli._format_size(3 * 1024**3) == "3.0 GB"
+        assert cli_progress._format_size(1024**3) == "1.0 GB"
+        assert cli_progress._format_size(3 * 1024**3) == "3.0 GB"
 
 
 class TestRenderRoster:
-    """cli._render_roster — the size-only pre-run roster (#53 §2.1)."""
+    """cli_progress.render_roster — the size-only pre-run roster (#53 §2.1)."""
 
     def test_lists_files_with_sizes_and_total(self, tmp_path):
         f1 = tmp_path / "tle2001.txt"
@@ -79,7 +79,7 @@ class TestRenderRoster:
         f2.write_bytes(b"y" * 512)  # 512 B
         console = Console(file=io.StringIO(), width=80)
 
-        cli._render_roster(console, {str(f1): 1536, str(f2): 512})
+        cli_progress.render_roster(console, {str(f1): 1536, str(f2): 512})
 
         out = console.file.getvalue()
         assert "tle2001.txt" in out
@@ -96,7 +96,7 @@ class TestRenderRoster:
         f1.write_bytes(b"ignored")  # 7 bytes on disk, irrelevant
         console = Console(file=io.StringIO(), width=80)
 
-        cli._render_roster(console, {str(f1): 2048})
+        cli_progress.render_roster(console, {str(f1): 2048})
 
         # 2.0 KB proves the passed size (2048) was used, not the 7-byte content.
         assert "2.0 KB" in console.file.getvalue()
@@ -111,7 +111,7 @@ class TestProgressDisplayDrain:
 
     def _display(self, q):
         console = Console(file=io.StringIO(), force_terminal=False, width=100)
-        return cli._ProgressDisplay(
+        return cli_progress.ProgressDisplay(
             total_files=2,
             progress_queue=q,
             console=console,
@@ -161,7 +161,7 @@ class TestProgressDisplayDrain:
     def test_file_done_counts_and_logs_in_non_tty(self):
         q = queue.Queue()
         console = Console(file=io.StringIO(), force_terminal=False, width=100)
-        disp = cli._ProgressDisplay(2, q, console, sizes={})
+        disp = cli_progress.ProgressDisplay(2, q, console, sizes={})
         stats = report.FileStats(src_name="tle2001.txt")
         stats.clean_count = 7
         stats.quarantined_count = 2
@@ -1010,10 +1010,10 @@ class TestPreRunShardScrub:
 
 class TestFormatElapsed:
     def test_format_elapsed_renders_minutes_and_hours(self):
-        assert cli._format_elapsed(0) == "0:00"
-        assert cli._format_elapsed(9) == "0:09"
-        assert cli._format_elapsed(75) == "1:15"
-        assert cli._format_elapsed(3661) == "1:01:01"
+        assert cli_progress._format_elapsed(0) == "0:00"
+        assert cli_progress._format_elapsed(9) == "0:09"
+        assert cli_progress._format_elapsed(75) == "1:15"
+        assert cli_progress._format_elapsed(3661) == "1:01:01"
 
 
 class TestShutdownHelpers:
@@ -1082,7 +1082,7 @@ class TestProgressDisplayRendering:
 
     def test_file_failed_counts_and_logs_error(self):
         console = Console(file=io.StringIO(), force_terminal=False, width=100)
-        disp = cli._ProgressDisplay(1, queue.Queue(), console, sizes={})
+        disp = cli_progress.ProgressDisplay(1, queue.Queue(), console, sizes={})
 
         disp.file_failed("bad.txt", RuntimeError("boom"))
 
@@ -1094,7 +1094,7 @@ class TestProgressDisplayRendering:
         # Off a TTY the live block is suppressed and the per-file completion
         # line is plain text — no ANSI escape sequences.
         console = Console(file=io.StringIO(), force_terminal=False, width=100)
-        disp = cli._ProgressDisplay(1, queue.Queue(), console, sizes={"a": 100})
+        disp = cli_progress.ProgressDisplay(1, queue.Queue(), console, sizes={"a": 100})
         assert disp._live is False
         stats = report.FileStats(src_name="a")
         stats.clean_count = 1
@@ -1112,7 +1112,7 @@ class TestProgressDisplayRendering:
         # on FileEnded. The drain thread is halted so assertions are deterministic.
         q = queue.Queue()
         console = Console(file=io.StringIO(), force_terminal=True, width=100)
-        disp = cli._ProgressDisplay(1, q, console, sizes={"a": 1000})
+        disp = cli_progress.ProgressDisplay(1, q, console, sizes={"a": 1000})
         with disp:
             disp._stop.set()  # halt the drain thread; drive _drain ourselves
             disp._thread.join()
@@ -1140,7 +1140,7 @@ class TestProgressColumns:
             return Text("INNER")
 
     def test_for_kind_renders_inner_only_for_the_matching_kind(self):
-        col = cli._ForKind("file", self._Inner())
+        col = cli_progress._ForKind("file", self._Inner())
 
         class _Task:
             def __init__(self, kind):
@@ -1152,7 +1152,7 @@ class TestProgressColumns:
     def test_overall_and_per_file_tasks_are_kind_tagged(self):
         q = queue.Queue()
         console = Console(file=io.StringIO(), force_terminal=True, width=120)
-        disp = cli._ProgressDisplay(1, q, console, sizes={"a": 1000})
+        disp = cli_progress.ProgressDisplay(1, q, console, sizes={"a": 1000})
         with disp:
             disp._stop.set()
             disp._thread.join()
@@ -1166,14 +1166,14 @@ class TestProgressColumns:
 
     def test_progress_wires_speed_eta_per_file_and_mofn_overall(self):
         console = Console(file=io.StringIO(), force_terminal=True, width=120)
-        disp = cli._ProgressDisplay(1, queue.Queue(), console, sizes={})
+        disp = cli_progress.ProgressDisplay(1, queue.Queue(), console, sizes={})
         with disp:
             disp._stop.set()
             disp._thread.join()
             wrapped = {
                 (c._kind, type(c._inner).__name__)
                 for c in disp._progress.columns
-                if isinstance(c, cli._ForKind)
+                if isinstance(c, cli_progress._ForKind)
             }
         assert ("file", "TransferSpeedColumn") in wrapped
         assert ("file", "TimeRemainingColumn") in wrapped
@@ -1192,7 +1192,7 @@ class TestStatusSpinner:
             "lintle.term.stderr_console",
             Console(file=io.StringIO(), force_terminal=True),
         )
-        assert isinstance(cli._status("working…"), Status)
+        assert isinstance(cli_progress.status("working…"), Status)
 
     def test_status_is_a_noop_context_off_a_tty(self, monkeypatch):
         import contextlib
@@ -1201,7 +1201,7 @@ class TestStatusSpinner:
             "lintle.term.stderr_console",
             Console(file=io.StringIO(), force_terminal=False),
         )
-        assert isinstance(cli._status("working…"), contextlib.nullcontext)
+        assert isinstance(cli_progress.status("working…"), contextlib.nullcontext)
 
 
 class TestExplainCommand:

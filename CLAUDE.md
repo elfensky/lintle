@@ -79,7 +79,8 @@ output shows failures.
 src/lintle/
 ├── __main__.py    # python -m lintle entry point
 ├── __init__.py    # __version__, stem() filename helper
-├── cli.py         # argparse, globbing, parallel workers, live progress, Ctrl-C handling
+├── cli.py         # argparse, globbing, parallel workers, resume/Ctrl-C handling, exit codes
+├── cli_progress.py # live multi-file progress display, file roster, status spinner (rich)
 ├── pipeline.py    # streams a file in binary, pairs 1/2 lines into records, routes them
 ├── repair.py      # speculative fixes, each confirmed by tle.py before commit
 ├── report.py      # FileStats + dataclasses, the validate summaries, the run report
@@ -104,8 +105,13 @@ is also pure data, composing those two leaves into documented examples.
 `report_writers.py` is the structured-file writers leaf (the `.broken.txt`
 sidecar, the `report.jsonl` findings shards, the corpus `broken-noradids.ndjson`,
 and the shard concat) depended on by `pipeline` and `cli`; it imports the
-dataclasses and the shared `_format_diagnostic` renderer from `report.py` —
-one-way, never the reverse, so no cycle. `fsutil.py`
+dataclasses and the shared `format_diagnostic` renderer from `report.py` —
+one-way, never the reverse, so no cycle. `cli_progress.py` is a rich-only
+presentation leaf (the live `ProgressDisplay`, the pre-run `render_roster`, and
+the `status` spinner) depended on by `cli`; it imports `pipeline`'s typed
+progress messages (`FileStarted`/`FileEnded`/`FileProgress`) to drive the
+display, so the dependency is `cli → cli_progress → pipeline`, one-way and
+acyclic. `fsutil.py`
 is a stdlib-only I/O leaf (the durable-commit helper) depended on by `pipeline`,
 `report`, `report_writers`, and `resume`. `term.py` is a rich-only stderr-output leaf (the shared
 Console plus the `error`/`warning`/`note`/`prompt` emitters) depended on by `cli`
