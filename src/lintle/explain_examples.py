@@ -37,7 +37,7 @@ class VerifyKind(enum.Enum):
 
     LINE = enum.auto()  # a single line, classified by repair.repair_line
     PAIRING = enum.auto()  # unpaired/garbage input lines, classified by iter_records
-    RECORD = enum.auto()  # a line-1/line-2 pair, classified by process_record
+    RECORD = enum.auto()  # a line-1/line-2 pair, classified by repair_record
     NONE = enum.auto()  # no reproducible example (internal-error safety net)
 
 

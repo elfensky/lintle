@@ -11,7 +11,9 @@ from lintle.categories import FixClass
 from lintle.diagnostics import Diagnostic, RepairTier, RuleID, diagnostic
 
 
-def repair_line(raw, lineno, source_line_no):
+def repair_line(
+    raw: bytes, lineno: int, source_line_no: int
+) -> tuple[str, list[FixClass], None] | tuple[None, list[FixClass], Diagnostic]:
     """Attempt to repair one raw line into a valid 69-character TLE line.
 
     ``raw`` is the bytes of a single line WITHOUT its ``\\n`` terminator
@@ -106,7 +108,11 @@ def repair_line(raw, lineno, source_line_no):
                 source_line_nos=src,
                 tier_attempted=tier,
                 column_range=(69, 69),
-                observed=candidate[68] if len(candidate) > 68 else "",
+                # candidate is invariantly 69 chars here: the branch above
+                # assigns it from either a length-69 line or a length-68 line
+                # plus its recomputed checksum digit; every other length
+                # returns early. So column 69 (index 68) always exists.
+                observed=candidate[68],
                 expected=str(tle.compute_checksum(candidate)),
             )
         else:
@@ -142,13 +148,15 @@ class Quarantined:
     is primary and the second is related.
     """
 
-    raw_lines: list
-    source_lines: list
+    raw_lines: list[bytes]
+    source_lines: list[int]
     primary: Diagnostic
     related: tuple[Diagnostic, ...] = ()
 
 
-def process_record(raw_line1, src1, raw_line2, src2):
+def repair_record(
+    raw_line1: bytes, src1: int, raw_line2: bytes, src2: int
+) -> Accepted | Quarantined:
     """Repair and validate a paired record.
 
     ``raw_line1``/``raw_line2`` are line bytes (no ``\\n``); ``src1``/``src2``

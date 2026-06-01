@@ -62,11 +62,11 @@ class TestRuleExamplesMatchValidator:
             if entry.verify is VerifyKind.RECORD:
                 good1, good2 = entry.good_lines
                 assert isinstance(
-                    repair.process_record(good1.encode(), 1, good2.encode(), 2),
+                    repair.repair_record(good1.encode(), 1, good2.encode(), 2),
                     repair.Accepted,
                 )
                 bad1, bad2 = entry.bad_lines
-                result = repair.process_record(bad1.encode(), 1, bad2.encode(), 2)
+                result = repair.repair_record(bad1.encode(), 1, bad2.encode(), 2)
                 assert isinstance(result, repair.Quarantined)
                 assert result.primary.rule_id is entry.rule_id
 
