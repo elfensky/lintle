@@ -3,6 +3,7 @@
 import argparse
 import concurrent.futures
 import contextlib
+import dataclasses
 import datetime
 import json
 import multiprocessing
@@ -454,6 +455,192 @@ def resolve_jobs(explicit, cpu_count, n_files):
     return max(1, min((cpu_count or 1) - 1, n_files))
 
 
+@dataclasses.dataclass
+class _RunPlan:
+    """The resolved pre-flight plan for a ``clean``/``validate`` run.
+
+    ``files_to_process`` is what the workers will read; ``reused_stats`` are the
+    files already finished in an earlier session and folded back in from a
+    resume checkpoint. ``inputs``/``completed``/``run_identity`` are the resume
+    checkpoint state threaded into worker dispatch (all empty for ``validate``).
+    ``exit_code`` is non-``None`` only when clean pre-flight decided the run must
+    stop before any worker starts — a disk shortfall or a declined/stale
+    resume — and :func:`main` returns it immediately.
+    """
+
+    files_to_process: list[str] = dataclasses.field(default_factory=list)
+    reused_stats: list[report.FileStats] = dataclasses.field(default_factory=list)
+    inputs: dict[str, object] = dataclasses.field(default_factory=dict)
+    completed: dict[str, object] = dataclasses.field(default_factory=dict)
+    run_identity: dict[str, object] = dataclasses.field(default_factory=dict)
+    exit_code: int | None = None
+
+
+def _resolve_clean_plan(args, files, file_sizes):
+    """Pre-flight for a ``clean`` run: the disk-space guard, then the resume
+    decision. Returns a :class:`_RunPlan`; when its ``exit_code`` is set the run
+    must stop before any worker starts (disk shortfall, or a declined/stale
+    resume) and :func:`main` returns that code. On RESUME the plan carries the
+    files still to process plus the stats reconstructed from the checkpoint; on
+    FRESH it archives any prior checkpoint and scrubs the output trees first."""
+    disk_status = _check_disk_space(args.out_dir, sum(file_sizes.values()))
+    if disk_status is not None:
+        severity, msg = disk_status
+        term.emit(severity, msg)
+        if severity is term.Severity.ERROR:
+            return _RunPlan(exit_code=2)
+    # Per-input identity for the resume checkpoint (spec §3.1): computed once,
+    # up front, for every discovered file. Cheap and constant-memory (a
+    # head+tail window hash), it is written into the checkpoint as files
+    # complete so an interrupted run can be finished later.
+    inputs = {path: resume.input_fingerprint(path) for path in files}
+    # Output-affecting configuration pinned into the checkpoint identity (spec
+    # §3.1). Today only the input set + version affect output content; this is
+    # the explicit, future-proof hook so a new output-affecting flag cannot
+    # validate-through and mix policies.
+    run_identity = {"max_quarantined": args.max_quarantined}
+
+    classification = resume.classify_checkpoint(args.out_dir, inputs, run_identity)
+    decision = resume.resolve_resume_action(
+        classification,
+        resume=args.resume,
+        no_resume=args.no_resume,
+        interactive=_is_interactive(),
+        prompt=_prompt_yes_no,
+    )
+    if decision.action is resume.ResumeAction.ABORT:
+        term.error(decision.message)
+        return _RunPlan(exit_code=decision.exit_code)
+    if decision.action is resume.ResumeAction.RESUME:
+        checkpoint = classification.checkpoint
+        completed = dict(checkpoint["completed"])
+        # Integrity re-verification (spec §3.6): drop any completed entry whose
+        # outputs are missing or truncated, so they are reprocessed.
+        for bad_path in resume.verify_completed_outputs(completed, args.out_dir):
+            completed.pop(bad_path, None)
+        reused_stats = [
+            report.stats_from_summary(e["summary"]) for e in completed.values()
+        ]
+        files_to_process = [f for f in files if f not in completed]
+        term.note(
+            f"resuming: {len(completed)}/{len(files)} files already complete, "
+            f"processing {len(files_to_process)}"
+            " — pass --no-resume for a fresh run"
+        )
+        return _RunPlan(
+            files_to_process=files_to_process,
+            reused_stats=reused_stats,
+            inputs=inputs,
+            completed=completed,
+            run_identity=run_identity,
+        )
+    # FRESH: true-fresh slate (spec §3.4) — archive any checkpoint (never delete
+    # a recoverable run), then scrub output trees so no orphans linger.
+    resume.archive_checkpoint(args.out_dir, timestamp=_run_started_stamp())
+    _scrub_outputs(args.out_dir)
+    return _RunPlan(
+        files_to_process=files,
+        inputs=inputs,
+        run_identity=run_identity,
+    )
+
+
+def _run_workers(args, files, plan, jobs, console, sizes):
+    """Dispatch ``plan.files_to_process`` across a worker pool, draining results
+    while streaming live progress and writing the resume checkpoint as each
+    clean file completes. Returns ``(all_stats, failed_files, interrupted,
+    interrupted_signo)``.
+
+    The executor runs without a ``with`` block deliberately: that block's
+    ``__exit__`` calls ``shutdown(wait=True)``, which on Ctrl-C would block until
+    every in-flight corpus file finished. Instead the workers ignore SIGINT (so
+    only this process sees it) and, on interrupt, we terminate them outright. A
+    manager queue carries record counts back for the display. SIGTERM/SIGHUP are
+    swapped to raise ``KeyboardInterrupt`` and restored in the ``finally``.
+    """
+    all_stats = list(plan.reused_stats)
+    failed_files = []
+    interrupted = False
+    interrupted_signo = signal.SIGINT
+    with multiprocessing.Manager() as manager:
+        progress_queue = manager.Queue()
+        executor = concurrent.futures.ProcessPoolExecutor(
+            max_workers=jobs, initializer=_ignore_sigint
+        )
+        caught = {"signo": signal.SIGINT}
+
+        def _raise_interrupt(signo, _frame):
+            caught["signo"] = signo
+            raise KeyboardInterrupt
+
+        prev_term = signal.signal(signal.SIGTERM, _raise_interrupt)
+        prev_hup = signal.signal(signal.SIGHUP, _raise_interrupt)
+        try:
+            futures = {
+                executor.submit(
+                    pipeline.process_file,
+                    path,
+                    args.out_dir,
+                    args.command,
+                    progress_queue,
+                ): path
+                for path in plan.files_to_process
+            }
+            with cli_progress.ProgressDisplay(
+                len(files),
+                progress_queue,
+                console,
+                sizes,
+                already_done=len(plan.completed),
+            ) as progress:
+                for future in concurrent.futures.as_completed(futures):
+                    path = futures[future]
+                    try:
+                        stats = future.result()
+                    except Exception as exc:
+                        progress.file_failed(path, exc)
+                        failed_files.append(path)
+                    else:
+                        all_stats.append(stats)
+                        progress.file_done(stats)
+                        # Record this file as completed in the always-on resume
+                        # checkpoint (issue #56). Both the worker's outputs and
+                        # this checkpoint write go through fsutil.durable_replace,
+                        # so a checkpoint entry can only name a file whose bytes
+                        # are on disk — the ordering invariant --resume's "trust
+                        # without reprocessing" requires (issue #58).
+                        if args.command == "clean":
+                            plan.completed[path] = {
+                                "summary": report.summary_dict(stats),
+                                "outputs": _output_sizes(args.out_dir, stats),
+                            }
+                            resume.write_checkpoint(
+                                args.out_dir,
+                                resume.build_checkpoint(
+                                    inputs=plan.inputs,
+                                    completed=plan.completed,
+                                    run_identity=plan.run_identity,
+                                ),
+                            )
+        except KeyboardInterrupt:
+            # Ignore any further Ctrl-C so the shutdown itself cannot be
+            # interrupted half-way (which is what left it hung before).
+            signal.signal(signal.SIGINT, signal.SIG_IGN)
+            interrupted = True
+            interrupted_signo = caught["signo"]
+            _terminate_workers(executor)
+            executor.shutdown(wait=False, cancel_futures=True)
+            term.note(
+                _format_cancel_message(done=len(plan.completed), total=len(files))
+            )
+        else:
+            executor.shutdown(wait=True)
+        finally:
+            signal.signal(signal.SIGTERM, prev_term)
+            signal.signal(signal.SIGHUP, prev_hup)
+    return all_stats, failed_files, interrupted, interrupted_signo
+
+
 def main(argv=None):
     """Entry point for the ``lintle`` console script.
 
@@ -529,13 +716,6 @@ def main(argv=None):
     # by discovery so the roster lists files in a stable order.
     file_sizes = {p: os.path.getsize(p) for p in files}
 
-    # Defaults for the shared dispatch below; ``clean --resume`` narrows them.
-    # ``inputs`` and ``completed`` drive the single-run resume checkpoint
-    # (issue #56) and stay empty for ``validate``.
-    files_to_process = files
-    reused_stats = []
-    inputs = {}
-    completed = {}
     # ExitStack holds the out-dir lock for a clean run. Closed in the finally
     # block below — so every exit path (LockHeldError aside, which returns
     # before entering the try, leaving the stack empty) releases the lock.
@@ -559,79 +739,32 @@ def main(argv=None):
     # removed.  For validate the stack is empty; close() is a no-op.
     try:
         if args.command == "clean":
-            disk_status = _check_disk_space(args.out_dir, sum(file_sizes.values()))
-            if disk_status is not None:
-                severity, msg = disk_status
-                term.emit(severity, msg)
-                if severity is term.Severity.ERROR:
-                    return 2
-            # Per-input identity for the resume checkpoint (spec §3.1): computed
-            # once, up front, for every discovered file. Cheap and constant-memory
-            # (a head+tail window hash), it is written into the checkpoint as files
-            # complete so an interrupted run can be finished later.
-            inputs = {path: resume.input_fingerprint(path) for path in files}
-            # Output-affecting configuration pinned into the checkpoint identity
-            # (spec §3.1). Today only the input set + version affect output content;
-            # this is the explicit, future-proof hook so a new output-affecting flag
-            # cannot validate-through and mix policies.
-            run_identity = {"max_quarantined": args.max_quarantined}
-
-            classification = resume.classify_checkpoint(
-                args.out_dir, inputs, run_identity
-            )
-            decision = resume.resolve_resume_action(
-                classification,
-                resume=args.resume,
-                no_resume=args.no_resume,
-                interactive=_is_interactive(),
-                prompt=_prompt_yes_no,
-            )
-            if decision.action is resume.ResumeAction.ABORT:
-                term.error(decision.message)
-                return decision.exit_code
-            if decision.action is resume.ResumeAction.RESUME:
-                checkpoint = classification.checkpoint
-                completed = dict(checkpoint["completed"])
-                # Integrity re-verification (spec §3.6): drop any completed entry
-                # whose outputs are missing or truncated, so they are reprocessed.
-                for bad_path in resume.verify_completed_outputs(
-                    completed, args.out_dir
-                ):
-                    completed.pop(bad_path, None)
-                reused_stats = [
-                    report.stats_from_summary(e["summary"]) for e in completed.values()
-                ]
-                files_to_process = [f for f in files if f not in completed]
-                term.note(
-                    f"resuming: {len(completed)}/{len(files)} files already complete, "
-                    f"processing {len(files_to_process)}"
-                    " — pass --no-resume for a fresh run"
-                )
-            else:  # FRESH
-                # True-fresh slate (spec §3.4): archive any checkpoint (never
-                # delete a recoverable run), then scrub output trees so no
-                # orphans linger.
-                resume.archive_checkpoint(args.out_dir, timestamp=_run_started_stamp())
-                _scrub_outputs(args.out_dir)
+            plan = _resolve_clean_plan(args, files, file_sizes)
+            if plan.exit_code is not None:
+                return plan.exit_code
+        else:
+            # validate processes every discovered file; no resume, no checkpoint.
+            plan = _RunPlan(files_to_process=files)
         # Resolve the worker count now that files_to_process is final: an
         # explicit --jobs is honoured as-is; the default is CPU count - 1,
         # capped at the file count and floored at one (issue #53 §2.3).
-        jobs = resolve_jobs(args.jobs, os.cpu_count(), len(files_to_process))
+        jobs = resolve_jobs(args.jobs, os.cpu_count(), len(plan.files_to_process))
 
         # The shared rich Console on stderr (term.stderr_console) drives both the
         # roster and the live progress block; off a TTY each degrades to plain
         # text. Byte-bar denominators come from os.stat (issue #53 §2.1/§2.2) —
         # no pre-read of the corpus.
         console = term.stderr_console
-        sizes = {os.path.basename(p): file_sizes[p] for p in files_to_process}
+        sizes = {os.path.basename(p): file_sizes[p] for p in plan.files_to_process}
         if args.command == "clean":
             cli_progress.render_roster(
-                console, {p: file_sizes[p] for p in files_to_process}
+                console, {p: file_sizes[p] for p in plan.files_to_process}
             )
 
-        if not reused_stats:
+        if not plan.reused_stats:
             term.note(
-                f"processing {len(files_to_process)} file(s) with {jobs} worker(s)..."
+                f"processing {len(plan.files_to_process)} file(s) "
+                f"with {jobs} worker(s)..."
             )
         # Run-level timing for the v1 envelope (issue #20). The wall-clock
         # start captures NOW (just before worker dispatch); the corresponding
@@ -645,92 +778,10 @@ def main(argv=None):
             "%Y-%m-%dT%H:%M:%SZ"
         )
         run_monotonic_start = time.monotonic()
-        # Files reused from a resume checkpoint are already done — seed the report
-        # with their reconstructed stats so corpus totals cover the whole run.
-        all_stats = list(reused_stats)
-        failed_files = []
-        interrupted = False
-        interrupted_signo = signal.SIGINT
 
-        # The executor runs without a `with` block deliberately: that block's
-        # __exit__ calls shutdown(wait=True), which on Ctrl-C would block until
-        # every in-flight corpus file finished. Instead the workers ignore
-        # SIGINT (so only this process sees it) and, on interrupt, we terminate
-        # them outright. A manager queue carries record counts back for display.
-        with multiprocessing.Manager() as manager:
-            progress_queue = manager.Queue()
-            executor = concurrent.futures.ProcessPoolExecutor(
-                max_workers=jobs, initializer=_ignore_sigint
-            )
-            caught = {"signo": signal.SIGINT}
-
-            def _raise_interrupt(signo, _frame):
-                caught["signo"] = signo
-                raise KeyboardInterrupt
-
-            prev_term = signal.signal(signal.SIGTERM, _raise_interrupt)
-            prev_hup = signal.signal(signal.SIGHUP, _raise_interrupt)
-            try:
-                futures = {
-                    executor.submit(
-                        pipeline.process_file,
-                        path,
-                        args.out_dir,
-                        args.command,
-                        progress_queue,
-                    ): path
-                    for path in files_to_process
-                }
-                with cli_progress.ProgressDisplay(
-                    len(files),
-                    progress_queue,
-                    console,
-                    sizes,
-                    already_done=len(completed),
-                ) as progress:
-                    for future in concurrent.futures.as_completed(futures):
-                        path = futures[future]
-                        try:
-                            stats = future.result()
-                        except Exception as exc:
-                            progress.file_failed(path, exc)
-                            failed_files.append(path)
-                        else:
-                            all_stats.append(stats)
-                            progress.file_done(stats)
-                            # Record this file as completed in the always-on resume
-                            # checkpoint (issue #56). Both the worker's outputs and
-                            # this checkpoint write go through fsutil.durable_replace,
-                            # so a checkpoint entry can only name a file whose bytes
-                            # are on disk — the ordering invariant --resume's "trust
-                            # without reprocessing" requires (issue #58).
-                            if args.command == "clean":
-                                completed[path] = {
-                                    "summary": report.summary_dict(stats),
-                                    "outputs": _output_sizes(args.out_dir, stats),
-                                }
-                                resume.write_checkpoint(
-                                    args.out_dir,
-                                    resume.build_checkpoint(
-                                        inputs=inputs,
-                                        completed=completed,
-                                        run_identity=run_identity,
-                                    ),
-                                )
-            except KeyboardInterrupt:
-                # Ignore any further Ctrl-C so the shutdown itself cannot be
-                # interrupted half-way (which is what left it hung before).
-                signal.signal(signal.SIGINT, signal.SIG_IGN)
-                interrupted = True
-                interrupted_signo = caught["signo"]
-                _terminate_workers(executor)
-                executor.shutdown(wait=False, cancel_futures=True)
-                term.note(_format_cancel_message(done=len(completed), total=len(files)))
-            else:
-                executor.shutdown(wait=True)
-            finally:
-                signal.signal(signal.SIGTERM, prev_term)
-                signal.signal(signal.SIGHUP, prev_hup)
+        all_stats, failed_files, interrupted, interrupted_signo = _run_workers(
+            args, files, plan, jobs, console, sizes
+        )
 
         if interrupted:
             return _signal_exit_code(interrupted_signo)
