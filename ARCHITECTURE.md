@@ -59,6 +59,7 @@ cli.py ──▶ pipeline.py ──▶ repair.py ──▶ tle.py
   │             ├──▶ report.py ──┐
   │             └──▶ report_writers.py ──┘ (imports report.py one-way)
   │
+  ├──▶ cli_progress.py  (rich live progress + roster; imports pipeline's progress messages)
   ├──▶ resume.py        (single-run checkpoint; depends only on __version__ + fsutil)
   ├──▶ diff.py          (read-only consumer of report.jsonl)
   ├──▶ explain.py ──▶ explain_examples.py
@@ -83,7 +84,8 @@ diagnostics.py, categories.py, explain_examples.py    pure-data leaves (no I/O)
 | `categories.py` | `FixClass` enum + `FixSpec` registry — the repair taxonomy. Pure data. |
 | `explain_examples.py` | Validator-verified examples + citations backing `explain`. Pure data. |
 | `term.py` | The single stderr `rich` Console and the `error:` / `warning:` / `note` / `prompt` emitters. |
-| `cli.py` | argparse, globbing, parallel workers, live progress, Ctrl-C handling, exit codes. |
+| `cli.py` | argparse, globbing, parallel workers, resume orchestration, signal/Ctrl-C handling, exit codes. |
+| `cli_progress.py` | Rich presentation leaf for `clean`/`validate`: the live `ProgressDisplay`, the pre-run `render_roster`, and the `status` spinner. Consumes `pipeline`'s typed progress messages. |
 
 `tle.py` and the data leaves carry no I/O. `report_writers.py` depends on `report.py` (never
 the reverse), so the structured writers and the renderers stay acyclic.
@@ -550,7 +552,7 @@ judgement under the relaxed bar that can be revisited.
 | `tqdm` | Reject (not worth it) | Can't render a dynamic block of N concurrent bars; `rich` already covers progress. |
 | `textual` | Reject (not worth it) | Full TUI framework; we want a progress block, not an app. |
 | `blessed` / `prompt_toolkit` | Reject (not worth it) | Lower-level; still ~50 lines of glue. `rich` fits better. |
-| **`rich`** | **Adopted (issue #53)** | Popular, well-maintained terminal renderer; drives the `clean` stderr progress UI, replacing ~150 lines of hand-rolled ANSI. Pure-Python; confined to `cli.py`/`term.py` stderr — no streaming, memory, or structured-output impact. |
+| **`rich`** | **Adopted (issue #53)** | Popular, well-maintained terminal renderer; drives the `clean` stderr progress UI, replacing ~150 lines of hand-rolled ANSI. Pure-Python; confined to `cli.py`/`cli_progress.py`/`term.py` stderr — no streaming, memory, or structured-output impact. |
 | `zstandard` | Defer (trigger-gated) | Only on a *measured* output-size / transfer bottleneck; until then stdlib `gzip`. |
 
 Dev-only (exempt; record purpose if nontrivial): `sgp4` (test oracle), `pytest`, `pytest-cov`,
