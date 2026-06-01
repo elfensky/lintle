@@ -14,8 +14,8 @@ class TestProgressQueue:
     """process_file's progress-queue protocol (issue #53 §6)."""
 
     def test_emits_unified_progress_messages(self, tmp_path, line1, line2):
-        # With a queue, process_file emits start, then
-        # ("progress", name, bytes_delta, records_delta), then end.
+        # With a queue, process_file emits FileStarted, then FileProgress
+        # deltas, then FileEnded.
         src = tmp_path / "tle2099.txt"
         src.write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
         out = tmp_path / "out"
@@ -27,16 +27,16 @@ class TestProgressQueue:
         while not q.empty():
             msgs.append(q.get_nowait())
 
-        assert msgs[0] == ("start", "tle2099.txt")
-        assert msgs[-1] == ("end", "tle2099.txt")
-        progress = [m for m in msgs if m[0] == "progress"]
+        assert msgs[0] == pipeline.FileStarted("tle2099.txt")
+        assert msgs[-1] == pipeline.FileEnded("tle2099.txt")
+        progress = [m for m in msgs if isinstance(m, pipeline.FileProgress)]
         assert progress, "expected at least one progress message"
         assert all(
-            name == "tle2099.txt" and b > 0 and r > 0
-            for (_kind, name, b, r) in progress
+            p.name == "tle2099.txt" and p.bytes_delta > 0 and p.records_delta > 0
+            for p in progress
         )
-        assert sum(m[3] for m in progress) == 1  # one record processed
-        assert sum(m[2] for m in progress) == src.stat().st_size  # bytes == file
+        assert sum(p.records_delta for p in progress) == 1  # one record processed
+        assert sum(p.bytes_delta for p in progress) == src.stat().st_size  # bytes
 
     def test_byte_deltas_sum_to_st_size_with_dropped_lines(
         self, tmp_path, line1, line2
@@ -57,11 +57,11 @@ class TestProgressQueue:
         progress = []
         while not q.empty():
             msg = q.get_nowait()
-            if msg[0] == "progress":
+            if isinstance(msg, pipeline.FileProgress):
                 progress.append(msg)
 
-        assert sum(m[2] for m in progress) == src.stat().st_size
-        assert sum(m[3] for m in progress) == 2  # two records processed
+        assert sum(m.bytes_delta for m in progress) == src.stat().st_size
+        assert sum(m.records_delta for m in progress) == 2  # two records processed
 
 
 class TestIterRecords:
@@ -297,9 +297,9 @@ class TestProcessFile:
         assert not list(out.rglob("*.partial"))  # but no partial temp file leaked
 
     def test_process_file_pushes_progress_to_queue(self, tmp_path, line1, line2):
-        # With a queue, process_file streams ("progress", name, bytes, records)
-        # deltas; the record deltas sum to the exact total — a partial trailing
-        # batch included — so the caller can render an accurate live count.
+        # With a queue, process_file streams FileProgress deltas; the record
+        # deltas sum to the exact total — a partial trailing batch included —
+        # so the caller can render an accurate live count.
         src = tmp_path / "tle2099.txt"
         src.write_bytes(
             ((line1 + "\n" + line2 + "\n") * 3).encode("ascii")
@@ -315,9 +315,11 @@ class TestProcessFile:
         messages = []
         while not progress.empty():
             messages.append(progress.get_nowait())
-        # ("progress", name, bytes_delta, records_delta): record deltas sum to
-        # the exact total (one flush of 2 records + a trailing flush of 1).
-        record_deltas = [m[3] for m in messages if m[0] == "progress"]
+        # FileProgress record deltas sum to the exact total (one flush of 2
+        # records + a trailing flush of 1).
+        record_deltas = [
+            m.records_delta for m in messages if isinstance(m, pipeline.FileProgress)
+        ]
         assert sum(record_deltas) == 3
 
     def test_process_file_emits_start_and_end_events(self, tmp_path, line1, line2):
@@ -337,18 +339,22 @@ class TestProcessFile:
         messages = []
         while not progress.empty():
             messages.append(progress.get_nowait())
-        events = [m for m in messages if isinstance(m, tuple)]
-        assert ("start", "tle2099.txt") in events
-        assert ("end", "tle2099.txt") in events
+        events = [
+            m
+            for m in messages
+            if isinstance(m, (pipeline.FileStarted, pipeline.FileEnded))
+        ]
+        assert pipeline.FileStarted("tle2099.txt") in events
+        assert pipeline.FileEnded("tle2099.txt") in events
         # Start must precede end so the display's active set is transiently
         # populated rather than instantly cancelled.
-        assert events.index(("start", "tle2099.txt")) < events.index(
-            ("end", "tle2099.txt")
+        assert events.index(pipeline.FileStarted("tle2099.txt")) < events.index(
+            pipeline.FileEnded("tle2099.txt")
         )
 
     def test_end_event_emitted_even_on_failure(self, tmp_path):
-        # A failing open would otherwise leave 'start' lingering forever in
-        # the display's active set — emit 'end' from a finally so cleanup
+        # A failing open would otherwise leave FileStarted lingering forever in
+        # the display's active set — emit FileEnded from a finally so cleanup
         # is unconditional.
         progress = queue.Queue()
         with contextlib.suppress(Exception):
@@ -362,8 +368,8 @@ class TestProcessFile:
         messages = []
         while not progress.empty():
             messages.append(progress.get_nowait())
-        events = [m for m in messages if isinstance(m, tuple)]
-        assert ("end", "missing.txt") in events
+        events = [m for m in messages if isinstance(m, pipeline.FileEnded)]
+        assert pipeline.FileEnded("missing.txt") in events
 
     def test_progress_disabled_when_every_is_zero(self, tmp_path, line1, line2):
         # progress_every=0 disables reporting: nothing reaches the queue —

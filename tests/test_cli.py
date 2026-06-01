@@ -122,9 +122,9 @@ class TestProgressDisplayDrain:
         q = queue.Queue()
         disp = self._display(q)
         for msg in [
-            ("start", "a"),
-            ("progress", "a", 100, 5),
-            ("progress", "a", 50, 3),
+            pipeline.FileStarted("a"),
+            pipeline.FileProgress("a", 100, 5),
+            pipeline.FileProgress("a", 50, 3),
         ]:
             q.put(msg)
         disp._drain()
@@ -135,10 +135,10 @@ class TestProgressDisplayDrain:
         q = queue.Queue()
         disp = self._display(q)
         for msg in [
-            ("start", "a"),
-            ("start", "b"),
-            ("progress", "a", 10, 4),
-            ("progress", "b", 20, 6),
+            pipeline.FileStarted("a"),
+            pipeline.FileStarted("b"),
+            pipeline.FileProgress("a", 10, 4),
+            pipeline.FileProgress("b", 20, 6),
         ]:
             q.put(msg)
         disp._drain()
@@ -148,7 +148,11 @@ class TestProgressDisplayDrain:
     def test_end_clears_per_file_state_but_keeps_overall(self):
         q = queue.Queue()
         disp = self._display(q)
-        for msg in [("start", "a"), ("progress", "a", 10, 4), ("end", "a")]:
+        for msg in [
+            pipeline.FileStarted("a"),
+            pipeline.FileProgress("a", 10, 4),
+            pipeline.FileEnded("a"),
+        ]:
             q.put(msg)
         disp._drain()
         assert "a" not in disp._file_records
@@ -1104,8 +1108,8 @@ class TestProgressDisplayRendering:
 
     def test_live_mode_tracks_per_file_tasks(self):
         # On a (forced) TTY, entering starts the rich live block; a per-file
-        # task appears on "start", advances on "progress", and is removed on
-        # "end". The drain thread is halted so the assertions are deterministic.
+        # task appears on FileStarted, advances on FileProgress, and is removed
+        # on FileEnded. The drain thread is halted so assertions are deterministic.
         q = queue.Queue()
         console = Console(file=io.StringIO(), force_terminal=True, width=100)
         disp = cli._ProgressDisplay(1, q, console, sizes={"a": 1000})
@@ -1113,13 +1117,13 @@ class TestProgressDisplayRendering:
             disp._stop.set()  # halt the drain thread; drive _drain ourselves
             disp._thread.join()
 
-            q.put(("start", "a"))
-            q.put(("progress", "a", 200, 9))
+            q.put(pipeline.FileStarted("a"))
+            q.put(pipeline.FileProgress("a", 200, 9))
             disp._drain()
             assert "a" in disp._tasks
             assert disp._records == 9
 
-            q.put(("end", "a"))
+            q.put(pipeline.FileEnded("a"))
             disp._drain()
             assert "a" not in disp._tasks
 
@@ -1153,7 +1157,7 @@ class TestProgressColumns:
             disp._stop.set()
             disp._thread.join()
             assert {t.fields.get("kind") for t in disp._progress.tasks} == {"overall"}
-            q.put(("start", "a"))
+            q.put(pipeline.FileStarted("a"))
             disp._drain()
             assert {t.fields.get("kind") for t in disp._progress.tasks} == {
                 "overall",
