@@ -7,7 +7,7 @@ numbers in prose; Python slices below are 0-indexed.
 LINE_LENGTH = 69
 
 
-def compute_checksum(line):
+def compute_checksum(line: str) -> int:
     """Return the mod-10 TLE checksum of the first 68 characters of ``line``.
 
     Each digit adds its value, each ``-`` adds 1, every other character
@@ -99,7 +99,7 @@ _LINE2_FIELDS = [
 _LINE_SPEC = {1: (_LINE1_CHARS, _LINE1_FIELDS), 2: (_LINE2_CHARS, _LINE2_FIELDS)}
 
 
-def _check_columns(body, lineno):
+def _check_columns(body: str, lineno: int) -> list[str]:
     """Validate the fixed-position column layout of a 68-character ``body``.
 
     ``lineno`` is 1 or 2. Returns a list of human-readable error strings;
@@ -124,7 +124,7 @@ def _check_columns(body, lineno):
     return errors
 
 
-def _check_semantics(body, lineno):
+def _check_semantics(body: str, lineno: int) -> list[str]:
     """Validate that numeric fields fall in their physically valid ranges.
 
     Assumes ``body`` already passed ``_check_columns`` for ``lineno``.
@@ -160,7 +160,7 @@ def _check_semantics(body, lineno):
     return errors
 
 
-def validate_body(body, lineno):
+def validate_body(body: str, lineno: int) -> list[str]:
     """Validate columns 1-68 of a TLE line: column layout then semantics.
 
     ``lineno`` is 1 or 2. Returns a list of error strings (empty = valid).
@@ -174,7 +174,7 @@ def validate_body(body, lineno):
     return _check_semantics(body, lineno)
 
 
-def checksum_error(line):
+def checksum_error(line: str) -> str | None:
     """Return an error string if the column-69 checksum of a 69-char
     ``line`` is wrong or non-numeric, else ``None``.
     """
@@ -187,7 +187,7 @@ def checksum_error(line):
     return None
 
 
-def validate_line(line, lineno):
+def validate_line(line: str, lineno: int) -> list[str]:
     """Fully validate a single 69-character TLE line.
 
     ``lineno`` is 1 or 2. Returns a list of error strings (empty = valid):
@@ -202,7 +202,7 @@ def validate_line(line, lineno):
     return [err] if err else []
 
 
-def extract_norad_id(line):
+def extract_norad_id(line: str | bytes) -> int | None:
     """Return the 5-digit NORAD catalog ID from a TLE line 1, or ``None``.
 
     Reads columns 3-7 (the satellite catalog number) and parses them as a
@@ -226,7 +226,7 @@ def extract_norad_id(line):
     return int(field)
 
 
-def validate_record(line1, line2):
+def validate_record(line1: str, line2: str) -> list[str]:
     """Validate a paired TLE record: each line valid, and the satellite
     catalog numbers (columns 3-7) match. Returns a list of error strings.
     """

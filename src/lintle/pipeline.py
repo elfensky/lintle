@@ -260,7 +260,7 @@ def _run(src_path, out_dir, mode, stats, progress_queue, progress_every):
                 stats.paired_records += 1
 
                 try:
-                    result = repair.process_record(
+                    result = repair.repair_record(
                         candidate.raw_line1,
                         candidate.src1,
                         candidate.raw_line2,
@@ -365,12 +365,15 @@ def _record_quarantine(stats, sink, primary, related, raw_lines, source_lines):
     # breakdown does (issue #9). Orphan-line-2 and bad-prefix quarantines
     # expose no line-1 catalog field and yield ``None``.
     norad_id = tle.extract_norad_id(raw_lines[0])
-    # Pass norad_id as a kwarg — QuarantineEntry's positional contract is
-    # (raw_lines, source_lines, primary, related), and norad_id is the
-    # trailing optional. The kwarg makes the intent explicit at the only
-    # production construction site (spec §4.5).
+    # Construct by keyword at this single production site so field order is
+    # decoupled from the call (spec §4.5): a reorder of QuarantineEntry's
+    # fields can no longer silently misassign arguments here.
     entry = report.QuarantineEntry(
-        raw_lines, source_lines, primary, related, norad_id=norad_id
+        raw_lines=raw_lines,
+        source_lines=source_lines,
+        primary=primary,
+        related=related,
+        norad_id=norad_id,
     )
     sink.add(entry)  # cap-checked, streamed if writer is open (issue #19)
     # The per-NORAD bucket records which rules the satellite hit, feeding

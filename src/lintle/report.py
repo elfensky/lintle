@@ -14,11 +14,11 @@ from lintle.diagnostics import RULES, Diagnostic, RepairTier, RuleID
 # goes straight to the ``.broken.txt`` sidecar via ``BrokenFileWriter`` —
 # this bound only caps the per-rule in-memory display sample, so peak
 # memory stays constant even on files where every record is corrupt.
-# Total ceiling per file is ``|RuleID| × _PER_RULE_EXEMPLAR_BOUND``. Owned
+# Total ceiling per file is ``|RuleID| × PER_RULE_EXEMPLAR_BOUND``. Owned
 # here — alongside the :class:`FileSample` dataclass it defaults — because
 # the sample shape is report-layer state; ``report_writers.QuarantineSink`` (the
 # canonical cap-enforcement boundary) imports it from here.
-_PER_RULE_EXEMPLAR_BOUND = 5
+PER_RULE_EXEMPLAR_BOUND = 5
 
 
 @dataclasses.dataclass
@@ -31,16 +31,17 @@ class QuarantineEntry:
     diagnostics, rendered on indented continuation lines. ``norad_id``
     (issue #9) carries the 5-digit catalog ID extracted from line 1,
     populated by ``pipeline._record_quarantine`` — consumed by the structured
-    ``report.jsonl`` emitter, not rendered into ``.broken.txt``. ``norad_id``
-    MUST stay the trailing field: the pipeline call site constructs this
-    dataclass positionally, so any reorder would silently corrupt the
-    per-call arguments. This is the report-layer twin of
-    :class:`repair.Quarantined`; ``pipeline._record_quarantine`` unpacks a
-    ``Quarantined`` (or an orphan's fields) and rebuilds it here.
+    ``report.jsonl`` emitter, not rendered into ``.broken.txt``. The sole
+    production construction site (``pipeline._record_quarantine``) builds
+    this dataclass by keyword, so field order is not load-bearing — ``norad_id``
+    stays last only because it is the one field carrying a default. This is
+    the report-layer twin of :class:`repair.Quarantined`;
+    ``pipeline._record_quarantine`` unpacks a ``Quarantined`` (or an orphan's
+    fields) and rebuilds it here.
     """
 
-    raw_lines: list
-    source_lines: list
+    raw_lines: list[bytes]
+    source_lines: list[int]
     primary: Diagnostic
     related: tuple[Diagnostic, ...] = ()
     norad_id: int | None = None
@@ -64,12 +65,17 @@ class FileSample:
     read it as a first-class field. Missing keys mean zero drops.
     """
 
-    buckets: dict
+    buckets: dict[RuleID, tuple[QuarantineEntry, ...]]
     cap: int
-    dropped_count: dict = dataclasses.field(default_factory=dict)
+    dropped_count: dict[RuleID, int] = dataclasses.field(default_factory=dict)
 
     @classmethod
-    def from_bounded(cls, cap, entries_by_rule, dropped_count=None):
+    def from_bounded(
+        cls,
+        cap: int,
+        entries_by_rule: dict[RuleID, tuple[QuarantineEntry, ...]],
+        dropped_count: dict[RuleID, int] | None = None,
+    ) -> FileSample:
         """Build a FileSample, asserting every bucket honours ``cap``.
 
         Test-friendly constructor: clones each bucket into a ``tuple`` so
@@ -92,7 +98,7 @@ class FileSample:
         )
 
     @classmethod
-    def empty(cls, cap):
+    def empty(cls, cap: int) -> FileSample:
         """Empty sentinel — saves renderer consumers a None-check per file."""
         return cls(buckets={}, cap=cap, dropped_count={})
 
@@ -119,9 +125,9 @@ class NoradTracker:
     breaking a monoid contract.
     """
 
-    counts: dict = dataclasses.field(default_factory=dict)
+    counts: dict[int, dict[RuleID, int]] = dataclasses.field(default_factory=dict)
 
-    def record(self, norad_id, rule_id):
+    def record(self, norad_id: int, rule_id: RuleID) -> None:
         """Tally one quarantine for ``norad_id`` against ``rule_id``.
 
         The only sanctioned mutation entry point. Outer key is the
@@ -178,10 +184,10 @@ class FileStats:
     bytes_consumed: int = 0
     clean_count: int = 0
     quarantined_count: int = 0
-    fix_counts: dict = dataclasses.field(default_factory=dict)
-    quarantine_counts: dict = dataclasses.field(default_factory=dict)
+    fix_counts: dict[FixClass, int] = dataclasses.field(default_factory=dict)
+    quarantine_counts: dict[RuleID, int] = dataclasses.field(default_factory=dict)
     quarantine_sample: FileSample = dataclasses.field(
-        default_factory=lambda: FileSample.empty(_PER_RULE_EXEMPLAR_BOUND)
+        default_factory=lambda: FileSample.empty(PER_RULE_EXEMPLAR_BOUND)
     )
     # Per-NORAD breakdown for records quarantined in this file (issue #47:
     # wrapped behind :class:`NoradTracker` so the single-writer convention
@@ -205,7 +211,7 @@ def _join_counts(counts):
     return " | ".join(f"{key} {value:,}" for key, value in sorted(counts.items()))
 
 
-def format_summary(stats):
+def format_summary(stats: FileStats) -> str:
     """Return the human-readable multi-line summary block for one file.
 
     The header line shows ``paired_records`` (true 2-line TLEs), followed by
@@ -234,7 +240,7 @@ def format_summary(stats):
 _RECORDS_PER_SEC_FLOOR = 0.001
 
 
-def summary_dict(stats):
+def summary_dict(stats: FileStats) -> dict[str, object]:
     """Return a JSON-serialisable summary of one file's stats.
 
     The ``quarantine_counts`` map is keyed by stable rule IDs (e.g.
@@ -276,7 +282,7 @@ def summary_dict(stats):
     }
 
 
-def stats_from_summary(data):
+def stats_from_summary(data: dict[str, object]) -> FileStats:
     """Rebuild a :class:`FileStats` from a JSON-deserialised :func:`summary_dict`.
 
     The inverse of :func:`summary_dict`, used by a resumed ``clean`` run (issue
@@ -302,7 +308,7 @@ def stats_from_summary(data):
         fix_counts={FixClass(k): v for k, v in data["fix_counts"].items()},
         quarantine_counts={RuleID(k): v for k, v in data["quarantine_counts"].items()},
         quarantine_sample=FileSample.from_bounded(
-            cap=_PER_RULE_EXEMPLAR_BOUND,
+            cap=PER_RULE_EXEMPLAR_BOUND,
             entries_by_rule={},
             dropped_count={RuleID(k): v for k, v in data["dropped_counts"].items()},
         ),
@@ -323,7 +329,13 @@ def stats_from_summary(data):
 _ENVELOPE_SCHEMA_VERSION = "2"
 
 
-def build_run_envelope(all_stats, *, command, started_at, elapsed_seconds):
+def build_run_envelope(
+    all_stats: list[FileStats],
+    *,
+    command: str,
+    started_at: str,
+    elapsed_seconds: float,
+) -> dict[str, object]:
     """Return the top-level versioned ``--report json`` envelope (issue #20).
 
     The shape is locked in ``ARCHITECTURE.md`` §6 (Outputs & machine-readable
@@ -374,7 +386,7 @@ def build_run_envelope(all_stats, *, command, started_at, elapsed_seconds):
     }
 
 
-def _format_diagnostic(diag):
+def format_diagnostic(diag: Diagnostic) -> str:
     """Render one :class:`Diagnostic` as a single-line string fragment.
 
     Format: ``rule: <id>[ (<tier>)][ - col(s) <range>][ observed=...][
@@ -382,8 +394,9 @@ def _format_diagnostic(diag):
     their underlying field is set. Shared low-level renderer: the
     ``validate`` summary (:func:`format_quarantine_lines`) and the
     ``.broken.txt`` sidecar (``report_writers._render_entry``) both consume
-    it, so it lives in this leaf and ``report_writers`` imports it — keeping
-    the dependency one-way and acyclic.
+    it, so it is a public name on this leaf module and ``report_writers``
+    imports it — keeping the dependency one-way, acyclic, and on an
+    intentional public surface.
     """
     parts = [f"rule: {diag.rule_id.value}"]
     if diag.tier_attempted != RepairTier.NONE:
@@ -404,13 +417,13 @@ def _format_diagnostic(diag):
     return head
 
 
-def format_quarantine_lines(stats):
+def format_quarantine_lines(stats: FileStats) -> str:
     """Render grouped quarantine exemplars for the ``validate`` summary.
 
     Walks rule IDs in descending order of total occurrences from
     ``stats.quarantine_counts`` and emits up to N exemplars per rule from
     ``stats.quarantine_sample.buckets``, each rendered via
-    :func:`_format_diagnostic` so column ranges / observed / expected /
+    :func:`format_diagnostic` so column ranges / observed / expected /
     tier survive into the operator view. Related diagnostics fold onto
     indented continuation lines, identical to ``.broken.txt``. A
     trailing ``...and X more`` appears under a rule when its bucket is
@@ -442,9 +455,9 @@ def format_quarantine_lines(stats):
                 location = f"{entry.source_lines[0]}-{entry.source_lines[1]}"
             else:
                 location = str(entry.source_lines[0])
-            lines.append(f"    line {location}: {_format_diagnostic(entry.primary)}")
+            lines.append(f"    line {location}: {format_diagnostic(entry.primary)}")
             for extra in entry.related:
-                lines.append(f"      and: {_format_diagnostic(extra)}")
+                lines.append(f"      and: {format_diagnostic(extra)}")
         remaining = total - len(bucket)
         if remaining > 0:
             lines.append(f"    ...and {remaining:,} more")
@@ -466,9 +479,9 @@ class _Totals:
     lines_seen: int
     clean: int
     quarantined: int
-    fixes: dict
-    quarantines: dict
-    dropped: dict
+    fixes: dict[FixClass, int]
+    quarantines: dict[RuleID, int]
+    dropped: dict[RuleID, int]
 
 
 def _aggregate(all_stats):
@@ -601,7 +614,7 @@ def _format_per_norad_section(all_stats, top_n):
     return lines
 
 
-def format_run_report(all_stats, top_n=100):
+def format_run_report(all_stats: list[FileStats], top_n: int | None = 100) -> str:
     """Render a Markdown report aggregating every processed file.
 
     Written to ``<out-dir>/report.md`` after a ``clean`` run: corpus
@@ -708,7 +721,7 @@ def _spec_for_key(key):
     return RULES.get(key)
 
 
-def write_run_report(path, all_stats):
+def write_run_report(path: str, all_stats: list[FileStats]) -> None:
     """Write the Markdown run report (``format_run_report``) to ``path``,
     atomically and durably via tmp + :func:`fsutil.durable_replace` (issue #58).
     """

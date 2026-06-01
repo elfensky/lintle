@@ -83,7 +83,7 @@ class TestRepairLine:
 
 class TestProcessRecord:
     def test_process_accepts_clean_record(self, line1, line2):
-        result = repair.process_record(
+        result = repair.repair_record(
             line1.encode("ascii"), 10, line2.encode("ascii"), 11
         )
         assert isinstance(result, repair.Accepted)
@@ -93,7 +93,7 @@ class TestProcessRecord:
     def test_process_repairs_backslash_and_checksum(self, line1, line2):
         raw1 = (line1[:68] + "\\").encode("ascii")  # checksumless + backslash
         raw2 = line2[:68].encode("ascii")  # checksumless
-        result = repair.process_record(raw1, 4, raw2, 5)
+        result = repair.repair_record(raw1, 4, raw2, 5)
         assert isinstance(result, repair.Accepted)
         assert result.line1 == line1 and result.line2 == line2
         assert FixClass.TRAILING_BACKSLASH in result.fixes
@@ -101,7 +101,7 @@ class TestProcessRecord:
 
     def test_process_quarantines_bad_line(self, line1, line2):
         raw1 = (line1[:68] + "9").encode("ascii")  # bad checksum
-        result = repair.process_record(raw1, 4, line2.encode("ascii"), 5)
+        result = repair.repair_record(raw1, 4, line2.encode("ascii"), 5)
         assert isinstance(result, repair.Quarantined)
         assert result.primary.rule_id == RuleID.CHECKSUM_MISMATCH
         assert result.related == ()
@@ -111,7 +111,7 @@ class TestProcessRecord:
     def test_process_quarantines_catalog_mismatch(self, line1, line2):
         other_body = "2 09999" + line2[7:68]
         other = other_body + str(tle.compute_checksum(other_body))
-        result = repair.process_record(
+        result = repair.repair_record(
             line1.encode("ascii"), 1, other.encode("ascii"), 2
         )
         assert isinstance(result, repair.Quarantined)
@@ -130,7 +130,7 @@ class TestProcessRecord:
         # 68-char checksumless versions of each line:
         raw1 = line1[:68].encode("ascii")
         raw2 = other_body.encode("ascii")
-        result = repair.process_record(raw1, 1, raw2, 2)
+        result = repair.repair_record(raw1, 1, raw2, 2)
         assert isinstance(result, repair.Quarantined)
         assert result.primary.rule_id == RuleID.CATALOG_MISMATCH
         assert result.primary.tier_attempted == RepairTier.CHECKSUM_RECONSTRUCT
@@ -138,7 +138,7 @@ class TestProcessRecord:
     def test_process_quarantines_both_bad_lines(self, line1, line2):
         raw1 = (line1[:68] + "9").encode("ascii")  # line 1: bad checksum
         raw2 = line2.encode("ascii") + b"\xff"  # line 2: non-ASCII byte
-        result = repair.process_record(raw1, 1, raw2, 2)
+        result = repair.repair_record(raw1, 1, raw2, 2)
         assert isinstance(result, repair.Quarantined)
         # Line 1's diagnostic is primary; line 2's is in related.
         assert result.primary.rule_id == RuleID.CHECKSUM_MISMATCH

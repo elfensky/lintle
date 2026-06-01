@@ -270,7 +270,7 @@ class TestProcessFile:
         def boom(*args, **kwargs):
             raise RuntimeError("simulated failure")
 
-        monkeypatch.setattr(pipeline.repair, "process_record", boom)
+        monkeypatch.setattr(pipeline.repair, "repair_record", boom)
         stats = pipeline.process_file(str(src), str(tmp_path / "out"), "clean")
 
         assert stats.quarantined_count == 1
@@ -393,7 +393,7 @@ class TestStreamingQuarantines:
     def test_exemplars_bucketed_per_rule_with_complete_broken_catalog(self, tmp_path):
         # Far more bad-prefix orphans than the per-rule exemplar bound —
         # the full catalog must reach disk; only the in-memory bucket caps.
-        n = report._PER_RULE_EXEMPLAR_BOUND + 1500
+        n = report.PER_RULE_EXEMPLAR_BOUND + 1500
         src = tmp_path / "tle2099.txt"
         src.write_bytes(b"\n".join(f"junk {i:08d}".encode("ascii") for i in range(n)))
         out = tmp_path / "out"
@@ -406,7 +406,7 @@ class TestStreamingQuarantines:
         # …but the in-memory bucket for that rule is capped at the bound.
         assert (
             len(stats.quarantine_sample.buckets[RuleID.BAD_PREFIX])
-            == report._PER_RULE_EXEMPLAR_BOUND
+            == report.PER_RULE_EXEMPLAR_BOUND
         )
         # The on-disk catalog header and trailing entry both reflect every
         # quarantined record — none were dropped due to the in-memory cap.
@@ -418,7 +418,7 @@ class TestStreamingQuarantines:
     def test_validate_mode_bucket_caps_per_rule(self, tmp_path):
         # In validate mode no sidecar is written, but each per-rule bucket
         # still caps so peak memory does not grow with quarantine count.
-        n = report._PER_RULE_EXEMPLAR_BOUND + 500
+        n = report.PER_RULE_EXEMPLAR_BOUND + 500
         src = tmp_path / "tle2099.txt"
         src.write_bytes(b"\n".join(f"junk {i:08d}".encode("ascii") for i in range(n)))
 
@@ -427,7 +427,7 @@ class TestStreamingQuarantines:
         assert stats.quarantined_count == n
         assert (
             len(stats.quarantine_sample.buckets[RuleID.BAD_PREFIX])
-            == report._PER_RULE_EXEMPLAR_BOUND
+            == report.PER_RULE_EXEMPLAR_BOUND
         )
 
     def test_rare_rules_preserved_under_skew(self, tmp_path):
@@ -457,10 +457,10 @@ class TestStreamingQuarantines:
     def test_internal_error_rule_bucketed_like_data_defects(
         self, tmp_path, monkeypatch
     ):
-        # Force ``repair.process_record`` to raise so every paired record
+        # Force ``repair.repair_record`` to raise so every paired record
         # lands in RuleID.INTERNAL_ERROR. With many more quarantines than the
         # cap, the bucket caps just like a data-defect rule.
-        n = report._PER_RULE_EXEMPLAR_BOUND + 5
+        n = report.PER_RULE_EXEMPLAR_BOUND + 5
         line1_tmpl = (
             "1 {i:05d}U 24001A   24001.00000000  .00000000  00000-0  00000-0 0  0001"
         )
@@ -479,14 +479,14 @@ class TestStreamingQuarantines:
         def _boom(*_args, **_kwargs):
             raise RuntimeError("synthetic per-record failure")
 
-        monkeypatch.setattr(repair, "process_record", _boom)
+        monkeypatch.setattr(repair, "repair_record", _boom)
 
         stats = pipeline.process_file(str(src), str(tmp_path / "out"), "validate")
 
         assert stats.quarantine_counts.get(RuleID.INTERNAL_ERROR) == n
         assert (
             len(stats.quarantine_sample.buckets[RuleID.INTERNAL_ERROR])
-            == report._PER_RULE_EXEMPLAR_BOUND
+            == report.PER_RULE_EXEMPLAR_BOUND
         )
 
 
