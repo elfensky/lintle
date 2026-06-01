@@ -32,6 +32,45 @@ class Orphan:
     diag: Diagnostic
 
 
+@dataclasses.dataclass(frozen=True)
+class FileStarted:
+    """Progress event: a worker has begun processing ``name`` (issue #53)."""
+
+    name: str
+
+
+@dataclasses.dataclass(frozen=True)
+class FileEnded:
+    """Progress event: a worker has finished or failed ``name`` (issue #53).
+
+    Emitted from ``process_file``'s ``finally`` so it fires on both the
+    success and the exception path.
+    """
+
+    name: str
+
+
+@dataclasses.dataclass(frozen=True)
+class FileProgress:
+    """Per-file progress delta (issue #53 §6): ``bytes_delta`` is the advance in
+    the true file offset and ``records_delta`` the records routed since the last
+    message. Across a file's messages the byte deltas sum to its ``st_size`` and
+    the record deltas to its routed-record count.
+    """
+
+    name: str
+    bytes_delta: int
+    records_delta: int
+
+
+# The worker -> display protocol over the progress queue, defined once here so
+# producer (``process_file``) and consumer (``cli_progress._ProgressDisplay``)
+# share one schema: dispatch is by type and field access is by name, so adding a
+# variant or reordering a field is a typed change at both ends rather than a
+# silently mis-unpacked tuple.
+ProgressMessage = FileStarted | FileEnded | FileProgress
+
+
 def _orphan(raw_line, src, rule_id, note):
     """Build an :class:`Orphan` with a pre-constructed :class:`Diagnostic`."""
     return Orphan(raw_line, src, diagnostic(rule_id, source_line_nos=(src,), note=note))
@@ -117,12 +156,11 @@ def process_file(src_path, out_dir, mode, progress_queue=None, progress_every=25
     written to a temp file and atomically renamed, so an interrupted run
     never leaves a half-written output.
 
-    When ``progress_queue`` is given, a per-file delta message
-    ``("progress", src_name, bytes_delta, records_delta)`` is pushed every
-    ``progress_every`` records — and once more when the file ends — so the
+    When ``progress_queue`` is given, a :class:`FileProgress` delta is pushed
+    every ``progress_every`` records — and once more when the file ends — so the
     caller can render live byte + record progress; the byte deltas sum to the
-    file's size. The queue also receives ``("start", src_name)`` before
-    processing begins and ``("end", src_name)`` in a ``finally`` (so failures
+    file's size. The queue also receives a :class:`FileStarted` before
+    processing begins and a :class:`FileEnded` in a ``finally`` (so failures
     still emit it), letting the caller track which files are currently in
     flight. With no queue (or ``progress_every`` set to 0) no progress is
     reported.
@@ -141,7 +179,7 @@ def process_file(src_path, out_dir, mode, progress_queue=None, progress_every=25
     started_monotonic = time.monotonic()
     progress_enabled = progress_queue is not None and bool(progress_every)
     if progress_enabled:
-        progress_queue.put(("start", src_name))
+        progress_queue.put(FileStarted(src_name))
 
     try:
         return _run(src_path, out_dir, mode, stats, progress_queue, progress_every)
@@ -154,7 +192,7 @@ def process_file(src_path, out_dir, mode, progress_queue=None, progress_every=25
         # non-zero duration in the envelope when callers retain stats.
         stats.elapsed_seconds = time.monotonic() - started_monotonic
         if progress_enabled:
-            progress_queue.put(("end", src_name))
+            progress_queue.put(FileEnded(src_name))
 
 
 def _run(src_path, out_dir, mode, stats, progress_queue, progress_every):
@@ -225,7 +263,7 @@ def _run(src_path, out_dir, mode, stats, progress_queue, progress_every):
             for candidate in iter_records(src_path, stats):
                 entries_processed += 1
 
-                # Flush one ``("progress", name, bytes, records)`` message every
+                # Flush one ``FileProgress`` message every
                 # ``progress_every`` records (issue #53 §6). The byte delta is
                 # the advance in ``stats.bytes_consumed`` — the true file offset
                 # tracked by ``iter_records``, counting dropped blank lines and
@@ -235,11 +273,8 @@ def _run(src_path, out_dir, mode, stats, progress_queue, progress_every):
                     if entries_processed % progress_every == 0:
                         byte_delta = stats.bytes_consumed - bytes_flushed
                         progress_queue.put(
-                            (
-                                "progress",
-                                stats.src_name,
-                                byte_delta,
-                                records_since_flush,
+                            FileProgress(
+                                stats.src_name, byte_delta, records_since_flush
                             )
                         )
                         bytes_flushed += byte_delta
@@ -305,7 +340,7 @@ def _run(src_path, out_dir, mode, stats, progress_queue, progress_every):
                 byte_delta = stats.bytes_consumed - bytes_flushed
                 if byte_delta or records_since_flush:
                     progress_queue.put(
-                        ("progress", stats.src_name, byte_delta, records_since_flush)
+                        FileProgress(stats.src_name, byte_delta, records_since_flush)
                     )
             completed = True
         finally:

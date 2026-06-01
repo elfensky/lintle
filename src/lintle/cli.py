@@ -593,9 +593,10 @@ class _ProgressDisplay:
             self._drain()
 
     def _drain(self):
-        """Fold queued messages into running state. Shapes: ``("start", name)``
-        / ``("end", name)`` lifecycle and ``("progress", name, bytes_delta,
-        records_delta)`` per-file deltas (issue #53 §6)."""
+        """Fold queued messages into running state. Consumes the typed worker
+        protocol: :class:`pipeline.FileStarted` / :class:`pipeline.FileEnded`
+        lifecycle events and :class:`pipeline.FileProgress` per-file deltas
+        (issue #53 §6)."""
         msgs = []
         with contextlib.suppress(queue.Empty):
             while True:
@@ -604,35 +605,31 @@ class _ProgressDisplay:
             return
         with self._lock:
             for msg in msgs:
-                kind = msg[0]
-                if kind == "progress":
-                    _, name, byte_delta, record_delta = msg
-                    self._records += record_delta
-                    self._file_records[name] = (
-                        self._file_records.get(name, 0) + record_delta
+                if isinstance(msg, pipeline.FileProgress):
+                    self._records += msg.records_delta
+                    self._file_records[msg.name] = (
+                        self._file_records.get(msg.name, 0) + msg.records_delta
                     )
-                    if self._live and name in self._tasks:
+                    if self._live and msg.name in self._tasks:
                         self._progress.update(
-                            self._tasks[name],
-                            advance=byte_delta,
-                            detail=f"{self._file_records[name]:,} rec",
+                            self._tasks[msg.name],
+                            advance=msg.bytes_delta,
+                            detail=f"{self._file_records[msg.name]:,} rec",
                         )
-                elif kind == "start":
-                    name = msg[1]
-                    self._file_records.setdefault(name, 0)
+                elif isinstance(msg, pipeline.FileStarted):
+                    self._file_records.setdefault(msg.name, 0)
                     if self._live:
-                        self._tasks[name] = self._progress.add_task(
-                            name,
-                            label=name,
+                        self._tasks[msg.name] = self._progress.add_task(
+                            msg.name,
+                            label=msg.name,
                             kind="file",
-                            total=self._sizes.get(name),
+                            total=self._sizes.get(msg.name),
                             detail="0 rec",
                         )
-                elif kind == "end":
-                    name = msg[1]
-                    if self._live and name in self._tasks:
-                        self._progress.remove_task(self._tasks.pop(name))
-                    self._file_records.pop(name, None)
+                elif isinstance(msg, pipeline.FileEnded):
+                    if self._live and msg.name in self._tasks:
+                        self._progress.remove_task(self._tasks.pop(msg.name))
+                    self._file_records.pop(msg.name, None)
             if self._live:
                 self._update_overall()
 
