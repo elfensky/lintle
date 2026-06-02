@@ -5,7 +5,7 @@ import dataclasses
 import datetime
 import sys
 
-from lintle import __version__, fsutil
+from lintle import __version__, fsutil, report_aggregation
 from lintle.categories import FixClass
 from lintle.diagnostics import RULES, Diagnostic, RepairTier, RuleID
 
@@ -465,52 +465,12 @@ def format_quarantine_lines(stats: FileStats) -> str:
     return "\n".join(blocks)
 
 
-@dataclasses.dataclass(frozen=True)
-class _Totals:
-    """Corpus-wide totals summed across every file's stats by :func:`_aggregate`.
-
-    Consumed by attribute (not positional unpacking) at the two call sites —
-    the ``--report json`` envelope and ``report.md`` — so the field set can
-    change without silently misassigning a renumbered tuple.
-    """
-
-    paired: int
-    orphans: int
-    lines_seen: int
-    clean: int
-    quarantined: int
-    fixes: dict[FixClass, int]
-    quarantines: dict[RuleID, int]
-    dropped: dict[RuleID, int]
+_Totals = report_aggregation.Totals
 
 
 def _aggregate(all_stats):
-    """Sum every file's stats into corpus-wide totals and count dicts.
-
-    Returns a :class:`_Totals`; its ``dropped`` map (issue #46) sums each
-    file's ``quarantine_sample.dropped_count`` so ``report.md`` can show a
-    corpus-wide Dropped column alongside the per-rule quarantine totals.
-    """
-    fixes = {}
-    quarantines = {}
-    dropped = {}
-    for stats in all_stats:
-        for key, value in stats.fix_counts.items():
-            fixes[key] = fixes.get(key, 0) + value
-        for key, value in stats.quarantine_counts.items():
-            quarantines[key] = quarantines.get(key, 0) + value
-        for key, value in stats.quarantine_sample.dropped_count.items():
-            dropped[key] = dropped.get(key, 0) + value
-    return _Totals(
-        paired=sum(s.paired_records for s in all_stats),
-        orphans=sum(s.orphan_entries for s in all_stats),
-        lines_seen=sum(s.input_lines_seen for s in all_stats),
-        clean=sum(s.clean_count for s in all_stats),
-        quarantined=sum(s.quarantined_count for s in all_stats),
-        fixes=fixes,
-        quarantines=quarantines,
-        dropped=dropped,
-    )
+    """Compatibility wrapper for corpus-wide totals aggregation."""
+    return report_aggregation.aggregate(all_stats)
 
 
 # How many filenames to enumerate before collapsing the trailing tail into
@@ -523,95 +483,27 @@ _PER_NORAD_FILES_PREVIEW = 5
 
 
 def _aggregate_per_norad(all_stats):
-    """Roll the per-file per-NORAD breakdowns up into a corpus-wide view.
-
-    Returns a ``dict[int, dict]`` keyed by NORAD ID; each value has
-    ``"total"`` (int), ``"rules"`` (``{RuleID: count}`` summed across files —
-    the ``report.md`` column header still reads "Defect categories" for
-    readability), and ``"files"`` (set of source filenames where the ID had
-    at least one quarantine). Memory is O(unique IDs × (|RuleID| + |source
-    files|)) — bounded by the satellite catalog (~tens of thousands) and the
-    small fixed number of source files in a corpus run, so the rollup stays
-    constant-memory regardless of total quarantine count.
-    """
-    rollup = {}
-    for stats in all_stats:
-        for nid, rule_counts in stats.quarantined_norad_ids.counts.items():
-            if not rule_counts:
-                continue
-            entry = rollup.setdefault(nid, {"total": 0, "rules": {}, "files": set()})
-            entry["files"].add(stats.src_name)
-            for rule, count in rule_counts.items():
-                entry["total"] += count
-                entry["rules"][rule] = entry["rules"].get(rule, 0) + count
-    return rollup
+    """Compatibility wrapper for corpus-wide per-NORAD aggregation."""
+    return report_aggregation.aggregate_per_norad(all_stats)
 
 
 def _format_per_norad_rules(rule_counts):
-    """Render a per-NORAD ``{RuleID: count}`` mapping as ``"a (2), b (1)"`` text.
-
-    Sorted by count descending then rule-ID ascending so the order is
-    deterministic and the dominant defect surfaces first. ``str(rule)``
-    coerces ``RuleID`` enum members via their ``StrEnum`` value, so the
-    output matches the stable wire tokens (``"TLE-CHK-001"``, etc.) used
-    elsewhere in the report.
-    """
-    items = sorted(rule_counts.items(), key=lambda kv: (-kv[1], str(kv[0])))
-    return ", ".join(f"{rule} ({count})" for rule, count in items)
+    """Compatibility wrapper for per-NORAD rule text."""
+    return report_aggregation.format_per_norad_rules(rule_counts)
 
 
 def _format_per_norad_files(files):
-    """Render a set of filenames as ``"a, b, c, d, e, +N more"`` text.
-
-    Files are sorted alphabetically — `tleYYYY.txt` corpora sort by year as
-    a side effect, but the helper makes no assumption about the naming
-    convention. The first ``_PER_NORAD_FILES_PREVIEW`` names are shown
-    verbatim; any trailing remainder collapses to ``", +N more"`` so the
-    Files column stays bounded for persistent satellites.
-    """
-    ordered = sorted(files)
-    if len(ordered) <= _PER_NORAD_FILES_PREVIEW:
-        return ", ".join(ordered)
-    head = ", ".join(ordered[:_PER_NORAD_FILES_PREVIEW])
-    return f"{head}, +{len(ordered) - _PER_NORAD_FILES_PREVIEW} more"
+    """Compatibility wrapper for bounded per-NORAD filenames."""
+    return report_aggregation.format_per_norad_files(
+        files, preview_count=_PER_NORAD_FILES_PREVIEW
+    )
 
 
 def _format_per_norad_section(all_stats, top_n):
-    """Render the ``## Per-NORAD breakdown`` Markdown section as a line list.
-
-    Rows are sorted by quarantined-record count descending then NORAD ID
-    ascending — deterministic so cross-run diffs of ``report.md`` show only
-    real changes. When the rollup has more than ``top_n`` rows the table is
-    truncated to ``top_n`` and an italicised "...and N more" footer points
-    the operator at ``broken-noradids.ndjson`` for the full catalog; pass
-    ``top_n=None`` to disable the cap entirely (used by tests asserting the
-    long tail). Returns the lines including a leading blank-line separator,
-    so the caller can ``lines += _format_per_norad_section(...)`` without
-    inserting glue.
-    """
-    rollup = _aggregate_per_norad(all_stats)
-    lines = ["", "## Per-NORAD breakdown", ""]
-    if not rollup:
-        lines.append("_None — no records quarantined._")
-        return lines
-    items = sorted(rollup.items(), key=lambda kv: (-kv[1]["total"], kv[0]))
-    shown = items if top_n is None else items[:top_n]
-    lines += [
-        "| NORAD ID | Quarantined records | Defect categories | Files |",
-        "|---------:|--------------------:|-------------------|-------|",
-    ]
-    for nid, entry in shown:
-        rules = _format_per_norad_rules(entry["rules"])
-        files = _format_per_norad_files(entry["files"])
-        lines.append(f"| {nid} | {entry['total']:,} | {rules} | {files} |")
-    if top_n is not None and len(items) > top_n:
-        remaining = len(items) - top_n
-        lines += [
-            "",
-            f"_...and {remaining:,} more — "
-            "see broken-noradids.ndjson for the full list._",
-        ]
-    return lines
+    """Compatibility wrapper for the per-NORAD Markdown section."""
+    return report_aggregation.format_per_norad_section(
+        all_stats, top_n, files_preview=_PER_NORAD_FILES_PREVIEW
+    )
 
 
 def format_run_report(all_stats: list[FileStats], top_n: int | None = 100) -> str:

@@ -3,7 +3,6 @@
 import argparse
 import concurrent.futures
 import contextlib
-import dataclasses
 import datetime
 import json
 import multiprocessing
@@ -19,12 +18,15 @@ from lintle import (
     diff,
     explain,
     fsutil,
-    pipeline,
+    output_artifacts,
+    process_control,
     report,
-    report_writers,
     resume,
+    run_planning,
     stem,
     term,
+    thresholds,
+    worker_pool,
 )
 
 _DEFAULT_SOURCE = "data/source"
@@ -77,36 +79,7 @@ def discover_paths(path):
     return []
 
 
-def parse_quarantine_threshold(raw):
-    """Parse a ``--max-quarantined`` value into ``(mode, threshold)``.
-
-    A bare integer (e.g. ``"100"``) is an absolute record count and returns
-    ``("count", int)``. A value with a trailing ``%`` (e.g. ``"1%"`` or
-    ``"1.5%"``) is a percentage of routed records and returns
-    ``("pct", float)``; the percentage must lie in ``0..100``. Surrounding
-    whitespace is tolerated. Raises :class:`ValueError` on malformed input
-    or out-of-range values; the message for a negative count preserves the
-    exact substring asserted by the legacy issue-#13 integration test.
-    """
-    raw = raw.strip()
-    if raw.endswith("%"):
-        body = raw[:-1].strip()
-        try:
-            pct = float(body)
-        except ValueError:
-            raise ValueError(f"--max-quarantined: invalid percentage {raw!r}") from None
-        if not (0.0 <= pct <= 100.0):
-            raise ValueError(
-                f"--max-quarantined percentage must be in 0..100 (got {raw!r})"
-            )
-        return ("pct", pct)
-    try:
-        count = int(raw)
-    except ValueError:
-        raise ValueError(f"--max-quarantined: invalid value {raw!r}") from None
-    if count < 0:
-        raise ValueError(f"--max-quarantined must be >= 0 (got {count})")
-    return ("count", count)
+parse_quarantine_threshold = thresholds.parse_quarantine_threshold
 
 
 def check_paths(path, using_default):
@@ -377,72 +350,10 @@ def _output_sizes(out_dir, stats):
     return sizes
 
 
-def _signal_exit_code(signo):
-    """Conventional 128 + signal number (spec §2.7): 130 SIGINT, 143 SIGTERM,
-    129 SIGHUP."""
-    return 128 + int(signo)
-
-
-def _format_cancel_message(*, done, total):
-    # Resume granularity is a whole file: the checkpoint is written only as
-    # files complete, so the file interrupted mid-stream is never resumable and
-    # always restarts. With nothing completed there is no checkpoint at all, so
-    # the re-run simply starts over — say so, rather than promise a continuation
-    # the design can't deliver (issue #56 field report: a single-file Ctrl-C
-    # looked like a broken resume).
-    if done == 0:
-        return (
-            f"interrupted — workers stopped (0/{total} files done).\n"
-            "No file finished, so nothing was checkpointed — re-running starts "
-            "over from the beginning.\n"
-            "Resume only skips fully-completed files; a file interrupted "
-            "mid-stream always restarts."
-        )
-    return (
-        f"interrupted — workers stopped ({done}/{total} files done).\n"
-        f"Re-run the same command (same --out-dir) to skip the {done} completed "
-        "file(s) and finish the rest; inputs must be unchanged. The file "
-        "interrupted mid-stream restarts.\n"
-        "Pass --no-resume to start over."
-    )
-
-
-def _ignore_sigint():
-    """Worker-process initializer: ignore Ctrl-C in the worker.
-
-    Without this, a terminal Ctrl-C is delivered to every worker too, and
-    each one prints its own ``KeyboardInterrupt`` traceback. Making the
-    parent the only process that sees the interrupt keeps shutdown tidy —
-    it catches it once and terminates the workers itself.
-    """
-    signal.signal(signal.SIGINT, signal.SIG_IGN)
-
-
-def _terminate_workers(executor):
-    """SIGTERM every pool worker so Ctrl-C need not wait on in-flight files.
-
-    ``ProcessPoolExecutor`` offers no public "stop now": leaving its
-    ``with`` block runs ``shutdown(wait=True)``, which blocks until every
-    running task finishes — and one TLE corpus file can take minutes.
-    Terminating the worker processes directly makes Ctrl-C feel immediate.
-
-    The fast path reaches into the private ``_processes`` mapping (no
-    public equivalent exists on CPython 3.11–3.13). If a future runtime
-    removes or renames it, fall back to ``shutdown(cancel_futures=True)`` —
-    slower (waits for running tasks) but always available — and tell the
-    operator why Ctrl-C felt sluggish.
-    """
-    try:
-        processes = executor._processes
-    except AttributeError:
-        term.warning(
-            "ProcessPoolExecutor._processes unavailable; falling back to "
-            "shutdown(cancel_futures=True) — Ctrl-C may wait for in-flight tasks."
-        )
-        executor.shutdown(cancel_futures=True)
-        return
-    for proc in list(processes.values()):
-        proc.terminate()
+_signal_exit_code = process_control.signal_exit_code
+_format_cancel_message = process_control.format_cancel_message
+_ignore_sigint = process_control.ignore_sigint
+_terminate_workers = process_control.terminate_workers
 
 
 def resolve_jobs(explicit, cpu_count, n_files):
@@ -455,190 +366,40 @@ def resolve_jobs(explicit, cpu_count, n_files):
     return max(1, min((cpu_count or 1) - 1, n_files))
 
 
-@dataclasses.dataclass
-class _RunPlan:
-    """The resolved pre-flight plan for a ``clean``/``validate`` run.
-
-    ``files_to_process`` is what the workers will read; ``reused_stats`` are the
-    files already finished in an earlier session and folded back in from a
-    resume checkpoint. ``inputs``/``completed``/``run_identity`` are the resume
-    checkpoint state threaded into worker dispatch (all empty for ``validate``).
-    ``exit_code`` is non-``None`` only when clean pre-flight decided the run must
-    stop before any worker starts — a disk shortfall or a declined/stale
-    resume — and :func:`main` returns it immediately.
-    """
-
-    files_to_process: list[str] = dataclasses.field(default_factory=list)
-    reused_stats: list[report.FileStats] = dataclasses.field(default_factory=list)
-    inputs: dict[str, object] = dataclasses.field(default_factory=dict)
-    completed: dict[str, object] = dataclasses.field(default_factory=dict)
-    run_identity: dict[str, object] = dataclasses.field(default_factory=dict)
-    exit_code: int | None = None
+_RunPlan = run_planning.RunPlan
 
 
 def _resolve_clean_plan(args, files, file_sizes):
-    """Pre-flight for a ``clean`` run: the disk-space guard, then the resume
-    decision. Returns a :class:`_RunPlan`; when its ``exit_code`` is set the run
-    must stop before any worker starts (disk shortfall, or a declined/stale
-    resume) and :func:`main` returns that code. On RESUME the plan carries the
-    files still to process plus the stats reconstructed from the checkpoint; on
-    FRESH it archives any prior checkpoint and scrubs the output trees first."""
-    disk_status = _check_disk_space(args.out_dir, sum(file_sizes.values()))
-    if disk_status is not None:
-        severity, msg = disk_status
-        term.emit(severity, msg)
-        if severity is term.Severity.ERROR:
-            return _RunPlan(exit_code=2)
-    # Per-input identity for the resume checkpoint (spec §3.1): computed once,
-    # up front, for every discovered file. Cheap and constant-memory (a
-    # head+tail window hash), it is written into the checkpoint as files
-    # complete so an interrupted run can be finished later.
-    inputs = {path: resume.input_fingerprint(path) for path in files}
-    # Output-affecting configuration pinned into the checkpoint identity (spec
-    # §3.1). Today only the input set + version affect output content; this is
-    # the explicit, future-proof hook so a new output-affecting flag cannot
-    # validate-through and mix policies.
-    run_identity = {"max_quarantined": args.max_quarantined}
-
-    classification = resume.classify_checkpoint(args.out_dir, inputs, run_identity)
-    decision = resume.resolve_resume_action(
-        classification,
-        resume=args.resume,
-        no_resume=args.no_resume,
-        interactive=_is_interactive(),
-        prompt=_prompt_yes_no,
-    )
-    if decision.action is resume.ResumeAction.ABORT:
-        term.error(decision.message)
-        return _RunPlan(exit_code=decision.exit_code)
-    if decision.action is resume.ResumeAction.RESUME:
-        checkpoint = classification.checkpoint
-        completed = dict(checkpoint["completed"])
-        # Integrity re-verification (spec §3.6): drop any completed entry whose
-        # outputs are missing or truncated, so they are reprocessed.
-        for bad_path in resume.verify_completed_outputs(completed, args.out_dir):
-            completed.pop(bad_path, None)
-        reused_stats = [
-            report.stats_from_summary(e["summary"]) for e in completed.values()
-        ]
-        files_to_process = [f for f in files if f not in completed]
-        term.note(
-            f"resuming: {len(completed)}/{len(files)} files already complete, "
-            f"processing {len(files_to_process)}"
-            " — pass --no-resume for a fresh run"
-        )
-        return _RunPlan(
-            files_to_process=files_to_process,
-            reused_stats=reused_stats,
-            inputs=inputs,
-            completed=completed,
-            run_identity=run_identity,
-        )
-    # FRESH: true-fresh slate (spec §3.4) — archive any checkpoint (never delete
-    # a recoverable run), then scrub output trees so no orphans linger.
-    resume.archive_checkpoint(args.out_dir, timestamp=_run_started_stamp())
-    _scrub_outputs(args.out_dir)
-    return _RunPlan(
-        files_to_process=files,
-        inputs=inputs,
-        run_identity=run_identity,
+    """Compatibility wrapper for clean-run preflight planning."""
+    return run_planning.resolve_clean_plan(
+        args,
+        files,
+        file_sizes,
+        check_disk_space=_check_disk_space,
+        is_interactive=_is_interactive,
+        prompt_yes_no=_prompt_yes_no,
+        run_started_stamp=_run_started_stamp,
+        scrub_outputs=_scrub_outputs,
     )
 
 
 def _run_workers(args, files, plan, jobs, console, sizes):
-    """Dispatch ``plan.files_to_process`` across a worker pool, draining results
-    while streaming live progress and writing the resume checkpoint as each
-    clean file completes. Returns ``(all_stats, failed_files, interrupted,
-    interrupted_signo)``.
-
-    The executor runs without a ``with`` block deliberately: that block's
-    ``__exit__`` calls ``shutdown(wait=True)``, which on Ctrl-C would block until
-    every in-flight corpus file finished. Instead the workers ignore SIGINT (so
-    only this process sees it) and, on interrupt, we terminate them outright. A
-    manager queue carries record counts back for the display. SIGTERM/SIGHUP are
-    swapped to raise ``KeyboardInterrupt`` and restored in the ``finally``.
-    """
-    all_stats = list(plan.reused_stats)
-    failed_files = []
-    interrupted = False
-    interrupted_signo = signal.SIGINT
-    with multiprocessing.Manager() as manager:
-        progress_queue = manager.Queue()
-        executor = concurrent.futures.ProcessPoolExecutor(
-            max_workers=jobs, initializer=_ignore_sigint
-        )
-        caught = {"signo": signal.SIGINT}
-
-        def _raise_interrupt(signo, _frame):
-            caught["signo"] = signo
-            raise KeyboardInterrupt
-
-        prev_term = signal.signal(signal.SIGTERM, _raise_interrupt)
-        prev_hup = signal.signal(signal.SIGHUP, _raise_interrupt)
-        try:
-            futures = {
-                executor.submit(
-                    pipeline.process_file,
-                    path,
-                    args.out_dir,
-                    args.command,
-                    progress_queue,
-                ): path
-                for path in plan.files_to_process
-            }
-            with cli_progress.ProgressDisplay(
-                len(files),
-                progress_queue,
-                console,
-                sizes,
-                already_done=len(plan.completed),
-            ) as progress:
-                for future in concurrent.futures.as_completed(futures):
-                    path = futures[future]
-                    try:
-                        stats = future.result()
-                    except Exception as exc:
-                        progress.file_failed(path, exc)
-                        failed_files.append(path)
-                    else:
-                        all_stats.append(stats)
-                        progress.file_done(stats)
-                        # Record this file as completed in the always-on resume
-                        # checkpoint (issue #56). Both the worker's outputs and
-                        # this checkpoint write go through fsutil.durable_replace,
-                        # so a checkpoint entry can only name a file whose bytes
-                        # are on disk — the ordering invariant --resume's "trust
-                        # without reprocessing" requires (issue #58).
-                        if args.command == "clean":
-                            plan.completed[path] = {
-                                "summary": report.summary_dict(stats),
-                                "outputs": _output_sizes(args.out_dir, stats),
-                            }
-                            resume.write_checkpoint(
-                                args.out_dir,
-                                resume.build_checkpoint(
-                                    inputs=plan.inputs,
-                                    completed=plan.completed,
-                                    run_identity=plan.run_identity,
-                                ),
-                            )
-        except KeyboardInterrupt:
-            # Ignore any further Ctrl-C so the shutdown itself cannot be
-            # interrupted half-way (which is what left it hung before).
-            signal.signal(signal.SIGINT, signal.SIG_IGN)
-            interrupted = True
-            interrupted_signo = caught["signo"]
-            _terminate_workers(executor)
-            executor.shutdown(wait=False, cancel_futures=True)
-            term.note(
-                _format_cancel_message(done=len(plan.completed), total=len(files))
-            )
-        else:
-            executor.shutdown(wait=True)
-        finally:
-            signal.signal(signal.SIGTERM, prev_term)
-            signal.signal(signal.SIGHUP, prev_hup)
-    return all_stats, failed_files, interrupted, interrupted_signo
+    """Compatibility wrapper for process-pool dispatch."""
+    return worker_pool.run_workers(
+        args,
+        files,
+        plan,
+        jobs,
+        console,
+        sizes,
+        futures_module=concurrent.futures,
+        multiprocessing_module=multiprocessing,
+        signal_module=signal,
+        ignore_sigint=_ignore_sigint,
+        terminate_workers=_terminate_workers,
+        format_cancel_message=_format_cancel_message,
+        output_sizes=_output_sizes,
+    )
 
 
 def main(argv=None):
@@ -794,22 +555,12 @@ def main(argv=None):
         # from the per-worker shards. All three are always written on a
         # successful clean run — empty when nothing was quarantined — so
         # downstream consumers see a stable artifact set.
-        report_path = None
-        noradids_path = None
-        findings_path = None
+        artifacts = output_artifacts.CleanArtifacts()
         if args.command == "clean" and all_stats:
             # A spinner over the silent finalization (the per-worker shard
             # concat into report.jsonl dominates on a large corpus); a no-op off
             # a TTY. Runs after the progress block has exited, so no Live nesting.
-            with cli_progress.status("finalizing report…"):
-                report_path = os.path.join(args.out_dir, "report.md")
-                report.write_run_report(report_path, all_stats)
-                noradids_path = os.path.join(args.out_dir, "broken-noradids.ndjson")
-                report_writers.write_broken_noradids_ndjson(noradids_path, all_stats)
-                findings_path = os.path.join(args.out_dir, "report.jsonl")
-                report_writers.concat_findings_shards(
-                    args.out_dir, findings_path, all_stats
-                )
+            artifacts = output_artifacts.write_clean_artifacts(args.out_dir, all_stats)
 
         if args.report == "json":
             # Issue #20: top-level versioned envelope; replaces the prior
@@ -830,12 +581,12 @@ def main(argv=None):
                 print(report.format_summary(stats))
                 if args.command == "validate" and stats.quarantine_sample.buckets:
                     print(report.format_quarantine_lines(stats))
-            if report_path:
-                print(f"\nrun report: {report_path}")
-            if noradids_path:
-                print(f"broken NORAD IDs: {noradids_path}")
-            if findings_path:
-                print(f"findings: {findings_path}")
+            if artifacts.report_path:
+                print(f"\nrun report: {artifacts.report_path}")
+            if artifacts.noradids_path:
+                print(f"broken NORAD IDs: {artifacts.noradids_path}")
+            if artifacts.findings_path:
+                print(f"findings: {artifacts.findings_path}")
 
         # A fully successful clean run leaves no resumable state behind. The
         # checkpoint and the findings shards (`.shards`) are both in-progress run
@@ -855,14 +606,8 @@ def main(argv=None):
         # gate (threshold exceeded); exit 2 covers all other operational failures.
         if failed_files:
             return 2
-        total_quarantined = sum(s.quarantined_count for s in all_stats)
-        if threshold_mode == "count":
-            return 1 if total_quarantined > quarantine_threshold else 0
-        # Rate mode: cross-multiplied (`100*q > p*r`) to avoid divide-by-zero on
-        # an empty corpus and float drift at the boundary. See design §3.
-        total_routed = sum(s.clean_count + s.quarantined_count for s in all_stats)
-        if 100 * total_quarantined > quarantine_threshold * total_routed:
-            return 1
-        return 0
+        return thresholds.quarantine_exit_code(
+            all_stats, threshold_mode, quarantine_threshold
+        )
     finally:
         _lock_stack.close()
