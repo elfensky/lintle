@@ -71,6 +71,49 @@ class FileProgress:
 ProgressMessage = FileStarted | FileEnded | FileProgress
 
 
+@dataclasses.dataclass
+class _ProgressBatcher:
+    """Accumulate per-file progress deltas before sending queue messages."""
+
+    progress_queue: object | None
+    progress_every: int
+    src_name: str
+    entries_processed: int = 0
+    bytes_flushed: int = 0
+    records_since_flush: int = 0
+
+    @property
+    def enabled(self):
+        return self.progress_queue is not None and bool(self.progress_every)
+
+    def item_seen(self, stats):
+        """Record one routed candidate and emit a batch when due."""
+        self.entries_processed += 1
+        if not self.enabled:
+            return
+        self.records_since_flush += 1
+        if self.entries_processed % self.progress_every == 0:
+            self._put(stats)
+
+    def flush(self, stats):
+        """Emit the trailing partial batch so the caller's tally is exact."""
+        if not self.enabled:
+            return
+        byte_delta = stats.bytes_consumed - self.bytes_flushed
+        if byte_delta or self.records_since_flush:
+            self.progress_queue.put(
+                FileProgress(self.src_name, byte_delta, self.records_since_flush)
+            )
+
+    def _put(self, stats):
+        byte_delta = stats.bytes_consumed - self.bytes_flushed
+        self.progress_queue.put(
+            FileProgress(self.src_name, byte_delta, self.records_since_flush)
+        )
+        self.bytes_flushed += byte_delta
+        self.records_since_flush = 0
+
+
 def _orphan(raw_line, src, rule_id, note):
     """Build an :class:`Orphan` with a pre-constructed :class:`Diagnostic`."""
     return Orphan(raw_line, src, diagnostic(rule_id, source_line_nos=(src,), note=note))
@@ -195,6 +238,67 @@ def process_file(src_path, out_dir, mode, progress_queue=None, progress_every=25
             progress_queue.put(FileEnded(src_name))
 
 
+def _record_acceptance(stats, cleaned_handle, result):
+    """Tally and optionally write one accepted repaired record."""
+    stats.clean_count += 1
+    for fix in result.fixes:
+        stats.fix_counts[fix] = stats.fix_counts.get(fix, 0) + 1
+    if cleaned_handle is not None:
+        cleaned_handle.write(result.line1 + "\n")
+        cleaned_handle.write(result.line2 + "\n")
+
+
+def _route_candidate(candidate, stats, sink, cleaned_handle):
+    """Route one paired record or orphan into accepted/quarantined accounting."""
+    if isinstance(candidate, Orphan):
+        stats.orphan_entries += 1
+        _record_quarantine(
+            stats,
+            sink,
+            candidate.diag,
+            (),
+            [candidate.raw_line],
+            [candidate.src],
+        )
+        return
+
+    stats.paired_records += 1
+
+    try:
+        result = repair.repair_record(
+            candidate.raw_line1,
+            candidate.src1,
+            candidate.raw_line2,
+            candidate.src2,
+        )
+    except Exception as exc:  # one bad record must not kill the run
+        _record_quarantine(
+            stats,
+            sink,
+            diagnostic(
+                RuleID.INTERNAL_ERROR,
+                source_line_nos=(candidate.src1, candidate.src2),
+                note=repr(exc),
+            ),
+            (),
+            [candidate.raw_line1, candidate.raw_line2],
+            [candidate.src1, candidate.src2],
+        )
+        return
+
+    if isinstance(result, repair.Accepted):
+        _record_acceptance(stats, cleaned_handle, result)
+    else:
+        _record_quarantine(
+            stats,
+            sink,
+            result.primary,
+            result.related,
+            result.raw_lines,
+            result.source_lines,
+        )
+
+
 def _run(src_path, out_dir, mode, stats, progress_queue, progress_every):
     """Process one file once start/end progress events are accounted for —
     body of :func:`process_file`. Kept separate so the wrapper above can
@@ -243,13 +347,7 @@ def _run(src_path, out_dir, mode, stats, progress_queue, progress_every):
     )
 
     completed = False
-    # Tracks paired+orphan yields — the "entries processed" count, used to
-    # drive progress reporting. Kept local because the stats counters are
-    # split: paired_records and orphan_entries each advance on their own
-    # branch below, but progress is an aggregate signal.
-    entries_processed = 0
-    bytes_flushed = 0  # bytes already reported via the progress queue
-    records_since_flush = 0
+    progress = _ProgressBatcher(progress_queue, progress_every, stats.src_name)
     with sink:
         try:
             # Input size for the v1 envelope (issue #20). Captured inside
@@ -261,87 +359,18 @@ def _run(src_path, out_dir, mode, stats, progress_queue, progress_every):
             # emits the lifecycle ``end`` event.
             stats.bytes = os.path.getsize(src_path)
             for candidate in iter_records(src_path, stats):
-                entries_processed += 1
-
                 # Flush one ``FileProgress`` message every
                 # ``progress_every`` records (issue #53 §6). The byte delta is
                 # the advance in ``stats.bytes_consumed`` — the true file offset
                 # tracked by ``iter_records``, counting dropped blank lines and
                 # exact newline widths — so the deltas sum to st_size exactly.
-                if progress_queue is not None and progress_every:
-                    records_since_flush += 1
-                    if entries_processed % progress_every == 0:
-                        byte_delta = stats.bytes_consumed - bytes_flushed
-                        progress_queue.put(
-                            FileProgress(
-                                stats.src_name, byte_delta, records_since_flush
-                            )
-                        )
-                        bytes_flushed += byte_delta
-                        records_since_flush = 0
-
-                if isinstance(candidate, Orphan):
-                    stats.orphan_entries += 1
-                    _record_quarantine(
-                        stats,
-                        sink,
-                        candidate.diag,
-                        (),
-                        [candidate.raw_line],
-                        [candidate.src],
-                    )
-                    continue
-
-                stats.paired_records += 1
-
-                try:
-                    result = repair.repair_record(
-                        candidate.raw_line1,
-                        candidate.src1,
-                        candidate.raw_line2,
-                        candidate.src2,
-                    )
-                except Exception as exc:  # one bad record must not kill the run
-                    _record_quarantine(
-                        stats,
-                        sink,
-                        diagnostic(
-                            RuleID.INTERNAL_ERROR,
-                            source_line_nos=(candidate.src1, candidate.src2),
-                            note=repr(exc),
-                        ),
-                        (),
-                        [candidate.raw_line1, candidate.raw_line2],
-                        [candidate.src1, candidate.src2],
-                    )
-                    continue
-
-                if isinstance(result, repair.Accepted):
-                    stats.clean_count += 1
-                    for fix in result.fixes:
-                        stats.fix_counts[fix] = stats.fix_counts.get(fix, 0) + 1
-                    if cleaned_handle is not None:
-                        cleaned_handle.write(result.line1 + "\n")
-                        cleaned_handle.write(result.line2 + "\n")
-                else:
-                    _record_quarantine(
-                        stats,
-                        sink,
-                        result.primary,
-                        result.related,
-                        result.raw_lines,
-                        result.source_lines,
-                    )
+                progress.item_seen(stats)
+                _route_candidate(candidate, stats, sink, cleaned_handle)
             # Push the trailing partial batch so the caller's tally is exact.
             # ``byte_delta`` can be non-zero with zero records when the file
             # ends in dropped blank lines — still flush it so the byte bar
             # reaches st_size.
-            if progress_queue is not None and progress_every:
-                byte_delta = stats.bytes_consumed - bytes_flushed
-                if byte_delta or records_since_flush:
-                    progress_queue.put(
-                        FileProgress(stats.src_name, byte_delta, records_since_flush)
-                    )
+            progress.flush(stats)
             completed = True
         finally:
             if cleaned_handle is not None:
