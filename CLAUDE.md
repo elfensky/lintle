@@ -79,11 +79,17 @@ output shows failures.
 src/lintle/
 ├── __main__.py    # python -m lintle entry point
 ├── __init__.py    # __version__, stem() filename helper
-├── cli.py         # argparse, globbing, parallel workers, resume/Ctrl-C handling, exit codes
+├── cli.py         # argparse, globbing, top-level clean/validate orchestration, exit codes
 ├── cli_progress.py # live multi-file progress display, file roster, status spinner (rich)
+├── run_planning.py # clean-run preflight: disk-space guard, resume classification, RunPlan
+├── worker_pool.py  # process-pool dispatch, progress collection, per-file failure + checkpoint
+├── process_control.py # worker SIGINT setup, fast pool termination, cancel/exit-code helpers
+├── thresholds.py   # --max-quarantined parsing + quality-gate exit policy (pure)
+├── output_artifacts.py # end-of-clean-run report.md / broken-noradids.ndjson / report.jsonl
 ├── pipeline.py    # streams a file in binary, pairs 1/2 lines into records, routes them
 ├── repair.py      # speculative fixes, each confirmed by tle.py before commit
 ├── report.py      # FileStats + dataclasses, the validate summaries, the run report
+├── report_aggregation.py # pure corpus aggregation: run totals + per-NORAD rollups for report.py
 ├── report_writers.py # structured-file writers: .broken.txt sidecar, report.jsonl findings, broken-noradids.ndjson, shard concat
 ├── resume.py      # single-run checkpoint for `clean --resume` (issue #56)
 ├── fsutil.py      # durable_replace — the one atomic+fsync commit path (issue #58)
@@ -99,7 +105,12 @@ src/lintle/
 Module dependencies flow one way: `cli.py → pipeline.py → repair.py → tle.py`,
 with the read-only `cli.py → diff.py` and `cli.py → explain.py → explain_examples.py`
 consumers and the `cli.py → resume.py` single-run checkpoint (`resume.py` depends only
-on `__version__`) alongside. `diagnostics.py` and `categories.py` are pure-data leaves
+on `__version__`) alongside. The `clean` orchestration is further split into
+cli-helper leaves depended on only by `cli.py` — `run_planning.py` (preflight),
+`worker_pool.py` (dispatch), `process_control.py` (signals/shutdown),
+`thresholds.py` (quarantine exit policy, pure), and `output_artifacts.py` (run
+finalization); `report_aggregation.py` is a pure corpus-aggregation leaf depended
+on by `report.py`. `diagnostics.py` and `categories.py` are pure-data leaves
 depended on by `repair`, `pipeline`, `report`, and `explain`; `explain_examples.py`
 is also pure data, composing those two leaves into documented examples.
 `report_writers.py` is the structured-file writers leaf (the `.broken.txt`
