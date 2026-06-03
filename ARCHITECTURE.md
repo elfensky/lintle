@@ -61,11 +61,11 @@ cli.py ──▶ pipeline.py ──▶ repair.py ──▶ tle.py
   │
   ├──▶ cli_progress.py  (rich live progress + roster; imports pipeline's progress messages)
   ├──▶ resume.py        (single-run checkpoint; depends only on __version__ + fsutil)
-  ├──▶ run_planning.py  (disk-space guard + resume/fresh-run decision)
-  ├──▶ worker_pool.py   (process-pool dispatch + progress collection)
-  ├──▶ output_artifacts.py (clean-run report/NDJSON/JSONL finalization)
-  ├──▶ thresholds.py    (--max-quarantined parsing + quality-gate exit policy)
-  ├──▶ process_control.py (worker SIGINT setup + fast pool termination)
+  ├──▶ run_planning.py  (disk-space guard + resume/fresh-run decision; → report, resume, term)
+  ├──▶ worker_pool.py   (process-pool dispatch + progress collection; → pipeline, cli_progress, report, resume, term)
+  ├──▶ output_artifacts.py (clean-run report/NDJSON/JSONL finalization; → report, report_writers, cli_progress)
+  ├──▶ thresholds.py    (--max-quarantined parsing + quality-gate exit policy; pure, no internal deps)
+  ├──▶ process_control.py (worker SIGINT setup + fast pool termination; → term)
   ├──▶ diff.py          (read-only consumer of report.jsonl)
   ├──▶ explain.py ──▶ explain_examples.py
   └──▶ term.py          (stderr-only rich Console + error/warning/note/prompt)
@@ -95,7 +95,7 @@ diagnostics.py, categories.py, explain_examples.py    pure-data leaves (no I/O)
 | `thresholds.py` | Pure `--max-quarantined` parsing and quarantine-threshold exit-code policy. |
 | `process_control.py` | Signal/worker shutdown helpers used by `cli.py` during process-pool runs. |
 | `term.py` | The single stderr `rich` Console and the `error:` / `warning:` / `note` / `prompt` emitters. |
-| `cli.py` | argparse, globbing, parallel workers, resume orchestration, signal/Ctrl-C handling, exit codes. |
+| `cli.py` | argparse, globbing, and top-level `clean`/`validate` orchestration: delegates preflight to `run_planning`, dispatch to `worker_pool`, signal/shutdown to `process_control`, the quality-gate exit policy to `thresholds`, and run finalization to `output_artifacts`; owns the resulting process exit code. |
 | `cli_progress.py` | Rich presentation leaf for `clean`/`validate`: the live `ProgressDisplay`, the pre-run `render_roster`, and the `status` spinner. Consumes `pipeline`'s typed progress messages. |
 
 `tle.py` and the data leaves carry no I/O. `report_writers.py` depends on `report.py` (never
@@ -563,7 +563,7 @@ judgement under the relaxed bar that can be revisited.
 | `tqdm` | Reject (not worth it) | Can't render a dynamic block of N concurrent bars; `rich` already covers progress. |
 | `textual` | Reject (not worth it) | Full TUI framework; we want a progress block, not an app. |
 | `blessed` / `prompt_toolkit` | Reject (not worth it) | Lower-level; still ~50 lines of glue. `rich` fits better. |
-| **`rich`** | **Adopted (issue #53)** | Popular, well-maintained terminal renderer; drives the `clean` stderr progress UI, replacing ~150 lines of hand-rolled ANSI. Pure-Python; confined to `cli.py`/`cli_progress.py`/`term.py` stderr — no streaming, memory, or structured-output impact. |
+| **`rich`** | **Adopted (issue #53)** | Popular, well-maintained terminal renderer; drives the `clean` stderr progress UI, replacing ~150 lines of hand-rolled ANSI. Pure-Python; imported only by the `cli_progress.py` and `term.py` presentation leaves — callers such as `cli.py` and `output_artifacts.py` reach it through them, never directly — and every byte goes to stderr, so no streaming, memory, or structured-output impact. |
 | `zstandard` | Defer (trigger-gated) | Only on a *measured* output-size / transfer bottleneck; until then stdlib `gzip`. |
 
 Dev-only (exempt; record purpose if nontrivial): `sgp4` (test oracle), `pytest`, `pytest-cov`,
