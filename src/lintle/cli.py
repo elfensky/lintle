@@ -271,6 +271,84 @@ def resolve_jobs(explicit, cpu_count, n_files):
     return max(1, min((cpu_count or 1) - 1, n_files))
 
 
+def _finalize_run(
+    args,
+    all_stats,
+    failed_files,
+    *,
+    run_started_iso,
+    run_monotonic_start,
+    threshold_mode,
+    quarantine_threshold,
+):
+    """Finish a non-interrupted run: sort stats, write the clean-run artifacts,
+    emit the text/JSON summary, tear down resumable state on success, and return
+    the process exit code. Split out of :func:`main` so the orchestration there
+    stays at the level of phases (validate inputs -> plan -> dispatch -> finalize)."""
+    all_stats.sort(key=lambda stats: stats.src_name)
+
+    # A `clean` run writes a Markdown run report, a corpus-wide NDJSON of
+    # NORAD IDs whose records were quarantined anywhere, and (issue #9) a
+    # corpus-wide ``report.jsonl`` of structured findings concatenated
+    # from the per-worker shards. All three are always written on a
+    # successful clean run — empty when nothing was quarantined — so
+    # downstream consumers see a stable artifact set.
+    artifacts = output_artifacts.CleanArtifacts()
+    if args.command == "clean" and all_stats:
+        # A spinner over the silent finalization (the per-worker shard
+        # concat into report.jsonl dominates on a large corpus); a no-op off
+        # a TTY. Runs after the progress block has exited, so no Live nesting.
+        artifacts = output_artifacts.write_clean_artifacts(args.out_dir, all_stats)
+
+    if args.report == "json":
+        # Issue #20: top-level versioned envelope; replaces the prior
+        # flat-array output. Run wall-clock is the parent process's
+        # monotonic delta, NOT the sum of per-file worker durations
+        # (those are reported per-file under ``files[i].elapsed_seconds``
+        # and exceed parent wall-clock under ``--jobs N``).
+        run_elapsed = time.monotonic() - run_monotonic_start
+        envelope = report.build_run_envelope(
+            all_stats,
+            command=args.command,
+            started_at=run_started_iso,
+            elapsed_seconds=run_elapsed,
+        )
+        print(json.dumps(envelope, indent=2))
+    else:
+        for stats in all_stats:
+            print(report.format_summary(stats))
+            if args.command == "validate" and stats.quarantine_sample.buckets:
+                print(report.format_quarantine_lines(stats))
+        if artifacts.report_path:
+            print(f"\nrun report: {artifacts.report_path}")
+        if artifacts.noradids_path:
+            print(f"broken NORAD IDs: {artifacts.noradids_path}")
+        if artifacts.findings_path:
+            print(f"findings: {artifacts.findings_path}")
+
+    # A fully successful clean run leaves no resumable state behind. The
+    # checkpoint and the findings shards (`.shards`) are both in-progress run
+    # state and are torn down together, here, ONLY on success: an interrupted
+    # run already returned 130 above (keeping both), and a failed run keeps both
+    # too, so the operator can fix the cause and `--resume` re-reads the
+    # surviving shards to rebuild a complete `report.jsonl` (issue #56). The
+    # `report.jsonl` was written from those shards by the report block above.
+    if args.command == "clean" and not failed_files:
+        resume.delete_checkpoint(args.out_dir)
+        shard_dir = os.path.join(args.out_dir, ".shards")
+        if os.path.exists(shard_dir):
+            shutil.rmtree(shard_dir)
+
+    # A file that could not be processed is an operational failure (spec §2.7
+    # / §10): exit 2 (operational error). Exit 1 is the quarantine quality
+    # gate (threshold exceeded); exit 2 covers all other operational failures.
+    if failed_files:
+        return 2
+    return thresholds.quarantine_exit_code(
+        all_stats, threshold_mode, quarantine_threshold
+    )
+
+
 def main(argv=None):
     """Entry point for the ``lintle`` console script.
 
@@ -416,67 +494,14 @@ def main(argv=None):
         if interrupted:
             return process_control.signal_exit_code(interrupted_signo)
 
-        all_stats.sort(key=lambda stats: stats.src_name)
-
-        # A `clean` run writes a Markdown run report, a corpus-wide NDJSON of
-        # NORAD IDs whose records were quarantined anywhere, and (issue #9) a
-        # corpus-wide ``report.jsonl`` of structured findings concatenated
-        # from the per-worker shards. All three are always written on a
-        # successful clean run — empty when nothing was quarantined — so
-        # downstream consumers see a stable artifact set.
-        artifacts = output_artifacts.CleanArtifacts()
-        if args.command == "clean" and all_stats:
-            # A spinner over the silent finalization (the per-worker shard
-            # concat into report.jsonl dominates on a large corpus); a no-op off
-            # a TTY. Runs after the progress block has exited, so no Live nesting.
-            artifacts = output_artifacts.write_clean_artifacts(args.out_dir, all_stats)
-
-        if args.report == "json":
-            # Issue #20: top-level versioned envelope; replaces the prior
-            # flat-array output. Run wall-clock is the parent process's
-            # monotonic delta, NOT the sum of per-file worker durations
-            # (those are reported per-file under ``files[i].elapsed_seconds``
-            # and exceed parent wall-clock under ``--jobs N``).
-            run_elapsed = time.monotonic() - run_monotonic_start
-            envelope = report.build_run_envelope(
-                all_stats,
-                command=args.command,
-                started_at=run_started_iso,
-                elapsed_seconds=run_elapsed,
-            )
-            print(json.dumps(envelope, indent=2))
-        else:
-            for stats in all_stats:
-                print(report.format_summary(stats))
-                if args.command == "validate" and stats.quarantine_sample.buckets:
-                    print(report.format_quarantine_lines(stats))
-            if artifacts.report_path:
-                print(f"\nrun report: {artifacts.report_path}")
-            if artifacts.noradids_path:
-                print(f"broken NORAD IDs: {artifacts.noradids_path}")
-            if artifacts.findings_path:
-                print(f"findings: {artifacts.findings_path}")
-
-        # A fully successful clean run leaves no resumable state behind. The
-        # checkpoint and the findings shards (`.shards`) are both in-progress run
-        # state and are torn down together, here, ONLY on success: an interrupted
-        # run already returned 130 above (keeping both), and a failed run keeps both
-        # too, so the operator can fix the cause and `--resume` re-reads the
-        # surviving shards to rebuild a complete `report.jsonl` (issue #56). The
-        # `report.jsonl` was written from those shards by the report block above.
-        if args.command == "clean" and not failed_files:
-            resume.delete_checkpoint(args.out_dir)
-            shard_dir = os.path.join(args.out_dir, ".shards")
-            if os.path.exists(shard_dir):
-                shutil.rmtree(shard_dir)
-
-        # A file that could not be processed is an operational failure (spec §2.7
-        # / §10): exit 2 (operational error). Exit 1 is the quarantine quality
-        # gate (threshold exceeded); exit 2 covers all other operational failures.
-        if failed_files:
-            return 2
-        return thresholds.quarantine_exit_code(
-            all_stats, threshold_mode, quarantine_threshold
+        return _finalize_run(
+            args,
+            all_stats,
+            failed_files,
+            run_started_iso=run_started_iso,
+            run_monotonic_start=run_monotonic_start,
+            threshold_mode=threshold_mode,
+            quarantine_threshold=quarantine_threshold,
         )
     finally:
         _lock_stack.close()
