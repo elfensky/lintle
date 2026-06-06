@@ -98,29 +98,10 @@ def check_paths(path, using_default):
     return f"no such file or directory: {path!r}"
 
 
-def build_parser():
-    """Build the ``lintle`` argument parser."""
-    parser = argparse.ArgumentParser(
-        prog="lintle",
-        description=(
-            "Validate and clean Two-Line Element (TLE) corpus files exported "
-            "from space-track.org."
-        ),
-        epilog=_EPILOG,
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    parser.add_argument(
-        "-V",
-        "--version",
-        action="version",
-        version=f"%(prog)s {__version__}",
-    )
-    subparsers = parser.add_subparsers(
-        dest="command",
-        required=True,
-        metavar="{validate,clean,diff,explain}",
-        title="commands",
-    )
+def _add_processing_subparsers(subparsers):
+    """Add the ``validate`` and ``clean`` subparsers, which share an argument
+    surface (path, --out-dir, --jobs, --report, --max-quarantined); ``clean``
+    additionally gets the mutually-exclusive --resume/--no-resume group."""
     for name, help_text, description in (
         (
             "validate",
@@ -205,9 +186,11 @@ def build_parser():
                 ),
             )
 
-    # `diff` has a different shape from validate/clean — two positional run
-    # directories, no --out-dir / --jobs / --report / --max-quarantined. It is
-    # read-only: it consumes each run's report.jsonl and writes nothing.
+
+def _add_diff_subparser(subparsers):
+    """Add the read-only ``diff`` subparser: two positional run directories, no
+    shared validate/clean option surface. It consumes each run's report.jsonl
+    and writes nothing."""
     diff_parser = subparsers.add_parser(
         "diff",
         help="compare two run outputs and show per-rule deltas",
@@ -226,9 +209,10 @@ def build_parser():
         "run_b", metavar="RUN-B", help="second run's output directory"
     )
 
-    # `explain` is a read-only documentation lookup: one positional TAG (a rule
-    # ID like TLE-CHK-001 or a fix tag like reconstructed-checksum), no shared
-    # validate/clean argument surface. Writes nothing.
+
+def _add_explain_subparser(subparsers):
+    """Add the read-only ``explain`` subparser: one positional TAG (a rule ID
+    like TLE-CHK-001 or a fix tag like reconstructed-checksum). Writes nothing."""
     explain_parser = subparsers.add_parser(
         "explain",
         help="print what a rule ID or fix tag means, with examples",
@@ -246,6 +230,34 @@ def build_parser():
         metavar="TAG",
         help="a rule ID (TLE-CHK-001) or fix tag (reconstructed-checksum)",
     )
+
+
+def build_parser():
+    """Build the ``lintle`` argument parser."""
+    parser = argparse.ArgumentParser(
+        prog="lintle",
+        description=(
+            "Validate and clean Two-Line Element (TLE) corpus files exported "
+            "from space-track.org."
+        ),
+        epilog=_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "-V",
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
+    )
+    subparsers = parser.add_subparsers(
+        dest="command",
+        required=True,
+        metavar="{validate,clean,diff,explain}",
+        title="commands",
+    )
+    _add_processing_subparsers(subparsers)
+    _add_diff_subparser(subparsers)
+    _add_explain_subparser(subparsers)
     return parser
 
 
