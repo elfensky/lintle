@@ -221,6 +221,8 @@ class TestMain:
         assert rc == 2
 
     def test_main_prints_summary(self, tmp_path, line1, line2, capsys):
+        # The aggregate panel is rendered to stderr; text-mode stdout is empty.
+        # The panel always carries the command label "clean".
         src = tmp_path / "src"
         src.mkdir()
         (src / "tle2099.txt").write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
@@ -230,7 +232,9 @@ class TestMain:
         )
 
         assert rc == 0
-        assert "tle2099.txt" in capsys.readouterr().out
+        cap = capsys.readouterr()
+        assert cap.out == ""  # text-mode stdout empty
+        assert "clean" in cap.err  # aggregate panel on stderr
 
     def test_main_returns_two_when_a_file_fails_to_process(self, tmp_path, capsys):
         # An explicit path to a missing file is now caught upfront by the
@@ -554,20 +558,17 @@ class TestReportJsonl:
         assert jsonl_path.exists()
         assert jsonl_path.read_text(encoding="utf-8") == ""
 
-    def test_clean_summary_announces_findings_path(
-        self, tmp_path, line1, line2, capsys
-    ):
-        # The post-run summary block includes a "findings: <path>" line
-        # so operators see the artifact location alongside report.md.
+    def test_clean_writes_findings_path(self, tmp_path, line1, line2):
+        # The post-run summary no longer prints artifact paths to stdout (the
+        # aggregate panel now goes to stderr; text-mode stdout is empty). The
+        # artifact itself must still be written.
         src = tmp_path / "src"
         src.mkdir()
         (src / "tle2099.txt").write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
         out = tmp_path / "out"
 
         cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
-        stdout = capsys.readouterr().out
-        assert "findings: " in stdout
-        assert "report.jsonl" in stdout
+        assert (out / "report.jsonl").exists()
 
 
 class TestExplainCommand:
@@ -611,3 +612,80 @@ class TestLockWiring:
         with fsutil.out_dir_lock(str(out)):  # simulate a concurrent run
             rc = cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
         assert rc == 2  # operational refusal — lock held
+
+
+class TestReportArtifactAndCommand:
+    """report.json is always persisted; the aggregate panel renders to stderr;
+    the read-only ``report`` subcommand renders report.json to stdout."""
+
+    def _make_src(self, tmp_path, line1, line2):
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "tle2099.txt").write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
+        return src
+
+    def test_clean_writes_report_json(self, tmp_path, line1, line2):
+        src = self._make_src(tmp_path, line1, line2)
+        out = tmp_path / "out"
+        cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
+        data = json.loads((out / "report.json").read_text(encoding="utf-8"))
+        assert data["schema_version"] == "2"
+        assert data["run"]["command"] == "clean"
+
+    def test_report_json_file_equals_report_json_stdout(
+        self, tmp_path, line1, line2, capsys
+    ):
+        src = self._make_src(tmp_path, line1, line2)
+        out = tmp_path / "out"
+        cli.main(
+            [
+                "clean",
+                str(src),
+                "--out-dir",
+                str(out),
+                "--jobs",
+                "1",
+                "--report",
+                "json",
+            ]
+        )
+        stdout = capsys.readouterr().out
+        # report.json uses indent=2 + trailing newline; stdout is
+        # json.dumps(...) + "\n" via print(), so they must match exactly.
+        assert (out / "report.json").read_text(encoding="utf-8") == stdout
+
+    def test_clean_panel_goes_to_stderr_not_stdout(
+        self, tmp_path, line1, line2, capsys
+    ):
+        src = self._make_src(tmp_path, line1, line2)
+        out = tmp_path / "out"
+        cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])  # text
+        cap = capsys.readouterr()
+        assert cap.out == ""  # text-mode stdout must be empty
+        assert "clean" in cap.err  # aggregate panel lands on stderr
+
+    def test_report_command_renders_last_run(self, tmp_path, line1, line2, capsys):
+        src = self._make_src(tmp_path, line1, line2)
+        out = tmp_path / "out"
+        cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
+        capsys.readouterr()  # discard the clean run's output
+        rc = cli.main(["report", str(out)])
+        cap = capsys.readouterr()
+        assert rc == 0
+        assert "clean" in cap.out  # the panel uses the run's command label
+        assert cap.err == ""  # the report panel must go to stdout, not stderr
+
+    def test_report_command_json_emits_verbatim(self, tmp_path, line1, line2, capsys):
+        src = self._make_src(tmp_path, line1, line2)
+        out = tmp_path / "out"
+        cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
+        capsys.readouterr()  # discard the clean run's output
+        rc = cli.main(["report", str(out), "--report", "json"])
+        cap = capsys.readouterr()
+        assert rc == 0
+        assert cap.out == (out / "report.json").read_text(encoding="utf-8")
+
+    def test_report_command_missing_run_is_exit_2(self, tmp_path, capsys):
+        rc = cli.main(["report", str(tmp_path / "nope")])
+        assert rc == 2
+        assert "no run found" in capsys.readouterr().err

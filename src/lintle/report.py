@@ -207,30 +207,6 @@ class FileStats:
     )
 
 
-def _join_counts(counts):
-    """Render a count dict as ``"key value | key value"``, sorted by key."""
-    return " | ".join(f"{key} {value:,}" for key, value in sorted(counts.items()))
-
-
-def format_summary(stats: FileStats) -> str:
-    """Return the human-readable multi-line summary block for one file.
-
-    The header line shows ``paired_records`` (true 2-line TLEs), followed by
-    clean and quarantined counts, then a parenthetical with the orphan and
-    input-line counters — separated so issue #5's conflation never returns.
-    """
-    lines = [
-        f"{stats.src_name}   {stats.paired_records:,} records   "
-        f"{stats.clean_count:,} clean   {stats.quarantined_count:,} quarantined   "
-        f"({stats.orphan_entries:,} orphan, {stats.input_lines_seen:,} lines)"
-    ]
-    if stats.fix_counts:
-        lines.append(f"  fixes:   {_join_counts(stats.fix_counts)}")
-    if stats.quarantine_counts:
-        lines.append(f"  quarantined: {_join_counts(stats.quarantine_counts)}")
-    return "\n".join(lines)
-
-
 # Lower bound on the ``elapsed_seconds`` denominator when computing the
 # per-file ``records_per_sec`` field (issue #20, gate R2). Clamping keeps
 # the field a stable ``float`` for sub-millisecond runs — typed downstream

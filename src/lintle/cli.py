@@ -20,6 +20,7 @@ from lintle import (
     report,
     resume,
     run_planning,
+    summary,
     term,
     thresholds,
     worker_pool,
@@ -218,6 +219,38 @@ def _add_explain_subparser(subparsers):
     )
 
 
+def _add_report_subparser(subparsers):
+    """Add the read-only ``report`` subparser: render a prior clean run's
+    aggregate summary from ``<out-dir>/report.json``. No --jobs / --out-dir
+    options beyond the positional output dir; writes nothing."""
+    report_parser = subparsers.add_parser(
+        "report",
+        help="render the last clean run's aggregate summary from report.json",
+        description=(
+            "Read report.json from a clean-run output directory and render the "
+            "aggregate summary panel. Read-only; writes nothing."
+        ),
+        epilog=_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    report_parser.add_argument(
+        "out_dir",
+        nargs="?",
+        default=_DEFAULT_OUTPUT,
+        metavar="OUT-DIR",
+        help=f"clean run output directory (default: {_DEFAULT_OUTPUT})",
+    )
+    report_parser.add_argument(
+        "--report",
+        choices=["text", "json"],
+        default="text",
+        help=(
+            "output format: text renders the panel to stdout; "
+            "json emits report.json verbatim (default: text)"
+        ),
+    )
+
+
 def build_parser():
     """Build the ``lintle`` argument parser."""
     parser = argparse.ArgumentParser(
@@ -238,12 +271,13 @@ def build_parser():
     subparsers = parser.add_subparsers(
         dest="command",
         required=True,
-        metavar="{clean,diff,explain}",
+        metavar="{clean,diff,explain,report}",
         title="commands",
     )
     _add_clean_subparser(subparsers)
     _add_diff_subparser(subparsers)
     _add_explain_subparser(subparsers)
+    _add_report_subparser(subparsers)
     return parser
 
 
@@ -273,25 +307,14 @@ def _finalize_run(
     stays at the level of phases (check inputs -> plan -> dispatch -> finalize)."""
     all_stats.sort(key=lambda stats: stats.src_name)
 
-    # A `clean` run writes a Markdown run report, a corpus-wide NDJSON of
-    # NORAD IDs whose records were quarantined anywhere, and (issue #9) a
-    # corpus-wide ``report.jsonl`` of structured findings concatenated
-    # from the per-worker shards. All three are always written on a
-    # successful clean run — empty when nothing was quarantined — so
-    # downstream consumers see a stable artifact set.
-    artifacts = output_artifacts.CleanArtifacts()
+    # Build the run envelope once, here: it is BOTH persisted to report.json
+    # AND (under --report json) printed to stdout — one object, no divergence.
+    # Issue #20: top-level versioned envelope. Run wall-clock is the parent
+    # process's monotonic delta, NOT the sum of per-file worker durations
+    # (those are reported per-file under ``files[i].elapsed_seconds`` and
+    # exceed parent wall-clock under ``--jobs N``).
+    envelope = None
     if all_stats:
-        # A spinner over the silent finalization (the per-worker shard
-        # concat into report.jsonl dominates on a large corpus); a no-op off
-        # a TTY. Runs after the progress block has exited, so no Live nesting.
-        artifacts = output_artifacts.write_clean_artifacts(args.out_dir, all_stats)
-
-    if args.report == "json":
-        # Issue #20: top-level versioned envelope; replaces the prior
-        # flat-array output. Run wall-clock is the parent process's
-        # monotonic delta, NOT the sum of per-file worker durations
-        # (those are reported per-file under ``files[i].elapsed_seconds``
-        # and exceed parent wall-clock under ``--jobs N``).
         run_elapsed = time.monotonic() - run_monotonic_start
         envelope = report.build_run_envelope(
             all_stats,
@@ -299,16 +322,27 @@ def _finalize_run(
             started_at=run_started_iso,
             elapsed_seconds=run_elapsed,
         )
+
+    # A `clean` run writes a Markdown run report, the machine-readable
+    # ``report.json`` (the byte-identical twin of the --report json stdout
+    # envelope), a corpus-wide NDJSON of NORAD IDs quarantined anywhere, and
+    # (issue #9) a corpus-wide ``report.jsonl`` of structured findings
+    # concatenated from the per-worker shards. All are always written on a
+    # successful clean run — empty when nothing was quarantined — so downstream
+    # consumers see a stable artifact set. A spinner covers the silent
+    # finalization (the per-worker shard concat dominates on a large corpus); a
+    # no-op off a TTY, and after the progress block exits, so no Live nesting.
+    if all_stats:
+        output_artifacts.write_clean_artifacts(args.out_dir, all_stats, envelope)
+
+    if args.report == "json":
         print(json.dumps(envelope, indent=2))
-    else:
-        for stats in all_stats:
-            print(report.format_summary(stats))
-        if artifacts.report_path:
-            print(f"\nrun report: {artifacts.report_path}")
-        if artifacts.noradids_path:
-            print(f"broken NORAD IDs: {artifacts.noradids_path}")
-        if artifacts.findings_path:
-            print(f"findings: {artifacts.findings_path}")
+    elif envelope is not None:
+        # The human aggregate panel goes to stderr (styled ephemera), replacing
+        # the old per-file stdout dump; per-file detail lives in report.md. Off
+        # a TTY it degrades to a plain ASCII block. Text-mode stdout stays empty
+        # so a pipe sees nothing the report.json artifact doesn't already carry.
+        summary.render(envelope, console=term.stderr_console, command_label="clean")
 
     # A fully successful clean run leaves no resumable state behind. The
     # checkpoint and the findings shards (`.shards`) are both in-progress run
@@ -366,6 +400,12 @@ def main(argv=None):
             )
             return 2
         return 0
+
+    # `report` is a read-only render of a prior clean run's report.json — text
+    # renders the aggregate panel to stdout, json echoes the file verbatim.
+    # Shares none of the `clean` surface, so dispatch it before that logic.
+    if args.command == "report":
+        return summary.run(args.out_dir, args.report)
 
     # `args.path` is None when the user passed nothing — fall back to the
     # default source dir, and remember it so we can give a tailored error if
