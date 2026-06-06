@@ -8,7 +8,7 @@ each run's own ``report.md``. Output is a deterministic plain-text report: a
 corpus-level per-rule delta, then a per-file (per-basename) breakdown.
 
 The per-file breakdown is keyed by ``report.jsonl``'s ``file`` field, which is
-a basename (``pipeline.py``: ``os.path.basename``). That key is unambiguous
+a basename (``pipeline.py``: ``Path(src_path).name``). That key is unambiguous
 because ``clean`` accepts only a single positional input, so within any
 producible run each basename names exactly one file. A basename present in
 only one run, however,
@@ -21,7 +21,7 @@ module: depends only on ``diagnostics`` and is imported by ``cli``.
 import collections
 import dataclasses
 import json
-import os
+from pathlib import Path
 
 from lintle import term
 from lintle.diagnostics import RULES, RuleID
@@ -43,7 +43,7 @@ def iter_findings(run_dir):
     file, a malformed JSON line, a ``schema_version`` other than ``"1"``, or a
     line lacking ``rule_id`` — the diff refuses to count what it cannot
     interpret."""
-    path = os.path.join(run_dir, _FINDINGS_NAME)
+    path = Path(run_dir) / _FINDINGS_NAME
     try:
         with open(path, encoding="utf-8") as handle:
             for lineno, raw in enumerate(handle, 1):
