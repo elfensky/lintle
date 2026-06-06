@@ -85,7 +85,7 @@ src/lintle/
 ├── worker_pool.py  # process-pool dispatch, progress collection, per-file failure + checkpoint
 ├── process_control.py # worker SIGINT setup, fast pool termination, cancel/exit-code helpers
 ├── thresholds.py   # --max-quarantined parsing + quality-gate exit policy (pure)
-├── output_artifacts.py # end-of-clean-run report.md / broken-noradids.ndjson / report.jsonl
+├── output_artifacts.py # end-of-clean-run report.md / report.json / broken-noradids.ndjson / report.jsonl
 ├── pipeline.py    # streams a file in binary, pairs 1/2 lines into records, routes them
 ├── repair.py      # speculative fixes, each confirmed by tle.py before commit
 ├── report.py      # FileStats + dataclasses, the run summaries, the run report

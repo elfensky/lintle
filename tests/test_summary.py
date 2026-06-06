@@ -4,7 +4,7 @@ import io
 
 from rich.console import Console
 
-from lintle import summary
+from lintle import report, summary
 
 
 def _console(width, *, terminal):
@@ -143,6 +143,20 @@ class TestRun:
         rc = summary.run(str(tmp_path), "text")
         assert rc == 2
         assert "invalid report.json" in capsys.readouterr().err
+
+    def test_non_object_report_json_is_exit_2(self, tmp_path, capsys):
+        # Well-formed JSON that is not an object (null / array / scalar) must
+        # exit 2 with a clear message, not crash with an AttributeError.
+        for doc in ("null", "[]", "42", '"hi"'):
+            (tmp_path / "report.json").write_text(doc, encoding="utf-8")
+            rc = summary.run(str(tmp_path), "text")
+            assert rc == 2
+            assert "not a JSON object" in capsys.readouterr().err
+
+    def test_schema_constant_tracks_report_envelope_version(self):
+        # summary's accepted schema must track the writer's stamped version, or
+        # a future bump would make `lintle report` reject fresh report.json.
+        assert summary._SCHEMA == report._ENVELOPE_SCHEMA_VERSION
 
 
 class TestEdgeCases:
