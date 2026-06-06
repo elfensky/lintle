@@ -79,7 +79,7 @@ output shows failures.
 src/lintle/
 ├── __main__.py    # python -m lintle entry point
 ├── __init__.py    # __version__, stem() filename helper
-├── cli.py         # argparse, globbing, top-level clean/validate orchestration, exit codes
+├── cli.py         # argparse, globbing, top-level clean orchestration, exit codes
 ├── cli_progress.py # live multi-file progress display, file roster, status spinner (rich)
 ├── run_planning.py # clean-run preflight: disk-space guard, output scrub, resume classification, RunPlan
 ├── worker_pool.py  # process-pool dispatch, progress collection, per-file failure + checkpoint
@@ -88,7 +88,7 @@ src/lintle/
 ├── output_artifacts.py # end-of-clean-run report.md / broken-noradids.ndjson / report.jsonl
 ├── pipeline.py    # streams a file in binary, pairs 1/2 lines into records, routes them
 ├── repair.py      # speculative fixes, each confirmed by tle.py before commit
-├── report.py      # FileStats + dataclasses, the validate summaries, the run report
+├── report.py      # FileStats + dataclasses, the run summaries, the run report
 ├── report_aggregation.py # pure corpus aggregation: run totals + per-NORAD rollups for report.py
 ├── report_writers.py # structured-file writers: .broken.txt sidecar, report.jsonl findings, broken-noradids.ndjson, shard concat
 ├── resume.py      # single-run checkpoint for `clean --resume` (#56); run-stamp + output-size helpers
@@ -148,7 +148,6 @@ uv run pytest tests/test_tle.py::TestComputeChecksum   # A single test class
 uv run pytest --cov=lintle --cov-report=term-missing --cov-branch  # Tests + coverage
 uv run ruff check .                # Lint
 uv run ruff format --check .       # Format check
-uv run lintle validate          # Audit data/source/ (read-only)
 uv run lintle clean             # Clean data/source/ -> data/output/
 ```
 

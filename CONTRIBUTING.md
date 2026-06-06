@@ -42,7 +42,6 @@ chain green + a changelog note (for `0.x` deps the leftmost non-zero component i
 ## Running
 
 ```bash
-uv run lintle validate          # Read-only audit of data/source/
 uv run lintle clean             # Write cleaned output to data/output/
 ```
 

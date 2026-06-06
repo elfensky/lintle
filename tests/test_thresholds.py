@@ -98,10 +98,22 @@ class TestMaxQuarantinedThreshold:
 
         assert rc == 1
 
-    def test_max_quarantined_applies_to_validate_too(self, tmp_path, line1, line2):
+    def test_max_quarantined_at_threshold_passes(self, tmp_path, line1, line2):
         src = self._write_one_bad_record(tmp_path, line1, line2)
+        out = tmp_path / "out"
 
-        rc = cli.main(["validate", str(src), "--jobs", "1", "--max-quarantined", "1"])
+        rc = cli.main(
+            [
+                "clean",
+                str(src),
+                "--out-dir",
+                str(out),
+                "--jobs",
+                "1",
+                "--max-quarantined",
+                "1",
+            ]
+        )
 
         assert rc == 0
 
@@ -112,8 +124,10 @@ class TestMaxQuarantinedThreshold:
 
         rc = cli.main(
             [
-                "validate",
+                "clean",
                 str(src),
+                "--out-dir",
+                str(tmp_path / "out"),
                 "--jobs",
                 "1",
                 "--max-quarantined",
@@ -210,10 +224,22 @@ class TestMaxQuarantinedThreshold:
 
         assert rc == 0
 
-    def test_pct_applies_to_validate(self, tmp_path, line1, line2):
+    def test_pct_at_threshold_passes(self, tmp_path, line1, line2):
         src = self._write_n_good_and_one_bad(tmp_path, line1, line2, n_good=99)
+        out = tmp_path / "out"
 
-        rc = cli.main(["validate", str(src), "--jobs", "1", "--max-quarantined", "5%"])
+        rc = cli.main(
+            [
+                "clean",
+                str(src),
+                "--out-dir",
+                str(out),
+                "--jobs",
+                "1",
+                "--max-quarantined",
+                "5%",
+            ]
+        )
 
         assert rc == 0
 
@@ -221,7 +247,16 @@ class TestMaxQuarantinedThreshold:
         src = self._write_one_bad_record(tmp_path, line1, line2)
 
         rc = cli.main(
-            ["validate", str(src), "--jobs", "1", "--max-quarantined", "1.2.3%"]
+            [
+                "clean",
+                str(src),
+                "--out-dir",
+                str(tmp_path / "out"),
+                "--jobs",
+                "1",
+                "--max-quarantined",
+                "1.2.3%",
+            ]
         )
 
         assert rc == 2
@@ -231,7 +266,16 @@ class TestMaxQuarantinedThreshold:
         src = self._write_one_bad_record(tmp_path, line1, line2)
 
         rc = cli.main(
-            ["validate", str(src), "--jobs", "1", "--max-quarantined", "150%"]
+            [
+                "clean",
+                str(src),
+                "--out-dir",
+                str(tmp_path / "out"),
+                "--jobs",
+                "1",
+                "--max-quarantined",
+                "150%",
+            ]
         )
 
         assert rc == 2
