@@ -52,9 +52,6 @@ No build step is needed to run the tool.
 The console script is `lintle` (`python -m lintle …` is equivalent):
 
 ```bash
-# Audit only — report defects, write nothing
-uv run lintle validate [path]
-
 # Produce cleaned output + quarantine sidecars
 uv run lintle clean [path]
 
@@ -79,8 +76,8 @@ uv run lintle diff <run-a> <run-b>
 **Examples:**
 
 ```bash
-# Validate the whole corpus
-uv run lintle validate data/source
+# Clean the whole corpus
+uv run lintle clean data/source
 
 # Clean one file to a custom location
 uv run lintle clean data/source/tle2022.txt --out-dir data/output
@@ -116,8 +113,8 @@ pipe would swallow.
 This is the heart of the tool. The cleaner never applies a fix and hopes: it applies a
 candidate fix, re-runs the *full* validator, and commits **only if the result passes** — so
 the output cannot contain a wrong-but-valid-looking record. **One validator** (`tle.py`)
-defines what "perfect" means; `validate` reports against it and `clean` reuses the *exact
-same* definition.
+defines what "perfect" means; `clean` checks every candidate repair against it before
+committing — so correctness is structural, not assumed.
 
 **lintle never invents data.** The single sanctioned reconstruction is the column-69
 checksum — safe *only because* it is a deterministic mod-10 function of columns 1–68, so
@@ -172,7 +169,6 @@ tle2022.txt   8,412,066 records   8,412,064 clean   3 quarantined   (1 orphan, 1
 the parenthetical reports unpaired `orphan` lines and total physical `lines`. The invariant
 is `records + orphan == clean + quarantined`. Defects key by the stable `RuleID` registry
 (`TLE-CHK-001`, `TLE-PAIR-001`, …) so one identifier names a defect across every artifact.
-`validate` writes nothing — it only prints this summary and defect locations.
 
 Live progress during a long run is written to **stderr** (so it never pollutes the stdout
 summary or a `--report json` pipe): a size roster up front, per-file byte/record progress

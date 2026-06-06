@@ -51,8 +51,8 @@ class QuarantineEntry:
 class FileSample:
     """Immutable, per-file bounded sample of quarantined records (issue #19).
 
-    Produced by :meth:`QuarantineSink.finalize`; consumed by renderers
-    (:func:`format_quarantine_lines`, :func:`write_broken_file`). Frozen so
+    Produced by :meth:`QuarantineSink.finalize`; consumed by the
+    ``.broken.txt`` sidecar writer (``report_writers.write_broken_file``). Frozen so
     post-finalize consumers cannot accidentally mutate the sample — the
     per-rule cap invariant is locked in at construction time. ``cap``
     travels with the sample so renderers can surface truncation against
@@ -392,11 +392,10 @@ def format_diagnostic(diag: Diagnostic) -> str:
     Format: ``rule: <id>[ (<tier>)][ - col(s) <range>][ observed=...][
     expected=...][ - <note>]``. The bracketed pieces are emitted only when
     their underlying field is set. Shared low-level renderer: the
-    ``validate`` summary (:func:`format_quarantine_lines`) and the
-    ``.broken.txt`` sidecar (``report_writers._render_entry``) both consume
-    it, so it is a public name on this leaf module and ``report_writers``
-    imports it — keeping the dependency one-way, acyclic, and on an
-    intentional public surface.
+    ``.broken.txt`` sidecar (``report_writers._render_entry``) consumes it,
+    so it is a public name on this leaf module and ``report_writers`` imports
+    it — keeping the dependency one-way, acyclic, and on an intentional public
+    surface.
     """
     parts = [f"rule: {diag.rule_id.value}"]
     if diag.tier_attempted != RepairTier.NONE:
@@ -415,54 +414,6 @@ def format_diagnostic(diag: Diagnostic) -> str:
     if diag.note:
         return f"{head} - {diag.note}"
     return head
-
-
-def format_quarantine_lines(stats: FileStats) -> str:
-    """Render grouped quarantine exemplars for the ``validate`` summary.
-
-    Walks rule IDs in descending order of total occurrences from
-    ``stats.quarantine_counts`` and emits up to N exemplars per rule from
-    ``stats.quarantine_sample.buckets``, each rendered via
-    :func:`format_diagnostic` so column ranges / observed / expected /
-    tier survive into the operator view. Related diagnostics fold onto
-    indented continuation lines, identical to ``.broken.txt``. A
-    trailing ``...and X more`` appears under a rule when its bucket is
-    shorter than the rule total. A single noisy rule cannot hide rarer
-    defects (issue #21).
-
-    When the sink dropped entries for a rule (issue #46), the heading
-    switches from the simple ``(M):`` form to ``(N of M hits, K
-    dropped):`` so an operator sees the truncation at a glance, not
-    just through the trailing ``...and X more`` hint. Rules that fit
-    under cap keep the simple heading — the verbose form is reserved
-    for the case where it actually carries new information.
-    """
-    blocks = []
-    for rule_id, total in sorted(
-        stats.quarantine_counts.items(), key=lambda kv: (-kv[1], kv[0])
-    ):
-        bucket = stats.quarantine_sample.buckets.get(rule_id, ())
-        dropped = stats.quarantine_sample.dropped_count.get(rule_id, 0)
-        if dropped > 0:
-            heading = (
-                f"  {rule_id} ({len(bucket):,} of {total:,} hits, {dropped:,} dropped):"
-            )
-        else:
-            heading = f"  {rule_id} ({total:,}):"
-        lines = [heading]
-        for entry in bucket:
-            if len(entry.source_lines) == 2:
-                location = f"{entry.source_lines[0]}-{entry.source_lines[1]}"
-            else:
-                location = str(entry.source_lines[0])
-            lines.append(f"    line {location}: {format_diagnostic(entry.primary)}")
-            for extra in entry.related:
-                lines.append(f"      and: {format_diagnostic(extra)}")
-        remaining = total - len(bucket)
-        if remaining > 0:
-            lines.append(f"    ...and {remaining:,} more")
-        blocks.append("\n".join(lines))
-    return "\n".join(blocks)
 
 
 # How many filenames to enumerate before collapsing the trailing tail into

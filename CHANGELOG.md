@@ -6,6 +6,13 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Removed
+
+- The `lintle validate` subcommand (read-only audit mode) has been removed from the CLI.
+  Use `lintle clean`; its `report.md`, `report.jsonl`, and `--report json` envelope cover
+  all audit needs that `validate` previously addressed. The validator definition (`tle.py`)
+  and the streaming pipeline are unchanged — this was a CLI-surface removal only.
+
 ## [0.4.1] - 2026-05-31
 
 ### Added

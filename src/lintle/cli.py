@@ -1,4 +1,4 @@
-"""Command-line interface: ``lintle validate``, ``lintle clean``, ``lintle diff``."""
+"""Command-line interface: ``lintle clean``, ``lintle diff``, ``lintle explain``."""
 
 import argparse
 import contextlib
@@ -30,12 +30,11 @@ _DEFAULT_OUTPUT = "data/output"
 
 _EPILOG = """\
 Examples:
-  lintle validate                         audit data/source/ (read-only)
   lintle clean                            clean data/source/ -> data/output/
-  lintle validate file.txt                audit a single file
+  lintle clean file.txt                   clean a single file
   lintle clean data/raw --jobs 4          clean with 4 parallel workers
   lintle clean data/raw --out-dir build   write to a custom location
-  lintle validate --report json           emit a machine-readable summary
+  lintle clean --report json              emit a machine-readable summary
   lintle diff run-a/ run-b/               compare two runs' findings
 
 Exit codes:
@@ -100,98 +99,83 @@ def check_paths(path, using_default):
     return f"no such file or directory: {path!r}"
 
 
-def _add_processing_subparsers(subparsers):
-    """Add the ``validate`` and ``clean`` subparsers, which share an argument
-    surface (path, --out-dir, --jobs, --report, --max-quarantined); ``clean``
-    additionally gets the mutually-exclusive --resume/--no-resume group."""
-    for name, help_text, description in (
-        (
-            "validate",
-            "audit files and report defects (writes nothing)",
-            "Audit TLE files against the spec and report every defect "
-            "(checksum mismatches, wrong length, orphan lines, etc.) "
-            "without modifying anything.",
-        ),
-        (
-            "clean",
-            "write cleaned files and quarantine sidecars",
+def _add_clean_subparser(subparsers):
+    """Add the ``clean`` subparser (path, --out-dir, --jobs, --report,
+    --max-quarantined) plus its mutually-exclusive --resume/--no-resume group."""
+    sub = subparsers.add_parser(
+        "clean",
+        help="write cleaned files and quarantine sidecars",
+        description=(
             "Apply validated repairs and write cleaned files plus a per-file "
-            "quarantine sidecar to --out-dir; emit a corpus-wide report.md.",
+            "quarantine sidecar to --out-dir; emit a corpus-wide report.md."
         ),
-    ):
-        sub = subparsers.add_parser(
-            name,
-            help=help_text,
-            description=description,
-            epilog=_EPILOG,
-            formatter_class=argparse.RawDescriptionHelpFormatter,
-        )
-        sub.add_argument(
-            "path",
-            nargs="?",
-            default=None,
-            metavar="PATH",
-            help=(
-                f"file or directory to process "
-                f"(default: {_DEFAULT_SOURCE}). "
-                "A directory is globbed for tle*.txt."
-            ),
-        )
-        sub.add_argument(
-            "--out-dir",
-            default=_DEFAULT_OUTPUT,
-            metavar="DIR",
-            help=f"destination for cleaned/broken files (default: {_DEFAULT_OUTPUT})",
-        )
-        sub.add_argument(
-            "--jobs",
-            type=int,
-            default=None,
-            metavar="N",
-            help=(
-                "files processed in parallel "
-                "(default: CPU count - 1, capped at file count)"
-            ),
-        )
-        sub.add_argument(
-            "--report",
-            choices=["text", "json"],
-            default="text",
-            help="summary output format (default: text)",
-        )
-        sub.add_argument(
-            "--max-quarantined",
-            default="0",
-            metavar="N[%]",
-            help=(
-                "exit non-zero only if MORE than N records were quarantined; "
-                "or, with a trailing `%%`, more than N%% of routed records "
-                "(default: 0 — any quarantine fails)"
-            ),
-        )
-        if name == "clean":
-            resume_group = sub.add_mutually_exclusive_group()
-            resume_group.add_argument(
-                "--resume",
-                action="store_true",
-                help=(
-                    "resume an interrupted run in --out-dir without prompting "
-                    "(resume is the default when an interrupted run is found)"
-                ),
-            )
-            resume_group.add_argument(
-                "--no-resume",
-                action="store_true",
-                help=(
-                    "ignore any interrupted run and start fresh, clearing prior "
-                    "outputs in --out-dir"
-                ),
-            )
+        epilog=_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    sub.add_argument(
+        "path",
+        nargs="?",
+        default=None,
+        metavar="PATH",
+        help=(
+            f"file or directory to process "
+            f"(default: {_DEFAULT_SOURCE}). "
+            "A directory is globbed for tle*.txt."
+        ),
+    )
+    sub.add_argument(
+        "--out-dir",
+        default=_DEFAULT_OUTPUT,
+        metavar="DIR",
+        help=f"destination for cleaned/broken files (default: {_DEFAULT_OUTPUT})",
+    )
+    sub.add_argument(
+        "--jobs",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "files processed in parallel (default: CPU count - 1, capped at file count)"
+        ),
+    )
+    sub.add_argument(
+        "--report",
+        choices=["text", "json"],
+        default="text",
+        help="summary output format (default: text)",
+    )
+    sub.add_argument(
+        "--max-quarantined",
+        default="0",
+        metavar="N[%]",
+        help=(
+            "exit non-zero only if MORE than N records were quarantined; "
+            "or, with a trailing `%%`, more than N%% of routed records "
+            "(default: 0 — any quarantine fails)"
+        ),
+    )
+    resume_group = sub.add_mutually_exclusive_group()
+    resume_group.add_argument(
+        "--resume",
+        action="store_true",
+        help=(
+            "resume an interrupted run in --out-dir without prompting "
+            "(resume is the default when an interrupted run is found)"
+        ),
+    )
+    resume_group.add_argument(
+        "--no-resume",
+        action="store_true",
+        help=(
+            "ignore any interrupted run and start fresh, clearing prior "
+            "outputs in --out-dir"
+        ),
+    )
 
 
 def _add_diff_subparser(subparsers):
     """Add the read-only ``diff`` subparser: two positional run directories, no
-    shared validate/clean option surface. It consumes each run's report.jsonl
+    shared ``clean`` option surface. It consumes each run's report.jsonl
     and writes nothing."""
     diff_parser = subparsers.add_parser(
         "diff",
@@ -254,10 +238,10 @@ def build_parser():
     subparsers = parser.add_subparsers(
         dest="command",
         required=True,
-        metavar="{validate,clean,diff,explain}",
+        metavar="{clean,diff,explain}",
         title="commands",
     )
-    _add_processing_subparsers(subparsers)
+    _add_clean_subparser(subparsers)
     _add_diff_subparser(subparsers)
     _add_explain_subparser(subparsers)
     return parser
@@ -286,7 +270,7 @@ def _finalize_run(
     """Finish a non-interrupted run: sort stats, write the clean-run artifacts,
     emit the text/JSON summary, tear down resumable state on success, and return
     the process exit code. Split out of :func:`main` so the orchestration there
-    stays at the level of phases (validate inputs -> plan -> dispatch -> finalize)."""
+    stays at the level of phases (check inputs -> plan -> dispatch -> finalize)."""
     all_stats.sort(key=lambda stats: stats.src_name)
 
     # A `clean` run writes a Markdown run report, a corpus-wide NDJSON of
@@ -296,7 +280,7 @@ def _finalize_run(
     # successful clean run — empty when nothing was quarantined — so
     # downstream consumers see a stable artifact set.
     artifacts = output_artifacts.CleanArtifacts()
-    if args.command == "clean" and all_stats:
+    if all_stats:
         # A spinner over the silent finalization (the per-worker shard
         # concat into report.jsonl dominates on a large corpus); a no-op off
         # a TTY. Runs after the progress block has exited, so no Live nesting.
@@ -319,8 +303,6 @@ def _finalize_run(
     else:
         for stats in all_stats:
             print(report.format_summary(stats))
-            if args.command == "validate" and stats.quarantine_sample.buckets:
-                print(report.format_quarantine_lines(stats))
         if artifacts.report_path:
             print(f"\nrun report: {artifacts.report_path}")
         if artifacts.noradids_path:
@@ -335,7 +317,7 @@ def _finalize_run(
     # too, so the operator can fix the cause and `--resume` re-reads the
     # surviving shards to rebuild a complete `report.jsonl` (issue #56). The
     # `report.jsonl` was written from those shards by the report block above.
-    if args.command == "clean" and not failed_files:
+    if not failed_files:
         resume.delete_checkpoint(args.out_dir)
         shard_dir = Path(args.out_dir) / ".shards"
         if shard_dir.exists():
@@ -366,8 +348,8 @@ def main(argv=None):
     args = build_parser().parse_args(argv)
 
     # `diff` is a read-only consumer of two report.jsonl files; it shares none
-    # of the validate/clean argument surface (paths, jobs, out-dir, threshold),
-    # so dispatch it before any of that logic runs.
+    # of the `clean` argument surface (paths, jobs, out-dir, threshold), so
+    # dispatch it before any of that logic runs.
     if args.command == "diff":
         return diff.run(args.run_a, args.run_b)
 
@@ -426,35 +408,29 @@ def main(argv=None):
     # by discovery so the roster lists files in a stable order.
     file_sizes = {p: Path(p).stat().st_size for p in files}
 
-    # ExitStack holds the out-dir lock for a clean run. Closed in the finally
+    # ExitStack holds the out-dir lock for the clean run. Closed in the finally
     # block below — so every exit path (LockHeldError aside, which returns
     # before entering the try, leaving the stack empty) releases the lock.
-    # For validate the stack stays empty and close() is a no-op.
     _lock_stack = contextlib.ExitStack()
 
-    if args.command == "clean":
-        Path(args.out_dir).mkdir(parents=True, exist_ok=True)
-        try:
-            _lock_stack.enter_context(
-                fsutil.out_dir_lock(args.out_dir, started=resume.run_started_stamp())
-            )
-        except fsutil.LockHeldError as exc:
-            # Stack is still empty — no lock to release.
-            term.error(str(exc))
-            return 2
+    Path(args.out_dir).mkdir(parents=True, exist_ok=True)
+    try:
+        _lock_stack.enter_context(
+            fsutil.out_dir_lock(args.out_dir, started=resume.run_started_stamp())
+        )
+    except fsutil.LockHeldError as exc:
+        # Stack is still empty — no lock to release.
+        term.error(str(exc))
+        return 2
 
     # The try/finally guarantees _lock_stack.close() runs on every exit path
     # that reaches here: disk-error return, ABORT return, interrupt return,
     # failed-files return, and normal success — so the lock file is always
-    # removed.  For validate the stack is empty; close() is a no-op.
+    # removed.
     try:
-        if args.command == "clean":
-            plan = run_planning.resolve_clean_plan(args, files, file_sizes)
-            if plan.exit_code is not None:
-                return plan.exit_code
-        else:
-            # validate processes every discovered file; no resume, no checkpoint.
-            plan = run_planning.RunPlan(files_to_process=files)
+        plan = run_planning.resolve_clean_plan(args, files, file_sizes)
+        if plan.exit_code is not None:
+            return plan.exit_code
         # Resolve the worker count now that files_to_process is final: an
         # explicit --jobs is honoured as-is; the default is CPU count - 1,
         # capped at the file count and floored at one (issue #53 §2.3).
@@ -466,10 +442,9 @@ def main(argv=None):
         # no pre-read of the corpus.
         console = term.stderr_console
         sizes = {Path(p).name: file_sizes[p] for p in plan.files_to_process}
-        if args.command == "clean":
-            cli_progress.render_roster(
-                console, {p: file_sizes[p] for p in plan.files_to_process}
-            )
+        cli_progress.render_roster(
+            console, {p: file_sizes[p] for p in plan.files_to_process}
+        )
 
         if not plan.reused_stats:
             term.note(

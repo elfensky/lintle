@@ -21,11 +21,9 @@ orbital-mechanics library can ingest directly. Records it cannot *safely* repair
 **quarantined** — never silently mangled — into a per-file sidecar detailed enough to file a
 defect report with space-track.
 
-**One validator, used two ways.** A single module (`tle.py`) defines what a "perfect" TLE
-record is — column layout, semantic ranges, the mod-10 checksum, and line pairing. The
-`validate` command reports defects against that definition and writes nothing; the `clean`
-command reuses the *exact same* validator and emits only records that pass it. There is no
-second "perfect."
+**One validator.** A single module (`tle.py`) defines what a "perfect" TLE record is —
+column layout, semantic ranges, the mod-10 checksum, and line pairing. The `clean` command
+reuses that definition to emit only records that pass it. There is no second "perfect."
 
 These four principles are the reason the design exists. An implementation that breaks one is
 wrong, not merely suboptimal.
@@ -79,7 +77,7 @@ diagnostics.py, categories.py, explain_examples.py    pure-data leaves (no I/O)
 | `tle.py` | The validator: column layout, mod-10 checksum, semantic ranges, record pairing. The single definition of "perfect." Pure functions, no I/O. |
 | `repair.py` | Speculative fixes, each confirmed by `tle.py` before commit; the `Accepted` / `Quarantined` record outcomes. Pure functions. |
 | `pipeline.py` | Streams a file in binary, pairs `1 `/`2 ` lines into records, routes each to clean output or quarantine. Owns the per-file `process_file` worker entry. |
-| `report.py` | `FileStats` and its sibling dataclasses, the `validate` summary renderers, the `summary_dict` / `build_run_envelope` JSON shapes, and the Markdown `report.md` writer. |
+| `report.py` | `FileStats` and its sibling dataclasses, the per-file summary renderer, the `summary_dict` / `build_run_envelope` JSON shapes, and the Markdown `report.md` writer. |
 | `report_aggregation.py` | Pure corpus aggregation helpers for run totals and per-NORAD rollups consumed by `report.py`. |
 | `report_writers.py` | Structured-file writers leaf: the `.broken.txt` sidecar (`BrokenFileWriter`), the `report.jsonl` findings shards (`JsonlFindingsWriter`), the `QuarantineSink` (bounded sample + streaming), `broken-noradids.ndjson`, and shard concatenation. Imports `report.py` one-way. |
 | `output_artifacts.py` | End-of-clean-run finalization for `report.md`, `broken-noradids.ndjson`, and corpus-wide `report.jsonl`. |
@@ -95,8 +93,8 @@ diagnostics.py, categories.py, explain_examples.py    pure-data leaves (no I/O)
 | `thresholds.py` | Pure `--max-quarantined` parsing and quarantine-threshold exit-code policy. |
 | `process_control.py` | Signal/worker shutdown helpers (SIGINT setup, fast pool termination, cancel/exit-code) used by `cli.py` and `worker_pool.py`. |
 | `term.py` | The single stderr `rich` Console, the `error:` / `warning:` / `note` / `prompt` emitters, and the `is_interactive` / `prompt_yes_no` stdin helpers. |
-| `cli.py` | argparse, globbing, and top-level `clean`/`validate` orchestration: delegates preflight to `run_planning`, dispatch to `worker_pool`, signal/shutdown to `process_control`, the quality-gate exit policy to `thresholds`, and run finalization to `output_artifacts`; owns the resulting process exit code. |
-| `cli_progress.py` | Rich presentation leaf for `clean`/`validate`: the live `ProgressDisplay`, the pre-run `render_roster`, and the `status` spinner. Consumes `pipeline`'s typed progress messages. |
+| `cli.py` | argparse, globbing, and top-level `clean` orchestration: delegates preflight to `run_planning`, dispatch to `worker_pool`, signal/shutdown to `process_control`, the quality-gate exit policy to `thresholds`, and run finalization to `output_artifacts`; owns the resulting process exit code. |
+| `cli_progress.py` | Rich presentation leaf for `clean`: the live `ProgressDisplay`, the pre-run `render_roster`, and the `status` spinner. Consumes `pipeline`'s typed progress messages. |
 
 `tle.py` and the data leaves carry no I/O. `report_writers.py` depends on `report.py` (never
 the reverse), so the structured writers and the renderers stay acyclic.
@@ -348,7 +346,7 @@ fields stays under `"2"`; renaming or removing one bumps the major — which is 
 | Field | Type | Notes |
 |---|---|---|
 | `schema_version` | string | exactly `"2"` in this release |
-| `run.command` | string | `"validate"` or `"clean"` |
+| `run.command` | string | `"clean"` (the only CLI-emitted run command) |
 | `run.timestamp` | string | ISO 8601 UTC, suffix `Z` |
 | `run.elapsed_seconds` | float | parent-process wall-clock; `>= 0` |
 | `environment.tool_version` | string | `lintle.__version__` |
