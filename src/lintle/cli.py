@@ -307,21 +307,22 @@ def _finalize_run(
     stays at the level of phases (check inputs -> plan -> dispatch -> finalize)."""
     all_stats.sort(key=lambda stats: stats.src_name)
 
-    # Build the run envelope once, here: it is BOTH persisted to report.json
-    # AND (under --report json) printed to stdout — one object, no divergence.
+    # Build the run envelope once, unconditionally — even an all-failed run
+    # (empty all_stats) must emit a valid versioned object under --report json,
+    # never ``null`` (``build_run_envelope([])`` returns a zeroed envelope). The
+    # same object is persisted to report.json (when there are stats) and printed
+    # to stdout under --report json — one object, no divergence.
     # Issue #20: top-level versioned envelope. Run wall-clock is the parent
     # process's monotonic delta, NOT the sum of per-file worker durations
     # (those are reported per-file under ``files[i].elapsed_seconds`` and
     # exceed parent wall-clock under ``--jobs N``).
-    envelope = None
-    if all_stats:
-        run_elapsed = time.monotonic() - run_monotonic_start
-        envelope = report.build_run_envelope(
-            all_stats,
-            command=args.command,
-            started_at=run_started_iso,
-            elapsed_seconds=run_elapsed,
-        )
+    run_elapsed = time.monotonic() - run_monotonic_start
+    envelope = report.build_run_envelope(
+        all_stats,
+        command=args.command,
+        started_at=run_started_iso,
+        elapsed_seconds=run_elapsed,
+    )
 
     # A `clean` run writes a Markdown run report, the machine-readable
     # ``report.json`` (the byte-identical twin of the --report json stdout
@@ -337,7 +338,7 @@ def _finalize_run(
 
     if args.report == "json":
         print(json.dumps(envelope, indent=2))
-    elif envelope is not None:
+    elif all_stats:
         # The human aggregate panel goes to stderr (styled ephemera), replacing
         # the old per-file stdout dump; per-file detail lives in report.md. Off
         # a TTY it degrades to a plain ASCII block. Text-mode stdout stays empty

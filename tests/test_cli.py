@@ -304,6 +304,66 @@ class TestMain:
 
         assert rc == 2
 
+    def test_all_files_fail_report_json_emits_valid_envelope_not_null(
+        self, tmp_path, line1, line2, monkeypatch, capsys
+    ):
+        # Every dispatched file fails → empty all_stats and exit 2, but
+        # --report json must still emit a valid versioned envelope to stdout,
+        # never the literal ``null`` (the structured-output contract holds even
+        # on an error run).
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "tle2099.txt").write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
+
+        class _RaisingFuture:
+            def result(self):
+                raise RuntimeError("worker boom")
+
+        class _FakeExecutor:
+            def __init__(self, *_args, **_kwargs):
+                self._processes = {}
+                self._f = _RaisingFuture()
+
+            def submit(self, fn, *args, **kwargs):
+                return self._f
+
+            def shutdown(self, **_kwargs):
+                pass
+
+        monkeypatch.setattr(
+            worker_pool.concurrent.futures,
+            "ProcessPoolExecutor",
+            lambda *a, **k: _FakeExecutor(),
+        )
+        monkeypatch.setattr(
+            worker_pool.concurrent.futures,
+            "as_completed",
+            lambda futures: iter([next(iter(futures))]),
+        )
+
+        original_sigint = signal.getsignal(signal.SIGINT)
+        try:
+            rc = cli.main(
+                [
+                    "clean",
+                    str(src),
+                    "--out-dir",
+                    str(tmp_path / "out"),
+                    "--jobs",
+                    "1",
+                    "--report",
+                    "json",
+                ]
+            )
+        finally:
+            signal.signal(signal.SIGINT, original_sigint)
+
+        assert rc == 2
+        envelope = json.loads(capsys.readouterr().out)
+        assert isinstance(envelope, dict)
+        assert envelope["schema_version"] == "2"
+        assert envelope["summary"]["files_processed"] == 0
+
     def test_main_friendly_error_when_default_source_missing(
         self, tmp_path, monkeypatch, capsys
     ):

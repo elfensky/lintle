@@ -159,7 +159,7 @@ def render(envelope, *, console, command_label="clean"):
     """Render the run envelope as a responsive aggregate panel to ``console``."""
     run = envelope["run"]
     s = envelope["summary"]
-    unicode_ok = _can_encode(console.encoding, "█─→")
+    unicode_ok = _can_encode(console.encoding, "█─·")
     tier = _pick_tier(
         is_terminal=console.is_terminal, width=console.width, unicode_ok=unicode_ok
     )
@@ -186,6 +186,9 @@ def run(out_dir, fmt):
         envelope = json.loads(raw)
     except json.JSONDecodeError as exc:
         term.error(f"{path}: invalid report.json ({exc})")
+        return 2
+    if not isinstance(envelope, dict):
+        term.error(f"{path}: invalid report.json (not a JSON object)")
         return 2
     if envelope.get("schema_version") != _SCHEMA:
         term.error(

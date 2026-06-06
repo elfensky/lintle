@@ -78,7 +78,7 @@ diagnostics.py, categories.py, explain_examples.py    pure-data leaves (no I/O)
 | `tle.py` | The validator: column layout, mod-10 checksum, semantic ranges, record pairing. The single definition of "perfect." Pure functions, no I/O. |
 | `repair.py` | Speculative fixes, each confirmed by `tle.py` before commit; the `Accepted` / `Quarantined` record outcomes. Pure functions. |
 | `pipeline.py` | Streams a file in binary, pairs `1 `/`2 ` lines into records, routes each to clean output or quarantine. Owns the per-file `process_file` worker entry. |
-| `report.py` | `FileStats` and its sibling dataclasses, the per-file summary renderer, the `summary_dict` / `build_run_envelope` JSON shapes, and the Markdown `report.md` / JSON `report.json` writers (`write_run_json` is the byte-identical twin of the `--report json` stdout envelope). |
+| `report.py` | `FileStats` and its sibling dataclasses, the `summary_dict` / `build_run_envelope` JSON shapes, and the Markdown `report.md` / JSON `report.json` writers (`write_run_json` is the byte-identical twin of the `--report json` stdout envelope). |
 | `report_aggregation.py` | Pure corpus aggregation helpers for run totals and per-NORAD rollups consumed by `report.py`. |
 | `report_writers.py` | Structured-file writers leaf: the `.broken.txt` sidecar (`BrokenFileWriter`), the `report.jsonl` findings shards (`JsonlFindingsWriter`), the `QuarantineSink` (bounded sample + streaming), `broken-noradids.ndjson`, and shard concatenation. Imports `report.py` one-way. |
 | `output_artifacts.py` | End-of-clean-run finalization for `report.md`, the machine-readable `report.json`, `broken-noradids.ndjson`, and corpus-wide `report.jsonl` — all committed in one place. |

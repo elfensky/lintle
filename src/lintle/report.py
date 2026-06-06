@@ -1,5 +1,5 @@
-"""Per-file statistics dataclasses (``FileStats`` et al.), the per-file
-summary renderer, the run envelope, and the Markdown / JSON run-report writers."""
+"""Per-file statistics dataclasses (``FileStats`` et al.), the ``summary_dict``
+and ``build_run_envelope`` JSON shapes, and the Markdown / JSON run-report writers."""
 
 import dataclasses
 import datetime
