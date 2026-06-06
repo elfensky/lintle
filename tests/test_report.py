@@ -7,7 +7,7 @@ import re
 
 import pytest
 
-from lintle import report, report_writers
+from lintle import report, report_aggregation, report_writers
 from lintle.categories import FixClass
 from lintle.diagnostics import RepairTier, RuleID, diagnostic
 
@@ -2137,11 +2137,11 @@ class TestBuildRunEnvelope:
 
     def test_summary_aggregates_match_aggregate_helper(self):
         # The summary block IS the corpus-wide aggregate; if these
-        # diverge from _aggregate() then two surfaces of the same data
-        # have drifted, which the issue explicitly warns against.
+        # diverge from report_aggregation.aggregate() then two surfaces of the
+        # same data have drifted, which the issue explicitly warns against.
         stats_list = _two_file_stats()
         env = self._envelope(all_stats=stats_list)
-        totals = report._aggregate(stats_list)
+        totals = report_aggregation.aggregate(stats_list)
         assert env["summary"]["paired_records"] == totals.paired
         assert env["summary"]["orphan_entries"] == totals.orphans
         assert env["summary"]["input_lines_seen"] == totals.lines_seen

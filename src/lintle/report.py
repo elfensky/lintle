@@ -350,7 +350,7 @@ def build_run_envelope(
     ``all_stats``, preserving order so consumers see deterministic file
     ordering matching ``report.md``.
     """
-    totals = _aggregate(all_stats)
+    totals = report_aggregation.aggregate(all_stats)
     paired = totals.paired
     orphans = totals.orphans
     lines_seen = totals.lines_seen
@@ -465,11 +465,6 @@ def format_quarantine_lines(stats: FileStats) -> str:
     return "\n".join(blocks)
 
 
-def _aggregate(all_stats):
-    """Compatibility wrapper for corpus-wide totals aggregation."""
-    return report_aggregation.aggregate(all_stats)
-
-
 # How many filenames to enumerate before collapsing the trailing tail into
 # a "+N more" suffix in the per-NORAD breakdown's Files column. Keeps the
 # cell width bounded for satellites quarantined across many source files
@@ -477,13 +472,6 @@ def _aggregate(all_stats):
 # for a given NORAD can be recovered by grepping the per-file ``.broken.txt``
 # sidecars (``broken-noradids.ndjson`` carries only catalog IDs).
 _PER_NORAD_FILES_PREVIEW = 5
-
-
-def _format_per_norad_section(all_stats, top_n):
-    """Compatibility wrapper for the per-NORAD Markdown section."""
-    return report_aggregation.format_per_norad_section(
-        all_stats, top_n, files_preview=_PER_NORAD_FILES_PREVIEW
-    )
 
 
 def format_run_report(all_stats: list[FileStats], top_n: int | None = 100) -> str:
@@ -501,7 +489,7 @@ def format_run_report(all_stats: list[FileStats], top_n: int | None = 100) -> st
     present.
     """
     timestamp = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    totals = _aggregate(all_stats)
+    totals = report_aggregation.aggregate(all_stats)
     paired = totals.paired
     orphans = totals.orphans
     lines_seen = totals.lines_seen
@@ -578,7 +566,9 @@ def format_run_report(all_stats: list[FileStats], top_n: int | None = 100) -> st
             else:
                 lines.append(f"- `{key}` — {spec.short_title}")
 
-    lines += _format_per_norad_section(all_stats, top_n=top_n)
+    lines += report_aggregation.format_per_norad_section(
+        all_stats, top_n, files_preview=_PER_NORAD_FILES_PREVIEW
+    )
     lines.append("")
     return "\n".join(lines)
 
