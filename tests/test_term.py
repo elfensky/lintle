@@ -113,3 +113,14 @@ class TestPromptYesNo:
     def test_garbage_then_abort(self, monkeypatch):
         monkeypatch.setattr(term.sys, "stdin", io.StringIO("maybe\nhuh\nwhat\n"))
         assert term.prompt_yes_no("go? ", default=True) is None
+
+
+class TestConsoles:
+    """Structural checks on the two shared Console instances: status/errors on
+    stderr, the ``report`` result view on stdout."""
+
+    def test_stdout_console_targets_stdout(self):
+        assert term.stdout_console.stderr is False
+
+    def test_stderr_console_targets_stderr(self):
+        assert term.stderr_console.stderr is True
