@@ -112,17 +112,17 @@ class NoradTracker:
     a single named entry point future writers can grep for instead of
     reinventing the ``setdefault``/``+1`` dance. The read surface is the
     public ``counts`` dict by deliberate choice: production consumers
-    (``summary_dict``, ``_aggregate_per_norad``, ``aggregate_broken_norad_ids``)
-    each want different access shapes (``.items()``, key iteration,
-    value-clone) and a proxy-method API would add surface tax with no
-    encapsulation gain.
+    (``summary_dict``, ``report_aggregation.aggregate_per_norad``,
+    ``aggregate_broken_norad_ids``) each want different access shapes
+    (``.items()``, key iteration, value-clone) and a proxy-method API would
+    add surface tax with no encapsulation gain.
 
     Bounded by the satellite catalog and the ``RuleID`` enum — never
     "full", no drops, no cap. Mutable through its life; no freeze
-    boundary. No ``merge`` method — corpus rollup stays a free
-    function in :func:`_aggregate_per_norad` so the per-NORAD data
-    shape stays free to evolve (timestamps, provenance) without
-    breaking a monoid contract.
+    boundary. No ``merge`` method — corpus rollup stays a free function in
+    :func:`report_aggregation.aggregate_per_norad` so the per-NORAD data shape
+    stays free to evolve (timestamps, provenance) without breaking a monoid
+    contract.
     """
 
     counts: dict[int, dict[RuleID, int]] = dataclasses.field(default_factory=dict)
@@ -465,9 +465,6 @@ def format_quarantine_lines(stats: FileStats) -> str:
     return "\n".join(blocks)
 
 
-_Totals = report_aggregation.Totals
-
-
 def _aggregate(all_stats):
     """Compatibility wrapper for corpus-wide totals aggregation."""
     return report_aggregation.aggregate(all_stats)
@@ -480,23 +477,6 @@ def _aggregate(all_stats):
 # for a given NORAD can be recovered by grepping the per-file ``.broken.txt``
 # sidecars (``broken-noradids.ndjson`` carries only catalog IDs).
 _PER_NORAD_FILES_PREVIEW = 5
-
-
-def _aggregate_per_norad(all_stats):
-    """Compatibility wrapper for corpus-wide per-NORAD aggregation."""
-    return report_aggregation.aggregate_per_norad(all_stats)
-
-
-def _format_per_norad_rules(rule_counts):
-    """Compatibility wrapper for per-NORAD rule text."""
-    return report_aggregation.format_per_norad_rules(rule_counts)
-
-
-def _format_per_norad_files(files):
-    """Compatibility wrapper for bounded per-NORAD filenames."""
-    return report_aggregation.format_per_norad_files(
-        files, preview_count=_PER_NORAD_FILES_PREVIEW
-    )
 
 
 def _format_per_norad_section(all_stats, top_n):
