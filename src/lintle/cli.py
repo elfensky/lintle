@@ -1,15 +1,11 @@
 """Command-line interface: ``lintle validate``, ``lintle clean``, ``lintle diff``."""
 
 import argparse
-import concurrent.futures
 import contextlib
 import datetime
 import json
-import multiprocessing
 import os
 import shutil
-import signal
-import sys
 import time
 
 from lintle import (
@@ -23,7 +19,6 @@ from lintle import (
     report,
     resume,
     run_planning,
-    stem,
     term,
     thresholds,
     worker_pool,
@@ -254,99 +249,6 @@ def build_parser():
     return parser
 
 
-def _is_interactive():
-    """A run is interactive iff stdin is a TTY (the prompt answer is read there)
-    and no CI/NONINTERACTIVE env var forces non-interactive — which prevents a
-    CI runner that allocates a pseudo-TTY from hanging on the prompt (spec §2.2)."""
-    if os.environ.get("CI") or os.environ.get("NONINTERACTIVE"):
-        return False
-    try:
-        return sys.stdin.isatty()
-    except AttributeError, ValueError:
-        return False
-
-
-def _prompt_yes_no(message, *, default):
-    """Ask a y/n question on stderr, reading the answer from stdin (spec §2.4).
-    Enter takes ``default``; up to 3 unrecognised answers then give up; EOF/Ctrl-D
-    gives up. Returns True/False, or None when the operator gave no usable answer
-    (caller treats None as abort)."""
-    for _ in range(3):
-        term.prompt(message)
-        line = sys.stdin.readline()
-        if line == "":  # EOF / Ctrl-D
-            term.note("")  # close the prompt line the operator never finished
-            return None
-        token = line.strip().lower()
-        if token == "":
-            return default
-        if token in ("y", "yes"):
-            return True
-        if token in ("n", "no"):
-            return False
-        term.note("  please answer y or n.")
-    return None
-
-
-def _check_disk_space(out_dir, input_bytes):
-    """Return a ``(term.Severity, message)`` tuple when ``out_dir``'s free
-    space is at or near the 2× input-size guard, else ``None``.
-    ``term.Severity.ERROR`` when free is below 2× input (caller aborts with exit
-    2); ``term.Severity.WARNING`` when free sits in the borderline band 2× to
-    2.5× (caller proceeds but
-    surfaces the warning so the user knows they're cutting it close). Cleaned +
-    broken output is ~1× input; the 2× guard leaves transient headroom for
-    ``.partial`` files coexisting with their final renames mid-run.
-    ``input_bytes`` is the total source size, stat'd once by the caller and
-    shared with the roster and byte-bar denominators.
-    """
-    needed = input_bytes * 2
-    free = shutil.disk_usage(out_dir).free
-    if free < needed:
-        return (
-            term.Severity.ERROR,
-            f"insufficient disk space in {out_dir}: "
-            f"need ~{needed:,} bytes, have {free:,}",
-        )
-    if free < int(needed * 1.25):
-        return (
-            term.Severity.WARNING,
-            f"free space in {out_dir} is close to the 2× safety guard: "
-            f"{free:,} bytes free of ~{needed:,} recommended; "
-            f"the run will proceed but may exhaust the disk",
-        )
-    return None
-
-
-def _scrub_outputs(out_dir):
-    """Clear the cleaned/, broken/, and .shards/ trees so a fresh run starts from
-    a clean slate and never leaves orphaned outputs from a prior, differently
-    scoped input set (spec §3.4). Idempotent — missing trees are ignored."""
-    for sub in ("cleaned", "broken", ".shards"):
-        shutil.rmtree(os.path.join(out_dir, sub), ignore_errors=True)
-
-
-def _run_started_stamp():
-    """ISO-8601 UTC timestamp for archive/lock naming. Isolated so the rest of the
-    resume logic stays clock-free and testable."""
-    return datetime.datetime.now(datetime.UTC).strftime("%Y%m%dT%H%M%SZ")
-
-
-def _output_sizes(out_dir, stats):
-    """Map each output basename this file produced to its on-disk size, captured
-    at completion for the resume integrity check (spec §3.6). The broken sidecar
-    is present only when something was quarantined."""
-    sizes = {}
-    cleaned = stem(stats.src_name) + ".cleaned.txt"
-    with contextlib.suppress(OSError):
-        sizes[cleaned] = os.path.getsize(os.path.join(out_dir, "cleaned", cleaned))
-    if stats.quarantined_count:
-        broken = stem(stats.src_name) + ".broken.txt"
-        with contextlib.suppress(OSError):
-            sizes[broken] = os.path.getsize(os.path.join(out_dir, "broken", broken))
-    return sizes
-
-
 def resolve_jobs(explicit, cpu_count, n_files):
     """Resolve the worker count for a run. An explicit ``--jobs`` is the user's
     deliberate choice and is returned unchanged; otherwise default to one fewer
@@ -355,39 +257,6 @@ def resolve_jobs(explicit, cpu_count, n_files):
     if explicit is not None:
         return explicit
     return max(1, min((cpu_count or 1) - 1, n_files))
-
-
-def _resolve_clean_plan(args, files, file_sizes):
-    """Compatibility wrapper for clean-run preflight planning."""
-    return run_planning.resolve_clean_plan(
-        args,
-        files,
-        file_sizes,
-        check_disk_space=_check_disk_space,
-        is_interactive=_is_interactive,
-        prompt_yes_no=_prompt_yes_no,
-        run_started_stamp=_run_started_stamp,
-        scrub_outputs=_scrub_outputs,
-    )
-
-
-def _run_workers(args, files, plan, jobs, console, sizes):
-    """Compatibility wrapper for process-pool dispatch."""
-    return worker_pool.run_workers(
-        args,
-        files,
-        plan,
-        jobs,
-        console,
-        sizes,
-        futures_module=concurrent.futures,
-        multiprocessing_module=multiprocessing,
-        signal_module=signal,
-        ignore_sigint=process_control.ignore_sigint,
-        terminate_workers=process_control.terminate_workers,
-        format_cancel_message=process_control.format_cancel_message,
-        output_sizes=_output_sizes,
-    )
 
 
 def main(argv=None):
@@ -475,7 +344,7 @@ def main(argv=None):
         os.makedirs(args.out_dir, exist_ok=True)
         try:
             _lock_stack.enter_context(
-                fsutil.out_dir_lock(args.out_dir, started=_run_started_stamp())
+                fsutil.out_dir_lock(args.out_dir, started=resume.run_started_stamp())
             )
         except fsutil.LockHeldError as exc:
             # Stack is still empty — no lock to release.
@@ -488,7 +357,7 @@ def main(argv=None):
     # removed.  For validate the stack is empty; close() is a no-op.
     try:
         if args.command == "clean":
-            plan = _resolve_clean_plan(args, files, file_sizes)
+            plan = run_planning.resolve_clean_plan(args, files, file_sizes)
             if plan.exit_code is not None:
                 return plan.exit_code
         else:
@@ -528,8 +397,8 @@ def main(argv=None):
         )
         run_monotonic_start = time.monotonic()
 
-        all_stats, failed_files, interrupted, interrupted_signo = _run_workers(
-            args, files, plan, jobs, console, sizes
+        all_stats, failed_files, interrupted, interrupted_signo = (
+            worker_pool.run_workers(args, files, plan, jobs, console, sizes)
         )
 
         if interrupted:

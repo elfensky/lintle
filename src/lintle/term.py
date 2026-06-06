@@ -11,6 +11,8 @@ so a replaced stream (tests, redirection) is honoured at print time.
 """
 
 import enum
+import os
+import sys
 
 from rich.console import Console
 from rich.text import Text
@@ -67,3 +69,37 @@ def prompt(message):
     channel consistency."""
     stderr_console.print(Text(message), end="", soft_wrap=True, highlight=False)
     stderr_console.file.flush()
+
+
+def is_interactive():
+    """A run is interactive iff stdin is a TTY (the prompt answer is read there)
+    and no CI/NONINTERACTIVE env var forces non-interactive — which prevents a
+    CI runner that allocates a pseudo-TTY from hanging on the prompt (spec §2.2)."""
+    if os.environ.get("CI") or os.environ.get("NONINTERACTIVE"):
+        return False
+    try:
+        return sys.stdin.isatty()
+    except AttributeError, ValueError:
+        return False
+
+
+def prompt_yes_no(message, *, default):
+    """Ask a y/n question on stderr, reading the answer from stdin (spec §2.4).
+    Enter takes ``default``; up to 3 unrecognised answers then give up; EOF/Ctrl-D
+    gives up. Returns True/False, or None when the operator gave no usable answer
+    (caller treats None as abort)."""
+    for _ in range(3):
+        prompt(message)
+        line = sys.stdin.readline()
+        if line == "":  # EOF / Ctrl-D
+            note("")  # close the prompt line the operator never finished
+            return None
+        token = line.strip().lower()
+        if token == "":
+            return default
+        if token in ("y", "yes"):
+            return True
+        if token in ("n", "no"):
+            return False
+        note("  please answer y or n.")
+    return None

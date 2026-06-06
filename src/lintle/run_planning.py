@@ -1,6 +1,8 @@
 """Clean-run preflight planning and resume resolution."""
 
 import dataclasses
+import os
+import shutil
 
 from lintle import report, resume, term
 
@@ -17,17 +19,45 @@ class RunPlan:
     exit_code: int | None = None
 
 
-def resolve_clean_plan(
-    args,
-    files,
-    file_sizes,
-    *,
-    check_disk_space,
-    is_interactive,
-    prompt_yes_no,
-    run_started_stamp,
-    scrub_outputs,
-):
+def check_disk_space(out_dir, input_bytes):
+    """Return a ``(term.Severity, message)`` tuple when ``out_dir``'s free
+    space is at or near the 2× input-size guard, else ``None``.
+    ``term.Severity.ERROR`` when free is below 2× input (caller aborts with exit
+    2); ``term.Severity.WARNING`` when free sits in the borderline band 2× to
+    2.5× (caller proceeds but
+    surfaces the warning so the user knows they're cutting it close). Cleaned +
+    broken output is ~1× input; the 2× guard leaves transient headroom for
+    ``.partial`` files coexisting with their final renames mid-run.
+    ``input_bytes`` is the total source size, stat'd once by the caller and
+    shared with the roster and byte-bar denominators.
+    """
+    needed = input_bytes * 2
+    free = shutil.disk_usage(out_dir).free
+    if free < needed:
+        return (
+            term.Severity.ERROR,
+            f"insufficient disk space in {out_dir}: "
+            f"need ~{needed:,} bytes, have {free:,}",
+        )
+    if free < int(needed * 1.25):
+        return (
+            term.Severity.WARNING,
+            f"free space in {out_dir} is close to the 2× safety guard: "
+            f"{free:,} bytes free of ~{needed:,} recommended; "
+            f"the run will proceed but may exhaust the disk",
+        )
+    return None
+
+
+def scrub_outputs(out_dir):
+    """Clear the cleaned/, broken/, and .shards/ trees so a fresh run starts from
+    a clean slate and never leaves orphaned outputs from a prior, differently
+    scoped input set (spec §3.4). Idempotent — missing trees are ignored."""
+    for sub in ("cleaned", "broken", ".shards"):
+        shutil.rmtree(os.path.join(out_dir, sub), ignore_errors=True)
+
+
+def resolve_clean_plan(args, files, file_sizes):
     """Resolve disk-space, resume, and fresh-run state for ``clean``."""
     disk_status = check_disk_space(args.out_dir, sum(file_sizes.values()))
     if disk_status is not None:
@@ -44,8 +74,8 @@ def resolve_clean_plan(
         classification,
         resume=args.resume,
         no_resume=args.no_resume,
-        interactive=is_interactive(),
-        prompt=prompt_yes_no,
+        interactive=term.is_interactive(),
+        prompt=term.prompt_yes_no,
     )
     if decision.action is resume.ResumeAction.ABORT:
         term.error(decision.message)
@@ -75,7 +105,7 @@ def resolve_clean_plan(
         )
 
     # FRESH: archive any checkpoint, then scrub output trees so no orphans linger.
-    resume.archive_checkpoint(args.out_dir, timestamp=run_started_stamp())
+    resume.archive_checkpoint(args.out_dir, timestamp=resume.run_started_stamp())
     scrub_outputs(args.out_dir)
     return RunPlan(
         files_to_process=files,
