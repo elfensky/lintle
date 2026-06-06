@@ -81,7 +81,7 @@ src/lintle/
 ├── __init__.py    # __version__, stem() filename helper
 ├── cli.py         # argparse, globbing, top-level clean/validate orchestration, exit codes
 ├── cli_progress.py # live multi-file progress display, file roster, status spinner (rich)
-├── run_planning.py # clean-run preflight: disk-space guard, resume classification, RunPlan
+├── run_planning.py # clean-run preflight: disk-space guard, output scrub, resume classification, RunPlan
 ├── worker_pool.py  # process-pool dispatch, progress collection, per-file failure + checkpoint
 ├── process_control.py # worker SIGINT setup, fast pool termination, cancel/exit-code helpers
 ├── thresholds.py   # --max-quarantined parsing + quality-gate exit policy (pure)
@@ -91,9 +91,9 @@ src/lintle/
 ├── report.py      # FileStats + dataclasses, the validate summaries, the run report
 ├── report_aggregation.py # pure corpus aggregation: run totals + per-NORAD rollups for report.py
 ├── report_writers.py # structured-file writers: .broken.txt sidecar, report.jsonl findings, broken-noradids.ndjson, shard concat
-├── resume.py      # single-run checkpoint for `clean --resume` (issue #56)
+├── resume.py      # single-run checkpoint for `clean --resume` (#56); run-stamp + output-size helpers
 ├── fsutil.py      # durable_replace — the one atomic+fsync commit path (issue #58)
-├── term.py        # shared stderr Console + error/warning/note/prompt helpers (rich)
+├── term.py        # stderr Console + error/warning/note/prompt + is_interactive/prompt_yes_no (rich)
 ├── diff.py        # read-only: per-rule delta between two runs' report.jsonl (lintle diff)
 ├── explain.py     # read-only: renders rule/fix documentation (lintle explain)
 ├── tle.py         # the validator — column layout, checksum, semantic ranges, pairing
@@ -104,30 +104,36 @@ src/lintle/
 
 Module dependencies flow one way: `cli.py → pipeline.py → repair.py → tle.py`,
 with the read-only `cli.py → diff.py` and `cli.py → explain.py → explain_examples.py`
-consumers and the `cli.py → resume.py` single-run checkpoint (`resume.py` depends only
-on `__version__`) alongside. The `clean` orchestration is further split into
-cli-helper leaves depended on only by `cli.py` — `run_planning.py` (preflight),
-`worker_pool.py` (dispatch), `process_control.py` (signals/shutdown),
-`thresholds.py` (quarantine exit policy, pure), and `output_artifacts.py` (run
-finalization); `report_aggregation.py` is a pure corpus-aggregation leaf depended
-on by `report.py`. `diagnostics.py` and `categories.py` are pure-data leaves
-depended on by `repair`, `pipeline`, `report`, and `explain`; `explain_examples.py`
-is also pure data, composing those two leaves into documented examples.
-`report_writers.py` is the structured-file writers leaf (the `.broken.txt`
-sidecar, the `report.jsonl` findings shards, the corpus `broken-noradids.ndjson`,
-and the shard concat) depended on by `pipeline` and `cli`; it imports the
-dataclasses and the shared `format_diagnostic` renderer from `report.py` —
-one-way, never the reverse, so no cycle. `cli_progress.py` is a rich-only
-presentation leaf (the live `ProgressDisplay`, the pre-run `render_roster`, and
-the `status` spinner) depended on by `cli`; it imports `pipeline`'s typed
-progress messages (`FileStarted`/`FileEnded`/`FileProgress`) to drive the
-display, so the dependency is `cli → cli_progress → pipeline`, one-way and
-acyclic. `fsutil.py`
-is a stdlib-only I/O leaf (the durable-commit helper) depended on by `pipeline`,
-`report`, `report_writers`, and `resume`. `term.py` is a rich-only stderr-output leaf (the shared
-Console plus the `error`/`warning`/`note`/`prompt` emitters) depended on by `cli`
-and `diff` — so the styled `error:`/`warning:` prefix lives in one place without a
-`diff → cli` cycle. `tle.py` and the data modules carry no I/O, so cycles are
+consumers and the `cli.py → resume.py` single-run checkpoint alongside. The `clean`
+orchestration is split into cli-helper leaves — `run_planning.py` (preflight:
+disk-space guard, output scrub, resume classification), `worker_pool.py` (process-pool
+dispatch), `process_control.py` (signals/shutdown), `thresholds.py` (quarantine exit
+policy, pure), and `output_artifacts.py` (run finalization). These leaves import their
+own collaborators directly rather than receiving them by injection: `worker_pool`
+imports `concurrent.futures`/`multiprocessing`/`signal` plus `process_control`,
+`pipeline`, `cli_progress`, `report`, `resume`, and `term`; `run_planning` imports
+`report`, `resume`, and `term`. `process_control` is depended on by `cli` and
+`worker_pool`. `report_aggregation.py` is a pure corpus-aggregation leaf depended on by
+`report.py`. `diagnostics.py` and `categories.py` are pure-data leaves depended on by
+`repair`, `pipeline`, `report`, and `explain`; `explain_examples.py` is also pure data,
+composing those two leaves into documented examples. `report_writers.py` is the
+structured-file writers leaf (the `.broken.txt` sidecar, the `report.jsonl` findings
+shards, the corpus `broken-noradids.ndjson`, and the shard concat) depended on by
+`pipeline` and `cli`; it imports the dataclasses and the shared `format_diagnostic`
+renderer from `report.py` — one-way, never the reverse, so no cycle. `cli_progress.py`
+is a rich-only presentation leaf (the live `ProgressDisplay`, the pre-run
+`render_roster`, and the `status` spinner) depended on by `cli`, `worker_pool`, and
+`output_artifacts`; it imports `pipeline`'s typed progress messages
+(`FileStarted`/`FileEnded`/`FileProgress`) to drive the display, so the chain
+`cli → worker_pool → cli_progress → pipeline` is one-way and acyclic. `fsutil.py` is a
+stdlib-only I/O leaf (the durable-commit helper) depended on by `pipeline`, `report`,
+`report_writers`, and `resume`. `term.py` is a rich-only terminal-IO leaf (the shared
+Console, the `error`/`warning`/`note`/`prompt` emitters, and the `is_interactive` /
+`prompt_yes_no` stdin helpers) depended on by `cli`, `cli_progress`, `diff`,
+`process_control`, `run_planning`, and `worker_pool` — so the styled prefixes and the
+prompt live in one place without a `→ cli` cycle. `resume.py` (which also owns the run-start timestamp and
+the per-file output-size capture for the checkpoint) imports only `__version__`,
+`fsutil`, and `stem`. `tle.py` and the data modules carry no I/O, so cycles are
 structurally impossible.
 
 → See [`README.md`](README.md) for the architecture, usage, and data flow.

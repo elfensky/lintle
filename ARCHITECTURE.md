@@ -60,15 +60,15 @@ cli.py ──▶ pipeline.py ──▶ repair.py ──▶ tle.py
   │             └──▶ report_writers.py ──┘ (imports report.py one-way)
   │
   ├──▶ cli_progress.py  (rich live progress + roster; imports pipeline's progress messages)
-  ├──▶ resume.py        (single-run checkpoint; depends only on __version__ + fsutil)
-  ├──▶ run_planning.py  (disk-space guard + resume/fresh-run decision; → report, resume, term)
-  ├──▶ worker_pool.py   (process-pool dispatch + progress collection; → pipeline, cli_progress, report, resume, term)
+  ├──▶ resume.py        (single-run checkpoint + run-stamp/output-size helpers; → __version__, fsutil, stem)
+  ├──▶ run_planning.py  (disk-space guard + output scrub + resume/fresh-run decision; → report, resume, term)
+  ├──▶ worker_pool.py   (process-pool dispatch + progress collection; → pipeline, cli_progress, process_control, report, resume, term + stdlib futures/mp/signal)
   ├──▶ output_artifacts.py (clean-run report/NDJSON/JSONL finalization; → report, report_writers, cli_progress)
   ├──▶ thresholds.py    (--max-quarantined parsing + quality-gate exit policy; pure, no internal deps)
-  ├──▶ process_control.py (worker SIGINT setup + fast pool termination; → term)
+  ├──▶ process_control.py (worker SIGINT setup + fast pool termination; → term; also used by worker_pool)
   ├──▶ diff.py          (read-only consumer of report.jsonl)
   ├──▶ explain.py ──▶ explain_examples.py
-  └──▶ term.py          (stderr-only rich Console + error/warning/note/prompt)
+  └──▶ term.py          (stderr rich Console + error/warning/note/prompt + is_interactive/prompt_yes_no)
 
 fsutil.py    stdlib-only I/O leaf — durable_replace + out_dir_lock
 diagnostics.py, categories.py, explain_examples.py    pure-data leaves (no I/O)
@@ -83,7 +83,7 @@ diagnostics.py, categories.py, explain_examples.py    pure-data leaves (no I/O)
 | `report_aggregation.py` | Pure corpus aggregation helpers for run totals and per-NORAD rollups consumed by `report.py`. |
 | `report_writers.py` | Structured-file writers leaf: the `.broken.txt` sidecar (`BrokenFileWriter`), the `report.jsonl` findings shards (`JsonlFindingsWriter`), the `QuarantineSink` (bounded sample + streaming), `broken-noradids.ndjson`, and shard concatenation. Imports `report.py` one-way. |
 | `output_artifacts.py` | End-of-clean-run finalization for `report.md`, `broken-noradids.ndjson`, and corpus-wide `report.jsonl`. |
-| `resume.py` | The single-run `.clean-state.json` checkpoint for `clean --resume`: input fingerprinting, checkpoint build/load, the resume-decision matrix. |
+| `resume.py` | The single-run `.clean-state.json` checkpoint for `clean --resume`: input fingerprinting, checkpoint build/load, the resume-decision matrix, the run-start timestamp, and per-file output-size capture. |
 | `run_planning.py` | Clean-run preflight: disk-space policy, resume classification, fresh-run output scrubbing, and the resolved `RunPlan`. |
 | `worker_pool.py` | Process-pool dispatch, progress collection, per-file failure handling, checkpoint updates, and interrupt shutdown. |
 | `fsutil.py` | `durable_replace` (the one atomic+fsync commit path) and `out_dir_lock` (the host-aware out-dir lock). Stdlib only. |
@@ -93,8 +93,8 @@ diagnostics.py, categories.py, explain_examples.py    pure-data leaves (no I/O)
 | `categories.py` | `FixClass` enum + `FixSpec` registry — the repair taxonomy. Pure data. |
 | `explain_examples.py` | Validator-verified examples + citations backing `explain`. Pure data. |
 | `thresholds.py` | Pure `--max-quarantined` parsing and quarantine-threshold exit-code policy. |
-| `process_control.py` | Signal/worker shutdown helpers used by `cli.py` during process-pool runs. |
-| `term.py` | The single stderr `rich` Console and the `error:` / `warning:` / `note` / `prompt` emitters. |
+| `process_control.py` | Signal/worker shutdown helpers (SIGINT setup, fast pool termination, cancel/exit-code) used by `cli.py` and `worker_pool.py`. |
+| `term.py` | The single stderr `rich` Console, the `error:` / `warning:` / `note` / `prompt` emitters, and the `is_interactive` / `prompt_yes_no` stdin helpers. |
 | `cli.py` | argparse, globbing, and top-level `clean`/`validate` orchestration: delegates preflight to `run_planning`, dispatch to `worker_pool`, signal/shutdown to `process_control`, the quality-gate exit policy to `thresholds`, and run finalization to `output_artifacts`; owns the resulting process exit code. |
 | `cli_progress.py` | Rich presentation leaf for `clean`/`validate`: the live `ProgressDisplay`, the pre-run `render_roster`, and the `status` spinner. Consumes `pipeline`'s typed progress messages. |
 
