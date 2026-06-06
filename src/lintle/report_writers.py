@@ -4,8 +4,8 @@ findings shards, the corpus ``broken-noradids.ndjson``, and shard concat."""
 import contextlib
 import datetime
 import json
-import os
 import shutil
+from pathlib import Path
 
 from lintle import __version__, fsutil, stem
 from lintle.diagnostics import Diagnostic
@@ -147,7 +147,7 @@ class BrokenFileWriter:
             out.write(header)
             shutil.copyfileobj(src, out, length=65536)
         with contextlib.suppress(OSError):
-            os.unlink(self._body_path)
+            Path(self._body_path).unlink()
         fsutil.durable_replace(self._final_partial, self.path)
         self._completed = True
 
@@ -159,7 +159,7 @@ class BrokenFileWriter:
         if not self._completed:
             for partial in (self._body_path, self._final_partial):
                 with contextlib.suppress(OSError):
-                    os.unlink(partial)
+                    Path(partial).unlink()
         return False
 
 
@@ -217,7 +217,7 @@ class JsonlFindingsWriter:
         # run leaves no debris.
         if not self._completed:
             with contextlib.suppress(OSError):
-                os.unlink(self._partial)
+                Path(self._partial).unlink()
         return False
 
 
@@ -419,12 +419,12 @@ def concat_findings_shards(
     successful run, so an interrupted or failed run keeps its shards and a
     later ``--resume`` can re-read them to rebuild a complete ``report.jsonl``.
     """
-    shard_dir = os.path.join(out_dir, ".shards")
+    shard_dir = Path(out_dir) / ".shards"
     tmp_path = dest_path + ".partial"
     with open(tmp_path, "wb") as out:
         for stats in all_stats:
-            shard = os.path.join(shard_dir, stem(stats.src_name) + ".findings.jsonl")
-            if not os.path.exists(shard):
+            shard = shard_dir / (stem(stats.src_name) + ".findings.jsonl")
+            if not shard.exists():
                 # Worker crashed before finalize, validate-mode worker, or
                 # an out-of-band cleanup removed it — skip silently.
                 continue

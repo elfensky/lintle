@@ -4,10 +4,10 @@ consumes the worker progress protocol. ``rich``-only rendering, split out of
 ``cli`` so the composition root keeps a single responsibility (issue #53)."""
 
 import contextlib
-import os
 import queue
 import threading
 import time
+from pathlib import Path
 
 from rich import box
 from rich.progress import (
@@ -235,7 +235,7 @@ def render_roster(console, file_sizes):
     total = 0
     for index, (path, size) in enumerate(file_sizes.items(), start=1):
         total += size
-        table.add_row(str(index), os.path.basename(path), _format_size(size))
+        table.add_row(str(index), Path(path).name, _format_size(size))
     table.add_section()
     table.add_row("", "total", _format_size(total))
     console.print(table)

@@ -2,8 +2,8 @@
 
 import contextlib
 import dataclasses
-import os
 import time
+from pathlib import Path
 
 from lintle import fsutil, repair, report, report_writers, stem, tle
 from lintle.diagnostics import Diagnostic, RuleID, diagnostic
@@ -208,7 +208,7 @@ def process_file(src_path, out_dir, mode, progress_queue=None, progress_every=25
     flight. With no queue (or ``progress_every`` set to 0) no progress is
     reported.
     """
-    src_name = os.path.basename(src_path)
+    src_name = Path(src_path).name
     stats = report.FileStats(src_name=src_name)
     # Wall-clock start for the v1 envelope (issue #20). Captured up front
     # so even a file that fails early during open still surfaces a
@@ -313,16 +313,17 @@ def _clean_output_paths(out_dir, src_name):
     return the three per-file output paths. The ``.shards`` findings shard is
     internal staging the cli concatenates into ``report.jsonl`` at end of run
     and then removes (issue #9, spec §4.6)."""
-    cleaned_dir = os.path.join(out_dir, "cleaned")
-    os.makedirs(cleaned_dir, exist_ok=True)
-    broken_dir = os.path.join(out_dir, "broken")
-    os.makedirs(broken_dir, exist_ok=True)
-    shard_dir = os.path.join(out_dir, ".shards")
-    os.makedirs(shard_dir, exist_ok=True)
+    out = Path(out_dir)
+    cleaned_dir = out / "cleaned"
+    cleaned_dir.mkdir(parents=True, exist_ok=True)
+    broken_dir = out / "broken"
+    broken_dir.mkdir(parents=True, exist_ok=True)
+    shard_dir = out / ".shards"
+    shard_dir.mkdir(parents=True, exist_ok=True)
     return _CleanPaths(
-        cleaned=os.path.join(cleaned_dir, stem(src_name) + ".cleaned.txt"),
-        broken=os.path.join(broken_dir, stem(src_name) + ".broken.txt"),
-        jsonl=os.path.join(shard_dir, stem(src_name) + ".findings.jsonl"),
+        cleaned=str(cleaned_dir / (stem(src_name) + ".cleaned.txt")),
+        broken=str(broken_dir / (stem(src_name) + ".broken.txt")),
+        jsonl=str(shard_dir / (stem(src_name) + ".findings.jsonl")),
     )
 
 
@@ -375,7 +376,7 @@ def _run(src_path, out_dir, mode, stats, progress_queue, progress_every):
             # by the inner finally and the sink's ``__exit__`` discards
             # the ``.broken.txt`` partials. The parent's ``finally`` still
             # emits the lifecycle ``end`` event.
-            stats.bytes = os.path.getsize(src_path)
+            stats.bytes = Path(src_path).stat().st_size
             for candidate in iter_records(src_path, stats):
                 # Flush one ``FileProgress`` message every
                 # ``progress_every`` records (issue #53 §6). The byte delta is
@@ -399,7 +400,7 @@ def _run(src_path, out_dir, mode, stats, progress_queue, progress_every):
             # handles the .broken.txt partials.
             if cleaned_tmp is not None and not completed:
                 with contextlib.suppress(OSError):
-                    os.unlink(cleaned_tmp)
+                    Path(cleaned_tmp).unlink()
 
         # Still inside `with sink:` — finalize must happen BEFORE __exit__
         # fires, otherwise the writer's exit handler sees _completed=False

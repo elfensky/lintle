@@ -1,8 +1,8 @@
 """Clean-run preflight planning and resume resolution."""
 
 import dataclasses
-import os
 import shutil
+from pathlib import Path
 
 from lintle import report, resume, term
 
@@ -54,7 +54,7 @@ def scrub_outputs(out_dir):
     a clean slate and never leaves orphaned outputs from a prior, differently
     scoped input set (spec §3.4). Idempotent — missing trees are ignored."""
     for sub in ("cleaned", "broken", ".shards"):
-        shutil.rmtree(os.path.join(out_dir, sub), ignore_errors=True)
+        shutil.rmtree(Path(out_dir) / sub, ignore_errors=True)
 
 
 def resolve_clean_plan(args, files, file_sizes):

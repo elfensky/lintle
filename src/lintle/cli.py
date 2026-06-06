@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import time
+from pathlib import Path
 
 from lintle import (
     __version__,
@@ -58,10 +59,11 @@ def discover_paths(path):
     returned as a single-element list. A nonexistent entry yields ``[]`` —
     callers should validate inputs with :func:`check_paths` first.
     """
-    if os.path.isdir(path):
+    directory = Path(path)
+    if directory.is_dir():
         return [
-            os.path.join(path, name)
-            for name in sorted(os.listdir(path))
+            str(directory / name)
+            for name in sorted(entry.name for entry in directory.iterdir())
             if (
                 name.startswith("tle")
                 and name.endswith(".txt")
@@ -69,7 +71,7 @@ def discover_paths(path):
                 and not name.endswith(".broken.txt")
             )
         ]
-    if os.path.isfile(path):
+    if Path(path).is_file():
         return [path]
     return []
 
@@ -86,7 +88,7 @@ def check_paths(path, using_default):
     surfaces through the per-file failure path in :func:`main` with the
     same exit code 2.
     """
-    if os.path.exists(path):
+    if Path(path).exists():
         return None
     if using_default:
         return (
@@ -335,8 +337,8 @@ def _finalize_run(
     # `report.jsonl` was written from those shards by the report block above.
     if args.command == "clean" and not failed_files:
         resume.delete_checkpoint(args.out_dir)
-        shard_dir = os.path.join(args.out_dir, ".shards")
-        if os.path.exists(shard_dir):
+        shard_dir = Path(args.out_dir) / ".shards"
+        if shard_dir.exists():
             shutil.rmtree(shard_dir)
 
     # A file that could not be processed is an operational failure (spec §2.7
@@ -408,7 +410,7 @@ def main(argv=None):
 
     files = discover_paths(path)
     if not files:
-        if os.path.isdir(path):
+        if Path(path).is_dir():
             term.error(
                 f"no tle*.txt files found in {path!r}.\n"
                 "  expected one or more files named tle*.txt "
@@ -422,7 +424,7 @@ def main(argv=None):
     # the disk-space guard, the pre-run roster, and the live byte-bar
     # denominators, so those three readouts can never silently diverge. Ordered
     # by discovery so the roster lists files in a stable order.
-    file_sizes = {p: os.path.getsize(p) for p in files}
+    file_sizes = {p: Path(p).stat().st_size for p in files}
 
     # ExitStack holds the out-dir lock for a clean run. Closed in the finally
     # block below — so every exit path (LockHeldError aside, which returns
@@ -431,7 +433,7 @@ def main(argv=None):
     _lock_stack = contextlib.ExitStack()
 
     if args.command == "clean":
-        os.makedirs(args.out_dir, exist_ok=True)
+        Path(args.out_dir).mkdir(parents=True, exist_ok=True)
         try:
             _lock_stack.enter_context(
                 fsutil.out_dir_lock(args.out_dir, started=resume.run_started_stamp())
@@ -463,7 +465,7 @@ def main(argv=None):
         # text. Byte-bar denominators come from os.stat (issue #53 §2.1/§2.2) —
         # no pre-read of the corpus.
         console = term.stderr_console
-        sizes = {os.path.basename(p): file_sizes[p] for p in plan.files_to_process}
+        sizes = {Path(p).name: file_sizes[p] for p in plan.files_to_process}
         if args.command == "clean":
             cli_progress.render_roster(
                 console, {p: file_sizes[p] for p in plan.files_to_process}

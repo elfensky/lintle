@@ -16,6 +16,7 @@ import enum
 import hashlib
 import json
 import os
+from pathlib import Path
 
 from lintle import __version__, fsutil, stem
 
@@ -39,7 +40,7 @@ def input_fingerprint(path):
     the window hash their whole content for both windows. Constant memory —
     the interior is never read.
     """
-    st = os.stat(path)
+    st = Path(path).stat()
     with open(path, "rb") as handle:
         head = handle.read(_HASH_WINDOW)
         if st.st_size > _HASH_WINDOW:
@@ -68,13 +69,14 @@ def output_sizes(out_dir, stats):
     at completion for the resume integrity check (spec §3.6). The broken sidecar
     is present only when something was quarantined."""
     sizes = {}
+    out = Path(out_dir)
     cleaned = stem(stats.src_name) + ".cleaned.txt"
     with contextlib.suppress(OSError):
-        sizes[cleaned] = os.path.getsize(os.path.join(out_dir, "cleaned", cleaned))
+        sizes[cleaned] = (out / "cleaned" / cleaned).stat().st_size
     if stats.quarantined_count:
         broken = stem(stats.src_name) + ".broken.txt"
         with contextlib.suppress(OSError):
-            sizes[broken] = os.path.getsize(os.path.join(out_dir, "broken", broken))
+            sizes[broken] = (out / "broken" / broken).stat().st_size
     return sizes
 
 
@@ -96,7 +98,7 @@ def build_checkpoint(*, inputs, completed, run_identity):
 
 
 def _checkpoint_path(out_dir):
-    return os.path.join(out_dir, CHECKPOINT_NAME)
+    return str(Path(out_dir) / CHECKPOINT_NAME)
 
 
 def write_checkpoint(out_dir, checkpoint):
@@ -154,7 +156,7 @@ def classify_checkpoint(out_dir, current_inputs, current_run_identity):
     treated as absent, so a damaged interrupted run is surfaced, not silently
     discarded), VALID, and STALE(reason).
     """
-    if not os.path.exists(_checkpoint_path(out_dir)):
+    if not Path(_checkpoint_path(out_dir)).exists():
         return Classification(CheckpointStatus.ABSENT)
     checkpoint = load_checkpoint(out_dir)
     if checkpoint is None:
@@ -174,10 +176,10 @@ def archive_checkpoint(out_dir, *, timestamp):
     or None if there was no checkpoint. ``timestamp`` is supplied by the caller
     (clock access is forbidden in pure helpers)."""
     src = _checkpoint_path(out_dir)
-    if not os.path.exists(src):
+    if not Path(src).exists():
         return None
     archived = f"{CHECKPOINT_NAME}.stale-{timestamp}"
-    os.replace(src, os.path.join(out_dir, archived))
+    os.replace(src, Path(out_dir) / archived)
     return archived
 
 
@@ -186,7 +188,7 @@ def delete_checkpoint(out_dir):
     successful run so a completed run leaves no resumable state behind.
     """
     with contextlib.suppress(FileNotFoundError):
-        os.remove(_checkpoint_path(out_dir))
+        Path(_checkpoint_path(out_dir)).unlink()
 
 
 # The output trees a `clean` run writes into, under ``--out-dir``. The
@@ -201,8 +203,8 @@ def _locate_output(out_dir, name):
     (rather than inferring the directory from the filename suffix) keeps the
     output-naming convention in one place — report.py — not duplicated here."""
     for sub in _OUTPUT_DIRS:
-        candidate = os.path.join(out_dir, sub, name)
-        if os.path.exists(candidate):
+        candidate = Path(out_dir) / sub / name
+        if candidate.exists():
             return candidate
     return None
 
@@ -217,7 +219,7 @@ def verify_completed_outputs(completed, out_dir):
     for path, entry in completed.items():
         for name, expected_size in entry.get("outputs", {}).items():
             actual = _locate_output(out_dir, name)
-            if actual is None or os.path.getsize(actual) != expected_size:
+            if actual is None or actual.stat().st_size != expected_size:
                 reprocess.append(path)
                 break
     return reprocess

@@ -167,7 +167,7 @@ class FileStats:
     # keep validate-mode fixtures and unit tests that build a bare
     # FileStats() valid; production captures are set by
     # ``pipeline.process_file`` from ``time.monotonic()`` and
-    # ``os.path.getsize()`` respectively. ``elapsed_seconds`` is the
+    # ``Path(src_path).stat().st_size`` respectively. ``elapsed_seconds`` is the
     # worker's wall-clock duration on this file — NEVER summed across
     # workers to derive a corpus total (use the parent's wall-clock
     # captured in ``cli.main`` for that).

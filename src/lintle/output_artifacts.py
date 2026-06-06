@@ -1,7 +1,7 @@
 """Run-level artifacts written after a successful clean dispatch."""
 
 import dataclasses
-import os
+from pathlib import Path
 
 from lintle import cli_progress, report, report_writers
 
@@ -20,11 +20,12 @@ def write_clean_artifacts(out_dir, all_stats):
     if not all_stats:
         return CleanArtifacts()
     with cli_progress.status("finalizing report…"):
-        report_path = os.path.join(out_dir, "report.md")
+        out = Path(out_dir)
+        report_path = str(out / "report.md")
         report.write_run_report(report_path, all_stats)
-        noradids_path = os.path.join(out_dir, "broken-noradids.ndjson")
+        noradids_path = str(out / "broken-noradids.ndjson")
         report_writers.write_broken_noradids_ndjson(noradids_path, all_stats)
-        findings_path = os.path.join(out_dir, "report.jsonl")
+        findings_path = str(out / "report.jsonl")
         report_writers.concat_findings_shards(out_dir, findings_path, all_stats)
     return CleanArtifacts(
         report_path=report_path,

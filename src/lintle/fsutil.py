@@ -25,6 +25,7 @@ import json
 import os
 import socket
 import sys
+from pathlib import Path
 
 # True power-loss durability on macOS requires F_FULLFSYNC, not plain fsync
 # (issue #58). Elsewhere os.fsync is the barrier.
@@ -52,7 +53,7 @@ def durable_replace(tmp, dest):
     finally:
         os.close(fd)
     os.replace(tmp, dest)
-    dir_fd = os.open(os.path.dirname(dest) or ".", os.O_RDONLY)
+    dir_fd = os.open(Path(dest).parent, os.O_RDONLY)
     try:
         _fsync(dir_fd)
     finally:
@@ -107,7 +108,7 @@ def out_dir_lock(out_dir, *, started="unknown"):
     (spec §3.3). Refuses (LockHeldError) when held by a live process on this host
     or by any process on a different host. Reclaims only a same-host dead-PID
     lock. ``started`` is an ISO timestamp passed in by the caller (no clock here)."""
-    path = os.path.join(out_dir, LOCK_NAME)
+    path = Path(out_dir) / LOCK_NAME
     host = _host_id()
     while True:
         try:
