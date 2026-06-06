@@ -299,6 +299,33 @@ def _route_candidate(candidate, stats, sink, cleaned_handle):
         )
 
 
+@dataclasses.dataclass(frozen=True)
+class _CleanPaths:
+    """Destination paths for one file's clean-mode outputs."""
+
+    cleaned: str
+    broken: str
+    jsonl: str
+
+
+def _clean_output_paths(out_dir, src_name):
+    """Create the cleaned/, broken/, and .shards/ trees under ``out_dir`` and
+    return the three per-file output paths. The ``.shards`` findings shard is
+    internal staging the cli concatenates into ``report.jsonl`` at end of run
+    and then removes (issue #9, spec §4.6)."""
+    cleaned_dir = os.path.join(out_dir, "cleaned")
+    os.makedirs(cleaned_dir, exist_ok=True)
+    broken_dir = os.path.join(out_dir, "broken")
+    os.makedirs(broken_dir, exist_ok=True)
+    shard_dir = os.path.join(out_dir, ".shards")
+    os.makedirs(shard_dir, exist_ok=True)
+    return _CleanPaths(
+        cleaned=os.path.join(cleaned_dir, stem(src_name) + ".cleaned.txt"),
+        broken=os.path.join(broken_dir, stem(src_name) + ".broken.txt"),
+        jsonl=os.path.join(shard_dir, stem(src_name) + ".findings.jsonl"),
+    )
+
+
 def _run(src_path, out_dir, mode, stats, progress_queue, progress_every):
     """Process one file once start/end progress events are accounted for —
     body of :func:`process_file`. Kept separate so the wrapper above can
@@ -312,9 +339,10 @@ def _run(src_path, out_dir, mode, stats, progress_queue, progress_every):
     broken_path = None
     jsonl_path = None
     if mode == "clean":
-        cleaned_dir = os.path.join(out_dir, "cleaned")
-        os.makedirs(cleaned_dir, exist_ok=True)
-        cleaned_path = os.path.join(cleaned_dir, stem(src_name) + ".cleaned.txt")
+        paths = _clean_output_paths(out_dir, src_name)
+        cleaned_path = paths.cleaned
+        broken_path = paths.broken
+        jsonl_path = paths.jsonl
         # Deterministic temp name (not tempfile.mkstemp): a killed run leaves
         # at most one .partial per file, which the next run truncates — no
         # random-name debris accumulates. open() also honours the umask
@@ -325,16 +353,6 @@ def _run(src_path, out_dir, mode, stats, progress_queue, progress_every):
         cleaned_handle = open(  # noqa: SIM115
             cleaned_tmp, "w", encoding="ascii", newline="\n"
         )
-        broken_dir = os.path.join(out_dir, "broken")
-        os.makedirs(broken_dir, exist_ok=True)
-        broken_path = os.path.join(broken_dir, stem(src_name) + ".broken.txt")
-        # Per-file findings shard for the corpus-wide report.jsonl (issue #9).
-        # Lives in ``.shards/`` so it's clearly an internal staging directory;
-        # the cli concatenates shards into ``report.jsonl`` at end of run and
-        # then ``rmtree``s the whole directory. Spec §4.6.
-        shard_dir = os.path.join(out_dir, ".shards")
-        os.makedirs(shard_dir, exist_ok=True)
-        jsonl_path = os.path.join(shard_dir, stem(src_name) + ".findings.jsonl")
 
     # The sink owns the BrokenFileWriter lifecycle in clean mode and the
     # bounded in-memory sample in both modes. Issue #19: cap-enforcement
