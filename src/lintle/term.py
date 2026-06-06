@@ -1,12 +1,16 @@
-"""Shared terminal-output helpers: the single stderr ``Console`` and the
-styled ``error:`` / ``warning:`` emitters used across the CLI surface.
+"""Shared terminal-output helpers: the two shared ``Console`` instances
+(``stderr_console`` for status/errors; ``stdout_console`` for the ``report``
+command's rendered view) and the styled ``error:`` / ``warning:`` emitters
+used across the CLI surface.
 
-rich styling is confined to stderr and only when it is a TTY; off a TTY (pipes,
-``capsys``, ``NO_COLOR``) the Console strips styling and the output is plain,
-so machine-readable stderr stays literal. This is the only Console attached to
-stderr — stdout result data and the structured output files are never routed
-through it. The module-level ``stderr_console`` is built before argument
-parsing so the earliest error sites share it; rich reads ``sys.stderr`` lazily,
+``stderr_console`` carries all status/error ephemera; ``stdout_console`` carries
+only the styled ``report`` result view. rich styling on each is confined to a
+TTY; off a TTY (pipes, ``capsys``, ``NO_COLOR``) the Console strips styling and
+the output is plain, so machine-readable output stays literal. The structured
+output files and the ``--report json`` stdout bytes are never routed through
+either Console — those go through plain ``json``/file writers for
+byte-determinism. The module-level Consoles are built before argument parsing so
+the earliest sites share them; rich reads ``sys.stderr`` / ``sys.stdout`` lazily,
 so a replaced stream (tests, redirection) is honoured at print time.
 """
 
@@ -18,6 +22,7 @@ from rich.console import Console
 from rich.text import Text
 
 stderr_console = Console(stderr=True)
+stdout_console = Console()
 
 
 class Severity(enum.Enum):
