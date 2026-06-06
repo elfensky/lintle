@@ -93,7 +93,8 @@ src/lintle/
 ├── report_writers.py # structured-file writers: .broken.txt sidecar, report.jsonl findings, broken-noradids.ndjson, shard concat
 ├── resume.py      # single-run checkpoint for `clean --resume` (#56); run-stamp + output-size helpers
 ├── fsutil.py      # durable_replace — the one atomic+fsync commit path (issue #58)
-├── term.py        # stderr Console + error/warning/note/prompt + is_interactive/prompt_yes_no (rich)
+├── summary.py     # responsive aggregate-panel renderer + read-only `lintle report` (rich)
+├── term.py        # stderr+stdout Consoles + error/warning/note/prompt + is_interactive/prompt_yes_no (rich)
 ├── diff.py        # read-only: per-rule delta between two runs' report.jsonl (lintle diff)
 ├── explain.py     # read-only: renders rule/fix documentation (lintle explain)
 ├── tle.py         # the validator — column layout, checksum, semantic ranges, pairing
@@ -127,11 +128,16 @@ is a rich-only presentation leaf (the live `ProgressDisplay`, the pre-run
 (`FileStarted`/`FileEnded`/`FileProgress`) to drive the display, so the chain
 `cli → worker_pool → cli_progress → pipeline` is one-way and acyclic. `fsutil.py` is a
 stdlib-only I/O leaf (the durable-commit helper) depended on by `pipeline`, `report`,
-`report_writers`, and `resume`. `term.py` is a rich-only terminal-IO leaf (the shared
-Console, the `error`/`warning`/`note`/`prompt` emitters, and the `is_interactive` /
+`report_writers`, and `resume`. `summary.py` is a rich-only presentation leaf (the
+responsive aggregate-panel renderer and the read-only `lintle report` entry that reads
+`<out-dir>/report.json`) depended on by `cli`; it imports the two shared Consoles from
+`term` and consumes the `build_run_envelope` dict shape, so `cli → summary → term`
+is one-way and acyclic. `term.py` is a rich-only terminal-IO leaf (the two shared
+Consoles — `stderr_console` for status/errors, `stdout_console` for the report view —
+the `error`/`warning`/`note`/`prompt` emitters, and the `is_interactive` /
 `prompt_yes_no` stdin helpers) depended on by `cli`, `cli_progress`, `diff`,
-`process_control`, `run_planning`, and `worker_pool` — so the styled prefixes and the
-prompt live in one place without a `→ cli` cycle. `resume.py` (which also owns the run-start timestamp and
+`process_control`, `run_planning`, `summary`, and `worker_pool` — so the styled prefixes
+and the prompt live in one place without a `→ cli` cycle. `resume.py` (which also owns the run-start timestamp and
 the per-file output-size capture for the checkpoint) imports only `__version__`,
 `fsutil`, and `stem`. `tle.py` and the data modules carry no I/O, so cycles are
 structurally impossible.

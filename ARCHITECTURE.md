@@ -61,12 +61,13 @@ cli.py ──▶ pipeline.py ──▶ repair.py ──▶ tle.py
   ├──▶ resume.py        (single-run checkpoint + run-stamp/output-size helpers; → __version__, fsutil, stem)
   ├──▶ run_planning.py  (disk-space guard + output scrub + resume/fresh-run decision; → report, resume, term)
   ├──▶ worker_pool.py   (process-pool dispatch + progress collection; → pipeline, cli_progress, process_control, report, resume, term + stdlib futures/mp/signal)
-  ├──▶ output_artifacts.py (clean-run report/NDJSON/JSONL finalization; → report, report_writers, cli_progress)
+  ├──▶ output_artifacts.py (clean-run report.md/json + NDJSON/JSONL finalization; → report, report_writers, cli_progress)
   ├──▶ thresholds.py    (--max-quarantined parsing + quality-gate exit policy; pure, no internal deps)
   ├──▶ process_control.py (worker SIGINT setup + fast pool termination; → term; also used by worker_pool)
   ├──▶ diff.py          (read-only consumer of report.jsonl)
   ├──▶ explain.py ──▶ explain_examples.py
-  └──▶ term.py          (stderr rich Console + error/warning/note/prompt + is_interactive/prompt_yes_no)
+  ├──▶ summary.py       (aggregate-panel renderer + read-only `lintle report` over report.json; → term)
+  └──▶ term.py          (stderr+stdout rich Consoles + error/warning/note/prompt + is_interactive/prompt_yes_no)
 
 fsutil.py    stdlib-only I/O leaf — durable_replace + out_dir_lock
 diagnostics.py, categories.py, explain_examples.py    pure-data leaves (no I/O)
@@ -77,23 +78,24 @@ diagnostics.py, categories.py, explain_examples.py    pure-data leaves (no I/O)
 | `tle.py` | The validator: column layout, mod-10 checksum, semantic ranges, record pairing. The single definition of "perfect." Pure functions, no I/O. |
 | `repair.py` | Speculative fixes, each confirmed by `tle.py` before commit; the `Accepted` / `Quarantined` record outcomes. Pure functions. |
 | `pipeline.py` | Streams a file in binary, pairs `1 `/`2 ` lines into records, routes each to clean output or quarantine. Owns the per-file `process_file` worker entry. |
-| `report.py` | `FileStats` and its sibling dataclasses, the per-file summary renderer, the `summary_dict` / `build_run_envelope` JSON shapes, and the Markdown `report.md` writer. |
+| `report.py` | `FileStats` and its sibling dataclasses, the per-file summary renderer, the `summary_dict` / `build_run_envelope` JSON shapes, and the Markdown `report.md` / JSON `report.json` writers (`write_run_json` is the byte-identical twin of the `--report json` stdout envelope). |
 | `report_aggregation.py` | Pure corpus aggregation helpers for run totals and per-NORAD rollups consumed by `report.py`. |
 | `report_writers.py` | Structured-file writers leaf: the `.broken.txt` sidecar (`BrokenFileWriter`), the `report.jsonl` findings shards (`JsonlFindingsWriter`), the `QuarantineSink` (bounded sample + streaming), `broken-noradids.ndjson`, and shard concatenation. Imports `report.py` one-way. |
-| `output_artifacts.py` | End-of-clean-run finalization for `report.md`, `broken-noradids.ndjson`, and corpus-wide `report.jsonl`. |
+| `output_artifacts.py` | End-of-clean-run finalization for `report.md`, the machine-readable `report.json`, `broken-noradids.ndjson`, and corpus-wide `report.jsonl` — all committed in one place. |
 | `resume.py` | The single-run `.clean-state.json` checkpoint for `clean --resume`: input fingerprinting, checkpoint build/load, the resume-decision matrix, the run-start timestamp, and per-file output-size capture. |
 | `run_planning.py` | Clean-run preflight: disk-space policy, resume classification, fresh-run output scrubbing, and the resolved `RunPlan`. |
 | `worker_pool.py` | Process-pool dispatch, progress collection, per-file failure handling, checkpoint updates, and interrupt shutdown. |
 | `fsutil.py` | `durable_replace` (the one atomic+fsync commit path) and `out_dir_lock` (the host-aware out-dir lock). Stdlib only. |
 | `diff.py` | Read-only: per-rule delta between two runs' `report.jsonl` (`lintle diff`). |
 | `explain.py` | Read-only: renders rule/fix documentation (`lintle explain`). |
+| `summary.py` | Responsive aggregate-panel renderer over the `build_run_envelope` dict (plain/medium/wide tiers + ASCII-bar fallback), keyed off the target Console; backs `clean`'s end-of-run stderr panel and the read-only `lintle report` (renders `<out-dir>/report.json`: text → panel on stdout, json → file bytes verbatim). Styled UI, not byte-bound. |
 | `diagnostics.py` | Stable `RuleID` registry + structured `Diagnostic` dataclass + `RepairTier`. Pure data. |
 | `categories.py` | `FixClass` enum + `FixSpec` registry — the repair taxonomy. Pure data. |
 | `explain_examples.py` | Validator-verified examples + citations backing `explain`. Pure data. |
 | `thresholds.py` | Pure `--max-quarantined` parsing and quarantine-threshold exit-code policy. |
 | `process_control.py` | Signal/worker shutdown helpers (SIGINT setup, fast pool termination, cancel/exit-code) used by `cli.py` and `worker_pool.py`. |
-| `term.py` | The single stderr `rich` Console, the `error:` / `warning:` / `note` / `prompt` emitters, and the `is_interactive` / `prompt_yes_no` stdin helpers. |
-| `cli.py` | argparse, globbing, and top-level `clean` orchestration: delegates preflight to `run_planning`, dispatch to `worker_pool`, signal/shutdown to `process_control`, the quality-gate exit policy to `thresholds`, and run finalization to `output_artifacts`; owns the resulting process exit code. |
+| `term.py` | Two shared `rich` Consoles — `stderr_console` for status/errors, `stdout_console` for the `report` result view — the `error:` / `warning:` / `note` / `prompt` emitters, and the `is_interactive` / `prompt_yes_no` stdin helpers. |
+| `cli.py` | argparse, globbing, and top-level `clean` orchestration: delegates preflight to `run_planning`, dispatch to `worker_pool`, signal/shutdown to `process_control`, the quality-gate exit policy to `thresholds`, run finalization to `output_artifacts`, and the aggregate panel / `report` render to `summary`; owns the resulting process exit code. |
 | `cli_progress.py` | Rich presentation leaf for `clean`: the live `ProgressDisplay`, the pre-run `render_roster`, and the `status` spinner. Consumes `pipeline`'s typed progress messages. |
 
 `tle.py` and the data leaves carry no I/O. `report_writers.py` depends on `report.py` (never
@@ -269,6 +271,7 @@ A successful `clean` run lays out `--out-dir`:
 ├── cleaned/                 tleYYYY.cleaned.txt    — one per input file
 ├── broken/                  tleYYYY.broken.txt     — one per input file (sidecar)
 ├── report.md                — corpus-wide Markdown run report
+├── report.json              — the run envelope, byte-identical to `--report json` stdout
 ├── report.jsonl             — corpus-wide structured findings (one JSON object per line)
 └── broken-noradids.ndjson   — corpus-wide list of quarantined NORAD IDs
 ```
@@ -276,9 +279,10 @@ A successful `clean` run lays out `--out-dir`:
 Transient run state lives alongside and is removed on success: `.shards/` (per-worker
 `report.jsonl` shards, concatenated then `rmtree`'d) and `.clean-state.json` (the resume
 checkpoint). On an interrupted or failed run, both survive so a later `--resume` can rebuild a
-complete `report.jsonl` from the shards. `report.md`, `report.jsonl`, and
-`broken-noradids.ndjson` are **always** written on a successful clean run — empty when nothing
-was quarantined — so the consumer artifact set is stable.
+complete `report.jsonl` from the shards. `report.md`, `report.json`, `report.jsonl`, and
+`broken-noradids.ndjson` are **always** written on a successful clean run — empty/zeroed when
+nothing was quarantined — so the consumer artifact set is stable. The persisted `report.json`
+is what the read-only `lintle report` command renders later.
 
 - **`cleaned/tleYYYY.cleaned.txt`** — standard 2-line TLE text, every record verified valid: 69
   ASCII columns per line, `\n`-terminated, matching catalog numbers, valid checksums.
@@ -286,15 +290,20 @@ was quarantined — so the consumer artifact set is stable.
 
 ### stdout / stderr discipline
 
-A hard three-channel rule, so output is safely pipeable:
+A hard channel rule, so output is safely pipeable:
 
-- **stdout** = pipeable data + the plain per-file summary. With `--report json`, stdout carries
-  *only* the JSON envelope. Never styled.
-- **stderr** = the live `rich` UI (roster, progress block), `processing…` notices, and
-  `error:` / `warning:` lines. rich styling is applied only when stderr is a TTY; off a TTY
-  (pipe, `capsys`, `NO_COLOR`) it degrades to plain literal text, so even stderr stays
-  machine-readable.
-- The structured output **files** are never routed through the stderr Console.
+- **`clean` stdout** = pipeable data only. With `--report json`, stdout carries *only* the JSON
+  envelope (byte-identical to the persisted `report.json`). In text mode, `clean` stdout is
+  **empty** — the human aggregate panel goes to stderr and the per-file detail lives in
+  `report.md` / `report.json`. Never styled.
+- **`clean` stderr** = the live `rich` UI (roster, progress block), `processing…` notices, the
+  end-of-run aggregate panel (text mode), and `error:` / `warning:` lines.
+- **`report` stdout** = the rendered result view: `report` text renders the aggregate panel to
+  stdout (via `term.stdout_console`); `report --report json` echoes `report.json` verbatim.
+- rich styling on either Console is applied only when that stream is a TTY; off a TTY (pipe,
+  `capsys`, `NO_COLOR`) it degrades to plain literal text, so even the panels stay readable.
+- The structured output **files** and the `--report json` stdout bytes are never routed through
+  a `rich` Console — they go through plain `json` / file writers for byte-determinism.
 
 ### Exit codes
 
@@ -517,9 +526,10 @@ dependency is rejected if it would:
 - **load a file whole** or make any per-file structure grow with record count (principle #3);
 - import **`sgp4` or another orbital parser at runtime**;
 - make any **structured/machine-readable output or stdout-pipeable data non-byte-deterministic
-  or styled** — `report.md`, `report.jsonl`, `broken-noradids.ndjson`, the `.broken.txt`
-  sidecar, the `--report json` envelope, the `.clean-state.json` checkpoint, and `cleaned/*.txt`
-  all stay exactly as their contracts assert; `rich` styling is confined to stderr ephemera;
+  or styled** — `report.md`, `report.json`, `report.jsonl`, `broken-noradids.ndjson`, the
+  `.broken.txt` sidecar, the `--report json` envelope, the `.clean-state.json` checkpoint, and
+  `cleaned/*.txt` all stay exactly as their contracts assert (`report.json` is byte-identical to
+  the `--report json` stdout envelope); `rich` styling is confined to the stderr/stdout panel UI;
 - weaken the **atomic + durable commit** (`durable_replace`) or the **host-aware out-dir lock**
   semantics; or
 - violate **validated transformation / correctness over recovery** (principles #1/#2).

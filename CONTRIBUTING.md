@@ -43,6 +43,7 @@ chain green + a changelog note (for `0.x` deps the leftmost non-zero component i
 
 ```bash
 uv run lintle clean             # Write cleaned output to data/output/
+uv run lintle report            # Re-render the last run's summary from report.json
 ```
 
 `uv run` executes a command inside the project virtual environment — no manual

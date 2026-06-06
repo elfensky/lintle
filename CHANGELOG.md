@@ -6,6 +6,21 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Added
+
+- A clean run now persists its run envelope as `report.json` in the output directory —
+  byte-identical to the `--report json` stdout output — alongside `report.md`,
+  `report.jsonl`, and `broken-noradids.ndjson`.
+- A new read-only `lintle report [out-dir]` subcommand re-renders a prior clean run's
+  aggregate summary from its `report.json` (text → panel on stdout; `--report json` →
+  the file's bytes verbatim). A missing or unreadable `report.json` exits `2`.
+
+### Changed
+
+- `clean` now renders a terminal-width-responsive **aggregate summary panel** to stderr at
+  the end of every run (replacing the per-file stdout summary dump); text-mode stdout is now
+  empty, and the per-file detail lives in `report.md` / `report.json`.
+
 ### Removed
 
 - The `lintle validate` subcommand (read-only audit mode) has been removed from the CLI.

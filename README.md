@@ -55,6 +55,9 @@ The console script is `lintle` (`python -m lintle …` is equivalent):
 # Produce cleaned output + quarantine sidecars
 uv run lintle clean [path]
 
+# Re-render a prior clean run's aggregate summary from its report.json
+uv run lintle report [out-dir]
+
 # Explain a rule ID or fix tag — definition, examples, source citation
 uv run lintle explain <TAG>
 
@@ -155,24 +158,26 @@ A `clean` run lays `--out-dir` out like this:
   of NORAD catalog numbers quarantined anywhere in the run (for programmatic consumers).
 - **`report.md`** — human-readable run report: corpus totals, % cleaned/quarantined, fix
   counts, the per-rule defect breakdown, a per-file table, and a per-NORAD breakdown.
+- **`report.json`** — the machine-readable run envelope, **byte-identical** to the
+  `--report json` stdout output. Persisted on every clean run so `lintle report` can
+  re-render the summary later without re-processing the corpus.
 
-A per-file summary is printed to stdout (and as JSON with `--report json`):
-
-```
-tle2022.txt   8,412,066 records   8,412,064 clean   3 quarantined   (1 orphan, 16,824,134 lines)
-  fixes:   trailing-backslash 8,412,064 | reconstructed-checksum 195,293
-  quarantined: TLE-CHK-001 1 | TLE-PAIR-001 1 | TLE-COL-001 1
-```
-
-`records` counts paired 2-line entries; `clean` are those that passed and were written;
-`quarantined` is everything routed to `broken/` (failed records **and** every orphan line);
-the parenthetical reports unpaired `orphan` lines and total physical `lines`. The invariant
-is `records + orphan == clean + quarantined`. Defects key by the stable `RuleID` registry
+At the end of a clean run an **aggregate summary panel** is rendered to **stderr** —
+corpus totals, % cleaned/quarantined, and the top fix / quarantine rules — sized to the
+terminal width (with an ASCII-bar fallback off a TTY). Text-mode stdout stays empty; the
+full machine summary is `report.json` (or `--report json` on stdout). `records` counts
+paired 2-line entries; `clean` are those that passed and were written; `quarantined` is
+everything routed to `broken/` (failed records **and** every orphan line). The invariant is
+`records + orphan == clean + quarantined`. Defects key by the stable `RuleID` registry
 (`TLE-CHK-001`, `TLE-PAIR-001`, …) so one identifier names a defect across every artifact.
 
-Live progress during a long run is written to **stderr** (so it never pollutes the stdout
-summary or a `--report json` pipe): a size roster up front, per-file byte/record progress
-with throughput and ETA, and an `[k/N]` line as each file finishes.
+`lintle report [out-dir]` re-renders that panel to **stdout** from a prior run's
+`report.json` (or echoes the JSON verbatim with `--report json`); a missing or unreadable
+`report.json` exits `2`.
+
+Live progress during a long run is also written to **stderr** (so it never pollutes the
+stdout `--report json` pipe): a size roster up front, per-file byte/record progress with
+throughput and ETA, and an `[k/N]` line as each file finishes.
 
 → Machine-readable contracts (`--report json` envelope, `report.jsonl`, the `.broken.txt`
 format, the checkpoint): [`ARCHITECTURE.md` §6](ARCHITECTURE.md#6-outputs--machine-readable-contracts).
