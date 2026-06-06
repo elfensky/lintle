@@ -9,7 +9,15 @@ import signal
 import pytest
 from rich.console import Console
 
-from lintle import cli, cli_progress, pipeline, report, resume
+from lintle import (
+    cli,
+    cli_progress,
+    pipeline,
+    process_control,
+    report,
+    resume,
+    thresholds,
+)
 
 
 class TestDiscoverPaths:
@@ -1020,7 +1028,7 @@ class TestShutdownHelpers:
     def test_ignore_sigint_sets_handler_to_ignore(self):
         original = signal.getsignal(signal.SIGINT)
         try:
-            cli._ignore_sigint()
+            process_control.ignore_sigint()
             assert signal.getsignal(signal.SIGINT) is signal.SIG_IGN
         finally:
             signal.signal(signal.SIGINT, original)
@@ -1038,7 +1046,7 @@ class TestShutdownHelpers:
                 self._processes = processes
 
         procs = {1: _FakeProc(), 2: _FakeProc()}
-        cli._terminate_workers(_FakeExecutor(procs))
+        process_control.terminate_workers(_FakeExecutor(procs))
         assert all(proc.terminated for proc in procs.values())
 
     def test_terminate_workers_falls_back_to_shutdown_when_processes_missing(self):
@@ -1057,7 +1065,7 @@ class TestShutdownHelpers:
                 self.shutdown_kwargs = kwargs
 
         executor = _NoPrivateExecutor()
-        cli._terminate_workers(executor)
+        process_control.terminate_workers(executor)
         assert executor.shutdown_kwargs == {"cancel_futures": True}
 
     def test_terminate_workers_warns_to_stderr_when_processes_missing(self, capsys):
@@ -1072,7 +1080,7 @@ class TestShutdownHelpers:
             def shutdown(self, **kwargs):
                 pass
 
-        cli._terminate_workers(_NoPrivateExecutor())
+        process_control.terminate_workers(_NoPrivateExecutor())
         err = capsys.readouterr().err
         assert "_processes" in err
 
@@ -1471,64 +1479,64 @@ class TestParseQuarantineThreshold:
     """
 
     def test_bare_integer_is_count_mode(self):
-        assert cli.parse_quarantine_threshold("100") == ("count", 100)
+        assert thresholds.parse_quarantine_threshold("100") == ("count", 100)
 
     def test_zero_is_count_zero(self):
-        assert cli.parse_quarantine_threshold("0") == ("count", 0)
+        assert thresholds.parse_quarantine_threshold("0") == ("count", 0)
 
     def test_trailing_percent_is_pct_mode(self):
-        assert cli.parse_quarantine_threshold("1%") == ("pct", 1.0)
+        assert thresholds.parse_quarantine_threshold("1%") == ("pct", 1.0)
 
     def test_zero_percent_is_valid(self):
-        assert cli.parse_quarantine_threshold("0%") == ("pct", 0.0)
+        assert thresholds.parse_quarantine_threshold("0%") == ("pct", 0.0)
 
     def test_hundred_percent_is_valid(self):
-        assert cli.parse_quarantine_threshold("100%") == ("pct", 100.0)
+        assert thresholds.parse_quarantine_threshold("100%") == ("pct", 100.0)
 
     def test_fractional_percent(self):
-        assert cli.parse_quarantine_threshold("1.5%") == ("pct", 1.5)
+        assert thresholds.parse_quarantine_threshold("1.5%") == ("pct", 1.5)
 
     def test_surrounding_whitespace_tolerated(self):
-        assert cli.parse_quarantine_threshold("  100  ") == ("count", 100)
-        assert cli.parse_quarantine_threshold("  1%  ") == ("pct", 1.0)
+        assert thresholds.parse_quarantine_threshold("  100  ") == ("count", 100)
+        assert thresholds.parse_quarantine_threshold("  1%  ") == ("pct", 1.0)
 
     def test_negative_count_rejected_with_legacy_message(self):
         # Preserves the issue-#13 substring required by the existing
         # negative-value integration test in TestMaxQuarantinedThreshold.
         with pytest.raises(ValueError, match=r"--max-quarantined must be >= 0"):
-            cli.parse_quarantine_threshold("-1")
+            thresholds.parse_quarantine_threshold("-1")
 
     def test_non_integer_count_rejected(self):
         # Counts are whole records; "1.5" with no `%` is not a count.
         with pytest.raises(ValueError, match="invalid value"):
-            cli.parse_quarantine_threshold("1.5")
+            thresholds.parse_quarantine_threshold("1.5")
 
     def test_non_numeric_rejected(self):
         with pytest.raises(ValueError, match="invalid value"):
-            cli.parse_quarantine_threshold("abc")
+            thresholds.parse_quarantine_threshold("abc")
 
     def test_bare_percent_rejected(self):
         with pytest.raises(ValueError, match="invalid percentage"):
-            cli.parse_quarantine_threshold("%")
+            thresholds.parse_quarantine_threshold("%")
 
     def test_pct_over_one_hundred_rejected(self):
         with pytest.raises(ValueError, match=r"percentage must be in 0\.\.100"):
-            cli.parse_quarantine_threshold("150%")
+            thresholds.parse_quarantine_threshold("150%")
 
     def test_pct_negative_rejected(self):
         with pytest.raises(ValueError, match=r"percentage must be in 0\.\.100"):
-            cli.parse_quarantine_threshold("-1%")
+            thresholds.parse_quarantine_threshold("-1%")
 
     def test_pct_malformed_rejected(self):
         with pytest.raises(ValueError, match="invalid percentage"):
-            cli.parse_quarantine_threshold("1.2.3%")
+            thresholds.parse_quarantine_threshold("1.2.3%")
 
     def test_inner_whitespace_around_percent_tolerated(self):
         # A space between the number and the `%` is accepted: the helper
         # strips the inner whitespace before parsing the float, so the
         # value still resolves to the same percentage.
-        assert cli.parse_quarantine_threshold("1 %") == ("pct", 1.0)
-        assert cli.parse_quarantine_threshold("  1.5 %  ") == ("pct", 1.5)
+        assert thresholds.parse_quarantine_threshold("1 %") == ("pct", 1.0)
+        assert thresholds.parse_quarantine_threshold("  1.5 %  ") == ("pct", 1.5)
 
 
 class TestIsInteractive:
@@ -1597,7 +1605,7 @@ class TestSignalHandling:
         # rest; the file interrupted mid-stream restarts. The message must not
         # promise to "continue where it stopped" — resume has no intra-file
         # granularity, and that wording read as a broken resume.
-        msg = cli._format_cancel_message(done=12, total=29)
+        msg = process_control.format_cancel_message(done=12, total=29)
         assert "12/29" in msg
         assert "--no-resume" in msg
         assert "same --out-dir" in msg
@@ -1609,14 +1617,14 @@ class TestSignalHandling:
         # from the beginning. The message must say so rather than imply
         # resumable progress (the single-file Ctrl-C field report). It also must
         # not dangle --no-resume, since there is no checkpoint to ignore.
-        msg = cli._format_cancel_message(done=0, total=1)
+        msg = process_control.format_cancel_message(done=0, total=1)
         assert "0/1" in msg
         assert "continue where it stopped" not in msg
         assert "starts over" in msg.lower()
 
     def test_signal_exit_code(self):
-        assert cli._signal_exit_code(signal.SIGINT) == 130
-        assert cli._signal_exit_code(signal.SIGTERM) == 143
+        assert process_control.signal_exit_code(signal.SIGINT) == 130
+        assert process_control.signal_exit_code(signal.SIGTERM) == 143
 
     def test_sigterm_sighup_traps_installed_and_raise(
         self, tmp_path, line1, line2, monkeypatch

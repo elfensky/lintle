@@ -79,9 +79,6 @@ def discover_paths(path):
     return []
 
 
-parse_quarantine_threshold = thresholds.parse_quarantine_threshold
-
-
 def check_paths(path, using_default):
     """Return a user-facing error string if ``path`` does not exist, else
     ``None``. ``using_default`` tailors the message for the case where the
@@ -350,12 +347,6 @@ def _output_sizes(out_dir, stats):
     return sizes
 
 
-_signal_exit_code = process_control.signal_exit_code
-_format_cancel_message = process_control.format_cancel_message
-_ignore_sigint = process_control.ignore_sigint
-_terminate_workers = process_control.terminate_workers
-
-
 def resolve_jobs(explicit, cpu_count, n_files):
     """Resolve the worker count for a run. An explicit ``--jobs`` is the user's
     deliberate choice and is returned unchanged; otherwise default to one fewer
@@ -364,9 +355,6 @@ def resolve_jobs(explicit, cpu_count, n_files):
     if explicit is not None:
         return explicit
     return max(1, min((cpu_count or 1) - 1, n_files))
-
-
-_RunPlan = run_planning.RunPlan
 
 
 def _resolve_clean_plan(args, files, file_sizes):
@@ -395,9 +383,9 @@ def _run_workers(args, files, plan, jobs, console, sizes):
         futures_module=concurrent.futures,
         multiprocessing_module=multiprocessing,
         signal_module=signal,
-        ignore_sigint=_ignore_sigint,
-        terminate_workers=_terminate_workers,
-        format_cancel_message=_format_cancel_message,
+        ignore_sigint=process_control.ignore_sigint,
+        terminate_workers=process_control.terminate_workers,
+        format_cancel_message=process_control.format_cancel_message,
         output_sizes=_output_sizes,
     )
 
@@ -412,7 +400,7 @@ def main(argv=None):
     or a stale/corrupt/declined resume); ``130``/``143``/``129`` = terminated
     by SIGINT/SIGTERM/SIGHUP. The threshold accepts either an integer record
     count (``--max-quarantined 100``) or a percentage of routed records
-    (``--max-quarantined 1%``); see :func:`parse_quarantine_threshold`.
+    (``--max-quarantined 1%``); see :func:`thresholds.parse_quarantine_threshold`.
     """
     args = build_parser().parse_args(argv)
 
@@ -447,7 +435,7 @@ def main(argv=None):
         return 2
 
     try:
-        threshold_mode, quarantine_threshold = parse_quarantine_threshold(
+        threshold_mode, quarantine_threshold = thresholds.parse_quarantine_threshold(
             args.max_quarantined
         )
     except ValueError as exc:
@@ -505,7 +493,7 @@ def main(argv=None):
                 return plan.exit_code
         else:
             # validate processes every discovered file; no resume, no checkpoint.
-            plan = _RunPlan(files_to_process=files)
+            plan = run_planning.RunPlan(files_to_process=files)
         # Resolve the worker count now that files_to_process is final: an
         # explicit --jobs is honoured as-is; the default is CPU count - 1,
         # capped at the file count and floored at one (issue #53 §2.3).
@@ -545,7 +533,7 @@ def main(argv=None):
         )
 
         if interrupted:
-            return _signal_exit_code(interrupted_signo)
+            return process_control.signal_exit_code(interrupted_signo)
 
         all_stats.sort(key=lambda stats: stats.src_name)
 
