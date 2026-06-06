@@ -1,42 +1,31 @@
 """Process-pool dispatch for validate and clean runs."""
 
-from lintle import cli_progress, pipeline, report, resume, term
+import concurrent.futures
+import multiprocessing
+import signal
+
+from lintle import cli_progress, pipeline, process_control, report, resume, term
 
 
-def run_workers(
-    args,
-    files,
-    plan,
-    jobs,
-    console,
-    sizes,
-    *,
-    futures_module,
-    multiprocessing_module,
-    signal_module,
-    ignore_sigint,
-    terminate_workers,
-    format_cancel_message,
-    output_sizes,
-):
+def run_workers(args, files, plan, jobs, console, sizes):
     """Dispatch ``plan.files_to_process`` across a worker pool."""
     all_stats = list(plan.reused_stats)
     failed_files = []
     interrupted = False
-    interrupted_signo = signal_module.SIGINT
-    with multiprocessing_module.Manager() as manager:
+    interrupted_signo = signal.SIGINT
+    with multiprocessing.Manager() as manager:
         progress_queue = manager.Queue()
-        executor = futures_module.ProcessPoolExecutor(
-            max_workers=jobs, initializer=ignore_sigint
+        executor = concurrent.futures.ProcessPoolExecutor(
+            max_workers=jobs, initializer=process_control.ignore_sigint
         )
-        caught = {"signo": signal_module.SIGINT}
+        caught = {"signo": signal.SIGINT}
 
         def _raise_interrupt(signo, _frame):
             caught["signo"] = signo
             raise KeyboardInterrupt
 
-        prev_term = signal_module.signal(signal_module.SIGTERM, _raise_interrupt)
-        prev_hup = signal_module.signal(signal_module.SIGHUP, _raise_interrupt)
+        prev_term = signal.signal(signal.SIGTERM, _raise_interrupt)
+        prev_hup = signal.signal(signal.SIGHUP, _raise_interrupt)
         try:
             futures = {
                 executor.submit(
@@ -55,7 +44,7 @@ def run_workers(
                 sizes,
                 already_done=len(plan.completed),
             ) as progress:
-                for future in futures_module.as_completed(futures):
+                for future in concurrent.futures.as_completed(futures):
                     path = futures[future]
                     try:
                         stats = future.result()
@@ -68,7 +57,7 @@ def run_workers(
                         if args.command == "clean":
                             plan.completed[path] = {
                                 "summary": report.summary_dict(stats),
-                                "outputs": output_sizes(args.out_dir, stats),
+                                "outputs": resume.output_sizes(args.out_dir, stats),
                             }
                             resume.write_checkpoint(
                                 args.out_dir,
@@ -79,15 +68,19 @@ def run_workers(
                                 ),
                             )
         except KeyboardInterrupt:
-            signal_module.signal(signal_module.SIGINT, signal_module.SIG_IGN)
+            signal.signal(signal.SIGINT, signal.SIG_IGN)
             interrupted = True
             interrupted_signo = caught["signo"]
-            terminate_workers(executor)
+            process_control.terminate_workers(executor)
             executor.shutdown(wait=False, cancel_futures=True)
-            term.note(format_cancel_message(done=len(plan.completed), total=len(files)))
+            term.note(
+                process_control.format_cancel_message(
+                    done=len(plan.completed), total=len(files)
+                )
+            )
         else:
             executor.shutdown(wait=True)
         finally:
-            signal_module.signal(signal_module.SIGTERM, prev_term)
-            signal_module.signal(signal_module.SIGHUP, prev_hup)
+            signal.signal(signal.SIGTERM, prev_term)
+            signal.signal(signal.SIGHUP, prev_hup)
     return all_stats, failed_files, interrupted, interrupted_signo

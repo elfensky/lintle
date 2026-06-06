@@ -16,7 +16,10 @@ from lintle import (
     process_control,
     report,
     resume,
+    run_planning,
+    term,
     thresholds,
+    worker_pool,
 )
 
 
@@ -415,14 +418,16 @@ class TestMain:
             return fake_executor
 
         monkeypatch.setattr(
-            cli.concurrent.futures, "ProcessPoolExecutor", _capture_executor
+            worker_pool.concurrent.futures, "ProcessPoolExecutor", _capture_executor
         )
 
         def _as_completed_one(futures):
             # Yield the one fake future so the collection loop can call result()
             yield list(futures.keys())[0]
 
-        monkeypatch.setattr(cli.concurrent.futures, "as_completed", _as_completed_one)
+        monkeypatch.setattr(
+            worker_pool.concurrent.futures, "as_completed", _as_completed_one
+        )
 
         original_sigint = signal.getsignal(signal.SIGINT)
         try:
@@ -601,7 +606,7 @@ class TestMain:
         def _interrupt(_futures):
             raise KeyboardInterrupt
 
-        monkeypatch.setattr(cli.concurrent.futures, "as_completed", _interrupt)
+        monkeypatch.setattr(worker_pool.concurrent.futures, "as_completed", _interrupt)
         # main()'s Ctrl-C handler sets SIGINT to SIG_IGN and never restores it;
         # save and restore it so later tests can still be interrupted.
         original_sigint = signal.getsignal(signal.SIGINT)
@@ -644,13 +649,13 @@ class TestMain:
                 pass
 
         monkeypatch.setattr(
-            cli.concurrent.futures, "ProcessPoolExecutor", _FakeExecutor
+            worker_pool.concurrent.futures, "ProcessPoolExecutor", _FakeExecutor
         )
 
         def _interrupt(_futures):
             raise KeyboardInterrupt
 
-        monkeypatch.setattr(cli.concurrent.futures, "as_completed", _interrupt)
+        monkeypatch.setattr(worker_pool.concurrent.futures, "as_completed", _interrupt)
 
         original_sigint = signal.getsignal(signal.SIGINT)
         try:
@@ -1541,47 +1546,47 @@ class TestParseQuarantineThreshold:
 
 class TestIsInteractive:
     def test_requires_stdin_tty_and_no_ci(self, monkeypatch):
-        monkeypatch.setattr(cli.sys, "stdin", io.StringIO())  # not a tty
+        monkeypatch.setattr(term.sys, "stdin", io.StringIO())  # not a tty
         monkeypatch.delenv("CI", raising=False)
         monkeypatch.delenv("NONINTERACTIVE", raising=False)
-        assert cli._is_interactive() is False
+        assert term.is_interactive() is False
 
     def test_ci_env_forces_non_interactive(self, monkeypatch):
         class _TTY(io.StringIO):
             def isatty(self):
                 return True
 
-        monkeypatch.setattr(cli.sys, "stdin", _TTY())
+        monkeypatch.setattr(term.sys, "stdin", _TTY())
         monkeypatch.setenv("CI", "true")
-        assert cli._is_interactive() is False
+        assert term.is_interactive() is False
 
     def test_interactive_when_stdin_tty_and_no_ci(self, monkeypatch):
         class _TTY(io.StringIO):
             def isatty(self):
                 return True
 
-        monkeypatch.setattr(cli.sys, "stdin", _TTY())
+        monkeypatch.setattr(term.sys, "stdin", _TTY())
         monkeypatch.delenv("CI", raising=False)
         monkeypatch.delenv("NONINTERACTIVE", raising=False)
-        assert cli._is_interactive() is True
+        assert term.is_interactive() is True
 
 
 class TestPromptYesNo:
     def test_enter_takes_default(self, monkeypatch):
-        monkeypatch.setattr(cli.sys, "stdin", io.StringIO("\n"))
-        assert cli._prompt_yes_no("go? ", default=True) is True
+        monkeypatch.setattr(term.sys, "stdin", io.StringIO("\n"))
+        assert term.prompt_yes_no("go? ", default=True) is True
 
     def test_explicit_no(self, monkeypatch):
-        monkeypatch.setattr(cli.sys, "stdin", io.StringIO("n\n"))
-        assert cli._prompt_yes_no("go? ", default=True) is False
+        monkeypatch.setattr(term.sys, "stdin", io.StringIO("n\n"))
+        assert term.prompt_yes_no("go? ", default=True) is False
 
     def test_eof_returns_none(self, monkeypatch):
-        monkeypatch.setattr(cli.sys, "stdin", io.StringIO(""))
-        assert cli._prompt_yes_no("go? ", default=True) is None
+        monkeypatch.setattr(term.sys, "stdin", io.StringIO(""))
+        assert term.prompt_yes_no("go? ", default=True) is None
 
     def test_garbage_then_abort(self, monkeypatch):
-        monkeypatch.setattr(cli.sys, "stdin", io.StringIO("maybe\nhuh\nwhat\n"))
-        assert cli._prompt_yes_no("go? ", default=True) is None
+        monkeypatch.setattr(term.sys, "stdin", io.StringIO("maybe\nhuh\nwhat\n"))
+        assert term.prompt_yes_no("go? ", default=True) is None
 
 
 class TestScrubOutputs:
@@ -1591,12 +1596,12 @@ class TestScrubOutputs:
             d = out / sub
             d.mkdir()
             (d / "stale.txt").write_text("old")
-        cli._scrub_outputs(str(out))
+        run_planning.scrub_outputs(str(out))
         for sub in ("cleaned", "broken", ".shards"):
             assert not (out / sub).exists()
 
     def test_noop_on_empty_dir(self, tmp_path):
-        cli._scrub_outputs(str(tmp_path))  # must not raise
+        run_planning.scrub_outputs(str(tmp_path))  # must not raise
 
 
 class TestSignalHandling:
@@ -1640,13 +1645,13 @@ class TestSignalHandling:
         out = tmp_path / "out"
 
         registered = {}
-        real_signal = cli.signal.signal
+        real_signal = signal.signal
 
         def recording_signal(signum, handler):
             registered.setdefault(signum, []).append(handler)
             return real_signal(signum, handler)
 
-        monkeypatch.setattr(cli.signal, "signal", recording_signal)
+        monkeypatch.setattr(signal, "signal", recording_signal)
         rc = cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
         assert rc == 0
 

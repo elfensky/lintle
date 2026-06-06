@@ -11,12 +11,13 @@ library.
 
 import contextlib
 import dataclasses
+import datetime
 import enum
 import hashlib
 import json
 import os
 
-from lintle import __version__, fsutil
+from lintle import __version__, fsutil, stem
 
 CHECKPOINT_NAME = ".clean-state.json"
 SCHEMA_VERSION = 3
@@ -54,6 +55,27 @@ def input_fingerprint(path):
         "head_sha256": hashlib.sha256(head).hexdigest(),
         "tail_sha256": hashlib.sha256(tail).hexdigest(),
     }
+
+
+def run_started_stamp():
+    """ISO-8601 UTC timestamp for archive/lock naming. Isolated so the rest of the
+    resume logic stays clock-free and testable."""
+    return datetime.datetime.now(datetime.UTC).strftime("%Y%m%dT%H%M%SZ")
+
+
+def output_sizes(out_dir, stats):
+    """Map each output basename this file produced to its on-disk size, captured
+    at completion for the resume integrity check (spec §3.6). The broken sidecar
+    is present only when something was quarantined."""
+    sizes = {}
+    cleaned = stem(stats.src_name) + ".cleaned.txt"
+    with contextlib.suppress(OSError):
+        sizes[cleaned] = os.path.getsize(os.path.join(out_dir, "cleaned", cleaned))
+    if stats.quarantined_count:
+        broken = stem(stats.src_name) + ".broken.txt"
+        with contextlib.suppress(OSError):
+            sizes[broken] = os.path.getsize(os.path.join(out_dir, "broken", broken))
+    return sizes
 
 
 def build_checkpoint(*, inputs, completed, run_identity):
