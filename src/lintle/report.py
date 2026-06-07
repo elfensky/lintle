@@ -22,7 +22,7 @@ from lintle.diagnostics import RULES, Diagnostic, RepairTier, RuleID
 PER_RULE_EXEMPLAR_BOUND = 5
 
 
-@dataclasses.dataclass
+@dataclasses.dataclass(slots=True)
 class QuarantineEntry:
     """One quarantined record, rendered into ``.broken.txt``.
 
@@ -48,7 +48,7 @@ class QuarantineEntry:
     norad_id: int | None = None
 
 
-@dataclasses.dataclass(frozen=True)
+@dataclasses.dataclass(frozen=True, slots=True)
 class FileSample:
     """Immutable, per-file bounded sample of quarantined records (issue #19).
 
@@ -104,7 +104,7 @@ class FileSample:
         return cls(buckets={}, cap=cap, dropped_count={})
 
 
-@dataclasses.dataclass
+@dataclasses.dataclass(slots=True)
 class NoradTracker:
     """Per-NORAD per-rule quarantine accounting for one source file (issue #47).
 
@@ -140,7 +140,7 @@ class NoradTracker:
         per_rule[rule_id] = per_rule.get(rule_id, 0) + 1
 
 
-@dataclasses.dataclass
+@dataclasses.dataclass(slots=True)
 class FileStats:
     """Accumulated results for one processed source file.
 
