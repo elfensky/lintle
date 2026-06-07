@@ -1,6 +1,7 @@
 """Corpus-wide report aggregation helpers."""
 
 import dataclasses
+from collections import Counter
 
 from lintle.categories import FixClass
 from lintle.diagnostics import RuleID
@@ -22,25 +23,25 @@ class Totals:
 
 def aggregate(all_stats):
     """Sum every file's stats into corpus-wide totals and count dicts."""
-    fixes = {}
-    quarantines = {}
-    dropped = {}
+    fixes = Counter()
+    quarantines = Counter()
+    dropped = Counter()
     for stats in all_stats:
-        for key, value in stats.fix_counts.items():
-            fixes[key] = fixes.get(key, 0) + value
-        for key, value in stats.quarantine_counts.items():
-            quarantines[key] = quarantines.get(key, 0) + value
-        for key, value in stats.quarantine_sample.dropped_count.items():
-            dropped[key] = dropped.get(key, 0) + value
+        fixes.update(stats.fix_counts)
+        quarantines.update(stats.quarantine_counts)
+        dropped.update(stats.quarantine_sample.dropped_count)
     return Totals(
         paired=sum(s.paired_records for s in all_stats),
         orphans=sum(s.orphan_entries for s in all_stats),
         lines_seen=sum(s.input_lines_seen for s in all_stats),
         clean=sum(s.clean_count for s in all_stats),
         quarantined=sum(s.quarantined_count for s in all_stats),
-        fixes=fixes,
-        quarantines=quarantines,
-        dropped=dropped,
+        # dict() so Totals holds plain dicts (its declared type); Counter
+        # preserves first-seen key order, so the JSON envelope's unsorted
+        # fix_counts/quarantine_counts stay byte-identical.
+        fixes=dict(fixes),
+        quarantines=dict(quarantines),
+        dropped=dict(dropped),
     )
 
 
