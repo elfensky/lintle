@@ -70,6 +70,18 @@ output shows failures.
   class — match that established style; do not expand to Args/Returns/Raises blocks.
 - `ruff` for linting and formatting, configured in `pyproject.toml` (rule sets `E`, `F`,
   `I`, `UP`, `B`, `SIM`; 88-column lines).
+- **Modern Python (3.14) idioms.** `ruff`'s `UP`/`SIM` sets auto-enforce most of these on
+  every commit — f-strings, `X | None` unions, builtin generics (`list[bytes]`),
+  `contextlib.suppress`, PEP 758 `except A, B:`. Three conventions `ruff` does *not*
+  enforce, so apply them by hand for consistency:
+  - **`match`** for 3-or-more-way type/shape dispatch — not an `isinstance`/`elif` chain
+    (a single 2-way `isinstance` check stays a plain `if`).
+  - **`@dataclasses.dataclass(slots=True)`** on every dataclass (add `frozen=True` when
+    immutable). Slotted dataclasses pickle correctly across the worker pool — keep it that
+    way (no `__dict__`-dependent tricks).
+  - **`collections.Counter`** (`.update()`) for tally/accumulate loops — not
+    `d[k] = d.get(k, 0) + 1`. Convert back with `dict()` at any byte-deterministic output
+    boundary so first-seen key order — and thus the JSON bytes — is preserved.
 - `src/` layout — all package code lives under `src/lintle/`.
 - Run `uv run ruff check .` and `uv run ruff format --check .` before committing.
 
