@@ -172,31 +172,32 @@ class ProgressDisplay:
             return
         with self._lock:
             for msg in msgs:
-                if isinstance(msg, pipeline.FileProgress):
-                    self._records += msg.records_delta
-                    self._file_records[msg.name] = (
-                        self._file_records.get(msg.name, 0) + msg.records_delta
-                    )
-                    if self._live and msg.name in self._tasks:
-                        self._progress.update(
-                            self._tasks[msg.name],
-                            advance=msg.bytes_delta,
-                            detail=f"{self._file_records[msg.name]:,} rec",
+                match msg:
+                    case pipeline.FileProgress():
+                        self._records += msg.records_delta
+                        self._file_records[msg.name] = (
+                            self._file_records.get(msg.name, 0) + msg.records_delta
                         )
-                elif isinstance(msg, pipeline.FileStarted):
-                    self._file_records.setdefault(msg.name, 0)
-                    if self._live:
-                        self._tasks[msg.name] = self._progress.add_task(
-                            msg.name,
-                            label=msg.name,
-                            kind="file",
-                            total=self._sizes.get(msg.name),
-                            detail="0 rec",
-                        )
-                elif isinstance(msg, pipeline.FileEnded):
-                    if self._live and msg.name in self._tasks:
-                        self._progress.remove_task(self._tasks.pop(msg.name))
-                    self._file_records.pop(msg.name, None)
+                        if self._live and msg.name in self._tasks:
+                            self._progress.update(
+                                self._tasks[msg.name],
+                                advance=msg.bytes_delta,
+                                detail=f"{self._file_records[msg.name]:,} rec",
+                            )
+                    case pipeline.FileStarted():
+                        self._file_records.setdefault(msg.name, 0)
+                        if self._live:
+                            self._tasks[msg.name] = self._progress.add_task(
+                                msg.name,
+                                label=msg.name,
+                                kind="file",
+                                total=self._sizes.get(msg.name),
+                                detail="0 rec",
+                            )
+                    case pipeline.FileEnded():
+                        if self._live and msg.name in self._tasks:
+                            self._progress.remove_task(self._tasks.pop(msg.name))
+                        self._file_records.pop(msg.name, None)
             if self._live:
                 self._update_overall()
 
