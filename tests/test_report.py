@@ -813,3 +813,19 @@ class TestWriteRunJson:
         report.write_run_json(str(a), self._envelope())
         report.write_run_json(str(b), self._envelope())
         assert a.read_bytes() == b.read_bytes()
+
+
+class TestEnvelopeRawNumbers:
+    """The machine envelope carries raw numbers, never humanized strings —
+    guards against a humanize leak into byte-deterministic output."""
+
+    def test_elapsed_and_counts_are_numbers_not_strings(self):
+        env = report.build_run_envelope(
+            [report.FileStats(src_name="tle.txt", elapsed_seconds=12.0)],
+            command="clean",
+            started_at="2026-06-07T00:00:00Z",
+            elapsed_seconds=124.0,
+        )
+        assert isinstance(env["run"]["elapsed_seconds"], float)
+        assert isinstance(env["summary"]["files_processed"], int)
+        assert isinstance(env["files"][0]["elapsed_seconds"], float)
