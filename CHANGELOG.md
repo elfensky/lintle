@@ -6,6 +6,8 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-06-08
+
 ### Added
 
 - A clean run now persists its run envelope as `report.json` in the output directory —
