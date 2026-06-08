@@ -88,7 +88,7 @@ diagnostics.py, categories.py, explain_examples.py    pure-data leaves (no I/O)
 | `fsutil.py` | `durable_replace` (the one atomic+fsync commit path) and `out_dir_lock` (the host-aware out-dir lock). Stdlib only. |
 | `diff.py` | Read-only: per-rule delta between two runs' `report.jsonl` (`lintle diff`). |
 | `explain.py` | Read-only: renders rule/fix documentation (`lintle explain`). |
-| `summary.py` | Responsive aggregate-panel renderer over the `build_run_envelope` dict (plain/medium/wide tiers + ASCII-bar fallback), keyed off the target Console; backs `clean`'s end-of-run stderr panel and the read-only `lintle report` (renders `<out-dir>/report.json`: text → panel on stdout, json → file bytes verbatim). Styled UI, not byte-bound. |
+| `summary.py` | Responsive aggregate-panel renderer over the `build_run_envelope` dict (plain/medium/wide tiers + ASCII-bar fallback), keyed off the target Console; backs `clean`'s end-of-run stderr panel and the read-only `lintle report` (renders `<out-dir>/report.json`: text → panel on stdout, json → file bytes verbatim). Imports `humanize` for human-readable panel durations (`precisedelta`). Styled UI, not byte-bound. |
 | `diagnostics.py` | Stable `RuleID` registry + structured `Diagnostic` dataclass + `RepairTier`. Pure data. |
 | `categories.py` | `FixClass` enum + `FixSpec` registry — the repair taxonomy. Pure data. |
 | `explain_examples.py` | Validator-verified examples + citations backing `explain`. Pure data. |
@@ -96,7 +96,7 @@ diagnostics.py, categories.py, explain_examples.py    pure-data leaves (no I/O)
 | `process_control.py` | Signal/worker shutdown helpers (SIGINT setup, fast pool termination, cancel/exit-code) used by `cli.py` and `worker_pool.py`. |
 | `term.py` | Two shared `rich` Consoles — `stderr_console` for status/errors, `stdout_console` for the `report` result view — the `error:` / `warning:` / `note` / `prompt` emitters, and the `is_interactive` / `prompt_yes_no` stdin helpers. |
 | `cli.py` | argparse, globbing, and top-level `clean` orchestration: delegates preflight to `run_planning`, dispatch to `worker_pool`, signal/shutdown to `process_control`, the quality-gate exit policy to `thresholds`, run finalization to `output_artifacts`, and the aggregate panel / `report` render to `summary`; owns the resulting process exit code. |
-| `cli_progress.py` | Rich presentation leaf for `clean`: the live `ProgressDisplay`, the pre-run `render_roster`, and the `status` spinner. Consumes `pipeline`'s typed progress messages. |
+| `cli_progress.py` | Rich presentation leaf for `clean`: the live `ProgressDisplay`, the pre-run `render_roster`, and the `status` spinner. Consumes `pipeline`'s typed progress messages. Imports `humanize` for human-readable roster sizes (`naturalsize(gnu=True)`). |
 
 `tle.py` and the data leaves carry no I/O. `report_writers.py` depends on `report.py` (never
 the reverse), so the structured writers and the renderers stay acyclic.
@@ -502,9 +502,13 @@ so no orphans from a differently-scoped prior run linger.
 
 ## 7. Runtime-dependency policy
 
-The runtime is lean by policy, not dogma. The current runtime dependency is **`rich>=15,<16`**
-(terminal rendering for the `clean` progress UI). `sgp4` and `pytest` are dev-only; `sgp4` is a
-test oracle and must never be imported at runtime.
+The runtime is lean by policy, not dogma. The current runtime dependencies are **`rich>=15,<16`**
+(terminal rendering for the `clean` progress UI) and **`humanize>=4,<5`** (human-readable
+durations and sizes in the human display — `precisedelta` for the panel duration, `naturalsize`
+for the roster sizes). `humanize` is confined to the human stderr/stdout display and never
+touches structured or byte-deterministic output (`report.*`, the `.broken.txt` sidecar, the
+checkpoint, `cleaned/*`, the `--report json` envelope, `broken-noradids.ndjson`). `sgp4` and
+`pytest` are dev-only; `sgp4` is a test oracle and must never be imported at runtime.
 
 **The bar is relaxed.** A third-party runtime dependency may be added when it advances the aim
 of a stable, maintainable, easy-to-understand app — i.e. when it is **popular, actively
@@ -572,10 +576,12 @@ judgement under the relaxed bar that can be revisited.
 | `textual` | Reject (not worth it) | Full TUI framework; we want a progress block, not an app. |
 | `blessed` / `prompt_toolkit` | Reject (not worth it) | Lower-level; still ~50 lines of glue. `rich` fits better. |
 | **`rich`** | **Adopted (issue #53)** | Popular, well-maintained terminal renderer; drives the `clean` stderr progress UI, replacing ~150 lines of hand-rolled ANSI. Pure-Python; imported only by the `cli_progress.py` and `term.py` presentation leaves — callers such as `cli.py` and `output_artifacts.py` reach it through them, never directly — and every byte goes to stderr, so no streaming, memory, or structured-output impact. |
+| **`humanize`** | **Adopted (2026-06-07)** | Human-display durations (`precisedelta`) and roster sizes (`naturalsize(gnu=True)`); pure-Python, zero transitive deps; confined to `summary.py` and `cli_progress.py` — stderr/stdout panel only, never structured output. A 2026-06-07 re-audit re-confirmed all other candidates as rejected or deferred for the reasons already tabled. |
 | `zstandard` | Defer (trigger-gated) | Only on a *measured* output-size / transfer bottleneck; until then stdlib `gzip`. |
 
 Dev-only (exempt; record purpose if nontrivial): `sgp4` (test oracle), `pytest`, `pytest-cov`,
-`ruff`; candidates `hypothesis`, `pytest-xdist`.
+`ruff`, `hypothesis` (property-based validator/repair tests), `pytest-xdist` (parallel suite —
+default run is `pytest -n auto`).
 
 ---
 

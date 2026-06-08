@@ -14,12 +14,26 @@ All notable changes to this project are documented in this file. The format is b
 - A new read-only `lintle report [out-dir]` subcommand re-renders a prior clean run's
   aggregate summary from its `report.json` (text → panel on stdout; `--report json` →
   the file's bytes verbatim). A missing or unreadable `report.json` exits `2`.
+- New runtime dependency: **`humanize>=4,<5`** — human-readable durations and sizes in
+  the human display (panel duration via `precisedelta`, roster sizes via
+  `naturalsize(gnu=True)`). Pure-Python, zero transitive deps; confined to `summary.py`
+  and `cli_progress.py` (stderr/stdout panel only — structured output is unaffected).
+- New dev dependencies: **`hypothesis>=6,<7`** (property-based tests for the validator
+  and repair logic) and **`pytest-xdist>=3,<4`** (parallel test execution — the default
+  suite now runs with `-n auto`).
 
 ### Changed
 
 - `clean` now renders a terminal-width-responsive **aggregate summary panel** to stderr at
   the end of every run (replacing the per-file stdout summary dump); text-mode stdout is now
   empty, and the per-file detail lives in `report.md` / `report.json`.
+- The `clean` summary panel now shows elapsed time in human-readable form (e.g. "2 minutes
+  and 4 seconds" instead of raw seconds) and the pre-run roster shows file sizes in
+  `gnu`-unit notation (e.g. "3.0G") via `humanize`. Fixes a roster unit bug where the old
+  hand-rolled `_format_size` used binary (1024-based) division but decimal labels — so
+  3 GiB rendered as "3.0 GB" (binary value, wrong "GB" label) rather than the correct
+  "3.0G"; `naturalsize(gnu=True)` is now used consistently. Display-format change only —
+  structured outputs carry raw numbers as before.
 
 ### Removed
 

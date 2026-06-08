@@ -17,8 +17,8 @@ are the current truth.
 
 ## Tech Stack
 
-Python 3.14 · uv · lean runtime (**`rich`** — the one third-party dep) · `sgp4` (dev-only
-test oracle) · `pytest` · `pytest-cov` · `ruff`
+Python 3.14 · uv · lean runtime (**`rich`** + **`humanize`**) · `sgp4` (dev-only
+test oracle) · `pytest` · `pytest-cov` · `pytest-xdist` · `hypothesis` · `ruff`
 
 **Runtime dependencies** are governed by a *relaxed* policy (revised 2026-05-31): a popular,
 actively-maintained library that genuinely reduces the code we'd otherwise own should be
@@ -31,10 +31,11 @@ invariants**: one validator definition (Critical Rule #4), constant-memory strea
 commit + host-aware lock. The canonical rule and the considered/deferred table live in
 [`ARCHITECTURE.md` §7](ARCHITECTURE.md#7-runtime-dependency-policy); the original rationale is
 archived under `docs/superpowers/archive/specs/2026-05-28-runtime-dependency-policy-design.md`.
-**Current runtime deps: `rich>=15,<16`** (terminal rendering for `clean`) — a relaxed-bar audit
-re-evaluated every
-candidate and still adopted none, since each trips a hard invariant or removes ~0 code. `sgp4`
-and `pytest` are dev-only; `sgp4` is a test oracle and must never be imported at runtime.
+**Current runtime deps: `rich>=15,<16`** (terminal rendering for `clean`) and
+**`humanize>=4,<5`** (human-readable durations + sizes in the human display; confined to
+`summary.py` and `cli_progress.py` — never structured output). A 2026-06-07 relaxed-bar
+re-audit re-confirmed all other candidates as rejected or deferred. `sgp4` and `pytest` are
+dev-only; `sgp4` is a test oracle and must never be imported at runtime.
 
 ## Critical Rules — principles that must not be violated
 
@@ -92,7 +93,7 @@ src/lintle/
 ├── __main__.py    # python -m lintle entry point
 ├── __init__.py    # __version__, stem() filename helper
 ├── cli.py         # argparse, globbing, top-level clean orchestration, exit codes
-├── cli_progress.py # live multi-file progress display, file roster, status spinner (rich)
+├── cli_progress.py # live multi-file progress display, file roster, status spinner (rich+humanize)
 ├── run_planning.py # clean-run preflight: disk-space guard, output scrub, resume classification, RunPlan
 ├── worker_pool.py  # process-pool dispatch, progress collection, per-file failure + checkpoint
 ├── process_control.py # worker SIGINT setup, fast pool termination, cancel/exit-code helpers
@@ -105,7 +106,7 @@ src/lintle/
 ├── report_writers.py # structured-file writers: .broken.txt sidecar, report.jsonl findings, broken-noradids.ndjson, shard concat
 ├── resume.py      # single-run checkpoint for `clean --resume` (#56); run-stamp + output-size helpers
 ├── fsutil.py      # durable_replace — the one atomic+fsync commit path (issue #58)
-├── summary.py     # responsive aggregate-panel renderer + read-only `lintle report` (rich)
+├── summary.py     # responsive aggregate-panel renderer + read-only `lintle report` (rich+humanize)
 ├── term.py        # stderr+stdout Consoles + error/warning/note/prompt + is_interactive/prompt_yes_no (rich)
 ├── diff.py        # read-only: per-rule delta between two runs' report.jsonl (lintle diff)
 ├── explain.py     # read-only: renders rule/fix documentation (lintle explain)
@@ -134,17 +135,18 @@ structured-file writers leaf (the `.broken.txt` sidecar, the `report.jsonl` find
 shards, the corpus `broken-noradids.ndjson`, and the shard concat) depended on by
 `pipeline` and `cli`; it imports the dataclasses and the shared `format_diagnostic`
 renderer from `report.py` — one-way, never the reverse, so no cycle. `cli_progress.py`
-is a rich-only presentation leaf (the live `ProgressDisplay`, the pre-run
+is a rich+humanize presentation leaf (the live `ProgressDisplay`, the pre-run
 `render_roster`, and the `status` spinner) depended on by `cli`, `worker_pool`, and
 `output_artifacts`; it imports `pipeline`'s typed progress messages
-(`FileStarted`/`FileEnded`/`FileProgress`) to drive the display, so the chain
+(`FileStarted`/`FileEnded`/`FileProgress`) to drive the display and `humanize` for
+human-readable roster sizes (`naturalsize(gnu=True)`), so the chain
 `cli → worker_pool → cli_progress → pipeline` is one-way and acyclic. `fsutil.py` is a
 stdlib-only I/O leaf (the durable-commit helper) depended on by `pipeline`, `report`,
-`report_writers`, and `resume`. `summary.py` is a rich-only presentation leaf (the
+`report_writers`, and `resume`. `summary.py` is a rich+humanize presentation leaf (the
 responsive aggregate-panel renderer and the read-only `lintle report` entry that reads
 `<out-dir>/report.json`) depended on by `cli`; it imports the two shared Consoles from
-`term` and consumes the `build_run_envelope` dict shape, so `cli → summary → term`
-is one-way and acyclic. `term.py` is a rich-only terminal-IO leaf (the two shared
+`term`, `humanize` for human-readable panel durations (`precisedelta`), and consumes the
+`build_run_envelope` dict shape, so `cli → summary → term` is one-way and acyclic. `term.py` is a rich-only terminal-IO leaf (the two shared
 Consoles — `stderr_console` for status/errors, `stdout_console` for the report view —
 the `error`/`warning`/`note`/`prompt` emitters, and the `is_interactive` /
 `prompt_yes_no` stdin helpers) depended on by `cli`, `cli_progress`, `diff`,
@@ -161,13 +163,16 @@ structurally impossible.
 
 ```bash
 uv sync                            # Install, including dev deps (sgp4, pytest, ruff)
-uv run pytest                      # Full test suite
+uv run pytest                      # Full test suite (runs in parallel via -n auto)
 uv run pytest tests/test_tle.py::TestComputeChecksum   # A single test class
 uv run pytest --cov=lintle --cov-report=term-missing --cov-branch  # Tests + coverage
 uv run ruff check .                # Lint
 uv run ruff format --check .       # Format check
 uv run lintle clean             # Clean data/source/ -> data/output/
 ```
+
+> **`--pdb` caveat:** the default suite runs in parallel (`-n auto`); `--pdb` is incompatible
+> with `pytest-xdist`. Disable parallelism when debugging: `uv run pytest -n0 --pdb ...`.
 
 ## Working Style
 
