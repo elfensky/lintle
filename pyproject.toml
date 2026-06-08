@@ -44,6 +44,7 @@ dev = [
     "hypothesis>=6,<7",
     "pytest>=9.0,<10",
     "pytest-cov>=7.1,<8",
+    "pytest-xdist>=3,<4",
     "ruff>=0.15,<0.16",
     "sgp4>=2.25,<3",
 ]
@@ -79,4 +80,4 @@ testpaths = ["tests"]
 markers = [
     "slow: opt-in long-running tests, excluded from the default suite",
 ]
-addopts = "-m 'not slow'"
+addopts = "-m 'not slow' -n auto"
