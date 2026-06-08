@@ -1,5 +1,8 @@
 """Tests for lintle.tle — the TLE validator."""
 
+from hypothesis import given
+from hypothesis import strategies as st
+
 from lintle import tle
 
 
@@ -235,3 +238,31 @@ class TestSemanticBoundaries:
         body = line2[:26] + "       " + line2[33:68]  # eccentricity = 7 spaces
         errs = tle._check_semantics(body, 2)
         assert any("could not be parsed" in e for e in errs)
+
+
+class TestChecksumProperties:
+    """Property-based invariants for the mod-10 checksum."""
+
+    @given(
+        st.text(
+            alphabet=st.characters(min_codepoint=32, max_codepoint=126),
+            min_size=68,
+            max_size=68,
+        )
+    )
+    def test_checksum_is_a_single_digit(self, body):
+        assert tle.compute_checksum(body) in range(10)
+
+    @given(st.text(alphabet="0123456789 .-+", min_size=68, max_size=68))
+    def test_appended_checksum_satisfies_checksum_error(self, body):
+        line = body + str(tle.compute_checksum(body))
+        assert tle.checksum_error(line) is None
+
+    @given(
+        st.text(alphabet="0123456789 .-+", min_size=68, max_size=68),
+        st.integers(min_value=1, max_value=9),
+    )
+    def test_wrong_checksum_digit_is_rejected(self, body, offset):
+        correct = tle.compute_checksum(body)
+        wrong = (correct + offset) % 10
+        assert tle.checksum_error(body + str(wrong)) is not None
