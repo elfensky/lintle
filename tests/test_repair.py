@@ -187,3 +187,41 @@ class TestRepairContractProperties:
         )
         assert isinstance(result, repair.Accepted)
         assert FixClass.RECONSTRUCTED_CHECKSUM in result.fixes
+
+
+class TestRepairRecordComboCases:
+    """Multi-line failure orchestration: primary/related selection + tiers."""
+
+    def _bad_line(self):
+        # 69 chars that pass length but fail column layout (all 'Z').
+        return ("Z" * 69).encode("ascii")
+
+    def test_both_lines_fail_primary_is_line1_related_is_line2(self):
+        result = repair.repair_record(self._bad_line(), 1, self._bad_line(), 2)
+        assert isinstance(result, repair.Quarantined)
+        assert result.primary.source_line_nos == (1,)
+        assert len(result.related) == 1
+        assert result.related[0].source_line_nos == (2,)
+
+    def test_only_line2_fails_related_is_empty(self, line1):
+        result = repair.repair_record(line1.encode("ascii"), 5, self._bad_line(), 6)
+        assert isinstance(result, repair.Quarantined)
+        assert result.primary.source_line_nos == (6,)
+        assert result.related == ()
+
+    def test_catalog_mismatch_after_both_repair(self, line1, line2):
+        other_body = "2 09999" + line2[7:68]
+        other = other_body + str(tle.compute_checksum(other_body))
+        result = repair.repair_record(
+            line1.encode("ascii"), 1, other.encode("ascii"), 2
+        )
+        assert isinstance(result, repair.Quarantined)
+        assert result.primary.rule_id == RuleID.CATALOG_MISMATCH
+        assert result.primary.source_line_nos == (1, 2)
+
+    def test_both_clean_lines_accepted_with_no_fixes(self, line1, line2):
+        result = repair.repair_record(
+            line1.encode("ascii"), 1, line2.encode("ascii"), 2
+        )
+        assert isinstance(result, repair.Accepted)
+        assert result.fixes == []
