@@ -8,6 +8,7 @@ renderer and one input shape."""
 import json
 from pathlib import Path
 
+import humanize
 from rich import box
 from rich.table import Table
 from rich.text import Text
@@ -18,15 +19,9 @@ _BAR_CELLS = 24
 
 
 def _humanize_duration(seconds):
-    """Return a human-readable duration string for ``seconds``."""
-    if seconds < 60:
-        return f"{seconds:.1f}s"
-    total = int(round(seconds))
-    h, rem = divmod(total, 3600)
-    m, s = divmod(rem, 60)
-    if h:
-        return f"{h}h {m:02d}m {s:02d}s"
-    return f"{m}m {s:02d}s"
+    """Return a human-readable duration string for ``seconds`` (e.g.
+    ``"2 minutes and 4 seconds"``), via humanize for the operator panel."""
+    return humanize.precisedelta(seconds, minimum_unit="seconds", format="%d")
 
 
 def _format_pct(part, whole):

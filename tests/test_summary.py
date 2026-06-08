@@ -54,9 +54,9 @@ def _demo_envelope():
 
 class TestHelpers:
     def test_humanize_duration(self):
-        assert summary._humanize_duration(45.2) == "45.2s"
-        assert summary._humanize_duration(124.0) == "2m 04s"
-        assert summary._humanize_duration(3661.0) == "1h 01m 01s"
+        assert summary._humanize_duration(45.2) == "45 seconds"
+        assert summary._humanize_duration(124.0) == "2 minutes and 4 seconds"
+        assert summary._humanize_duration(3661.0) == "1 hour, 1 minute and 1 second"
 
     def test_format_pct_honest_tiny_rate(self):
         assert summary._format_pct(0, 1000) == "0%"
