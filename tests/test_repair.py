@@ -1,5 +1,8 @@
 """Tests for lintle.repair — speculative, validated line and record repair."""
 
+from hypothesis import HealthCheck, given, settings
+from hypothesis import strategies as st
+
 from lintle import repair, tle
 from lintle.categories import FixClass
 from lintle.diagnostics import RepairTier, RuleID
@@ -144,3 +147,43 @@ class TestProcessRecord:
         assert result.primary.rule_id == RuleID.CHECKSUM_MISMATCH
         assert len(result.related) == 1
         assert result.related[0].rule_id == RuleID.NON_ASCII_BYTE
+
+
+class TestRepairContractProperties:
+    """The repair contract: a committed line is always tle-valid; a quarantine
+    never claims success. Fuzz benign normalizations around the canonical line."""
+
+    @given(
+        prefix_ws=st.text(alphabet=" ", max_size=3),
+        suffix=st.sampled_from(["", "\n", "\r\n", " ", "  ", "\\"]),
+        drop_checksum=st.booleans(),
+    )
+    @settings(
+        max_examples=200,
+        suppress_health_check=[HealthCheck.function_scoped_fixture],
+    )
+    def test_repaired_line_is_always_valid_or_quarantined(
+        self, line1, prefix_ws, suffix, drop_checksum
+    ):
+        base = line1[:68] if drop_checksum else line1
+        raw = (prefix_ws + base + suffix).encode("ascii")
+        clean, fixes, diag = repair.repair_line(raw, 1, source_line_no=7)
+        if diag is None:
+            # committed: must pass full validation (validated-transformation)
+            assert clean is not None
+            assert tle.validate_line(clean, 1) == []
+        else:
+            # quarantined: no committed line, and provenance is recorded
+            assert clean is None
+            assert diag.source_line_nos == (7,)
+
+    def test_record_fixes_reflect_a_single_lines_checksum_reconstruct(
+        self, line1, line2
+    ):
+        # Drop line-2's checksum so its repair reaches RECONSTRUCTED_CHECKSUM;
+        # the record-level fixes include it even though line-1 needed none.
+        result = repair.repair_record(
+            line1.encode("ascii"), 1, line2[:68].encode("ascii"), 2
+        )
+        assert isinstance(result, repair.Accepted)
+        assert FixClass.RECONSTRUCTED_CHECKSUM in result.fixes
