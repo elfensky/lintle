@@ -13,16 +13,16 @@ class TestFormatSize:
     """cli_progress._format_size — human-readable byte counts for the roster (#53)."""
 
     def test_bytes_below_one_kib(self):
-        assert cli_progress._format_size(0) == "0 B"
-        assert cli_progress._format_size(512) == "512 B"
+        assert cli_progress._format_size(0) == "0B"
+        assert cli_progress._format_size(512) == "512B"
 
     def test_kilobytes(self):
-        assert cli_progress._format_size(1024) == "1.0 KB"
-        assert cli_progress._format_size(1536) == "1.5 KB"
+        assert cli_progress._format_size(1024) == "1.0K"
+        assert cli_progress._format_size(1536) == "1.5K"
 
     def test_gigabytes(self):
-        assert cli_progress._format_size(1024**3) == "1.0 GB"
-        assert cli_progress._format_size(3 * 1024**3) == "3.0 GB"
+        assert cli_progress._format_size(1024**3) == "1.0G"
+        assert cli_progress._format_size(3 * 1024**3) == "3.0G"
 
 
 class TestRenderRoster:
@@ -40,10 +40,10 @@ class TestRenderRoster:
         out = console.file.getvalue()
         assert "tle2001.txt" in out
         assert "tle2002.txt" in out
-        assert "1.5 KB" in out
-        assert "512 B" in out
+        assert "1.5K" in out
+        assert "512B" in out
         assert "total" in out
-        assert "2.0 KB" in out  # 1536 + 512 = 2048 bytes
+        assert "2.0K" in out  # 1536 + 512 = 2048 bytes
 
     def test_renders_the_sizes_it_is_given(self, tmp_path):
         # The roster renders the caller-supplied sizes verbatim — it never
@@ -54,8 +54,8 @@ class TestRenderRoster:
 
         cli_progress.render_roster(console, {str(f1): 2048})
 
-        # 2.0 KB proves the passed size (2048) was used, not the 7-byte content.
-        assert "2.0 KB" in console.file.getvalue()
+        # 2.0K proves the passed size (2048) was used, not the 7-byte content.
+        assert "2.0K" in console.file.getvalue()
 
 
 class TestProgressDisplayDrain:

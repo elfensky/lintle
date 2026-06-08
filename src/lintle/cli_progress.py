@@ -9,6 +9,7 @@ import threading
 import time
 from pathlib import Path
 
+import humanize
 from rich import box
 from rich.progress import (
     BarColumn,
@@ -212,14 +213,9 @@ class ProgressDisplay:
 
 
 def _format_size(n_bytes):
-    """Render a byte count as a short human-readable string (e.g. ``2.9 GB``),
-    using binary (1024) units."""
-    size = float(n_bytes)
-    for unit in ("B", "KB", "MB", "GB"):
-        if size < 1024:
-            return f"{int(size)} B" if unit == "B" else f"{size:.1f} {unit}"
-        size /= 1024
-    return f"{size:.1f} TB"
+    """Render a byte count compactly for the roster (e.g. ``"3.0G"``), via
+    humanize's gnu units — fixes the prior binary-math/decimal-label mismatch."""
+    return humanize.naturalsize(n_bytes, gnu=True)
 
 
 def render_roster(console, file_sizes):
