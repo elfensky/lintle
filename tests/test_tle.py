@@ -1,6 +1,6 @@
 """Tests for lintle.tle — the TLE validator."""
 
-from hypothesis import given
+from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 from lintle import tle
@@ -266,3 +266,24 @@ class TestChecksumProperties:
         correct = tle.compute_checksum(body)
         wrong = (correct + offset) % 10
         assert tle.checksum_error(body + str(wrong)) is not None
+
+
+class TestSemanticRangeProperties:
+    """Fuzz inclination around its [0, 180] bound on a valid line-2 body."""
+
+    @given(
+        st.floats(min_value=0.0, max_value=270.0, allow_nan=False, allow_infinity=False)
+    )
+    @settings(
+        max_examples=300,
+        suppress_health_check=[HealthCheck.function_scoped_fixture],
+    )
+    def test_inclination_accepted_iff_in_range(self, line2, inc):
+        # Non-negative only: a leading '-' would fail column layout (a column
+        # error, not an inclination error), desyncing the oracle. 0..270 still
+        # spans in-range and above-range. Width is always 8 (e.g. "270.0000").
+        field = f"{inc:08.4f}"
+        body = line2[:8] + field + line2[16:68]
+        in_range = 0.0 <= float(field) <= 180.0  # value as the column encodes it
+        has_error = any("inclination" in e for e in tle.validate_body(body, 2))
+        assert has_error != in_range
