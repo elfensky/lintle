@@ -146,3 +146,92 @@ class TestExtractNoradId:
         # zero-padded string, so dedup across "  005" and "00005" collapses.
         body = "1 00005U junk"
         assert tle.extract_norad_id(body) == 5
+
+
+class TestSemanticBoundaries:
+    """Explicit boundary-value tests for every _check_semantics range.
+
+    Inclusive edges are accepted; exclusive edges are rejected. These
+    document the intended bounds and anchor the hypothesis property tests.
+    """
+
+    # epoch day-of-year (line 1): 0.0 < day < 367.0 (both exclusive)
+    def test_epoch_day_lower_exclusive_rejected(self, line1):
+        body = line1[:20] + "000.00000000" + line1[32:68]  # day = 0.0
+        assert any("epoch day-of-year" in e for e in tle.validate_body(body, 1))
+
+    def test_epoch_day_just_above_zero_accepted(self, line1):
+        body = line1[:20] + "000.00100000" + line1[32:68]  # day = 0.001
+        assert not any("epoch day-of-year" in e for e in tle.validate_body(body, 1))
+
+    def test_epoch_day_upper_exclusive_rejected(self, line1):
+        body = line1[:20] + "367.00000000" + line1[32:68]  # day = 367.0
+        assert any("epoch day-of-year" in e for e in tle.validate_body(body, 1))
+
+    def test_epoch_day_just_below_upper_accepted(self, line1):
+        body = line1[:20] + "366.99900000" + line1[32:68]  # day = 366.999
+        assert not any("epoch day-of-year" in e for e in tle.validate_body(body, 1))
+
+    # inclination (line 2): 0.0 <= inc <= 180.0 (both inclusive)
+    def test_inclination_lower_inclusive_accepted(self, line2):
+        body = line2[:8] + "000.0000" + line2[16:68]  # inc = 0.0
+        assert not any("inclination" in e for e in tle.validate_body(body, 2))
+
+    def test_inclination_upper_inclusive_accepted(self, line2):
+        body = line2[:8] + "180.0000" + line2[16:68]  # inc = 180.0
+        assert not any("inclination" in e for e in tle.validate_body(body, 2))
+
+    def test_inclination_just_above_upper_rejected(self, line2):
+        body = line2[:8] + "180.0001" + line2[16:68]  # inc = 180.0001
+        assert any("inclination" in e for e in tle.validate_body(body, 2))
+
+    # RAAN (line 2): 0.0 <= raan < 360.0 (inclusive lower, exclusive upper)
+    def test_raan_upper_exclusive_rejected(self, line2):
+        body = line2[:17] + "360.0000" + line2[25:68]  # raan = 360.0
+        assert any("RAAN" in e for e in tle.validate_body(body, 2))
+
+    def test_raan_just_below_upper_accepted(self, line2):
+        body = line2[:17] + "359.9999" + line2[25:68]  # raan = 359.9999
+        assert not any("RAAN" in e for e in tle.validate_body(body, 2))
+
+    # eccentricity (line 2): 0.0 <= ecc < 1.0; field = int(body[26:33]) / 1e7
+    def test_eccentricity_zero_accepted(self, line2):
+        body = line2[:26] + "0000000" + line2[33:68]  # ecc = 0.0
+        assert not any("eccentricity" in e for e in tle.validate_body(body, 2))
+
+    def test_eccentricity_max_field_accepted(self, line2):
+        # 9999999 -> 0.9999999, the largest value a 7-digit field can encode;
+        # the < 1.0 upper bound is therefore structurally unreachable via
+        # column data (the rejection branch is defensive only).
+        body = line2[:26] + "9999999" + line2[33:68]
+        assert not any("eccentricity" in e for e in tle.validate_body(body, 2))
+
+    # argument of perigee (line 2): 0.0 <= argp < 360.0
+    def test_argp_upper_exclusive_rejected(self, line2):
+        body = line2[:34] + "360.0000" + line2[42:68]  # argp = 360.0
+        assert any("argument of perigee" in e for e in tle.validate_body(body, 2))
+
+    def test_argp_just_below_upper_accepted(self, line2):
+        body = line2[:34] + "359.9999" + line2[42:68]  # argp = 359.9999
+        assert not any("argument of perigee" in e for e in tle.validate_body(body, 2))
+
+    # mean anomaly (line 2): 0.0 <= mean_anom < 360.0
+    def test_mean_anomaly_upper_exclusive_rejected(self, line2):
+        body = line2[:43] + "360.0000" + line2[51:68]  # mean_anom = 360.0
+        assert any("mean anomaly" in e for e in tle.validate_body(body, 2))
+
+    def test_mean_anomaly_just_below_upper_accepted(self, line2):
+        body = line2[:43] + "359.9999" + line2[51:68]  # mean_anom = 359.9999
+        assert not any("mean anomaly" in e for e in tle.validate_body(body, 2))
+
+    # mean motion (line 2): mean_motion > 0.0 (strictly positive)
+    def test_mean_motion_small_positive_accepted(self, line2):
+        body = line2[:52] + "00.00010000" + line2[63:68]  # 0.0001 rev/day
+        assert not any("mean motion" in e for e in tle.validate_body(body, 2))
+
+    # numeric-parse-failure path (call _check_semantics directly: it assumes
+    # columns already passed, so a parse-breaking field reaches the except branch)
+    def test_unparseable_numeric_field_reports_parse_failure(self, line2):
+        body = line2[:26] + "       " + line2[33:68]  # eccentricity = 7 spaces
+        errs = tle._check_semantics(body, 2)
+        assert any("could not be parsed" in e for e in errs)
