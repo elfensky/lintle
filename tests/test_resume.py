@@ -637,3 +637,94 @@ class TestVerifyCompletedOutputsWithShard:
         assert resume.verify_completed_outputs(
             self._completed_with_shard("tle2099.txt", 100, 50), str(tmp_path)
         ) == ["tle2099.txt"]
+
+
+# ---------------------------------------------------------------------------
+# Issue #118 — CompletedEntry round-trip and verify_completed_outputs wiring
+# ---------------------------------------------------------------------------
+
+
+class TestCompletedEntryRoundTrip:
+    """CompletedEntry.from_stats → as_dict → verify_completed_outputs round-trip
+    (issue #118): the typed constructor must produce a dict shape that
+    verify_completed_outputs accepts and actually inspects on disk."""
+
+    def _write_output(self, root, dirname, name, data=b"x" * 50):
+        d = root / dirname
+        d.mkdir(parents=True, exist_ok=True)
+        (d / name).write_bytes(data)
+
+    def test_as_dict_has_summary_and_outputs_keys(self, tmp_path):
+        # The wire shape must match the checkpoint contract exactly.
+        entry = resume.CompletedEntry(summary={"src_name": "tle2099.txt"}, outputs={})
+        d = entry.as_dict()
+        assert set(d) == {"summary", "outputs"}
+        assert d["summary"] == {"src_name": "tle2099.txt"}
+        assert d["outputs"] == {}
+
+    def test_from_stats_builds_valid_entry(self, tmp_path):
+        # from_stats must produce an entry with a summary dict and an outputs
+        # dict; the summary must include at least src_name.
+        st = FileStats(src_name="tle2099.txt")
+        self._write_output(tmp_path, CLEANED_DIRNAME, "tle2099" + CLEANED_SUFFIX)
+        entry = resume.CompletedEntry.from_stats(str(tmp_path), st)
+        assert isinstance(entry.summary, dict)
+        assert isinstance(entry.outputs, dict)
+        assert entry.summary.get("src_name") == "tle2099.txt"
+        # The cleaned file was present — it must be in outputs.
+        assert "tle2099" + CLEANED_SUFFIX in entry.outputs
+
+    def test_round_trip_verify_passes_intact_outputs(self, tmp_path):
+        # The dict produced by as_dict() must satisfy verify_completed_outputs
+        # when all named output files are on disk at the recorded size.
+        st = FileStats(src_name="tle2099.txt")
+        data = b"y" * 80
+        self._write_output(tmp_path, CLEANED_DIRNAME, "tle2099" + CLEANED_SUFFIX, data)
+        entry = resume.CompletedEntry.from_stats(str(tmp_path), st)
+        completed = {"tle2099.txt": entry.as_dict()}
+        assert resume.verify_completed_outputs(completed, str(tmp_path)) == []
+
+    def test_round_trip_verify_flags_missing_output(self, tmp_path):
+        # If the output file is absent after as_dict() is serialised, the
+        # round-trip must flag it for reprocessing.
+        st = FileStats(src_name="tle2099.txt")
+        data = b"z" * 60
+        self._write_output(tmp_path, CLEANED_DIRNAME, "tle2099" + CLEANED_SUFFIX, data)
+        entry = resume.CompletedEntry.from_stats(str(tmp_path), st)
+        # Remove the output file to simulate a post-completion corruption.
+        (tmp_path / CLEANED_DIRNAME / ("tle2099" + CLEANED_SUFFIX)).unlink()
+        completed = {"tle2099.txt": entry.as_dict()}
+        assert resume.verify_completed_outputs(completed, str(tmp_path)) == [
+            "tle2099.txt"
+        ]
+
+    def test_checkpoint_bytes_unchanged_after_refactor(self, tmp_path):
+        # Byte-determinism check (issue #118): the JSON bytes produced by
+        # build_checkpoint when using CompletedEntry.as_dict() must be
+        # identical to those produced by the pre-refactor inline dict.
+        import json
+
+        summary = {"src_name": "tle2099.txt", "clean_count": 5, "quarantined_count": 1}
+        outputs = {"tle2099.cleaned.txt": 200, "tle2099.broken.txt": 50}
+
+        # Pre-refactor inline dict (the old write path).
+        pre_refactor_entry = {"summary": summary, "outputs": outputs}
+        # Post-refactor typed path.
+        post_refactor_entry = resume.CompletedEntry(
+            summary=summary, outputs=outputs
+        ).as_dict()
+
+        completed = {"data/source/tle2099.txt": pre_refactor_entry}
+        completed_new = {"data/source/tle2099.txt": post_refactor_entry}
+
+        ckpt_old = resume.build_checkpoint(
+            inputs={}, completed=completed, run_identity={}
+        )
+        ckpt_new = resume.build_checkpoint(
+            inputs={}, completed=completed_new, run_identity={}
+        )
+
+        # json.dumps with sort_keys=True must produce identical bytes.
+        old_bytes = json.dumps(ckpt_old, separators=(",", ":"), sort_keys=True)
+        new_bytes = json.dumps(ckpt_new, separators=(",", ":"), sort_keys=True)
+        assert old_bytes == new_bytes

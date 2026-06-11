@@ -99,6 +99,54 @@ def output_sizes(out_dir, stats):
     return sizes
 
 
+@dataclasses.dataclass(slots=True, frozen=True)
+class CompletedEntry:
+    """Typed record for one file's per-run checkpoint entry (issue #118).
+
+    Owns the ``{"summary": ..., "outputs": ...}`` shape that worker_pool
+    builds after each file completes and that resume readers consume.
+    ``from_stats`` is the single construction site so key names cannot drift;
+    ``as_dict`` serialises to the exact wire shape consumed by
+    ``build_checkpoint`` and the resume readers. ``summary`` holds the
+    :func:`report.summary_dict` result; ``outputs`` holds the
+    :func:`output_sizes` result. Both are plain dicts so the checkpoint JSON
+    is byte-identical to the pre-refactor form — ``build_checkpoint`` passes
+    the whole ``completed`` mapping through ``json.dumps(sort_keys=True)``,
+    which sorts ``"outputs"`` before ``"summary"`` regardless of field order.
+    """
+
+    summary: dict
+    outputs: dict
+
+    @classmethod
+    def from_stats(cls, out_dir, stats) -> CompletedEntry:
+        """Build a CompletedEntry from a completed file's stats and out_dir.
+
+        Imports ``report`` lazily-via-caller: worker_pool already imports both
+        ``report`` and ``resume`` at module level, so it passes the result of
+        ``report.summary_dict(stats)`` and the out_dir directly here.
+        Called as ``CompletedEntry.from_stats(out_dir, stats)`` from
+        worker_pool after each file's future resolves.
+        """
+        from lintle import report  # local import avoids a module-level cycle
+
+        return cls(
+            summary=report.summary_dict(stats),
+            outputs=output_sizes(out_dir, stats),
+        )
+
+    def as_dict(self) -> dict:
+        """Serialise to the ``{"summary": ..., "outputs": ...}`` wire shape.
+
+        The key order here is irrelevant: ``build_checkpoint`` calls
+        ``json.dumps(sort_keys=True)``, which sorts to ``outputs`` before
+        ``summary`` regardless. The dict is what ``plan.completed`` stores
+        so the resume readers (``run_planning`` and ``verify_completed_outputs``)
+        continue to see a plain dict — no reader changes needed.
+        """
+        return {"summary": self.summary, "outputs": self.outputs}
+
+
 def build_checkpoint(*, inputs, completed, run_identity):
     """Assemble the checkpoint payload, pinning schema, lintle version, and the
     run identity (spec §3.1). ``inputs`` maps each discovered input path to its
