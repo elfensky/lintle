@@ -67,7 +67,13 @@ def resolve_clean_plan(args, files, file_sizes):
             return RunPlan(exit_code=2)
 
     inputs = {path: resume.input_fingerprint(path) for path in files}
-    run_identity = {"max_quarantined": args.max_quarantined}
+    # reconstruct_checksum changes which records are accepted vs quarantined,
+    # so a resume with a flipped flag must re-run (STALE), not fold mismatched
+    # outputs together (issue #82).
+    run_identity = {
+        "max_quarantined": args.max_quarantined,
+        "reconstruct_checksum": args.reconstruct_checksum,
+    }
 
     classification = resume.classify_checkpoint(args.out_dir, inputs, run_identity)
     decision = resume.resolve_resume_action(

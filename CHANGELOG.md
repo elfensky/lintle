@@ -6,6 +6,19 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Added
+
+- `clean --reconstruct-checksum` opts in to tier-2 missing-checksum reconstruction.
+
+### Changed
+
+- **Missing-checksum reconstruction is now opt-in (default off).** A checksumless 68-char
+  line is quarantined by default rather than having a recomputed checksum appended: a dropped
+  trailing *data* character is indistinguishable from a dropped checksum, so reconstructing it
+  by default could silently emit wrong-but-valid data (Critical Rule #2, issue #82). Pass
+  `--reconstruct-checksum` to restore the recompute. The flag is part of the resume
+  run-identity, so changing it forces a re-run rather than folding mismatched outputs.
+
 ## [0.5.0] - 2026-06-08
 
 ### Added

@@ -25,10 +25,10 @@ def _simulate_interrupted_clean(
     outputs and findings shards committed, as a worker leaves them — no
     end-of-run concat), plus a checkpoint that lists them complete with every
     input fingerprinted. Mirrors the real interrupted state without needing to
-    actually kill a parallel run. ``run_identity`` defaults to the schema-v2
-    shape used by ``main()`` (``{"max_quarantined": "0"}``)."""
+    actually kill a parallel run. ``run_identity`` defaults to the shape used
+    by ``main()`` (``{"max_quarantined": "0", "reconstruct_checksum": False}``)."""
     if run_identity is None:
-        run_identity = {"max_quarantined": "0"}
+        run_identity = {"max_quarantined": "0", "reconstruct_checksum": False}
     os.makedirs(out_dir, exist_ok=True)
     inputs = {p: resume.input_fingerprint(p) for p in src_paths}
     completed = {}
@@ -232,6 +232,35 @@ class TestResume:
         assert rc == 2
         assert "input changed" in err.lower()
         assert "tle2099" in err
+        # A refused resume leaves the checkpoint intact for an explicit restart.
+        assert (out_partial / resume.CHECKPOINT_NAME).exists()
+
+    def test_resume_refuses_when_reconstruct_flag_changed(
+        self, tmp_path, line1, line2, capsys
+    ):
+        # The interrupted run used the default (reconstruct off); resuming with
+        # --reconstruct-checksum changes which records are accepted, so the run
+        # configuration no longer matches the checkpoint → STALE → refuse (#82).
+        src = self._two_file_src(tmp_path, line1, line2)
+        paths = cli.discover_paths(str(src))
+        out_partial = tmp_path / "partial"
+        _simulate_interrupted_clean(paths, str(out_partial), completed_count=1)
+
+        rc = cli.main(
+            [
+                "clean",
+                str(src),
+                "--out-dir",
+                str(out_partial),
+                "--resume",
+                "--jobs",
+                "1",
+                "--reconstruct-checksum",
+            ]
+        )
+        err = capsys.readouterr().err
+        assert rc == 2
+        assert "run configuration changed" in err.lower()
         # A refused resume leaves the checkpoint intact for an explicit restart.
         assert (out_partial / resume.CHECKPOINT_NAME).exists()
 

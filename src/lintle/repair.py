@@ -12,7 +12,11 @@ from lintle.diagnostics import Diagnostic, RepairTier, RuleID, diagnostic
 
 
 def repair_line(
-    raw: bytes, lineno: int, source_line_no: int
+    raw: bytes,
+    lineno: int,
+    source_line_no: int,
+    *,
+    reconstruct_checksum: bool = False,
 ) -> tuple[str, list[FixClass], None] | tuple[None, list[FixClass], Diagnostic]:
     """Attempt to repair one raw line into a valid 69-character TLE line.
 
@@ -21,6 +25,14 @@ def repair_line(
     within a record). ``source_line_no`` is the 1-indexed file line that
     populates a failure's :class:`Diagnostic` — required so provenance is
     never silently invented (no sentinel-line-0 in published output).
+
+    ``reconstruct_checksum`` gates the tier-2 missing-checksum repair (issue
+    #82). It defaults to ``False`` — a 68-char line whose body is otherwise
+    valid is quarantined as a length error rather than having a checksum
+    appended, because a dropped trailing *data* character is indistinguishable
+    from a dropped checksum and reconstructing the latter would silently emit
+    wrong-but-valid data (Critical Rule #2). Pass ``True`` (the CLI's
+    ``--reconstruct-checksum``) to opt in to the deterministic recompute.
 
     Returns ``(clean_line, fixes, diagnostic_or_None)``:
       * success -> ``(str, list[FixClass], None)``
@@ -72,6 +84,23 @@ def repair_line(
                     source_line_nos=src,
                     tier_attempted=RepairTier.NORMALIZATION,
                     note="; ".join(body_errors),
+                ),
+            )
+        if not reconstruct_checksum:
+            # Body is valid but the column-69 checksum is absent. By default we
+            # quarantine rather than recompute it: a dropped trailing data
+            # character looks identical to a dropped checksum, so appending one
+            # could emit wrong-but-valid data (Critical Rule #2, issue #82).
+            return (
+                None,
+                fixes,
+                diagnostic(
+                    RuleID.LINE_LENGTH,
+                    source_line_nos=src,
+                    tier_attempted=RepairTier.NORMALIZATION,
+                    observed="68",
+                    expected="69",
+                    note="checksum absent; use --reconstruct-checksum to recompute",
                 ),
             )
         candidate = line + str(tle.compute_checksum(line))
@@ -155,16 +184,26 @@ class Quarantined:
 
 
 def repair_record(
-    raw_line1: bytes, src1: int, raw_line2: bytes, src2: int
+    raw_line1: bytes,
+    src1: int,
+    raw_line2: bytes,
+    src2: int,
+    *,
+    reconstruct_checksum: bool = False,
 ) -> Accepted | Quarantined:
     """Repair and validate a paired record.
 
     ``raw_line1``/``raw_line2`` are line bytes (no ``\\n``); ``src1``/``src2``
-    are their 1-indexed source line numbers. Returns ``Accepted`` or
-    ``Quarantined``.
+    are their 1-indexed source line numbers. ``reconstruct_checksum`` is
+    forwarded to :func:`repair_line` (issue #82; default off). Returns
+    ``Accepted`` or ``Quarantined``.
     """
-    line1, fixes1, diag1 = repair_line(raw_line1, 1, src1)
-    line2, fixes2, diag2 = repair_line(raw_line2, 2, src2)
+    line1, fixes1, diag1 = repair_line(
+        raw_line1, 1, src1, reconstruct_checksum=reconstruct_checksum
+    )
+    line2, fixes2, diag2 = repair_line(
+        raw_line2, 2, src2, reconstruct_checksum=reconstruct_checksum
+    )
 
     if diag1 or diag2:
         if diag1 and diag2:

@@ -105,8 +105,14 @@ class TestFixExamplesMatchRepairer:
 
     def test_before_repairs_to_after_producing_this_fix(self):
         for entry in FIX_EXPLAIN.values():
+            # reconstruct_checksum is opt-in (#82); the documented
+            # reconstructed-checksum example depends on it, and it is a no-op
+            # for the other fix tags, so enable it for every entry here.
             clean, fixes, diag = repair.repair_line(
-                entry.before.encode("latin-1"), entry.lineno, 1
+                entry.before.encode("latin-1"),
+                entry.lineno,
+                1,
+                reconstruct_checksum=True,
             )
             assert diag is None, entry.fix_class
             assert clean == entry.after

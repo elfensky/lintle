@@ -15,15 +15,31 @@ class TestRepairLine:
         assert diag is None and clean == line1
         assert FixClass.TRAILING_BACKSLASH in fixes
 
+    def test_missing_checksum_quarantined_by_default(self, line1):
+        # Default: a checksumless 68-char line is quarantined as the wrong
+        # length, not reconstructed (Critical Rule #2 — when in doubt,
+        # quarantine). Reconstruction is opt-in via reconstruct_checksum.
+        raw = line1[:68].encode("ascii")  # 68 columns, checksum absent
+        clean, fixes, diag = repair.repair_line(raw, 1, source_line_no=7)
+        assert clean is None
+        assert diag.rule_id == RuleID.LINE_LENGTH
+        assert diag.observed == "68" and diag.expected == "69"
+        assert FixClass.RECONSTRUCTED_CHECKSUM not in fixes
+        assert diag.source_line_nos == (7,)
+
     def test_reconstruct_missing_checksum(self, line1):
         raw = line1[:68].encode("ascii")  # 68 columns, checksum absent
-        clean, fixes, diag = repair.repair_line(raw, 1, source_line_no=1)
+        clean, fixes, diag = repair.repair_line(
+            raw, 1, source_line_no=1, reconstruct_checksum=True
+        )
         assert diag is None and clean == line1
         assert FixClass.RECONSTRUCTED_CHECKSUM in fixes
 
     def test_reconstruct_with_backslash_artifact(self, line1):
         raw = (line1[:68] + "\\").encode("ascii")  # 69 bytes: 68 columns + '\'
-        clean, fixes, diag = repair.repair_line(raw, 1, source_line_no=1)
+        clean, fixes, diag = repair.repair_line(
+            raw, 1, source_line_no=1, reconstruct_checksum=True
+        )
         assert diag is None and clean == line1
         assert FixClass.TRAILING_BACKSLASH in fixes
         assert FixClass.RECONSTRUCTED_CHECKSUM in fixes
@@ -93,10 +109,18 @@ class TestProcessRecord:
         assert result.line1 == line1 and result.line2 == line2
         assert result.fixes == []
 
+    def test_record_with_missing_checksum_quarantined_by_default(self, line1, line2):
+        # Default: a checksumless record is quarantined, not reconstructed.
+        result = repair.repair_record(
+            line1[:68].encode("ascii"), 1, line2[:68].encode("ascii"), 2
+        )
+        assert isinstance(result, repair.Quarantined)
+        assert result.primary.rule_id == RuleID.LINE_LENGTH
+
     def test_process_repairs_backslash_and_checksum(self, line1, line2):
         raw1 = (line1[:68] + "\\").encode("ascii")  # checksumless + backslash
         raw2 = line2[:68].encode("ascii")  # checksumless
-        result = repair.repair_record(raw1, 4, raw2, 5)
+        result = repair.repair_record(raw1, 4, raw2, 5, reconstruct_checksum=True)
         assert isinstance(result, repair.Accepted)
         assert result.line1 == line1 and result.line2 == line2
         assert FixClass.TRAILING_BACKSLASH in result.fixes
@@ -133,7 +157,7 @@ class TestProcessRecord:
         # 68-char checksumless versions of each line:
         raw1 = line1[:68].encode("ascii")
         raw2 = other_body.encode("ascii")
-        result = repair.repair_record(raw1, 1, raw2, 2)
+        result = repair.repair_record(raw1, 1, raw2, 2, reconstruct_checksum=True)
         assert isinstance(result, repair.Quarantined)
         assert result.primary.rule_id == RuleID.CATALOG_MISMATCH
         assert result.primary.tier_attempted == RepairTier.CHECKSUM_RECONSTRUCT
@@ -183,7 +207,11 @@ class TestRepairContractProperties:
         # Drop line-2's checksum so its repair reaches RECONSTRUCTED_CHECKSUM;
         # the record-level fixes include it even though line-1 needed none.
         result = repair.repair_record(
-            line1.encode("ascii"), 1, line2[:68].encode("ascii"), 2
+            line1.encode("ascii"),
+            1,
+            line2[:68].encode("ascii"),
+            2,
+            reconstruct_checksum=True,
         )
         assert isinstance(result, repair.Accepted)
         assert FixClass.RECONSTRUCTED_CHECKSUM in result.fixes
