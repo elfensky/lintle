@@ -24,13 +24,14 @@ def _humanize_duration(seconds):
     return humanize.precisedelta(seconds, minimum_unit="seconds", format="%d")
 
 
-def _format_pct(part, whole):
+def _format_pct(part, whole, *, zero_marker="—"):
     """Return a percentage string for ``part / whole``, honest about tiny rates.
-    Uses the Unicode em dash for a zero denominator — suitable for the medium and
-    wide tiers whose consoles can encode it.  Use :func:`_format_pct_plain` for the
-    plain tier (issue #97)."""
+    ``zero_marker`` is returned for a zero denominator — the default em dash suits
+    the medium and wide tiers whose consoles can encode it; the plain tier passes
+    ``"-"`` since it is chosen precisely when the console cannot encode Unicode
+    (issue #97)."""
     if whole <= 0:
-        return "—"
+        return zero_marker
     if part == 0:
         return "0%"
     rate = 100.0 * part / whole
@@ -40,18 +41,9 @@ def _format_pct(part, whole):
 
 
 def _format_pct_plain(part, whole):
-    """ASCII-safe percentage string for the plain tier (issue #97): returns ``"-"``
-    (a hyphen) for a zero denominator instead of the em dash returned by
-    :func:`_format_pct`.  The plain tier is selected precisely when the console
-    cannot encode Unicode, so any non-ASCII character would raise UnicodeEncodeError."""
-    if whole <= 0:
-        return "-"
-    if part == 0:
-        return "0%"
-    rate = 100.0 * part / whole
-    if rate < 0.01:
-        return "<0.01%"
-    return f"{rate:.2f}%"
+    """ASCII-safe percentage for the plain tier — delegates to :func:`_format_pct`
+    with a hyphen zero-marker so the output is 7-bit ASCII (issue #97)."""
+    return _format_pct(part, whole, zero_marker="-")
 
 
 def _can_encode(encoding, sample):
