@@ -17,8 +17,8 @@ are the current truth.
 
 ## Tech Stack
 
-Python 3.14 · uv · lean runtime (**`rich`** — the one third-party dep) · `sgp4` (dev-only
-test oracle) · `pytest` · `pytest-cov` · `ruff`
+Python 3.14 · uv · lean runtime (**`rich`** + **`humanize`**) · `sgp4` (dev-only
+test oracle) · `pytest` · `pytest-cov` · `pytest-xdist` · `hypothesis` · `ruff`
 
 **Runtime dependencies** are governed by a *relaxed* policy (revised 2026-05-31): a popular,
 actively-maintained library that genuinely reduces the code we'd otherwise own should be
@@ -31,10 +31,11 @@ invariants**: one validator definition (Critical Rule #4), constant-memory strea
 commit + host-aware lock. The canonical rule and the considered/deferred table live in
 [`ARCHITECTURE.md` §7](ARCHITECTURE.md#7-runtime-dependency-policy); the original rationale is
 archived under `docs/superpowers/archive/specs/2026-05-28-runtime-dependency-policy-design.md`.
-**Current runtime deps: `rich>=15,<16`** (terminal rendering for `clean`) — a relaxed-bar audit
-re-evaluated every
-candidate and still adopted none, since each trips a hard invariant or removes ~0 code. `sgp4`
-and `pytest` are dev-only; `sgp4` is a test oracle and must never be imported at runtime.
+**Current runtime deps: `rich>=15,<16`** (terminal rendering for `clean`) and
+**`humanize>=4,<5`** (human-readable durations + sizes in the human display; confined to
+`summary.py` and `cli_progress.py` — never structured output). A 2026-06-07 relaxed-bar
+re-audit re-confirmed all other candidates as rejected or deferred. `sgp4` and `pytest` are
+dev-only; `sgp4` is a test oracle and must never be imported at runtime.
 
 ## Critical Rules — principles that must not be violated
 
@@ -70,6 +71,18 @@ output shows failures.
   class — match that established style; do not expand to Args/Returns/Raises blocks.
 - `ruff` for linting and formatting, configured in `pyproject.toml` (rule sets `E`, `F`,
   `I`, `UP`, `B`, `SIM`; 88-column lines).
+- **Modern Python (3.14) idioms.** `ruff`'s `UP`/`SIM` sets auto-enforce most of these on
+  every commit — f-strings, `X | None` unions, builtin generics (`list[bytes]`),
+  `contextlib.suppress`, PEP 758 `except A, B:`. Three conventions `ruff` does *not*
+  enforce, so apply them by hand for consistency:
+  - **`match`** for 3-or-more-way type/shape dispatch — not an `isinstance`/`elif` chain
+    (a single 2-way `isinstance` check stays a plain `if`).
+  - **`@dataclasses.dataclass(slots=True)`** on every dataclass (add `frozen=True` when
+    immutable). Slotted dataclasses pickle correctly across the worker pool — keep it that
+    way (no `__dict__`-dependent tricks).
+  - **`collections.Counter`** (`.update()`) for tally/accumulate loops — not
+    `d[k] = d.get(k, 0) + 1`. Convert back with `dict()` at any byte-deterministic output
+    boundary so first-seen key order — and thus the JSON bytes — is preserved.
 - `src/` layout — all package code lives under `src/lintle/`.
 - Run `uv run ruff check .` and `uv run ruff format --check .` before committing.
 
@@ -79,14 +92,22 @@ output shows failures.
 src/lintle/
 ├── __main__.py    # python -m lintle entry point
 ├── __init__.py    # __version__, stem() filename helper
-├── cli.py         # argparse, globbing, parallel workers, live progress, Ctrl-C handling
+├── cli.py         # argparse, globbing, top-level clean orchestration, exit codes
+├── cli_progress.py # live multi-file progress display, file roster, status spinner (rich+humanize)
+├── run_planning.py # clean-run preflight: disk-space guard, output scrub, resume classification, RunPlan
+├── worker_pool.py  # process-pool dispatch, progress collection, per-file failure + checkpoint
+├── process_control.py # worker SIGINT setup, fast pool termination, cancel/exit-code helpers
+├── thresholds.py   # --max-quarantined parsing + quality-gate exit policy (pure)
+├── output_artifacts.py # end-of-clean-run report.md / report.json / broken-noradids.ndjson / report.jsonl
 ├── pipeline.py    # streams a file in binary, pairs 1/2 lines into records, routes them
 ├── repair.py      # speculative fixes, each confirmed by tle.py before commit
-├── report.py      # FileStats + dataclasses, the validate summaries, the run report
+├── report.py      # FileStats + dataclasses, the run summaries, the run report
+├── report_aggregation.py # pure corpus aggregation: run totals + per-NORAD rollups for report.py
 ├── report_writers.py # structured-file writers: .broken.txt sidecar, report.jsonl findings, broken-noradids.ndjson, shard concat
-├── resume.py      # single-run checkpoint for `clean --resume` (issue #56)
+├── resume.py      # single-run checkpoint for `clean --resume` (#56); run-stamp + output-size helpers
 ├── fsutil.py      # durable_replace — the one atomic+fsync commit path (issue #58)
-├── term.py        # shared stderr Console + error/warning/note/prompt helpers (rich)
+├── summary.py     # responsive aggregate-panel renderer + read-only `lintle report` (rich+humanize)
+├── term.py        # stderr+stdout Consoles + error/warning/note/prompt + is_interactive/prompt_yes_no (rich)
 ├── diff.py        # read-only: per-rule delta between two runs' report.jsonl (lintle diff)
 ├── explain.py     # read-only: renders rule/fix documentation (lintle explain)
 ├── tle.py         # the validator — column layout, checksum, semantic ranges, pairing
@@ -97,20 +118,42 @@ src/lintle/
 
 Module dependencies flow one way: `cli.py → pipeline.py → repair.py → tle.py`,
 with the read-only `cli.py → diff.py` and `cli.py → explain.py → explain_examples.py`
-consumers and the `cli.py → resume.py` single-run checkpoint (`resume.py` depends only
-on `__version__`) alongside. `diagnostics.py` and `categories.py` are pure-data leaves
-depended on by `repair`, `pipeline`, `report`, and `explain`; `explain_examples.py`
-is also pure data, composing those two leaves into documented examples.
-`report_writers.py` is the structured-file writers leaf (the `.broken.txt`
-sidecar, the `report.jsonl` findings shards, the corpus `broken-noradids.ndjson`,
-and the shard concat) depended on by `pipeline` and `cli`; it imports the
-dataclasses and the shared `_format_diagnostic` renderer from `report.py` —
-one-way, never the reverse, so no cycle. `fsutil.py`
-is a stdlib-only I/O leaf (the durable-commit helper) depended on by `pipeline`,
-`report`, `report_writers`, and `resume`. `term.py` is a rich-only stderr-output leaf (the shared
-Console plus the `error`/`warning`/`note`/`prompt` emitters) depended on by `cli`
-and `diff` — so the styled `error:`/`warning:` prefix lives in one place without a
-`diff → cli` cycle. `tle.py` and the data modules carry no I/O, so cycles are
+consumers and the `cli.py → resume.py` single-run checkpoint alongside. The `clean`
+orchestration is split into cli-helper leaves — `run_planning.py` (preflight:
+disk-space guard, output scrub, resume classification), `worker_pool.py` (process-pool
+dispatch), `process_control.py` (signals/shutdown), `thresholds.py` (quarantine exit
+policy, pure), and `output_artifacts.py` (run finalization). These leaves import their
+own collaborators directly rather than receiving them by injection: `worker_pool`
+imports `concurrent.futures`/`multiprocessing`/`signal` plus `process_control`,
+`pipeline`, `cli_progress`, `report`, `resume`, and `term`; `run_planning` imports
+`report`, `resume`, and `term`. `process_control` is depended on by `cli` and
+`worker_pool`. `report_aggregation.py` is a pure corpus-aggregation leaf depended on by
+`report.py`. `diagnostics.py` and `categories.py` are pure-data leaves depended on by
+`repair`, `pipeline`, `report`, and `explain`; `explain_examples.py` is also pure data,
+composing those two leaves into documented examples. `report_writers.py` is the
+structured-file writers leaf (the `.broken.txt` sidecar, the `report.jsonl` findings
+shards, the corpus `broken-noradids.ndjson`, and the shard concat) depended on by
+`pipeline` and `cli`; it imports the dataclasses and the shared `format_diagnostic`
+renderer from `report.py` — one-way, never the reverse, so no cycle. `cli_progress.py`
+is a rich+humanize presentation leaf (the live `ProgressDisplay`, the pre-run
+`render_roster`, and the `status` spinner) depended on by `cli`, `worker_pool`, and
+`output_artifacts`; it imports `pipeline`'s typed progress messages
+(`FileStarted`/`FileEnded`/`FileProgress`) to drive the display and `humanize` for
+human-readable roster sizes (`naturalsize(gnu=True)`), so the chain
+`cli → worker_pool → cli_progress → pipeline` is one-way and acyclic. `fsutil.py` is a
+stdlib-only I/O leaf (the durable-commit helper) depended on by `pipeline`, `report`,
+`report_writers`, and `resume`. `summary.py` is a rich+humanize presentation leaf (the
+responsive aggregate-panel renderer and the read-only `lintle report` entry that reads
+`<out-dir>/report.json`) depended on by `cli`; it imports the two shared Consoles from
+`term`, `humanize` for human-readable panel durations (`precisedelta`), and consumes the
+`build_run_envelope` dict shape, so `cli → summary → term` is one-way and acyclic. `term.py` is a rich-only terminal-IO leaf (the two shared
+Consoles — `stderr_console` for status/errors, `stdout_console` for the report view —
+the `error`/`warning`/`note`/`prompt` emitters, and the `is_interactive` /
+`prompt_yes_no` stdin helpers) depended on by `cli`, `cli_progress`, `diff`,
+`process_control`, `run_planning`, `summary`, and `worker_pool` — so the styled prefixes
+and the prompt live in one place without a `→ cli` cycle. `resume.py` (which also owns the run-start timestamp and
+the per-file output-size capture for the checkpoint) imports only `__version__`,
+`fsutil`, and `stem`. `tle.py` and the data modules carry no I/O, so cycles are
 structurally impossible.
 
 → See [`README.md`](README.md) for the architecture, usage, and data flow.
@@ -120,14 +163,16 @@ structurally impossible.
 
 ```bash
 uv sync                            # Install, including dev deps (sgp4, pytest, ruff)
-uv run pytest                      # Full test suite
+uv run pytest                      # Full test suite (runs in parallel via -n auto)
 uv run pytest tests/test_tle.py::TestComputeChecksum   # A single test class
 uv run pytest --cov=lintle --cov-report=term-missing --cov-branch  # Tests + coverage
 uv run ruff check .                # Lint
 uv run ruff format --check .       # Format check
-uv run lintle validate          # Audit data/source/ (read-only)
 uv run lintle clean             # Clean data/source/ -> data/output/
 ```
+
+> **`--pdb` caveat:** the default suite runs in parallel (`-n auto`); `--pdb` is incompatible
+> with `pytest-xdist`. Disable parallelism when debugging: `uv run pytest -n0 --pdb ...`.
 
 ## Working Style
 

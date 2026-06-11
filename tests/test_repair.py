@@ -1,5 +1,8 @@
 """Tests for lintle.repair — speculative, validated line and record repair."""
 
+from hypothesis import HealthCheck, given, settings
+from hypothesis import strategies as st
+
 from lintle import repair, tle
 from lintle.categories import FixClass
 from lintle.diagnostics import RepairTier, RuleID
@@ -83,7 +86,7 @@ class TestRepairLine:
 
 class TestProcessRecord:
     def test_process_accepts_clean_record(self, line1, line2):
-        result = repair.process_record(
+        result = repair.repair_record(
             line1.encode("ascii"), 10, line2.encode("ascii"), 11
         )
         assert isinstance(result, repair.Accepted)
@@ -93,7 +96,7 @@ class TestProcessRecord:
     def test_process_repairs_backslash_and_checksum(self, line1, line2):
         raw1 = (line1[:68] + "\\").encode("ascii")  # checksumless + backslash
         raw2 = line2[:68].encode("ascii")  # checksumless
-        result = repair.process_record(raw1, 4, raw2, 5)
+        result = repair.repair_record(raw1, 4, raw2, 5)
         assert isinstance(result, repair.Accepted)
         assert result.line1 == line1 and result.line2 == line2
         assert FixClass.TRAILING_BACKSLASH in result.fixes
@@ -101,7 +104,7 @@ class TestProcessRecord:
 
     def test_process_quarantines_bad_line(self, line1, line2):
         raw1 = (line1[:68] + "9").encode("ascii")  # bad checksum
-        result = repair.process_record(raw1, 4, line2.encode("ascii"), 5)
+        result = repair.repair_record(raw1, 4, line2.encode("ascii"), 5)
         assert isinstance(result, repair.Quarantined)
         assert result.primary.rule_id == RuleID.CHECKSUM_MISMATCH
         assert result.related == ()
@@ -111,7 +114,7 @@ class TestProcessRecord:
     def test_process_quarantines_catalog_mismatch(self, line1, line2):
         other_body = "2 09999" + line2[7:68]
         other = other_body + str(tle.compute_checksum(other_body))
-        result = repair.process_record(
+        result = repair.repair_record(
             line1.encode("ascii"), 1, other.encode("ascii"), 2
         )
         assert isinstance(result, repair.Quarantined)
@@ -130,7 +133,7 @@ class TestProcessRecord:
         # 68-char checksumless versions of each line:
         raw1 = line1[:68].encode("ascii")
         raw2 = other_body.encode("ascii")
-        result = repair.process_record(raw1, 1, raw2, 2)
+        result = repair.repair_record(raw1, 1, raw2, 2)
         assert isinstance(result, repair.Quarantined)
         assert result.primary.rule_id == RuleID.CATALOG_MISMATCH
         assert result.primary.tier_attempted == RepairTier.CHECKSUM_RECONSTRUCT
@@ -138,9 +141,87 @@ class TestProcessRecord:
     def test_process_quarantines_both_bad_lines(self, line1, line2):
         raw1 = (line1[:68] + "9").encode("ascii")  # line 1: bad checksum
         raw2 = line2.encode("ascii") + b"\xff"  # line 2: non-ASCII byte
-        result = repair.process_record(raw1, 1, raw2, 2)
+        result = repair.repair_record(raw1, 1, raw2, 2)
         assert isinstance(result, repair.Quarantined)
         # Line 1's diagnostic is primary; line 2's is in related.
         assert result.primary.rule_id == RuleID.CHECKSUM_MISMATCH
         assert len(result.related) == 1
         assert result.related[0].rule_id == RuleID.NON_ASCII_BYTE
+
+
+class TestRepairContractProperties:
+    """The repair contract: a committed line is always tle-valid; a quarantine
+    never claims success. Fuzz benign normalizations around the canonical line."""
+
+    @given(
+        prefix_ws=st.text(alphabet=" ", max_size=3),
+        suffix=st.sampled_from(["", "\n", "\r\n", " ", "  ", "\\"]),
+        drop_checksum=st.booleans(),
+    )
+    @settings(
+        max_examples=200,
+        suppress_health_check=[HealthCheck.function_scoped_fixture],
+    )
+    def test_repaired_line_is_always_valid_or_quarantined(
+        self, line1, prefix_ws, suffix, drop_checksum
+    ):
+        base = line1[:68] if drop_checksum else line1
+        raw = (prefix_ws + base + suffix).encode("ascii")
+        clean, fixes, diag = repair.repair_line(raw, 1, source_line_no=7)
+        if diag is None:
+            # committed: must pass full validation (validated-transformation)
+            assert clean is not None
+            assert tle.validate_line(clean, 1) == []
+        else:
+            # quarantined: no committed line, and provenance is recorded
+            assert clean is None
+            assert diag.source_line_nos == (7,)
+
+    def test_record_fixes_reflect_a_single_lines_checksum_reconstruct(
+        self, line1, line2
+    ):
+        # Drop line-2's checksum so its repair reaches RECONSTRUCTED_CHECKSUM;
+        # the record-level fixes include it even though line-1 needed none.
+        result = repair.repair_record(
+            line1.encode("ascii"), 1, line2[:68].encode("ascii"), 2
+        )
+        assert isinstance(result, repair.Accepted)
+        assert FixClass.RECONSTRUCTED_CHECKSUM in result.fixes
+
+
+class TestRepairRecordComboCases:
+    """Multi-line failure orchestration: primary/related selection + tiers."""
+
+    def _bad_line(self):
+        # 69 chars that pass length but fail column layout (all 'Z').
+        return ("Z" * 69).encode("ascii")
+
+    def test_both_lines_fail_primary_is_line1_related_is_line2(self):
+        result = repair.repair_record(self._bad_line(), 1, self._bad_line(), 2)
+        assert isinstance(result, repair.Quarantined)
+        assert result.primary.source_line_nos == (1,)
+        assert len(result.related) == 1
+        assert result.related[0].source_line_nos == (2,)
+
+    def test_only_line2_fails_related_is_empty(self, line1):
+        result = repair.repair_record(line1.encode("ascii"), 5, self._bad_line(), 6)
+        assert isinstance(result, repair.Quarantined)
+        assert result.primary.source_line_nos == (6,)
+        assert result.related == ()
+
+    def test_catalog_mismatch_after_both_repair(self, line1, line2):
+        other_body = "2 09999" + line2[7:68]
+        other = other_body + str(tle.compute_checksum(other_body))
+        result = repair.repair_record(
+            line1.encode("ascii"), 1, other.encode("ascii"), 2
+        )
+        assert isinstance(result, repair.Quarantined)
+        assert result.primary.rule_id == RuleID.CATALOG_MISMATCH
+        assert result.primary.source_line_nos == (1, 2)
+
+    def test_both_clean_lines_accepted_with_no_fixes(self, line1, line2):
+        result = repair.repair_record(
+            line1.encode("ascii"), 1, line2.encode("ascii"), 2
+        )
+        assert isinstance(result, repair.Accepted)
+        assert result.fixes == []

@@ -4,14 +4,21 @@ findings shards, the corpus ``broken-noradids.ndjson``, and shard concat."""
 import contextlib
 import datetime
 import json
-import os
 import shutil
+from pathlib import Path
 
 from lintle import __version__, fsutil, stem
-from lintle.report import _PER_RULE_EXEMPLAR_BOUND, FileSample, _format_diagnostic
+from lintle.diagnostics import Diagnostic
+from lintle.report import (
+    PER_RULE_EXEMPLAR_BOUND,
+    FileSample,
+    FileStats,
+    QuarantineEntry,
+    format_diagnostic,
+)
 
 
-def _diagnostic_to_nested(diag):
+def _diagnostic_to_nested(diag: Diagnostic) -> dict[str, object]:
     """Render one :class:`Diagnostic` as a JSON-ready dict (issue #9).
 
     Used both inside the ``related`` array and as the body of the
@@ -33,7 +40,9 @@ def _diagnostic_to_nested(diag):
     }
 
 
-def entry_to_jsonl_dict(entry, *, file, norad_id):
+def entry_to_jsonl_dict(
+    entry: QuarantineEntry, *, file: str, norad_id: int | None
+) -> dict[str, object]:
     """Render one :class:`QuarantineEntry` as a single ``report.jsonl`` line dict.
 
     Envelope shape carries ``schema_version`` (``"1"`` for this spec),
@@ -56,7 +65,7 @@ def entry_to_jsonl_dict(entry, *, file, norad_id):
     }
 
 
-def _render_entry(index, entry):
+def _render_entry(index: int, entry: QuarantineEntry) -> bytes:
     """Render one :class:`QuarantineEntry` as the bytes it occupies in ``.broken.txt``.
 
     Header line cites the primary diagnostic; any related diagnostics fold
@@ -67,11 +76,11 @@ def _render_entry(index, entry):
         location = f"source lines {entry.source_lines[0]}-{entry.source_lines[1]}"
     else:
         location = f"source line {entry.source_lines[0]}"
-    head = f"[{index}] {location} - {_format_diagnostic(entry.primary)}\n"
+    head = f"[{index}] {location} - {format_diagnostic(entry.primary)}\n"
     chunks = [head.encode("ascii", errors="replace")]
     for extra in entry.related:
         chunks.append(
-            f"    and: {_format_diagnostic(extra)}\n".encode("ascii", errors="replace")
+            f"    and: {format_diagnostic(extra)}\n".encode("ascii", errors="replace")
         )
     for raw in entry.raw_lines:
         chunks.append(raw)
@@ -80,7 +89,7 @@ def _render_entry(index, entry):
     return b"".join(chunks)
 
 
-def _render_header(src_name, quarantined, entries):
+def _render_header(src_name: str, quarantined: int, entries: int) -> bytes:
     """Render the three-line ASCII header of a ``.broken.txt`` sidecar.
 
     ``entries`` is ``paired_records + orphan_entries`` — the count of things
@@ -105,7 +114,7 @@ class BrokenFileWriter:
     leaves a half-written sidecar behind.
     """
 
-    def __init__(self, path, src_name):
+    def __init__(self, path: str, src_name: str) -> None:
         self.path = path
         self.src_name = src_name
         self._body_path = path + ".body.partial"
@@ -118,16 +127,18 @@ class BrokenFileWriter:
         self._handle = open(self._body_path, "wb")
         return self
 
-    def write_entry(self, entry):
+    def write_entry(self, entry: QuarantineEntry) -> None:
         """Append one ``QuarantineEntry`` to the sidecar body, byte-faithfully."""
         self._entry_count += 1
         self._handle.write(_render_entry(self._entry_count, entry))
 
-    def finalize(self, entries):
+    def finalize(self, *, entries: int) -> None:
         """Stitch header + body into the final path; atomic-rename in place.
 
         ``entries`` is the denominator shown in the header — pass
         ``paired_records + orphan_entries`` from the source file's stats.
+        Keyword-only to match :meth:`QuarantineSink.finalize`, so the three
+        streaming writers share one ``finalize`` calling convention.
         """
         if self._handle is not None and not self._handle.closed:
             self._handle.close()
@@ -136,7 +147,7 @@ class BrokenFileWriter:
             out.write(header)
             shutil.copyfileobj(src, out, length=65536)
         with contextlib.suppress(OSError):
-            os.unlink(self._body_path)
+            Path(self._body_path).unlink()
         fsutil.durable_replace(self._final_partial, self.path)
         self._completed = True
 
@@ -148,7 +159,7 @@ class BrokenFileWriter:
         if not self._completed:
             for partial in (self._body_path, self._final_partial):
                 with contextlib.suppress(OSError):
-                    os.unlink(partial)
+                    Path(partial).unlink()
         return False
 
 
@@ -167,7 +178,7 @@ class JsonlFindingsWriter:
     Use as a context manager so an interrupted run leaves no debris.
     """
 
-    def __init__(self, path, src_name):
+    def __init__(self, path: str, src_name: str) -> None:
         self.path = path
         self.src_name = src_name
         self._partial = path + ".partial"
@@ -178,7 +189,7 @@ class JsonlFindingsWriter:
         self._handle = open(self._partial, "w", encoding="utf-8", newline="\n")
         return self
 
-    def write_entry(self, entry):
+    def write_entry(self, entry: QuarantineEntry) -> None:
         """Append one ``QuarantineEntry`` to the shard as a JSON line."""
         payload = entry_to_jsonl_dict(
             entry, file=self.src_name, norad_id=entry.norad_id
@@ -192,7 +203,7 @@ class JsonlFindingsWriter:
         self._handle.write(line)
         self._handle.write("\n")
 
-    def finalize(self):
+    def finalize(self) -> None:
         """Close the partial and atomically, durably rename into place."""
         if self._handle is not None and not self._handle.closed:
             self._handle.close()
@@ -206,7 +217,7 @@ class JsonlFindingsWriter:
         # run leaves no debris.
         if not self._completed:
             with contextlib.suppress(OSError):
-                os.unlink(self._partial)
+                Path(self._partial).unlink()
         return False
 
 
@@ -228,11 +239,11 @@ class QuarantineSink:
     def __init__(
         self,
         *,
-        cap=_PER_RULE_EXEMPLAR_BOUND,
-        broken_path=None,
-        src_name=None,
-        jsonl_path=None,
-    ):
+        cap: int = PER_RULE_EXEMPLAR_BOUND,
+        broken_path: str | None = None,
+        src_name: str | None = None,
+        jsonl_path: str | None = None,
+    ) -> None:
         self._cap = cap
         self._buckets = {}
         # Per-rule running count of entries dropped because the bucket was
@@ -266,7 +277,7 @@ class QuarantineSink:
             self._jsonl_writer.__exit__(exc_type, exc, tb)
         return False
 
-    def add(self, entry):
+    def add(self, entry: QuarantineEntry) -> None:
         """Record one quarantined entry. Silently drops past cap.
 
         Drops are not data loss: the operator-visible totals live in
@@ -296,7 +307,7 @@ class QuarantineSink:
         if self._jsonl_writer is not None:
             self._jsonl_writer.write_entry(entry)
 
-    def finalize(self, *, entries):
+    def finalize(self, *, entries: int) -> FileSample:
         """Seal the sink and return the immutable :class:`FileSample`.
 
         ``entries`` is the denominator shown in the sidecar header
@@ -311,7 +322,7 @@ class QuarantineSink:
         if self._finalized:
             return self._sample
         if self._writer is not None:
-            self._writer.finalize(entries)
+            self._writer.finalize(entries=entries)
         if self._jsonl_writer is not None:
             self._jsonl_writer.finalize()
         self._sample = FileSample(
@@ -323,7 +334,7 @@ class QuarantineSink:
         return self._sample
 
 
-def write_broken_file(path, src_name, stats):
+def write_broken_file(path: str, src_name: str, stats: FileStats) -> None:
     """Write the ``.broken.txt`` sidecar from a populated ``FileStats``.
 
     Thin wrapper that flattens ``stats.quarantine_sample.buckets`` (a per-rule
@@ -343,10 +354,10 @@ def write_broken_file(path, src_name, stats):
         flattened.sort(key=lambda e: e.source_lines[0])
         for entry in flattened:
             writer.write_entry(entry)
-        writer.finalize(stats.paired_records + stats.orphan_entries)
+        writer.finalize(entries=stats.paired_records + stats.orphan_entries)
 
 
-def aggregate_broken_norad_ids(all_stats):
+def aggregate_broken_norad_ids(all_stats: list[FileStats]) -> list[int]:
     """Return the sorted, deduplicated NORAD IDs quarantined corpus-wide."""
     ids = set()
     for stats in all_stats:
@@ -354,7 +365,7 @@ def aggregate_broken_norad_ids(all_stats):
     return sorted(ids)
 
 
-def format_broken_noradids_ndjson(all_stats):
+def format_broken_noradids_ndjson(all_stats: list[FileStats]) -> str:
     """Render the corpus-wide quarantined-NORAD-ID NDJSON as a string.
 
     One ``{"noradId": N}`` object per line, deduplicated across every
@@ -371,7 +382,7 @@ def format_broken_noradids_ndjson(all_stats):
     return "".join(line + "\n" for line in lines)
 
 
-def write_broken_noradids_ndjson(path, all_stats):
+def write_broken_noradids_ndjson(path: str, all_stats: list[FileStats]) -> None:
     """Write the corpus-wide ``broken-noradids.ndjson`` to ``path``.
 
     Thin wrapper around ``format_broken_noradids_ndjson`` that pins LF
@@ -385,7 +396,9 @@ def write_broken_noradids_ndjson(path, all_stats):
     fsutil.durable_replace(tmp, path)
 
 
-def concat_findings_shards(out_dir, dest_path, all_stats):
+def concat_findings_shards(
+    out_dir: str, dest_path: str, all_stats: list[FileStats]
+) -> None:
     """Concatenate per-file findings shards into the corpus ``report.jsonl``.
 
     Per-worker shards live in ``<out_dir>/.shards/<stem>.findings.jsonl``,
@@ -406,12 +419,12 @@ def concat_findings_shards(out_dir, dest_path, all_stats):
     successful run, so an interrupted or failed run keeps its shards and a
     later ``--resume`` can re-read them to rebuild a complete ``report.jsonl``.
     """
-    shard_dir = os.path.join(out_dir, ".shards")
+    shard_dir = Path(out_dir) / ".shards"
     tmp_path = dest_path + ".partial"
     with open(tmp_path, "wb") as out:
         for stats in all_stats:
-            shard = os.path.join(shard_dir, stem(stats.src_name) + ".findings.jsonl")
-            if not os.path.exists(shard):
+            shard = shard_dir / (stem(stats.src_name) + ".findings.jsonl")
+            if not shard.exists():
                 # Worker crashed before finalize, validate-mode worker, or
                 # an out-of-band cleanup removed it — skip silently.
                 continue

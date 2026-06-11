@@ -2,8 +2,8 @@
 
 import contextlib
 import dataclasses
-import os
 import time
+from pathlib import Path
 
 from lintle import fsutil, repair, report, report_writers, stem, tle
 from lintle.diagnostics import Diagnostic, RuleID, diagnostic
@@ -30,6 +30,88 @@ class Orphan:
     raw_line: bytes
     src: int
     diag: Diagnostic
+
+
+@dataclasses.dataclass(frozen=True)
+class FileStarted:
+    """Progress event: a worker has begun processing ``name`` (issue #53)."""
+
+    name: str
+
+
+@dataclasses.dataclass(frozen=True)
+class FileEnded:
+    """Progress event: a worker has finished or failed ``name`` (issue #53).
+
+    Emitted from ``process_file``'s ``finally`` so it fires on both the
+    success and the exception path.
+    """
+
+    name: str
+
+
+@dataclasses.dataclass(frozen=True)
+class FileProgress:
+    """Per-file progress delta (issue #53 §6): ``bytes_delta`` is the advance in
+    the true file offset and ``records_delta`` the records routed since the last
+    message. Across a file's messages the byte deltas sum to its ``st_size`` and
+    the record deltas to its routed-record count.
+    """
+
+    name: str
+    bytes_delta: int
+    records_delta: int
+
+
+# The worker -> display protocol over the progress queue, defined once here so
+# producer (``process_file``) and consumer (``cli_progress._ProgressDisplay``)
+# share one schema: dispatch is by type and field access is by name, so adding a
+# variant or reordering a field is a typed change at both ends rather than a
+# silently mis-unpacked tuple.
+ProgressMessage = FileStarted | FileEnded | FileProgress
+
+
+@dataclasses.dataclass
+class _ProgressBatcher:
+    """Accumulate per-file progress deltas before sending queue messages."""
+
+    progress_queue: object | None
+    progress_every: int
+    src_name: str
+    entries_processed: int = 0
+    bytes_flushed: int = 0
+    records_since_flush: int = 0
+
+    @property
+    def enabled(self):
+        return self.progress_queue is not None and bool(self.progress_every)
+
+    def item_seen(self, stats):
+        """Record one routed candidate and emit a batch when due."""
+        self.entries_processed += 1
+        if not self.enabled:
+            return
+        self.records_since_flush += 1
+        if self.entries_processed % self.progress_every == 0:
+            self._put(stats)
+
+    def flush(self, stats):
+        """Emit the trailing partial batch so the caller's tally is exact."""
+        if not self.enabled:
+            return
+        byte_delta = stats.bytes_consumed - self.bytes_flushed
+        if byte_delta or self.records_since_flush:
+            self.progress_queue.put(
+                FileProgress(self.src_name, byte_delta, self.records_since_flush)
+            )
+
+    def _put(self, stats):
+        byte_delta = stats.bytes_consumed - self.bytes_flushed
+        self.progress_queue.put(
+            FileProgress(self.src_name, byte_delta, self.records_since_flush)
+        )
+        self.bytes_flushed += byte_delta
+        self.records_since_flush = 0
 
 
 def _orphan(raw_line, src, rule_id, note):
@@ -117,17 +199,16 @@ def process_file(src_path, out_dir, mode, progress_queue=None, progress_every=25
     written to a temp file and atomically renamed, so an interrupted run
     never leaves a half-written output.
 
-    When ``progress_queue`` is given, a per-file delta message
-    ``("progress", src_name, bytes_delta, records_delta)`` is pushed every
-    ``progress_every`` records — and once more when the file ends — so the
+    When ``progress_queue`` is given, a :class:`FileProgress` delta is pushed
+    every ``progress_every`` records — and once more when the file ends — so the
     caller can render live byte + record progress; the byte deltas sum to the
-    file's size. The queue also receives ``("start", src_name)`` before
-    processing begins and ``("end", src_name)`` in a ``finally`` (so failures
+    file's size. The queue also receives a :class:`FileStarted` before
+    processing begins and a :class:`FileEnded` in a ``finally`` (so failures
     still emit it), letting the caller track which files are currently in
     flight. With no queue (or ``progress_every`` set to 0) no progress is
     reported.
     """
-    src_name = os.path.basename(src_path)
+    src_name = Path(src_path).name
     stats = report.FileStats(src_name=src_name)
     # Wall-clock start for the v1 envelope (issue #20). Captured up front
     # so even a file that fails early during open still surfaces a
@@ -141,7 +222,7 @@ def process_file(src_path, out_dir, mode, progress_queue=None, progress_every=25
     started_monotonic = time.monotonic()
     progress_enabled = progress_queue is not None and bool(progress_every)
     if progress_enabled:
-        progress_queue.put(("start", src_name))
+        progress_queue.put(FileStarted(src_name))
 
     try:
         return _run(src_path, out_dir, mode, stats, progress_queue, progress_every)
@@ -154,7 +235,96 @@ def process_file(src_path, out_dir, mode, progress_queue=None, progress_every=25
         # non-zero duration in the envelope when callers retain stats.
         stats.elapsed_seconds = time.monotonic() - started_monotonic
         if progress_enabled:
-            progress_queue.put(("end", src_name))
+            progress_queue.put(FileEnded(src_name))
+
+
+def _record_acceptance(stats, cleaned_handle, result):
+    """Tally and optionally write one accepted repaired record."""
+    stats.clean_count += 1
+    for fix in result.fixes:
+        stats.fix_counts[fix] = stats.fix_counts.get(fix, 0) + 1
+    if cleaned_handle is not None:
+        cleaned_handle.write(result.line1 + "\n")
+        cleaned_handle.write(result.line2 + "\n")
+
+
+def _route_candidate(candidate, stats, sink, cleaned_handle):
+    """Route one paired record or orphan into accepted/quarantined accounting."""
+    if isinstance(candidate, Orphan):
+        stats.orphan_entries += 1
+        _record_quarantine(
+            stats,
+            sink,
+            candidate.diag,
+            (),
+            [candidate.raw_line],
+            [candidate.src],
+        )
+        return
+
+    stats.paired_records += 1
+
+    try:
+        result = repair.repair_record(
+            candidate.raw_line1,
+            candidate.src1,
+            candidate.raw_line2,
+            candidate.src2,
+        )
+    except Exception as exc:  # one bad record must not kill the run
+        _record_quarantine(
+            stats,
+            sink,
+            diagnostic(
+                RuleID.INTERNAL_ERROR,
+                source_line_nos=(candidate.src1, candidate.src2),
+                note=repr(exc),
+            ),
+            (),
+            [candidate.raw_line1, candidate.raw_line2],
+            [candidate.src1, candidate.src2],
+        )
+        return
+
+    if isinstance(result, repair.Accepted):
+        _record_acceptance(stats, cleaned_handle, result)
+    else:
+        _record_quarantine(
+            stats,
+            sink,
+            result.primary,
+            result.related,
+            result.raw_lines,
+            result.source_lines,
+        )
+
+
+@dataclasses.dataclass(frozen=True)
+class _CleanPaths:
+    """Destination paths for one file's clean-mode outputs."""
+
+    cleaned: str
+    broken: str
+    jsonl: str
+
+
+def _clean_output_paths(out_dir, src_name):
+    """Create the cleaned/, broken/, and .shards/ trees under ``out_dir`` and
+    return the three per-file output paths. The ``.shards`` findings shard is
+    internal staging the cli concatenates into ``report.jsonl`` at end of run
+    and then removes (issue #9, spec §4.6)."""
+    out = Path(out_dir)
+    cleaned_dir = out / "cleaned"
+    cleaned_dir.mkdir(parents=True, exist_ok=True)
+    broken_dir = out / "broken"
+    broken_dir.mkdir(parents=True, exist_ok=True)
+    shard_dir = out / ".shards"
+    shard_dir.mkdir(parents=True, exist_ok=True)
+    return _CleanPaths(
+        cleaned=str(cleaned_dir / (stem(src_name) + ".cleaned.txt")),
+        broken=str(broken_dir / (stem(src_name) + ".broken.txt")),
+        jsonl=str(shard_dir / (stem(src_name) + ".findings.jsonl")),
+    )
 
 
 def _run(src_path, out_dir, mode, stats, progress_queue, progress_every):
@@ -170,9 +340,10 @@ def _run(src_path, out_dir, mode, stats, progress_queue, progress_every):
     broken_path = None
     jsonl_path = None
     if mode == "clean":
-        cleaned_dir = os.path.join(out_dir, "cleaned")
-        os.makedirs(cleaned_dir, exist_ok=True)
-        cleaned_path = os.path.join(cleaned_dir, stem(src_name) + ".cleaned.txt")
+        paths = _clean_output_paths(out_dir, src_name)
+        cleaned_path = paths.cleaned
+        broken_path = paths.broken
+        jsonl_path = paths.jsonl
         # Deterministic temp name (not tempfile.mkstemp): a killed run leaves
         # at most one .partial per file, which the next run truncates — no
         # random-name debris accumulates. open() also honours the umask
@@ -183,16 +354,6 @@ def _run(src_path, out_dir, mode, stats, progress_queue, progress_every):
         cleaned_handle = open(  # noqa: SIM115
             cleaned_tmp, "w", encoding="ascii", newline="\n"
         )
-        broken_dir = os.path.join(out_dir, "broken")
-        os.makedirs(broken_dir, exist_ok=True)
-        broken_path = os.path.join(broken_dir, stem(src_name) + ".broken.txt")
-        # Per-file findings shard for the corpus-wide report.jsonl (issue #9).
-        # Lives in ``.shards/`` so it's clearly an internal staging directory;
-        # the cli concatenates shards into ``report.jsonl`` at end of run and
-        # then ``rmtree``s the whole directory. Spec §4.6.
-        shard_dir = os.path.join(out_dir, ".shards")
-        os.makedirs(shard_dir, exist_ok=True)
-        jsonl_path = os.path.join(shard_dir, stem(src_name) + ".findings.jsonl")
 
     # The sink owns the BrokenFileWriter lifecycle in clean mode and the
     # bounded in-memory sample in both modes. Issue #19: cap-enforcement
@@ -205,13 +366,7 @@ def _run(src_path, out_dir, mode, stats, progress_queue, progress_every):
     )
 
     completed = False
-    # Tracks paired+orphan yields — the "entries processed" count, used to
-    # drive progress reporting. Kept local because the stats counters are
-    # split: paired_records and orphan_entries each advance on their own
-    # branch below, but progress is an aggregate signal.
-    entries_processed = 0
-    bytes_flushed = 0  # bytes already reported via the progress queue
-    records_since_flush = 0
+    progress = _ProgressBatcher(progress_queue, progress_every, stats.src_name)
     with sink:
         try:
             # Input size for the v1 envelope (issue #20). Captured inside
@@ -221,92 +376,20 @@ def _run(src_path, out_dir, mode, stats, progress_queue, progress_every):
             # by the inner finally and the sink's ``__exit__`` discards
             # the ``.broken.txt`` partials. The parent's ``finally`` still
             # emits the lifecycle ``end`` event.
-            stats.bytes = os.path.getsize(src_path)
+            stats.bytes = Path(src_path).stat().st_size
             for candidate in iter_records(src_path, stats):
-                entries_processed += 1
-
-                # Flush one ``("progress", name, bytes, records)`` message every
+                # Flush one ``FileProgress`` message every
                 # ``progress_every`` records (issue #53 §6). The byte delta is
                 # the advance in ``stats.bytes_consumed`` — the true file offset
                 # tracked by ``iter_records``, counting dropped blank lines and
                 # exact newline widths — so the deltas sum to st_size exactly.
-                if progress_queue is not None and progress_every:
-                    records_since_flush += 1
-                    if entries_processed % progress_every == 0:
-                        byte_delta = stats.bytes_consumed - bytes_flushed
-                        progress_queue.put(
-                            (
-                                "progress",
-                                stats.src_name,
-                                byte_delta,
-                                records_since_flush,
-                            )
-                        )
-                        bytes_flushed += byte_delta
-                        records_since_flush = 0
-
-                if isinstance(candidate, Orphan):
-                    stats.orphan_entries += 1
-                    _record_quarantine(
-                        stats,
-                        sink,
-                        candidate.diag,
-                        (),
-                        [candidate.raw_line],
-                        [candidate.src],
-                    )
-                    continue
-
-                stats.paired_records += 1
-
-                try:
-                    result = repair.process_record(
-                        candidate.raw_line1,
-                        candidate.src1,
-                        candidate.raw_line2,
-                        candidate.src2,
-                    )
-                except Exception as exc:  # one bad record must not kill the run
-                    _record_quarantine(
-                        stats,
-                        sink,
-                        diagnostic(
-                            RuleID.INTERNAL_ERROR,
-                            source_line_nos=(candidate.src1, candidate.src2),
-                            note=repr(exc),
-                        ),
-                        (),
-                        [candidate.raw_line1, candidate.raw_line2],
-                        [candidate.src1, candidate.src2],
-                    )
-                    continue
-
-                if isinstance(result, repair.Accepted):
-                    stats.clean_count += 1
-                    for fix in result.fixes:
-                        stats.fix_counts[fix] = stats.fix_counts.get(fix, 0) + 1
-                    if cleaned_handle is not None:
-                        cleaned_handle.write(result.line1 + "\n")
-                        cleaned_handle.write(result.line2 + "\n")
-                else:
-                    _record_quarantine(
-                        stats,
-                        sink,
-                        result.primary,
-                        result.related,
-                        result.raw_lines,
-                        result.source_lines,
-                    )
+                progress.item_seen(stats)
+                _route_candidate(candidate, stats, sink, cleaned_handle)
             # Push the trailing partial batch so the caller's tally is exact.
             # ``byte_delta`` can be non-zero with zero records when the file
             # ends in dropped blank lines — still flush it so the byte bar
             # reaches st_size.
-            if progress_queue is not None and progress_every:
-                byte_delta = stats.bytes_consumed - bytes_flushed
-                if byte_delta or records_since_flush:
-                    progress_queue.put(
-                        ("progress", stats.src_name, byte_delta, records_since_flush)
-                    )
+            progress.flush(stats)
             completed = True
         finally:
             if cleaned_handle is not None:
@@ -317,7 +400,7 @@ def _run(src_path, out_dir, mode, stats, progress_queue, progress_every):
             # handles the .broken.txt partials.
             if cleaned_tmp is not None and not completed:
                 with contextlib.suppress(OSError):
-                    os.unlink(cleaned_tmp)
+                    Path(cleaned_tmp).unlink()
 
         # Still inside `with sink:` — finalize must happen BEFORE __exit__
         # fires, otherwise the writer's exit handler sees _completed=False
@@ -365,12 +448,15 @@ def _record_quarantine(stats, sink, primary, related, raw_lines, source_lines):
     # breakdown does (issue #9). Orphan-line-2 and bad-prefix quarantines
     # expose no line-1 catalog field and yield ``None``.
     norad_id = tle.extract_norad_id(raw_lines[0])
-    # Pass norad_id as a kwarg — QuarantineEntry's positional contract is
-    # (raw_lines, source_lines, primary, related), and norad_id is the
-    # trailing optional. The kwarg makes the intent explicit at the only
-    # production construction site (spec §4.5).
+    # Construct by keyword at this single production site so field order is
+    # decoupled from the call (spec §4.5): a reorder of QuarantineEntry's
+    # fields can no longer silently misassign arguments here.
     entry = report.QuarantineEntry(
-        raw_lines, source_lines, primary, related, norad_id=norad_id
+        raw_lines=raw_lines,
+        source_lines=source_lines,
+        primary=primary,
+        related=related,
+        norad_id=norad_id,
     )
     sink.add(entry)  # cap-checked, streamed if writer is open (issue #19)
     # The per-NORAD bucket records which rules the satellite hit, feeding

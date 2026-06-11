@@ -1,21 +1,28 @@
-"""Shared terminal-output helpers: the single stderr ``Console`` and the
-styled ``error:`` / ``warning:`` emitters used across the CLI surface.
+"""Shared terminal-output helpers: the two shared ``Console`` instances
+(``stderr_console`` for status/errors; ``stdout_console`` for the ``report``
+command's rendered view) and the styled ``error:`` / ``warning:`` emitters
+used across the CLI surface.
 
-rich styling is confined to stderr and only when it is a TTY; off a TTY (pipes,
-``capsys``, ``NO_COLOR``) the Console strips styling and the output is plain,
-so machine-readable stderr stays literal. This is the only Console attached to
-stderr — stdout result data and the structured output files are never routed
-through it. The module-level ``stderr_console`` is built before argument
-parsing so the earliest error sites share it; rich reads ``sys.stderr`` lazily,
+``stderr_console`` carries all status/error ephemera; ``stdout_console`` carries
+only the styled ``report`` result view. rich styling on each is confined to a
+TTY; off a TTY (pipes, ``capsys``, ``NO_COLOR``) the Console strips styling and
+the output is plain, so machine-readable output stays literal. The structured
+output files and the ``--report json`` stdout bytes are never routed through
+either Console — those go through plain ``json``/file writers for
+byte-determinism. The module-level Consoles are built before argument parsing so
+the earliest sites share them; rich reads ``sys.stderr`` / ``sys.stdout`` lazily,
 so a replaced stream (tests, redirection) is honoured at print time.
 """
 
 import enum
+import os
+import sys
 
 from rich.console import Console
 from rich.text import Text
 
 stderr_console = Console(stderr=True)
+stdout_console = Console()
 
 
 class Severity(enum.Enum):
@@ -67,3 +74,37 @@ def prompt(message):
     channel consistency."""
     stderr_console.print(Text(message), end="", soft_wrap=True, highlight=False)
     stderr_console.file.flush()
+
+
+def is_interactive():
+    """A run is interactive iff stdin is a TTY (the prompt answer is read there)
+    and no CI/NONINTERACTIVE env var forces non-interactive — which prevents a
+    CI runner that allocates a pseudo-TTY from hanging on the prompt (spec §2.2)."""
+    if os.environ.get("CI") or os.environ.get("NONINTERACTIVE"):
+        return False
+    try:
+        return sys.stdin.isatty()
+    except AttributeError, ValueError:
+        return False
+
+
+def prompt_yes_no(message, *, default):
+    """Ask a y/n question on stderr, reading the answer from stdin (spec §2.4).
+    Enter takes ``default``; up to 3 unrecognised answers then give up; EOF/Ctrl-D
+    gives up. Returns True/False, or None when the operator gave no usable answer
+    (caller treats None as abort)."""
+    for _ in range(3):
+        prompt(message)
+        line = sys.stdin.readline()
+        if line == "":  # EOF / Ctrl-D
+            note("")  # close the prompt line the operator never finished
+            return None
+        token = line.strip().lower()
+        if token == "":
+            return default
+        if token in ("y", "yes"):
+            return True
+        if token in ("n", "no"):
+            return False
+        note("  please answer y or n.")
+    return None

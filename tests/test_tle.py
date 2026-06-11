@@ -1,5 +1,8 @@
 """Tests for lintle.tle — the TLE validator."""
 
+from hypothesis import HealthCheck, given, settings
+from hypothesis import strategies as st
+
 from lintle import tle
 
 
@@ -146,3 +149,141 @@ class TestExtractNoradId:
         # zero-padded string, so dedup across "  005" and "00005" collapses.
         body = "1 00005U junk"
         assert tle.extract_norad_id(body) == 5
+
+
+class TestSemanticBoundaries:
+    """Explicit boundary-value tests for every _check_semantics range.
+
+    Inclusive edges are accepted; exclusive edges are rejected. These
+    document the intended bounds and anchor the hypothesis property tests.
+    """
+
+    # epoch day-of-year (line 1): 0.0 < day < 367.0 (both exclusive)
+    def test_epoch_day_lower_exclusive_rejected(self, line1):
+        body = line1[:20] + "000.00000000" + line1[32:68]  # day = 0.0
+        assert any("epoch day-of-year" in e for e in tle.validate_body(body, 1))
+
+    def test_epoch_day_just_above_zero_accepted(self, line1):
+        body = line1[:20] + "000.00100000" + line1[32:68]  # day = 0.001
+        assert not any("epoch day-of-year" in e for e in tle.validate_body(body, 1))
+
+    def test_epoch_day_upper_exclusive_rejected(self, line1):
+        body = line1[:20] + "367.00000000" + line1[32:68]  # day = 367.0
+        assert any("epoch day-of-year" in e for e in tle.validate_body(body, 1))
+
+    def test_epoch_day_just_below_upper_accepted(self, line1):
+        body = line1[:20] + "366.99900000" + line1[32:68]  # day = 366.999
+        assert not any("epoch day-of-year" in e for e in tle.validate_body(body, 1))
+
+    # inclination (line 2): 0.0 <= inc <= 180.0 (both inclusive)
+    def test_inclination_lower_inclusive_accepted(self, line2):
+        body = line2[:8] + "000.0000" + line2[16:68]  # inc = 0.0
+        assert not any("inclination" in e for e in tle.validate_body(body, 2))
+
+    def test_inclination_upper_inclusive_accepted(self, line2):
+        body = line2[:8] + "180.0000" + line2[16:68]  # inc = 180.0
+        assert not any("inclination" in e for e in tle.validate_body(body, 2))
+
+    def test_inclination_just_above_upper_rejected(self, line2):
+        body = line2[:8] + "180.0001" + line2[16:68]  # inc = 180.0001
+        assert any("inclination" in e for e in tle.validate_body(body, 2))
+
+    # RAAN (line 2): 0.0 <= raan < 360.0 (inclusive lower, exclusive upper)
+    def test_raan_upper_exclusive_rejected(self, line2):
+        body = line2[:17] + "360.0000" + line2[25:68]  # raan = 360.0
+        assert any("RAAN" in e for e in tle.validate_body(body, 2))
+
+    def test_raan_just_below_upper_accepted(self, line2):
+        body = line2[:17] + "359.9999" + line2[25:68]  # raan = 359.9999
+        assert not any("RAAN" in e for e in tle.validate_body(body, 2))
+
+    # eccentricity (line 2): 0.0 <= ecc < 1.0; field = int(body[26:33]) / 1e7
+    def test_eccentricity_zero_accepted(self, line2):
+        body = line2[:26] + "0000000" + line2[33:68]  # ecc = 0.0
+        assert not any("eccentricity" in e for e in tle.validate_body(body, 2))
+
+    def test_eccentricity_max_field_accepted(self, line2):
+        # 9999999 -> 0.9999999, the largest value a 7-digit field can encode;
+        # the < 1.0 upper bound is therefore structurally unreachable via
+        # column data (the rejection branch is defensive only).
+        body = line2[:26] + "9999999" + line2[33:68]
+        assert not any("eccentricity" in e for e in tle.validate_body(body, 2))
+
+    # argument of perigee (line 2): 0.0 <= argp < 360.0
+    def test_argp_upper_exclusive_rejected(self, line2):
+        body = line2[:34] + "360.0000" + line2[42:68]  # argp = 360.0
+        assert any("argument of perigee" in e for e in tle.validate_body(body, 2))
+
+    def test_argp_just_below_upper_accepted(self, line2):
+        body = line2[:34] + "359.9999" + line2[42:68]  # argp = 359.9999
+        assert not any("argument of perigee" in e for e in tle.validate_body(body, 2))
+
+    # mean anomaly (line 2): 0.0 <= mean_anom < 360.0
+    def test_mean_anomaly_upper_exclusive_rejected(self, line2):
+        body = line2[:43] + "360.0000" + line2[51:68]  # mean_anom = 360.0
+        assert any("mean anomaly" in e for e in tle.validate_body(body, 2))
+
+    def test_mean_anomaly_just_below_upper_accepted(self, line2):
+        body = line2[:43] + "359.9999" + line2[51:68]  # mean_anom = 359.9999
+        assert not any("mean anomaly" in e for e in tle.validate_body(body, 2))
+
+    # mean motion (line 2): mean_motion > 0.0 (strictly positive)
+    def test_mean_motion_small_positive_accepted(self, line2):
+        body = line2[:52] + "00.00010000" + line2[63:68]  # 0.0001 rev/day
+        assert not any("mean motion" in e for e in tle.validate_body(body, 2))
+
+    # numeric-parse-failure path (call _check_semantics directly: it assumes
+    # columns already passed, so a parse-breaking field reaches the except branch)
+    def test_unparseable_numeric_field_reports_parse_failure(self, line2):
+        body = line2[:26] + "       " + line2[33:68]  # eccentricity = 7 spaces
+        errs = tle._check_semantics(body, 2)
+        assert any("could not be parsed" in e for e in errs)
+
+
+class TestChecksumProperties:
+    """Property-based invariants for the mod-10 checksum."""
+
+    @given(
+        st.text(
+            alphabet=st.characters(min_codepoint=32, max_codepoint=126),
+            min_size=68,
+            max_size=68,
+        )
+    )
+    def test_checksum_is_a_single_digit(self, body):
+        assert tle.compute_checksum(body) in range(10)
+
+    @given(st.text(alphabet="0123456789 .-+", min_size=68, max_size=68))
+    def test_appended_checksum_satisfies_checksum_error(self, body):
+        line = body + str(tle.compute_checksum(body))
+        assert tle.checksum_error(line) is None
+
+    @given(
+        st.text(alphabet="0123456789 .-+", min_size=68, max_size=68),
+        st.integers(min_value=1, max_value=9),
+    )
+    def test_wrong_checksum_digit_is_rejected(self, body, offset):
+        correct = tle.compute_checksum(body)
+        wrong = (correct + offset) % 10
+        assert tle.checksum_error(body + str(wrong)) is not None
+
+
+class TestSemanticRangeProperties:
+    """Fuzz inclination around its [0, 180] bound on a valid line-2 body."""
+
+    @given(
+        st.floats(min_value=0.0, max_value=270.0, allow_nan=False, allow_infinity=False)
+    )
+    @settings(
+        max_examples=300,
+        suppress_health_check=[HealthCheck.function_scoped_fixture],
+    )
+    def test_inclination_accepted_iff_in_range(self, line2, inc):
+        # Non-negative only: a leading '-' would fail column layout (a column
+        # error, not an inclination error), desyncing the oracle. 0..270 still
+        # spans in-range and above-range. Width is always 8 (e.g. "270.0000").
+        field = f"{inc:08.4f}"
+        body = line2[:8] + field + line2[16:68]
+        in_range = 0.0 <= float(field) <= 180.0  # value as the column encodes it
+        has_error = any("inclination" in e for e in tle.validate_body(body, 2))
+        assert has_error != in_range

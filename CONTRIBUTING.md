@@ -42,8 +42,8 @@ chain green + a changelog note (for `0.x` deps the leftmost non-zero component i
 ## Running
 
 ```bash
-uv run lintle validate          # Read-only audit of data/source/
 uv run lintle clean             # Write cleaned output to data/output/
+uv run lintle report            # Re-render the last run's summary from report.json
 ```
 
 `uv run` executes a command inside the project virtual environment — no manual
@@ -93,6 +93,16 @@ Tests are grouped into `Test*` classes, one per unit or behaviour under test.
 [Ruff](https://docs.astral.sh/ruff/) handles both linting and formatting. Its
 configuration lives in `pyproject.toml` under `[tool.ruff]` (rule sets `E`, `F`, `I`,
 `UP`, `B`, `SIM`; 88-column lines).
+
+This is a Python 3.14 codebase and uses modern idioms. The `UP`/`SIM` rule sets
+auto-enforce most of them (f-strings, `X | None` unions, builtin generics,
+`contextlib.suppress`, PEP 758 `except A, B:`). Three conventions Ruff does *not*
+enforce — please apply them by hand so new code matches the existing style:
+
+- **`match`** for 3-or-more-way type/shape dispatch (not `isinstance`/`elif` chains).
+- **`@dataclasses.dataclass(slots=True)`** on every dataclass (`frozen=True` when immutable).
+- **`collections.Counter`** for tally/accumulate loops (not `d[k] = d.get(k, 0) + 1`);
+  convert back with `dict()` at byte-deterministic output boundaries to preserve key order.
 
 ```bash
 uv run ruff check .                # Lint
