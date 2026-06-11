@@ -91,15 +91,25 @@ def _pid_alive(pid):
     return True
 
 
-def _read_lock(path):
-    """Read and parse the JSON lock file at ``path``; return None on any error."""
+def read_json_or_none(path):
+    """Open ``path`` as UTF-8 JSON and return its parsed value if it is a
+    ``dict``; return ``None`` on any read or parse error (``OSError``,
+    ``json.JSONDecodeError``, ``UnicodeDecodeError``) and also when the
+    parsed value is not a dict (array, string, number, null). The dict guard
+    means callers can index the result directly without an isinstance check."""
     try:
-        with open(path) as h:
-            return json.load(h)
-    except OSError:
+        with open(path, encoding="utf-8") as h:
+            data = json.load(h)
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         return None
-    except json.JSONDecodeError:
-        return None
+    return data if isinstance(data, dict) else None
+
+
+def _read_lock(path):
+    """Read and parse the JSON lock file at ``path``; return None on any error.
+    Delegates to :func:`read_json_or_none` so UnicodeDecodeError in a corrupt
+    lock file is caught rather than propagated (issue #92)."""
+    return read_json_or_none(path)
 
 
 @contextlib.contextmanager

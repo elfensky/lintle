@@ -177,6 +177,11 @@ def run(out_dir, fmt):
     except OSError:
         term.error(f"no run found in {out_dir!r} — run `lintle clean` first")
         return 2
+    except UnicodeDecodeError as exc:
+        # Issue #92: invalid-UTF-8 bytes in report.json must not propagate —
+        # treat it as a corrupt/invalid report with a clear error message.
+        term.error(f"{path}: invalid report.json ({exc})")
+        return 2
     try:
         envelope = json.loads(raw)
     except json.JSONDecodeError as exc:
