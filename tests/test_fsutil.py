@@ -173,6 +173,12 @@ class TestFsyncFallback:
         monkeypatch.setattr(fsutil, "_fullfsync_works", None)
         import fcntl as _fcntl
 
+        # F_FULLFSYNC is macOS-only; add it so this forced-macOS-path test is
+        # reachable on Linux CI, where the constant is otherwise absent and
+        # `_fsync` would raise AttributeError before reaching the fallback.
+        # fcntl.fcntl itself is monkeypatched below, so the value is inert.
+        monkeypatch.setattr(_fcntl, "F_FULLFSYNC", 51, raising=False)
+
         called_fsync = []
 
         def raise_enotsup(fd, op):
@@ -200,6 +206,12 @@ class TestFsyncFallback:
         monkeypatch.setattr(fsutil, "_USE_FULLFSYNC", True)
         monkeypatch.setattr(fsutil, "_fullfsync_works", None)
         import fcntl as _fcntl
+
+        # F_FULLFSYNC is macOS-only; add it so this forced-macOS-path test is
+        # reachable on Linux CI, where the constant is otherwise absent and
+        # `_fsync` would raise AttributeError before reaching the fallback.
+        # fcntl.fcntl itself is monkeypatched below, so the value is inert.
+        monkeypatch.setattr(_fcntl, "F_FULLFSYNC", 51, raising=False)
 
         called_fsync = []
         called_fullfsync = []
@@ -230,6 +242,12 @@ class TestFsyncFallback:
         monkeypatch.setattr(fsutil, "_USE_FULLFSYNC", True)
         monkeypatch.setattr(fsutil, "_fullfsync_works", None)
         import fcntl as _fcntl
+
+        # F_FULLFSYNC is macOS-only; add it so this forced-macOS-path test is
+        # reachable on Linux CI, where the constant is otherwise absent and
+        # `_fsync` would raise AttributeError before reaching the fallback.
+        # fcntl.fcntl itself is monkeypatched below, so the value is inert.
+        monkeypatch.setattr(_fcntl, "F_FULLFSYNC", 51, raising=False)
 
         def raise_enotsup(fd, op):
             raise OSError(45, "Operation not supported")
