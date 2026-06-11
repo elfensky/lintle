@@ -11,6 +11,13 @@ LINE_LENGTH = 69
 # silently misread — so every digit test goes through this explicit set.
 _DIGIT = "0123456789"
 
+# Precomputed per-character checksum contribution: ASCII digit → its value,
+# '-' → 1, everything else → 0. Built once at import time so the hot-path
+# loop body is a single dict lookup rather than a membership test + int().
+# Non-ASCII codepoints are absent from the table and default to 0 via .get().
+_CHECKSUM_CONTRIB: dict[str, int] = {str(d): d for d in range(10)}
+_CHECKSUM_CONTRIB["-"] = 1
+
 
 def compute_checksum(line: str) -> int:
     """Return the mod-10 TLE checksum of the first 68 characters of ``line``.
@@ -19,13 +26,7 @@ def compute_checksum(line: str) -> int:
     (letters, spaces, ``.``, ``+``, and any non-ASCII char) adds 0. The result
     is ``sum % 10``.
     """
-    total = 0
-    for ch in line[:68]:
-        if ch in _DIGIT:
-            total += int(ch)
-        elif ch == "-":
-            total += 1
-    return total % 10
+    return sum(_CHECKSUM_CONTRIB.get(c, 0) for c in line[:68]) % 10
 
 
 # --- Column-layout rules -------------------------------------------------
@@ -244,3 +245,21 @@ def validate_record(line1: str, line2: str) -> list[str]:
             f"catalog number mismatch: line 1 {line1[2:7]!r} vs line 2 {line2[2:7]!r}"
         )
     return errors
+
+
+def validate_record_catalog(line1: str, line2: str) -> list[str]:
+    """Check only the catalog-number cross-match for two individually-valid lines.
+
+    Assumes both ``line1`` and ``line2`` have already passed ``validate_line``
+    for their respective line numbers. Returns the same error list that
+    ``validate_record`` would return for two valid lines — i.e. either an
+    empty list (catalog numbers match) or a single catalog-mismatch string —
+    without re-running per-line layout, semantics, or checksum validation.
+    This is the record-level fast path for callers like ``repair_record`` where
+    each line has already been individually validated.
+    """
+    if line1[2:7] != line2[2:7]:
+        return [
+            f"catalog number mismatch: line 1 {line1[2:7]!r} vs line 2 {line2[2:7]!r}"
+        ]
+    return []

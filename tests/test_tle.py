@@ -119,6 +119,58 @@ class TestValidateRecord:
         assert any("catalog" in e for e in tle.validate_record(line1, other))
 
 
+class TestValidateRecordCatalog:
+    """Tests for the fast catalog-only cross-check (issue #109)."""
+
+    def test_matching_catalog_returns_empty(self, line1, line2):
+        assert tle.validate_record_catalog(line1, line2) == []
+
+    def test_mismatch_returns_same_error_as_validate_record(self, line1, line2):
+        other_body = "2 09999" + line2[7:68]
+        other = other_body + str(tle.compute_checksum(other_body))
+        cat_errors = tle.validate_record_catalog(line1, other)
+        full_errors = tle.validate_record(line1, other)
+        # validate_record on two valid lines returns only the catalog error.
+        assert cat_errors == full_errors
+
+    @given(
+        satnum=st.integers(min_value=0, max_value=99999),
+    )
+    @settings(
+        max_examples=200,
+        suppress_health_check=[HealthCheck.function_scoped_fixture],
+    )
+    def test_equivalence_for_any_valid_pair(self, line1, line2, satnum):
+        """validate_record_catalog == validate_record for two valid lines."""
+        sat_field = f"{satnum:05d}"
+        body1 = line1[:2] + sat_field + line1[7:68]
+        body2 = line2[:2] + sat_field + line2[7:68]
+        l1 = body1 + str(tle.compute_checksum(body1))
+        l2 = body2 + str(tle.compute_checksum(body2))
+        # Both are valid; catalog cross-check fast path must agree with full check.
+        assert tle.validate_record_catalog(l1, l2) == tle.validate_record(l1, l2)
+
+    @given(
+        satnum1=st.integers(min_value=0, max_value=99999),
+        satnum2=st.integers(min_value=0, max_value=99999),
+    )
+    @settings(
+        max_examples=200,
+        suppress_health_check=[HealthCheck.function_scoped_fixture],
+    )
+    def test_equivalence_for_mismatched_valid_pair(
+        self, line1, line2, satnum1, satnum2
+    ):
+        """Mismatch case: both functions return the same single catalog error."""
+        sat1 = f"{satnum1:05d}"
+        sat2 = f"{satnum2:05d}"
+        body1 = line1[:2] + sat1 + line1[7:68]
+        body2 = line2[:2] + sat2 + line2[7:68]
+        l1 = body1 + str(tle.compute_checksum(body1))
+        l2 = body2 + str(tle.compute_checksum(body2))
+        assert tle.validate_record_catalog(l1, l2) == tle.validate_record(l1, l2)
+
+
 class TestExtractNoradId:
     def test_extracts_from_canonical_line1(self, line1):
         assert tle.extract_norad_id(line1) == 5
