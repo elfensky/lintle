@@ -22,7 +22,7 @@ from lintle import (
 from lintle.diagnostics import Diagnostic, RuleID, diagnostic
 
 
-@dataclasses.dataclass
+@dataclasses.dataclass(slots=True)
 class RecordCandidate:
     """A line-1 / line-2 pair, with their 1-indexed source line numbers."""
 
@@ -32,7 +32,7 @@ class RecordCandidate:
     src2: int
 
 
-@dataclasses.dataclass
+@dataclasses.dataclass(slots=True)
 class Orphan:
     """A line that could not be paired into a record. ``diag`` carries the
     rule ID and source line; the raw bytes survive verbatim for the
@@ -95,7 +95,7 @@ ProgressMessage = FileStarted | FileEnded | FileProgress
 _MAX_LINE_BYTES = 4096
 
 
-@dataclasses.dataclass
+@dataclasses.dataclass(slots=True)
 class _ProgressBatcher:
     """Accumulate per-file progress deltas before sending queue messages."""
 
@@ -105,15 +105,17 @@ class _ProgressBatcher:
     entries_processed: int = 0
     bytes_flushed: int = 0
     records_since_flush: int = 0
+    # Precomputed once so per-record hot path avoids re-evaluating the
+    # condition (two attribute reads + a bool() call) on every item_seen call.
+    _enabled: bool = dataclasses.field(init=False)
 
-    @property
-    def enabled(self):
-        return self.progress_queue is not None and bool(self.progress_every)
+    def __post_init__(self):
+        self._enabled = self.progress_queue is not None and bool(self.progress_every)
 
     def item_seen(self, stats):
         """Record one routed candidate and emit a batch when due."""
         self.entries_processed += 1
-        if not self.enabled:
+        if not self._enabled:
             return
         self.records_since_flush += 1
         if self.entries_processed % self.progress_every == 0:
@@ -121,7 +123,7 @@ class _ProgressBatcher:
 
     def flush(self, stats):
         """Emit the trailing partial batch so the caller's tally is exact."""
-        if not self.enabled:
+        if not self._enabled:
             return
         byte_delta = stats.bytes_consumed - self.bytes_flushed
         if byte_delta or self.records_since_flush:
@@ -350,8 +352,9 @@ def _record_acceptance(stats, cleaned_handle, result):
     for fix in result.fixes:
         stats.fix_counts[fix] = stats.fix_counts.get(fix, 0) + 1
     if cleaned_handle is not None:
-        cleaned_handle.write(result.line1 + "\n")
-        cleaned_handle.write(result.line2 + "\n")
+        # Single write keeps the two-line record together in one syscall,
+        # halving write calls on the hot accept path (byte-identical output).
+        cleaned_handle.write(result.line1 + "\n" + result.line2 + "\n")
 
 
 def _route_candidate(candidate, stats, sink, cleaned_handle, reconstruct_checksum):
