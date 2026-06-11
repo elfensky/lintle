@@ -1,8 +1,10 @@
 """Tests for thresholds.py — --max-quarantined parsing and the quarantine exit gate."""
 
+from fractions import Fraction
+
 import pytest
 
-from lintle import cli, thresholds
+from lintle import cli, report, thresholds
 
 
 class TestMaxQuarantinedThreshold:
@@ -280,6 +282,43 @@ class TestMaxQuarantinedThreshold:
 
         assert rc == 2
         assert "percentage must be in 0..100" in capsys.readouterr().err
+
+
+class TestQuarantineExitCodeExactBoundary:
+    """The percentage gate must compare exactly: exactly-at-threshold passes
+    (the strictly-greater contract). A float threshold drifts at awkward
+    percentages like 0.29%, flipping an at-boundary run to a spurious failure.
+    """
+
+    @staticmethod
+    def _stats(clean, quarantined):
+        return [
+            report.FileStats(
+                src_name="t", clean_count=clean, quarantined_count=quarantined
+            )
+        ]
+
+    def test_pct_exact_boundary_passes_at_awkward_percentage(self):
+        # 290 quarantined of 100_000 routed = exactly 0.29%. float("0.29") is
+        # 0.28999999999999998, so 100*290 (=29000) > 0.29*100000
+        # (=28999.999999999996) spuriously fails. The contract is
+        # strictly-greater, so exactly 0.29% must pass.
+        mode, threshold = thresholds.parse_quarantine_threshold("0.29%")
+        stats = self._stats(clean=99_710, quarantined=290)
+        assert thresholds.quarantine_exit_code(stats, mode, threshold) == 0
+
+    def test_pct_just_over_awkward_boundary_fails(self):
+        # 291 of 100_000 = 0.291% > 0.29% → fail.
+        mode, threshold = thresholds.parse_quarantine_threshold("0.29%")
+        stats = self._stats(clean=99_709, quarantined=291)
+        assert thresholds.quarantine_exit_code(stats, mode, threshold) == 1
+
+    def test_parsed_pct_is_exact_rational(self):
+        # The parsed percentage is an exact Fraction, not a lossy float.
+        assert thresholds.parse_quarantine_threshold("0.29%") == (
+            "pct",
+            Fraction(29, 100),
+        )
 
 
 class TestParseQuarantineThreshold:
