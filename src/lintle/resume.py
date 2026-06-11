@@ -109,10 +109,10 @@ def write_checkpoint(out_dir, checkpoint):
     destination path.
     """
     dest = _checkpoint_path(out_dir)
-    tmp = dest + ".partial"
-    with open(tmp, "w", encoding="utf-8", newline="\n") as handle:
-        json.dump(checkpoint, handle, separators=(",", ":"), sort_keys=True)
-    fsutil.durable_replace(tmp, dest)
+    fsutil.durable_write_text(
+        dest,
+        json.dumps(checkpoint, separators=(",", ":"), sort_keys=True),
+    )
     return dest
 
 

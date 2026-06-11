@@ -390,10 +390,9 @@ def write_broken_noradids_ndjson(path: str, all_stats: list[FileStats]) -> None:
     Written atomically and durably via tmp + :func:`fsutil.durable_replace`
     (issue #58).
     """
-    tmp = path + ".partial"
-    with open(tmp, "w", encoding="ascii", newline="\n") as handle:
-        handle.write(format_broken_noradids_ndjson(all_stats))
-    fsutil.durable_replace(tmp, path)
+    fsutil.durable_write_text(
+        path, format_broken_noradids_ndjson(all_stats), encoding="ascii"
+    )
 
 
 def concat_findings_shards(

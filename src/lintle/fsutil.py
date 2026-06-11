@@ -75,6 +75,20 @@ def durable_replace(tmp, dest):
     return dest
 
 
+def durable_write_text(path, text, *, encoding="utf-8"):
+    """Write ``text`` to ``path`` atomically, durably, and with pinned LF
+    line endings (``newline="\\n"``), so the artifact is byte-identical across
+    platforms (Critical Rules #1/#2). Owns the ``.partial`` suffix, the open,
+    the write, and the :func:`durable_replace` call, deduplicating the
+    boilerplate from bounded text-mode writers (issue #85). NOT for streaming
+    writers, which cannot buffer their whole output as a single string.
+    """
+    tmp = path + ".partial"
+    with open(tmp, "w", encoding=encoding, newline="\n") as handle:
+        handle.write(text)
+    durable_replace(tmp, path)
+
+
 LOCK_NAME = ".clean.lock"
 
 
