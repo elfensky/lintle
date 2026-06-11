@@ -59,8 +59,8 @@ cli.py ──▶ pipeline.py ──▶ repair.py ──▶ tle.py
   │
   ├──▶ cli_progress.py  (rich live progress + roster; imports pipeline's progress messages)
   ├──▶ resume.py        (single-run checkpoint + run-stamp/output-size helpers; → __version__, fsutil, stem, naming-constants)
-  ├──▶ run_planning.py  (disk-space guard + output scrub + resume/fresh-run decision; → fsutil, report, resume, term)
-  ├──▶ worker_pool.py   (process-pool dispatch + progress collection; → pipeline, cli_progress, process_control, report, resume, term + stdlib futures/mp/signal)
+  ├──▶ run_planning.py  (disk-space guard + output scrub + resume/fresh-run decision; CleanConfig + RunPlan; → fsutil, report, resume, term)
+  ├──▶ worker_pool.py   (process-pool dispatch + progress collection; → pipeline, cli_progress, process_control, resume, run_planning, term + stdlib futures/mp/signal)
   ├──▶ output_artifacts.py (clean-run report.md/json + NDJSON/JSONL finalization; → report, report_writers, cli_progress, term)
   ├──▶ thresholds.py    (--max-quarantined parsing + quality-gate exit policy; pure, no internal deps)
   ├──▶ process_control.py (worker SIGINT setup + fast pool termination; → term; also used by worker_pool)
@@ -82,9 +82,9 @@ diagnostics.py, categories.py, explain_examples.py    pure-data leaves (no I/O)
 | `report_aggregation.py` | Pure corpus aggregation helpers for run totals and per-NORAD rollups consumed by `report.py`. |
 | `report_writers.py` | Structured-file writers leaf: the `.broken.txt` sidecar (`BrokenFileWriter`), the `report.jsonl` findings shards (`JsonlFindingsWriter`), the `QuarantineSink` (bounded sample + streaming), `broken-noradids.ndjson`, and shard concatenation. Imports `report.py` one-way. |
 | `output_artifacts.py` | End-of-clean-run finalization for `report.md`, the machine-readable `report.json`, `broken-noradids.ndjson`, and corpus-wide `report.jsonl` — all committed in one place. |
-| `resume.py` | The single-run `.clean-state.json` checkpoint for `clean --resume`: input fingerprinting, checkpoint build/load, the resume-decision matrix, the run-start timestamp, and per-file output-size capture. Imports only `__version__`, `fsutil`, and `stem`/naming-constants from `lintle.__init__` — deliberately minimal to avoid cycles. |
-| `run_planning.py` | Clean-run preflight: disk-space policy, resume classification, fresh-run output scrubbing, and the resolved `RunPlan`. |
-| `worker_pool.py` | Process-pool dispatch, progress collection, per-file failure handling, checkpoint updates, and interrupt shutdown. |
+| `resume.py` | The single-run `.clean-state.json` checkpoint for `clean --resume`: input fingerprinting, checkpoint build/load, the resume-decision matrix, the run-start timestamp, per-file output-size capture, and the typed `CompletedEntry` dataclass (issue #118). Module-level imports only `__version__`, `fsutil`, and `stem`/naming-constants; `CompletedEntry.from_stats` does a local `from lintle import report` to avoid a module-level cycle. |
+| `run_planning.py` | Clean-run preflight: disk-space policy, resume classification, fresh-run output scrubbing, and the resolved `RunPlan` (slots=True). Also owns `CleanConfig` (issue #121) — the typed `clean`-command configuration snapshot built once in `cli.main` and passed to both leaf functions instead of a raw argparse `Namespace`. Imports `fsutil`, `report`, `resume`, `term`. |
+| `worker_pool.py` | Process-pool dispatch, progress collection, per-file failure handling, checkpoint updates via `resume.CompletedEntry.from_stats` (issue #118), and interrupt shutdown. Now imports `run_planning` for the `CleanConfig` type (one-way, no cycle). |
 | `fsutil.py` | `durable_replace` (the one atomic+fsync commit path) and `out_dir_lock` (the host-aware out-dir lock). Stdlib only. |
 | `diff.py` | Read-only: per-rule delta between two runs' `report.jsonl` (`lintle diff`). |
 | `explain.py` | Read-only: renders rule/fix documentation (`lintle explain`). |
