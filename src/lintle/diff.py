@@ -58,8 +58,6 @@ def iter_findings(run_dir):
         raise DiffError(f"cannot read {path}: {exc}") from exc
 
 
-
-
 def _finding_from_line(path, lineno, line):
     """Parse one ``report.jsonl`` line and return its ``(file, rule_id)``.
     Raises :class:`DiffError` (citing ``path:lineno``) on malformed JSON, an
