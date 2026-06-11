@@ -122,13 +122,14 @@ class CompletedEntry:
     def from_stats(cls, out_dir, stats) -> CompletedEntry:
         """Build a CompletedEntry from a completed file's stats and out_dir.
 
-        Imports ``report`` lazily-via-caller: worker_pool already imports both
-        ``report`` and ``resume`` at module level, so it passes the result of
-        ``report.summary_dict(stats)`` and the out_dir directly here.
-        Called as ``CompletedEntry.from_stats(out_dir, stats)`` from
-        worker_pool after each file's future resolves.
+        ``report`` is imported locally rather than at module level: resume is a
+        deliberately minimal leaf, so a top-level ``report`` import would widen
+        its dependency surface (worker_pool also dropped its module-level
+        ``report`` import in the #118 refactor). Called as
+        ``CompletedEntry.from_stats(out_dir, stats)`` from worker_pool after
+        each file's future resolves.
         """
-        from lintle import report  # local import avoids a module-level cycle
+        from lintle import report  # local import keeps resume a minimal leaf
 
         return cls(
             summary=report.summary_dict(stats),
