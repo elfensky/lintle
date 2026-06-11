@@ -52,11 +52,12 @@ def aggregate_per_norad(all_stats):
         for nid, rule_counts in stats.quarantined_norad_ids.counts.items():
             if not rule_counts:
                 continue
-            entry = rollup.setdefault(nid, {"total": 0, "rules": {}, "files": set()})
+            entry = rollup.setdefault(
+                nid, {"total": 0, "rules": Counter(), "files": set()}
+            )
             entry["files"].add(stats.src_name)
-            for rule, count in rule_counts.items():
-                entry["total"] += count
-                entry["rules"][rule] = entry["rules"].get(rule, 0) + count
+            entry["rules"].update(rule_counts)
+            entry["total"] += sum(rule_counts.values())
     return rollup
 
 

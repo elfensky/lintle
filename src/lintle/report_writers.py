@@ -2,7 +2,6 @@
 findings shards, the corpus ``broken-noradids.ndjson``, and shard concat."""
 
 import contextlib
-import datetime
 import json
 import shutil
 from pathlib import Path
@@ -15,6 +14,7 @@ from lintle.report import (
     FileStats,
     QuarantineEntry,
     format_diagnostic,
+    utc_stamp,
 )
 
 
@@ -96,7 +96,7 @@ def _render_header(src_name: str, quarantined: int, entries: int) -> bytes:
     that became findings or clean output, which is the meaningful denominator
     for ``quarantined``.
     """
-    timestamp = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    timestamp = utc_stamp()
     return (
         f"# {stem(src_name)}.broken.txt - quarantined records\n"
         f"# source: {src_name} | generated: {timestamp} | lintle {__version__}\n"

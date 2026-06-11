@@ -11,6 +11,17 @@ from lintle import __version__, fsutil, report_aggregation
 from lintle.categories import FixClass
 from lintle.diagnostics import RULES, Diagnostic, RepairTier, RuleID
 
+
+def utc_stamp() -> str:
+    """Return the current UTC time as an ISO 8601 string (``%Y-%m-%dT%H:%M:%SZ``).
+
+    Shared by ``format_run_report`` and ``report_writers._render_header`` so
+    the timestamp format is defined once. Resume's compact filename stamp
+    (``%Y%m%dT%H%M%SZ``) is intentionally different and lives in resume.py.
+    """
+    return datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 # How many quarantined records to retain in memory as exemplars per
 # ``RuleID`` for the ``validate`` summary. The full byte-faithful catalog
 # goes straight to the ``.broken.txt`` sidecar via ``BrokenFileWriter`` —
@@ -444,7 +455,7 @@ def format_run_report(
     """
     if failed_files is None:
         failed_files = []
-    timestamp = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    timestamp = utc_stamp()
     totals = report_aggregation.aggregate(all_stats)
     paired = totals.paired
     orphans = totals.orphans
