@@ -6,16 +6,22 @@ numbers in prose; Python slices below are 0-indexed.
 
 LINE_LENGTH = 69
 
+# Only these ASCII characters count as TLE digits. str.isdigit() also accepts
+# non-ASCII Unicode digits (e.g. '²', '٣') — which int() may then reject or
+# silently misread — so every digit test goes through this explicit set.
+_DIGIT = "0123456789"
+
 
 def compute_checksum(line: str) -> int:
     """Return the mod-10 TLE checksum of the first 68 characters of ``line``.
 
-    Each digit adds its value, each ``-`` adds 1, every other character
-    (letters, spaces, ``.``, ``+``) adds 0. The result is ``sum % 10``.
+    Each ASCII digit adds its value, each ``-`` adds 1, every other character
+    (letters, spaces, ``.``, ``+``, and any non-ASCII char) adds 0. The result
+    is ``sum % 10``.
     """
     total = 0
     for ch in line[:68]:
-        if ch.isdigit():
+        if ch in _DIGIT:
             total += int(ch)
         elif ch == "-":
             total += 1
@@ -25,7 +31,6 @@ def compute_checksum(line: str) -> int:
 # --- Column-layout rules -------------------------------------------------
 # Slices below are 0-indexed half-open ranges into the 68-character body.
 
-_DIGIT = "0123456789"
 _DIGIT_SPACE = "0123456789 "
 _SIGN = " +-"
 _EXP_SIGN = "+-"
@@ -179,7 +184,7 @@ def checksum_error(line: str) -> str | None:
     ``line`` is wrong or non-numeric, else ``None``.
     """
     actual = line[68]
-    if not actual.isdigit():
+    if actual not in _DIGIT:
         return f"checksum column 69 is {actual!r}, not a digit"
     expected = compute_checksum(line)
     if int(actual) != expected:

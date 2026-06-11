@@ -23,6 +23,12 @@ class TestComputeChecksum:
     def test_non_digit_non_minus_counts_as_zero(self):
         assert tle.compute_checksum("ABCDE.+ " * 8 + "    ") == 0
 
+    def test_unicode_digit_counts_as_zero_not_value(self):
+        # '²' (SUPERSCRIPT TWO) is str.isdigit()-True but int('²')
+        # raises ValueError; only ASCII 0-9 may contribute to the checksum,
+        # so it must be treated as a zero-contributing character, not crash.
+        assert tle.compute_checksum("²" + " " * 67) == 0
+
 
 class TestCheckColumns:
     def test_valid_line1_passes_column_checks(self, line1):
@@ -77,6 +83,15 @@ class TestChecksumError:
     def test_checksum_error_non_digit(self, line1):
         # The non-digit checksum branch is distinct from a numeric mismatch.
         bad = line1[:68] + "X"
+        err = tle.checksum_error(bad)
+        assert err is not None and "not a digit" in err
+
+    def test_checksum_error_rejects_unicode_digit(self, line1):
+        # '٣' (ARABIC-INDIC DIGIT THREE) is str.isdigit()-True and int()==3,
+        # which equals the canonical checksum — so it would spuriously
+        # validate the line as perfect. Only ASCII 0-9 are valid in column 69.
+        assert tle.compute_checksum(line1) == 3  # canonical checksum is 3
+        bad = line1[:68] + "٣"
         err = tle.checksum_error(bad)
         assert err is not None and "not a digit" in err
 
