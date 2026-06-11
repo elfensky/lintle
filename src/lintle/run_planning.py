@@ -5,7 +5,15 @@ import dataclasses
 import shutil
 from pathlib import Path
 
-from lintle import fsutil, report, resume, term
+from lintle import (
+    BROKEN_DIRNAME,
+    CLEANED_DIRNAME,
+    SHARDS_DIRNAME,
+    fsutil,
+    report,
+    resume,
+    term,
+)
 
 # Marker written into the out-dir on the first fresh run.  Its presence (or the
 # presence of a checkpoint / stale-checkpoint archive) is the ownership signal
@@ -115,7 +123,7 @@ def scrub_outputs(out_dir):
     Idempotent — missing trees/files are ignored.  Does NOT check ownership;
     callers that need the ownership gate call :func:`_is_safe_to_scrub` first."""
     out = Path(out_dir)
-    for sub in ("cleaned", "broken", ".shards"):
+    for sub in (CLEANED_DIRNAME, BROKEN_DIRNAME, SHARDS_DIRNAME):
         shutil.rmtree(out / sub, ignore_errors=True)
     for name in _REPORT_ARTIFACTS:
         with contextlib.suppress(OSError):

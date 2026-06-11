@@ -58,10 +58,10 @@ cli.py ──▶ pipeline.py ──▶ repair.py ──▶ tle.py
   │             └──▶ report_writers.py ──┘ (imports report.py one-way)
   │
   ├──▶ cli_progress.py  (rich live progress + roster; imports pipeline's progress messages)
-  ├──▶ resume.py        (single-run checkpoint + run-stamp/output-size helpers; → __version__, fsutil, stem)
+  ├──▶ resume.py        (single-run checkpoint + run-stamp/output-size helpers; → __version__, fsutil, stem, naming-constants)
   ├──▶ run_planning.py  (disk-space guard + output scrub + resume/fresh-run decision; → fsutil, report, resume, term)
   ├──▶ worker_pool.py   (process-pool dispatch + progress collection; → pipeline, cli_progress, process_control, report, resume, term + stdlib futures/mp/signal)
-  ├──▶ output_artifacts.py (clean-run report.md/json + NDJSON/JSONL finalization; → report, report_writers, cli_progress)
+  ├──▶ output_artifacts.py (clean-run report.md/json + NDJSON/JSONL finalization; → report, report_writers, cli_progress, term)
   ├──▶ thresholds.py    (--max-quarantined parsing + quality-gate exit policy; pure, no internal deps)
   ├──▶ process_control.py (worker SIGINT setup + fast pool termination; → term; also used by worker_pool)
   ├──▶ diff.py          (read-only consumer of report.jsonl)
