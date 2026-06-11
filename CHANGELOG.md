@@ -10,6 +10,13 @@ All notable changes to this project are documented in this file. The format is b
 
 - `clean --reconstruct-checksum` opts in to tier-2 missing-checksum reconstruction.
 
+### Fixed
+
+- Records whose lines carry leading whitespace now pair and repair via the `leading-trim`
+  fix class instead of being quarantined as `BAD_PREFIX`. `iter_records` matches the
+  `1 `/`2 ` prefix on a whitespace-trimmed view while carrying the raw bytes forward to the
+  repairer (issue #88).
+
 ### Changed
 
 - **Missing-checksum reconstruction is now opt-in (default off).** A checksumless 68-char

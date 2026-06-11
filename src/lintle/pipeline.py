@@ -125,7 +125,11 @@ def iter_records(path, stats=None):
     The file is read in binary so ``\\r`` and stray bytes are observed
     exactly. Blank, whitespace-only, and CR-only lines are dropped.
     Pairing is prefix-driven and resynchronises on every ``1 `` line, so
-    one missing line cannot cascade into a run of mispaired records.
+    one missing line cannot cascade into a run of mispaired records. The
+    prefix is matched on a leading-whitespace-trimmed *view* of the line
+    (mirroring what ``repair_line`` will lstrip), so a record indented with
+    spaces/tabs still pairs; the **raw** bytes are carried forward unchanged
+    so ``repair_line`` performs the trim and tags it ``leading-trim`` (#88).
 
     When ``stats`` is given, ``stats.input_lines_seen`` is updated to the
     1-indexed lineno of the line just consumed and ``stats.bytes_consumed``
@@ -144,7 +148,12 @@ def iter_records(path, stats=None):
             if line.strip(b" \t\r") == b"":
                 continue  # blank, whitespace-only, or CR-only line — dropped
 
-            prefix = line[:2]
+            # Route on a leading-whitespace-trimmed view (repair_line lstrips
+            # the same " \t"), but keep ``line`` — the raw bytes — so repair
+            # owns the trim and tags it ``leading-trim``. A leading BOM/\r is
+            # not trimmed here (nor by repair), so such lines still fall
+            # through to BAD_PREFIX, matching repair's behaviour.
+            prefix = line.lstrip(b" \t")[:2]
             if prefix == b"1 ":
                 if held is not None:
                     yield _orphan(

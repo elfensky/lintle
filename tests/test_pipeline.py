@@ -7,6 +7,7 @@ import queue
 import pytest
 
 from lintle import pipeline, report, report_writers
+from lintle.categories import FixClass
 from lintle.diagnostics import RuleID
 
 
@@ -72,6 +73,20 @@ class TestIterRecords:
         assert len(records) == 1
         assert isinstance(records[0], pipeline.RecordCandidate)
         assert records[0].src1 == 1 and records[0].src2 == 2
+
+    def test_pairs_lines_with_leading_whitespace_preserving_raw_bytes(
+        self, tmp_path, line1, line2
+    ):
+        # Leading whitespace must not block pairing: the prefix is matched on a
+        # trimmed view, but the RAW bytes (whitespace intact) are carried so
+        # repair_line trims and tags leading-trim (#88).
+        src = tmp_path / "in.txt"
+        src.write_bytes(("  " + line1 + "\n\t" + line2 + "\n").encode("ascii"))
+        records = list(pipeline.iter_records(str(src)))
+        assert len(records) == 1
+        assert isinstance(records[0], pipeline.RecordCandidate)
+        assert records[0].raw_line1 == b"  " + line1.encode("ascii")
+        assert records[0].raw_line2 == b"\t" + line2.encode("ascii")
 
     def test_blank_and_cr_only_lines_dropped(self, tmp_path, line1, line2):
         src = tmp_path / "in.txt"
@@ -147,6 +162,24 @@ class TestProcessFile:
         cleaned = (out / "cleaned" / "tle2099.cleaned.txt").read_text()
         assert cleaned == line1 + "\n" + line2 + "\n" + line1 + "\n" + line2 + "\n"
         assert (out / "broken" / "tle2099.broken.txt").exists()
+
+    def test_leading_whitespace_record_pairs_and_repairs(self, tmp_path, line1, line2):
+        # A record whose lines carry leading whitespace must pair and repair
+        # via the documented leading-trim fix class — not quarantine as
+        # BAD_PREFIX before repair can run (#88, ARCHITECTURE §4).
+        src = tmp_path / "tle2099.txt"
+        src.write_bytes(("  " + line1 + "\n" + " " + line2 + "\n").encode("ascii"))
+        out = tmp_path / "out"
+
+        stats = pipeline.process_file(str(src), str(out), "clean")
+
+        assert stats.paired_records == 1
+        assert stats.orphan_entries == 0
+        assert stats.clean_count == 1
+        assert stats.quarantined_count == 0
+        assert stats.fix_counts.get(FixClass.LEADING_TRIM) == 2
+        cleaned = (out / "cleaned" / "tle2099.cleaned.txt").read_text()
+        assert cleaned == line1 + "\n" + line2 + "\n"
 
     def test_orphan_does_not_count_as_paired_record(self, tmp_path, line1, line2):
         # One paired record, then an orphan line 1 at EOF. Orphans must not
