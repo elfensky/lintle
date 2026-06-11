@@ -224,11 +224,23 @@ import-time guard fails fast if a `RuleID` lacks a matching `RuleSpec`.
 ### Constant-memory streaming
 
 `pipeline.iter_records` opens each file in **binary** so `\r` and stray bytes are observed
-exactly, reads it line by line, and pairs lines with a prefix-driven state machine that holds
-**at most two lines** (a line-1 awaiting its line-2). Blank, whitespace-only, and CR-only lines
-are dropped. Pairing resynchronises on every `1 ` line, so one missing line cannot cascade into
-a run of mispaired records. Memory is constant regardless of file size — a 3.2 GB file never
-loads whole.
+exactly, reads it line by line via `handle.readline(_MAX_LINE_BYTES)` (C-level, throughput
+equal to the iterator on normal lines), and pairs lines with a prefix-driven state machine that
+holds **at most two lines** (a line-1 awaiting its line-2). Blank, whitespace-only, and CR-only
+lines are dropped. Pairing resynchronises on every `1 ` line, so one missing line cannot cascade
+into a run of mispaired records. Memory is constant regardless of file size — a 3.2 GB file
+never loads whole.
+
+**Line-length cap (issue #95).** A genuine TLE line is 69 bytes; `_MAX_LINE_BYTES = 4096`
+is the cap applied to each `readline` call. A chunk of exactly that size with no trailing `\n`
+is treated as (the start of) an oversized line: the excerpt is kept as a bounded quarantine
+payload, the remainder is drained cheaply in fixed-size chunks (summing their lengths into
+`stats.bytes_consumed` so the counter still reaches `st_size`), and one `Orphan` with
+`RuleID.LINE_LENGTH` is emitted for the logical line. This prevents a CR-only or newline-free
+multi-GB file from materialising as one giant `bytes` object in the worker process and across
+the pool's pickle boundary. The raw bytes in the quarantine entry are truncated (noted in the
+`Diagnostic.note`); this is the one place byte-faithfulness yields to constant-memory, and only
+for a pathological input — every real corpus file has `\n`-terminated lines well under the cap.
 
 ### Per-file parallelism
 
