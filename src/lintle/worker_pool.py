@@ -13,10 +13,10 @@ import concurrent.futures
 import multiprocessing
 import signal
 
-from lintle import cli_progress, pipeline, process_control, report, resume, term
+from lintle import cli_progress, pipeline, process_control, resume, run_planning, term
 
 
-def run_workers(args, files, plan, jobs, console, sizes):
+def run_workers(config: run_planning.CleanConfig, files, plan, jobs, console, sizes):
     """Dispatch ``plan.files_to_process`` across a worker pool."""
     all_stats = list(plan.reused_stats)
     failed_files = []
@@ -48,10 +48,10 @@ def run_workers(args, files, plan, jobs, console, sizes):
                 executor.submit(
                     pipeline.process_file,
                     path,
-                    args.out_dir,
-                    args.command,
+                    config.out_dir,
+                    config.command,
                     progress_queue,
-                    reconstruct_checksum=args.reconstruct_checksum,
+                    reconstruct_checksum=config.reconstruct_checksum,
                 ): path
                 for path in plan.files_to_process
             }
@@ -79,12 +79,11 @@ def run_workers(args, files, plan, jobs, console, sizes):
                         try:
                             all_stats.append(stats)
                             progress.file_done(stats)
-                            plan.completed[path] = {
-                                "summary": report.summary_dict(stats),
-                                "outputs": resume.output_sizes(args.out_dir, stats),
-                            }
+                            plan.completed[path] = resume.CompletedEntry.from_stats(
+                                config.out_dir, stats
+                            ).as_dict()
                             resume.write_checkpoint(
-                                args.out_dir,
+                                config.out_dir,
                                 resume.build_checkpoint(
                                     inputs=plan.inputs,
                                     completed=plan.completed,
