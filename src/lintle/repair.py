@@ -156,7 +156,7 @@ def repair_line(
     return candidate, fixes, None
 
 
-@dataclasses.dataclass
+@dataclasses.dataclass(slots=True)
 class Accepted:
     """A record that is valid after repair. ``fixes`` lists the fix-class
     tags applied across both lines (e.g. ``FixClass.TRAILING_BACKSLASH``).
@@ -167,7 +167,7 @@ class Accepted:
     fixes: list[FixClass]
 
 
-@dataclasses.dataclass
+@dataclasses.dataclass(slots=True)
 class Quarantined:
     """A record routed to quarantine. ``raw_lines`` preserves the original
     bytes for byte-faithful sidecar output. ``primary`` is the headline
@@ -213,7 +213,7 @@ def repair_record(
             related = ()
         return Quarantined([raw_line1, raw_line2], [src1, src2], primary, related)
 
-    record_errors = tle.validate_record(line1, line2)
+    record_errors = tle.validate_record_catalog(line1, line2)
     if record_errors:
         # Tier reflects the strongest repair attempted on EITHER line. A
         # CATALOG_MISMATCH after both lines survived checksum reconstruction
