@@ -77,13 +77,16 @@ def prompt(message):
 
 
 def is_interactive():
-    """A run is interactive iff stdin is a TTY (the prompt answer is read there)
-    and no CI/NONINTERACTIVE env var forces non-interactive — which prevents a
-    CI runner that allocates a pseudo-TTY from hanging on the prompt (spec §2.2)."""
+    """A run is interactive iff both stdin (where the prompt answer is read) and
+    stderr (where :func:`prompt` writes the question) are TTYs, and no
+    CI/NONINTERACTIVE env var forces non-interactive. Requiring stderr too
+    prevents an invisible-prompt hang when stderr is redirected (e.g. ``lintle
+    clean 2>errors.log``) while stdin stays a TTY, and stops a CI runner with a
+    pseudo-TTY from blocking on the prompt (spec §2.2)."""
     if os.environ.get("CI") or os.environ.get("NONINTERACTIVE"):
         return False
     try:
-        return sys.stdin.isatty()
+        return sys.stdin.isatty() and sys.stderr.isatty()
     except AttributeError, ValueError:
         return False
 
