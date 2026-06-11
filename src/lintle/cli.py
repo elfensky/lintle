@@ -2,7 +2,6 @@
 
 import argparse
 import contextlib
-import datetime
 import json
 import os
 import shutil
@@ -546,9 +545,7 @@ def main(argv=None):
         # subtraction using a monotonic clock so NTP jitter mid-run cannot
         # produce a negative duration. Per spec §4, this aggregate is
         # intentionally NOT the sum of per-file worker durations.
-        run_started_iso = datetime.datetime.now(datetime.UTC).strftime(
-            "%Y-%m-%dT%H:%M:%SZ"
-        )
+        run_started_iso = report.utc_stamp()
         run_monotonic_start = time.monotonic()
 
         all_stats, failed_files, interrupted, interrupted_signo, operational_error = (
