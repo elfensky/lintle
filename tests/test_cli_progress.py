@@ -262,3 +262,77 @@ class TestStatusSpinner:
             Console(file=io.StringIO(), force_terminal=False),
         )
         assert isinstance(cli_progress.status("working…"), contextlib.nullcontext)
+
+
+class TestDrainThreadSurvivesTransientError:
+    """Issue #84 — a transient render error must not permanently stop the drain
+    thread; the queue must keep being consumed across failures."""
+
+    def _display(self, q):
+        console = Console(file=io.StringIO(), force_terminal=False, width=100)
+        return cli_progress.ProgressDisplay(
+            total_files=3,
+            progress_queue=q,
+            console=console,
+            sizes={"a": 1000},
+        )
+
+    def test_transient_drain_error_does_not_kill_thread(self, monkeypatch):
+        # Arrange: make _drain raise on the first call only.
+        q = queue.Queue()
+        disp = self._display(q)
+        call_count = {"n": 0}
+        original_drain = disp._drain
+
+        def flaky_drain():
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                raise RuntimeError("transient render glitch")
+            original_drain()
+
+        monkeypatch.setattr(disp, "_drain", flaky_drain)
+
+        # Put messages on the queue; they should be consumed on the 2nd+ drain.
+        q.put(pipeline.FileStarted("a"))
+        q.put(pipeline.FileProgress("a", 100, 7))
+
+        with disp:
+            # Give the drain thread at least two iterations.
+            import time
+
+            time.sleep(0.4)
+
+        # The queue was drained and records tallied — thread did NOT die.
+        assert disp._records == 7, (
+            f"Expected 7 records consumed, got {disp._records}; "
+            "thread died on first transient error"
+        )
+
+    def test_genuine_shutdown_error_breaks_cleanly(self, monkeypatch):
+        # An EOFError (manager gone) inside _drain should not propagate out of _run.
+        q = queue.Queue()
+        disp = self._display(q)
+
+        def eof_drain():
+            raise EOFError("manager gone")
+
+        monkeypatch.setattr(disp, "_drain", eof_drain)
+
+        # _run must complete without raising — daemon thread exits cleanly.
+        import threading
+
+        errors = []
+
+        def run_and_capture():
+            try:
+                disp._run()
+            except Exception as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        t = threading.Thread(target=run_and_capture)
+        t.start()
+        # Signal stop so the thread terminates quickly.
+        disp._stop.set()
+        t.join(timeout=2.0)
+        assert not t.is_alive(), "Thread hung — did not exit"
+        assert not errors, f"_run propagated exception: {errors}"
