@@ -59,7 +59,7 @@ cli.py ──▶ pipeline.py ──▶ repair.py ──▶ tle.py
   │
   ├──▶ cli_progress.py  (rich live progress + roster; imports pipeline's progress messages)
   ├──▶ resume.py        (single-run checkpoint + run-stamp/output-size helpers; → __version__, fsutil, stem)
-  ├──▶ run_planning.py  (disk-space guard + output scrub + resume/fresh-run decision; → report, resume, term)
+  ├──▶ run_planning.py  (disk-space guard + output scrub + resume/fresh-run decision; → fsutil, report, resume, term)
   ├──▶ worker_pool.py   (process-pool dispatch + progress collection; → pipeline, cli_progress, process_control, report, resume, term + stdlib futures/mp/signal)
   ├──▶ output_artifacts.py (clean-run report.md/json + NDJSON/JSONL finalization; → report, report_writers, cli_progress)
   ├──▶ thresholds.py    (--max-quarantined parsing + quality-gate exit policy; pure, no internal deps)

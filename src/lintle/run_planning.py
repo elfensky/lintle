@@ -13,6 +13,12 @@ from lintle import fsutil, report, resume, term
 # lacks all three signals is treated as user-owned and scrub refuses (issue #93).
 _OUTPUT_MARKER = ".lintle-output"
 
+# Exact prefix of a stale-checkpoint archive (see resume.archive_checkpoint:
+# ``<checkpoint>.stale-<timestamp>``).  Matching this — rather than the bare
+# checkpoint name — keeps a user file like ``.clean-state.json.bak`` from being
+# mistaken for a lintle-ownership signal (issue #93).
+_STALE_CHECKPOINT_PREFIX = resume.CHECKPOINT_NAME + ".stale-"
+
 # Report artifacts written by output_artifacts.write_clean_artifacts.  Removed
 # during a fresh-run scrub so an interrupted fresh run leaves no stale reports
 # for ``lintle report`` to render (issue #102).
@@ -76,7 +82,9 @@ def _is_safe_to_scrub(out_dir):
       files ``clean`` itself wrote this run; or
     - it already carries a lintle-ownership signal: the ownership marker, the
       resume checkpoint (``resume.CHECKPOINT_NAME``), or a stale-checkpoint
-      archive (any file whose name starts with ``resume.CHECKPOINT_NAME``).
+      archive (a file named ``<checkpoint>.stale-…`` — the exact prefix
+      ``archive_checkpoint`` writes, NOT the bare checkpoint name, so a user
+      file like ``.clean-state.json.bak`` is never mistaken for our signal).
 
     The lock file is always present when this function is called (``cli.main``
     acquires the lock before calling ``resolve_clean_plan``), so it is excluded
@@ -96,7 +104,7 @@ def _is_safe_to_scrub(out_dir):
         return True
     if resume.CHECKPOINT_NAME in entries:
         return True
-    return any(name.startswith(resume.CHECKPOINT_NAME) for name in entries)
+    return any(name.startswith(_STALE_CHECKPOINT_PREFIX) for name in entries)
 
 
 def scrub_outputs(out_dir):
@@ -185,6 +193,19 @@ def resolve_clean_plan(args, files, file_sizes):
         )
         return RunPlan(exit_code=2)
 
+    # Write the ownership marker BEFORE scrubbing so it persists even if a
+    # later step (scrub, disk guard, or the run itself) fails — otherwise a
+    # successful run whose marker write was lost would leave the dir with
+    # outputs but no ownership signal, locking out the next fresh run. The
+    # marker is not in the scrub set, so it survives the scrub. A write failure
+    # means the out-dir is unwritable (the run could not write outputs either),
+    # so surface it as an operational error rather than silently swallowing it.
+    try:
+        Path(args.out_dir, _OUTPUT_MARKER).write_text("", encoding="utf-8")
+    except OSError as exc:
+        term.error(f"cannot write the output marker in {args.out_dir!r}: {exc}")
+        return RunPlan(exit_code=2)
+
     # Archive any prior checkpoint (preserves recoverability) then scrub outputs.
     resume.archive_checkpoint(args.out_dir, timestamp=resume.run_started_stamp())
     # Issue #102: scrub also removes prior-run report artifacts.
@@ -198,11 +219,6 @@ def resolve_clean_plan(args, files, file_sizes):
         term.emit(severity, msg)
         if severity is term.Severity.ERROR:
             return RunPlan(exit_code=2)
-
-    # Write the ownership marker so subsequent runs (and scrubs) recognise the
-    # directory as lintle-owned without needing a checkpoint (issue #93).
-    with contextlib.suppress(OSError):
-        Path(args.out_dir, _OUTPUT_MARKER).write_text("", encoding="utf-8")
 
     return RunPlan(
         files_to_process=files,
