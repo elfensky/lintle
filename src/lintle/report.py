@@ -352,13 +352,6 @@ def build_run_envelope(
     if failed_files is None:
         failed_files = []
     totals = report_aggregation.aggregate(all_stats)
-    paired = totals.paired
-    orphans = totals.orphans
-    lines_seen = totals.lines_seen
-    clean = totals.clean
-    quarantined = totals.quarantined
-    fixes = totals.fixes
-    quarantines = totals.quarantines
     # Serialise failed_files sorted by basename for byte-determinism.
     serialised_failures = sorted(
         [{"file": os.path.basename(p), "error": err} for p, err in failed_files],
@@ -381,14 +374,14 @@ def build_run_envelope(
         },
         "summary": {
             "files_processed": len(all_stats),
-            "paired_records": paired,
-            "orphan_entries": orphans,
-            "input_lines_seen": lines_seen,
-            "clean_count": clean,
-            "quarantined_count": quarantined,
+            "paired_records": totals.paired,
+            "orphan_entries": totals.orphans,
+            "input_lines_seen": totals.lines_seen,
+            "clean_count": totals.clean,
+            "quarantined_count": totals.quarantined,
             "failed_count": len(failed_files),
-            "fix_counts": dict(fixes),
-            "quarantine_counts": dict(quarantines),
+            "fix_counts": dict(totals.fixes),
+            "quarantine_counts": dict(totals.quarantines),
         },
         "files": [summary_dict(s) for s in all_stats],
     }
@@ -527,7 +520,9 @@ def format_run_report(
     if quarantines:
         lines += ["", "## Rule reference", ""]
         for key in sorted(quarantines):
-            spec = _spec_for_key(key)
+            # RULES.get() accepts both RuleID (StrEnum) and its string value;
+            # both hash identically, so a single dict lookup covers both cases.
+            spec = RULES.get(key)
             if spec is None:
                 lines.append(f"- `{key}` — (unknown rule)")
             else:
@@ -550,16 +545,6 @@ def format_run_report(
 
     lines.append("")
     return "\n".join(lines)
-
-
-def _spec_for_key(key):
-    """Return the :class:`diagnostics.RuleSpec` for a rule-ID key, or ``None``.
-
-    ``key`` may be a :class:`diagnostics.RuleID` or its string value —
-    both hash and compare identically (StrEnum extends ``str``), so a
-    single dict lookup serves both cases without a linear scan.
-    """
-    return RULES.get(key)
 
 
 def write_run_report(
