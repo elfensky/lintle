@@ -510,8 +510,14 @@ def main(argv=None):
     # failed-files return, and normal success — so the lock file is always
     # removed.
     try:
+        # Build the typed config snapshot from args ONCE so the two leaves
+        # (resolve_clean_plan, run_workers) receive named, statically-typed
+        # fields rather than a raw argparse Namespace.  A flag rename that
+        # breaks from_args surfaces at this single construction site rather
+        # than mid-run as an AttributeError inside a leaf (issue #121).
+        config = run_planning.CleanConfig.from_args(args)
         try:
-            plan = run_planning.resolve_clean_plan(args, files, file_sizes)
+            plan = run_planning.resolve_clean_plan(config, files, file_sizes)
         except OSError as exc:
             term.error(f"preflight error: {exc}")
             return 2
@@ -520,7 +526,7 @@ def main(argv=None):
         # Resolve the worker count now that files_to_process is final: an
         # explicit --jobs is honoured as-is; the default is CPU count - 1,
         # capped at the file count and floored at one (issue #53 §2.3).
-        jobs = resolve_jobs(args.jobs, os.cpu_count(), len(plan.files_to_process))
+        jobs = resolve_jobs(config.jobs, os.cpu_count(), len(plan.files_to_process))
 
         # The shared rich Console on stderr (term.stderr_console) drives both the
         # roster and the live progress block; off a TTY each degrades to plain
@@ -549,7 +555,7 @@ def main(argv=None):
         run_monotonic_start = time.monotonic()
 
         all_stats, failed_files, interrupted, interrupted_signo, operational_error = (
-            worker_pool.run_workers(args, files, plan, jobs, console, sizes)
+            worker_pool.run_workers(config, files, plan, jobs, console, sizes)
         )
 
         if operational_error is not None:

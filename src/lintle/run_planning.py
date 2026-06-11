@@ -38,7 +38,43 @@ _REPORT_ARTIFACTS = (
 )
 
 
-@dataclasses.dataclass
+@dataclasses.dataclass(slots=True, frozen=True)
+class CleanConfig:
+    """Typed snapshot of the ``clean`` command's configuration (issue #121).
+
+    Built once in ``cli.main`` right after ``parse_args`` via
+    :meth:`from_args` and passed to :func:`resolve_clean_plan` and
+    ``worker_pool.run_workers`` instead of the raw argparse ``Namespace``.
+    Centralising the attribute names here means a flag rename surfaces as
+    an ``AttributeError`` at the single ``from_args`` construction site —
+    before the out-dir lock is taken — rather than mid-run in a leaf.
+    ``jobs`` is included so callers never need to reach back to the
+    ``Namespace`` after the config is built.
+    """
+
+    out_dir: str
+    command: str
+    max_quarantined: str
+    reconstruct_checksum: bool
+    resume: bool
+    no_resume: bool
+    jobs: int | None
+
+    @classmethod
+    def from_args(cls, args) -> CleanConfig:
+        """Construct a CleanConfig from a parsed argparse Namespace."""
+        return cls(
+            out_dir=args.out_dir,
+            command=args.command,
+            max_quarantined=args.max_quarantined,
+            reconstruct_checksum=args.reconstruct_checksum,
+            resume=args.resume,
+            no_resume=args.no_resume,
+            jobs=args.jobs,
+        )
+
+
+@dataclasses.dataclass(slots=True)
 class RunPlan:
     """The resolved pre-flight plan for a ``clean``/``validate`` run."""
 
@@ -130,7 +166,7 @@ def scrub_outputs(out_dir):
             (out / name).unlink()
 
 
-def resolve_clean_plan(args, files, file_sizes):
+def resolve_clean_plan(config: CleanConfig, files, file_sizes):
     """Resolve disk-space, resume, and fresh-run state for ``clean``.
 
     Execution order: build inputs + run_identity → classify checkpoint →
@@ -142,15 +178,15 @@ def resolve_clean_plan(args, files, file_sizes):
     # so a resume with a flipped flag must re-run (STALE), not fold mismatched
     # outputs together (issue #82).
     run_identity = {
-        "max_quarantined": args.max_quarantined,
-        "reconstruct_checksum": args.reconstruct_checksum,
+        "max_quarantined": config.max_quarantined,
+        "reconstruct_checksum": config.reconstruct_checksum,
     }
 
-    classification = resume.classify_checkpoint(args.out_dir, inputs, run_identity)
+    classification = resume.classify_checkpoint(config.out_dir, inputs, run_identity)
     decision = resume.resolve_resume_action(
         classification,
-        resume=args.resume,
-        no_resume=args.no_resume,
+        resume=config.resume,
+        no_resume=config.no_resume,
         interactive=term.is_interactive(),
         prompt=term.prompt_yes_no,
     )
@@ -163,7 +199,7 @@ def resolve_clean_plan(args, files, file_sizes):
         completed = dict(checkpoint["completed"])
         # Integrity re-verification: drop any completed entry whose outputs are
         # missing or truncated, so they are reprocessed.
-        for bad_path in resume.verify_completed_outputs(completed, args.out_dir):
+        for bad_path in resume.verify_completed_outputs(completed, config.out_dir):
             completed.pop(bad_path, None)
         reused_stats = [
             report.stats_from_summary(e["summary"]) for e in completed.values()
@@ -177,7 +213,7 @@ def resolve_clean_plan(args, files, file_sizes):
         # Issue #94: charge the guard against the REMAINING input only, AFTER
         # we know which files still need processing.
         remaining_bytes = sum(file_sizes[f] for f in files_to_process)
-        disk_status = check_disk_space(args.out_dir, remaining_bytes)
+        disk_status = check_disk_space(config.out_dir, remaining_bytes)
         if disk_status is not None:
             severity, msg = disk_status
             term.emit(severity, msg)
@@ -193,9 +229,9 @@ def resolve_clean_plan(args, files, file_sizes):
 
     # FRESH branch.
     # Issue #93: gate the scrub on an ownership check before destroying anything.
-    if not _is_safe_to_scrub(args.out_dir):
+    if not _is_safe_to_scrub(config.out_dir):
         term.error(
-            f"refusing to scrub {args.out_dir!r}: not a lintle output directory "
+            f"refusing to scrub {config.out_dir!r}: not a lintle output directory "
             f"(no {_OUTPUT_MARKER} marker); "
             f"use an empty or new --out-dir, or remove it yourself"
         )
@@ -209,19 +245,19 @@ def resolve_clean_plan(args, files, file_sizes):
     # means the out-dir is unwritable (the run could not write outputs either),
     # so surface it as an operational error rather than silently swallowing it.
     try:
-        Path(args.out_dir, _OUTPUT_MARKER).write_text("", encoding="utf-8")
+        Path(config.out_dir, _OUTPUT_MARKER).write_text("", encoding="utf-8")
     except OSError as exc:
-        term.error(f"cannot write the output marker in {args.out_dir!r}: {exc}")
+        term.error(f"cannot write the output marker in {config.out_dir!r}: {exc}")
         return RunPlan(exit_code=2)
 
     # Archive any prior checkpoint (preserves recoverability) then scrub outputs.
-    resume.archive_checkpoint(args.out_dir, timestamp=resume.run_started_stamp())
+    resume.archive_checkpoint(config.out_dir, timestamp=resume.run_started_stamp())
     # Issue #102: scrub also removes prior-run report artifacts.
-    scrub_outputs(args.out_dir)
+    scrub_outputs(config.out_dir)
 
     # Issue #94: disk guard runs AFTER scrub so freed prior-output space is
     # already counted as available.
-    disk_status = check_disk_space(args.out_dir, sum(file_sizes.values()))
+    disk_status = check_disk_space(config.out_dir, sum(file_sizes.values()))
     if disk_status is not None:
         severity, msg = disk_status
         term.emit(severity, msg)
