@@ -199,6 +199,17 @@ def iter_records(path, stats=None):
                 if stats is not None:
                     stats.input_lines_seen = lineno
                     stats.bytes_consumed += n_bytes
+                # An oversized (garbage) line breaks pairing: flush any held
+                # line-1 as an orphan so it cannot pair with a line-2 across the
+                # corruption (mirrors the BAD_PREFIX branch).
+                if held is not None:
+                    yield _orphan(
+                        held[0],
+                        held[1],
+                        RuleID.ORPHAN_LINE,
+                        "orphan line 1: followed by an oversized line",
+                    )
+                    held = None
                 yield _orphan(
                     excerpt,
                     lineno,
