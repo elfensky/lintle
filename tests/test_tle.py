@@ -119,6 +119,39 @@ class TestValidateRecord:
         assert any("catalog" in e for e in tle.validate_record(line1, other))
 
 
+class TestChecksumRoutingWordIsPinned:
+    """repair.py routes a failed repair to the public RuleID CHECKSUM_MISMATCH
+    vs INVALID_COLUMN_LAYOUT by substring-matching ``"checksum"`` in the
+    validator's prose (``any("checksum" in e for e in errors)``). That contract
+    is unpinned, so a future reword could silently misroute a never-recycled
+    RuleID. Pin it from both sides (issue #106): checksum errors MUST carry the
+    word; column/semantic errors and field descriptions MUST NOT.
+    """
+
+    def test_checksum_errors_contain_the_word(self, line1):
+        assert "checksum" in tle.checksum_error(line1[:68] + "X")  # non-digit
+        assert "checksum" in tle.checksum_error(line1[:68] + "9")  # wrong digit
+
+    def test_no_column_or_semantic_error_contains_checksum(self, line1, line2):
+        cases = [
+            ("9" + line1[1:68], 1),  # bad line-number prefix (column)
+            (line1[:18] + "X" + line1[19:68], 1),  # letter in digit field (column)
+            (line2[:8] + "999.2682" + line2[16:68], 2),  # inclination range (semantic)
+            (line2[:52] + "00.00000000" + line2[63:68], 2),  # mean motion (semantic)
+        ]
+        for body, lineno in cases:
+            errs = tle.validate_body(body, lineno)
+            assert errs, (body, lineno)  # genuinely invalid
+            assert not any("checksum" in e for e in errs), (lineno, errs)
+
+    def test_no_field_description_mentions_checksum(self):
+        for chars, fields in tle._LINE_SPEC.values():
+            for *_, desc in chars:
+                assert "checksum" not in desc.lower()
+            for *_, desc in fields:
+                assert "checksum" not in desc.lower()
+
+
 class TestValidateRecordCatalog:
     """Tests for the fast catalog-only cross-check (issue #109)."""
 
