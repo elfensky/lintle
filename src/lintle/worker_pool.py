@@ -25,6 +25,13 @@ def run_workers(args, files, plan, jobs, console, sizes):
             caught["signo"] = signo
             raise KeyboardInterrupt
 
+        # Save ALL three previous handlers before installing the traps so the
+        # finally block can restore them on every exit path — success,
+        # KeyboardInterrupt, or unexpected operational error. Issue #100: the
+        # previous code only saved prev_term/prev_hup; the KI branch then set
+        # SIGINT to SIG_IGN but never restored it, leaving it ignored after an
+        # interrupted run.
+        prev_int = signal.signal(signal.SIGINT, signal.getsignal(signal.SIGINT))
         prev_term = signal.signal(signal.SIGTERM, _raise_interrupt)
         prev_hup = signal.signal(signal.SIGHUP, _raise_interrupt)
         try:
@@ -83,7 +90,13 @@ def run_workers(args, files, plan, jobs, console, sizes):
                             operational_error = exc
                             raise KeyboardInterrupt from None
         except KeyboardInterrupt:
+            # Issue #100: immediately silence all three signals so a second
+            # signal arriving mid-teardown (e.g. a second SIGTERM) cannot fire
+            # _raise_interrupt and abort cleanup with a fresh uncaught
+            # KeyboardInterrupt.
             signal.signal(signal.SIGINT, signal.SIG_IGN)
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
+            signal.signal(signal.SIGHUP, signal.SIG_IGN)
             interrupted = True
             interrupted_signo = caught["signo"]
             process_control.terminate_workers(executor)
@@ -97,6 +110,11 @@ def run_workers(args, files, plan, jobs, console, sizes):
         else:
             executor.shutdown(wait=True)
         finally:
+            # Issue #100: restore ALL three handlers — including SIGINT — on
+            # every exit path (success, KI, or operational error). Previously
+            # only SIGTERM and SIGHUP were restored; SIGINT was left as SIG_IGN
+            # after an interrupted run.
+            signal.signal(signal.SIGINT, prev_int)
             signal.signal(signal.SIGTERM, prev_term)
             signal.signal(signal.SIGHUP, prev_hup)
     return all_stats, failed_files, interrupted, interrupted_signo, operational_error
