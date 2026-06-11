@@ -505,7 +505,11 @@ def main(argv=None):
     # failed-files return, and normal success — so the lock file is always
     # removed.
     try:
-        plan = run_planning.resolve_clean_plan(args, files, file_sizes)
+        try:
+            plan = run_planning.resolve_clean_plan(args, files, file_sizes)
+        except OSError as exc:
+            term.error(f"preflight error: {exc}")
+            return 2
         if plan.exit_code is not None:
             return plan.exit_code
         # Resolve the worker count now that files_to_process is final: an
@@ -541,9 +545,20 @@ def main(argv=None):
         )
         run_monotonic_start = time.monotonic()
 
-        all_stats, failed_files, interrupted, interrupted_signo = (
+        all_stats, failed_files, interrupted, interrupted_signo, operational_error = (
             worker_pool.run_workers(args, files, plan, jobs, console, sizes)
         )
+
+        if operational_error is not None:
+            # Issue #89: parent-side bookkeeping failure (e.g. ENOSPC from
+            # write_checkpoint). The pool has already been torn down via the
+            # KI path; surface a clean error and return 2 (operational error).
+            # Exit 1 is reserved exclusively for the quarantine quality gate.
+            term.error(
+                f"run aborted due to an operational error: {operational_error}\n"
+                "  if some files completed, re-run with --resume to finish."
+            )
+            return 2
 
         if interrupted:
             return process_control.signal_exit_code(interrupted_signo)
@@ -557,5 +572,16 @@ def main(argv=None):
             threshold_mode=threshold_mode,
             quarantine_threshold=quarantine_threshold,
         )
+    except Exception as exc:
+        # Issue #89: catch-all backstop — any unhandled exception in the clean
+        # orchestration (that isn't a KeyboardInterrupt, which propagates
+        # naturally) maps to a clean exit-2 operational error so exit 1 stays
+        # unambiguous as the quality-gate signal. A brief resume hint tells the
+        # operator that partial progress may be recoverable.
+        term.error(
+            f"unexpected error during clean: {exc}\n"
+            "  if some files completed, re-run with --resume to finish."
+        )
+        return 2
     finally:
         _lock_stack.close()
