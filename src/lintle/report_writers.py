@@ -101,7 +101,7 @@ def _render_header(src_name: str, quarantined: int, entries: int) -> bytes:
         f"# {stem(src_name)}.broken.txt - quarantined records\n"
         f"# source: {src_name} | generated: {timestamp} | lintle {__version__}\n"
         f"# {quarantined} quarantined of {entries} entries\n\n"
-    ).encode("ascii")
+    ).encode("ascii", errors="replace")
 
 
 class BrokenFileWriter:

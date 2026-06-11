@@ -253,6 +253,31 @@ class TestWriteBrokenFile:
         assert b"rule: TLE-PAIR-002" in text  # BAD_PREFIX
         assert b"1 garbage" in text
 
+    def test_non_ascii_source_name_does_not_crash_header(self, tmp_path):
+        # A non-ASCII source filename must not raise UnicodeEncodeError at
+        # finalize (which would fail the whole file after all its work). The
+        # header encodes with errors="replace", matching the body renderer.
+        stats = report.FileStats(src_name="tlé.txt")
+        stats.paired_records = 3
+        stats.quarantined_count = 1
+        stats.quarantine_sample = report.FileSample.from_bounded(
+            cap=5,
+            entries_by_rule={
+                RuleID.BAD_PREFIX: [
+                    report.QuarantineEntry(
+                        raw_lines=[b"1 garbage"],
+                        source_lines=[1],
+                        primary=_diag(RuleID.BAD_PREFIX, src=1),
+                    )
+                ]
+            },
+        )
+        out = tmp_path / "out.broken.txt"
+
+        report_writers.write_broken_file(str(out), "tlé.txt", stats)
+
+        assert b"# source: tl?.txt" in out.read_bytes()
+
     def test_broken_file_is_byte_faithful(self, tmp_path):
         # A line quarantined for a non-ASCII byte must appear verbatim.
         stats = report.FileStats(src_name="x.txt")
