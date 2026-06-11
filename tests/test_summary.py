@@ -368,8 +368,10 @@ class TestFailedFilesRendering:
         con = _console(120, terminal=True)
         summary.render(env, console=con)
         out = con.file.getvalue()
-        # A clean run must NOT add any failures-related text.
-        assert "failed" not in out.lower() or "0" in out
+        # A clean run must NOT add any failures-related text. (No `or "0"`
+        # escape hatch — the panel always shows "quarantined 0", which would
+        # make the disjunction vacuously true and hide a regression.)
+        assert "failed" not in out.lower()
 
     def test_failures_section_appears_in_plain_tier(self):
         env = self._env_with_failures(
