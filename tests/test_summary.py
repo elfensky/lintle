@@ -144,6 +144,15 @@ class TestRun:
         assert rc == 2
         assert "invalid report.json" in capsys.readouterr().err
 
+    def test_invalid_utf8_report_json_is_exit_2(self, tmp_path, capsys):
+        # Issue #92: UnicodeDecodeError from report.json must be caught, not
+        # propagated — `lintle report` must return 2 with a clear message.
+        (tmp_path / "report.json").write_bytes(b"\xff\xfe")
+        rc = summary.run(str(tmp_path), "text")
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "invalid report.json" in err or "no run found" in err
+
     def test_non_object_report_json_is_exit_2(self, tmp_path, capsys):
         # Well-formed JSON that is not an object (null / array / scalar) must
         # exit 2 with a clear message, not crash with an AttributeError.

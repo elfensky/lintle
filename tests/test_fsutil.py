@@ -107,3 +107,52 @@ class TestOutDirLock:
         with pytest.raises(fsutil.LockHeldError):  # noqa: SIM117
             with fsutil.out_dir_lock(str(tmp_path)):
                 pass
+
+    def test_invalid_utf8_lock_treated_as_unreadable(self, tmp_path):
+        # Issue #92: invalid-UTF-8 bytes in .clean.lock must not crash with a
+        # UnicodeDecodeError traceback; the lock should be treated as unreadable
+        # (same-host dead-PID reclaim path or LockHeldError, not AttributeError).
+        lock = tmp_path / fsutil.LOCK_NAME
+        lock.write_bytes(b"\xff\xfe")
+        # We can't reclaim (not a dead same-host PID), so we expect LockHeldError
+        # OR the lock to be quietly treated as corrupt and an error raised — but
+        # crucially, NOT an unhandled UnicodeDecodeError.
+        try:
+            with fsutil.out_dir_lock(str(tmp_path)):
+                pass
+        except fsutil.LockHeldError:
+            pass  # expected — corrupt lock treated as unrecognised holder
+        # The key assertion: no UnicodeDecodeError was raised above.
+
+
+class TestReadJsonOrNone:
+    """``read_json_or_none`` returns a dict or None for any unreadable/malformed/
+    non-dict payload — never raises OSError, json.JSONDecodeError, or UnicodeDecodeError.
+    """
+
+    def test_valid_json_object_returns_dict(self, tmp_path):
+        p = tmp_path / "data.json"
+        p.write_text('{"k": 1}', encoding="utf-8")
+        assert fsutil.read_json_or_none(p) == {"k": 1}
+
+    def test_missing_file_returns_none(self, tmp_path):
+        assert fsutil.read_json_or_none(tmp_path / "absent.json") is None
+
+    def test_invalid_json_returns_none(self, tmp_path):
+        p = tmp_path / "bad.json"
+        p.write_text("{not json", encoding="utf-8")
+        assert fsutil.read_json_or_none(p) is None
+
+    def test_invalid_utf8_returns_none(self, tmp_path):
+        # Issue #92: UnicodeDecodeError must be caught, not propagated.
+        p = tmp_path / "bad.json"
+        p.write_bytes(b"\xff\xfe")
+        assert fsutil.read_json_or_none(p) is None
+
+    def test_json_array_returns_none(self, tmp_path):
+        # Issue #91 dict-guard: non-dict JSON (array/string/null/number) → None,
+        # so callers get the safe "no usable data" default for any non-object payload.
+        for doc in ('[]', '"hello"', '42', 'null'):
+            p = tmp_path / "typed.json"
+            p.write_text(doc, encoding="utf-8")
+            assert fsutil.read_json_or_none(p) is None

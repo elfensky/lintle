@@ -117,15 +117,13 @@ def write_checkpoint(out_dir, checkpoint):
 
 
 def load_checkpoint(out_dir):
-    """Return the parsed checkpoint from ``out_dir``, or ``None`` if it is absent
-    or unparseable. A corrupt checkpoint is treated as no checkpoint — the safe
-    default is to redo work, never to resume against garbage.
+    """Return the parsed checkpoint from ``out_dir``, or ``None`` if it is absent,
+    unparseable, or not a JSON object. A corrupt checkpoint is treated as no
+    checkpoint — the safe default is to redo work, never to resume against garbage.
+    Routes through :func:`fsutil.read_json_or_none` so ``UnicodeDecodeError`` on
+    invalid-UTF-8 bytes and non-dict payloads are both caught (issues #91, #92).
     """
-    try:
-        with open(_checkpoint_path(out_dir), encoding="utf-8") as handle:
-            return json.load(handle)
-    except OSError, json.JSONDecodeError:
-        return None
+    return fsutil.read_json_or_none(_checkpoint_path(out_dir))
 
 
 class CheckpointStatus(enum.Enum):

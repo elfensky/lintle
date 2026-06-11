@@ -107,6 +107,19 @@ class TestCheckpointRoundTrip:
             handle.write("{ not valid json")
         assert resume.load_checkpoint(str(tmp_path)) is None
 
+    def test_load_invalid_utf8_returns_none(self, tmp_path):
+        # Issue #92: a .clean-state.json with invalid-UTF-8 bytes must return
+        # None, not raise UnicodeDecodeError.
+        (tmp_path / resume.CHECKPOINT_NAME).write_bytes(b"\xff\xfe")
+        assert resume.load_checkpoint(str(tmp_path)) is None
+
+    def test_load_non_dict_json_returns_none(self, tmp_path):
+        # Issue #91 dict-guard: a valid JSON array/string/null is not a usable
+        # checkpoint — must return None so callers see "no checkpoint".
+        for doc in ("[]", '"hello"', "42", "null"):
+            (tmp_path / resume.CHECKPOINT_NAME).write_text(doc, encoding="utf-8")
+            assert resume.load_checkpoint(str(tmp_path)) is None
+
     def test_delete_removes_checkpoint(self, tmp_path):
         resume.write_checkpoint(
             str(tmp_path),
