@@ -577,6 +577,61 @@ class TestMain:
         assert not list(out.rglob("*.partial"))
 
 
+class TestParentSideExceptionHandling:
+    """Issue #89: parent-side post-result I/O errors (e.g. OSError from
+    write_checkpoint) must map to exit 2, never exit 1, and must not raise;
+    the lock must be released on every exit path."""
+
+    def test_checkpoint_oserror_returns_2_not_1_and_no_raise(
+        self, tmp_path, line1, line2, monkeypatch
+    ):
+        # Monkeypatch resume.write_checkpoint to raise OSError on the first call
+        # (simulating ENOSPC mid-run). cli.main must return 2 (operational error),
+        # never 1 (quality-gate), and must not propagate the exception.
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "tle2099.txt").write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
+        out = tmp_path / "out"
+
+        def _boom(out_dir, checkpoint):
+            raise OSError("simulated ENOSPC")
+
+        monkeypatch.setattr(worker_pool.resume, "write_checkpoint", _boom)
+        original_sigint = signal.getsignal(signal.SIGINT)
+        try:
+            rc = cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
+        finally:
+            signal.signal(signal.SIGINT, original_sigint)
+
+        # Must return 2 (operational error), NOT 1 (quality gate).
+        assert rc == 2
+
+    def test_checkpoint_oserror_releases_lock(
+        self, tmp_path, line1, line2, monkeypatch
+    ):
+        # Even if write_checkpoint raises, the lock must be released so a
+        # subsequent run can proceed without a stale lock blocking it.
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "tle2099.txt").write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
+        out = tmp_path / "out"
+
+        def _boom(out_dir, checkpoint):
+            raise OSError("simulated ENOSPC")
+
+        monkeypatch.setattr(worker_pool.resume, "write_checkpoint", _boom)
+        original_sigint = signal.getsignal(signal.SIGINT)
+        try:
+            cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
+        finally:
+            signal.signal(signal.SIGINT, original_sigint)
+
+        # A second run must not hit LockHeldError — confirms the lock was released.
+        monkeypatch.undo()  # restore write_checkpoint
+        rc2 = cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
+        assert rc2 in (0, 1)  # real run, not a lock error
+
+
 class TestDiscoverPathsSymlinkAndIsFile:
     """Issue #86: discover_paths must exclude dangling symlinks and directories
     named tle*.txt, returning only real regular files."""

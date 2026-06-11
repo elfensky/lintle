@@ -13,6 +13,7 @@ def run_workers(args, files, plan, jobs, console, sizes):
     failed_files = []
     interrupted = False
     interrupted_signo = signal.SIGINT
+    operational_error: Exception | None = None
     with multiprocessing.Manager() as manager:
         progress_queue = manager.Queue()
         executor = concurrent.futures.ProcessPoolExecutor(
@@ -53,35 +54,49 @@ def run_workers(args, files, plan, jobs, console, sizes):
                         progress.file_failed(path, exc)
                         failed_files.append(path)
                     else:
-                        all_stats.append(stats)
-                        progress.file_done(stats)
-                        if args.command == "clean":
-                            plan.completed[path] = {
-                                "summary": report.summary_dict(stats),
-                                "outputs": resume.output_sizes(args.out_dir, stats),
-                            }
-                            resume.write_checkpoint(
-                                args.out_dir,
-                                resume.build_checkpoint(
-                                    inputs=plan.inputs,
-                                    completed=plan.completed,
-                                    run_identity=plan.run_identity,
-                                ),
-                            )
+                        # Guard the parent-side post-result bookkeeping so an
+                        # unexpected OSError (e.g. ENOSPC from write_checkpoint)
+                        # is treated as an operational error rather than escaping
+                        # the pool dispatch with a raw traceback that would
+                        # collide with exit-code 1 (the quality-gate meaning).
+                        # Issue #89.
+                        try:
+                            all_stats.append(stats)
+                            progress.file_done(stats)
+                            if args.command == "clean":
+                                plan.completed[path] = {
+                                    "summary": report.summary_dict(stats),
+                                    "outputs": resume.output_sizes(args.out_dir, stats),
+                                }
+                                resume.write_checkpoint(
+                                    args.out_dir,
+                                    resume.build_checkpoint(
+                                        inputs=plan.inputs,
+                                        completed=plan.completed,
+                                        run_identity=plan.run_identity,
+                                    ),
+                                )
+                        except Exception as exc:
+                            # Parent-side bookkeeping failure: tear the pool
+                            # down via the KI path; mark as an operational
+                            # error so cli.main returns 2, not 1.
+                            operational_error = exc
+                            raise KeyboardInterrupt from None
         except KeyboardInterrupt:
             signal.signal(signal.SIGINT, signal.SIG_IGN)
             interrupted = True
             interrupted_signo = caught["signo"]
             process_control.terminate_workers(executor)
             executor.shutdown(wait=False, cancel_futures=True)
-            term.note(
-                process_control.format_cancel_message(
-                    done=len(plan.completed), total=len(files)
+            if operational_error is None:
+                term.note(
+                    process_control.format_cancel_message(
+                        done=len(plan.completed), total=len(files)
+                    )
                 )
-            )
         else:
             executor.shutdown(wait=True)
         finally:
             signal.signal(signal.SIGTERM, prev_term)
             signal.signal(signal.SIGHUP, prev_hup)
-    return all_stats, failed_files, interrupted, interrupted_signo
+    return all_stats, failed_files, interrupted, interrupted_signo, operational_error
