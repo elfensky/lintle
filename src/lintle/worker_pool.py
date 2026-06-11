@@ -1,4 +1,13 @@
-"""Process-pool dispatch for validate and clean runs."""
+"""Process-pool dispatch for validate and clean runs.
+
+``run_workers`` returns a 5-tuple:
+``(all_stats, failed_files, interrupted, interrupted_signo, operational_error)``.
+``failed_files`` is a ``list[tuple[str, str]]`` of ``(path, error_string)``
+pairs, one entry per file whose worker raised an exception.  The path is the
+full input path as submitted to the executor; the error string is ``str(exc)``
+from the caught exception.  Callers that only need the truthiness check (is
+the list non-empty?) are unaffected by the shape change.
+"""
 
 import concurrent.futures
 import multiprocessing
@@ -59,7 +68,7 @@ def run_workers(args, files, plan, jobs, console, sizes):
                         stats = future.result()
                     except Exception as exc:
                         progress.file_failed(path, exc)
-                        failed_files.append(path)
+                        failed_files.append((path, str(exc)))
                     else:
                         # Guard the parent-side post-result bookkeeping so an
                         # unexpected OSError (e.g. ENOSPC from write_checkpoint)

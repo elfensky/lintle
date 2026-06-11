@@ -332,7 +332,7 @@ A hard channel rule, so output is safely pipeable:
 `%` (percentage of routed records = `clean + quarantined`, cross-multiplied to avoid
 divide-by-zero and float drift). The default `0` means "any quarantine fails."
 
-### The `--report json` envelope — `schema_version "2"`
+### The `--report json` envelope — `schema_version "3"`
 
 A single top-level JSON object. Every field is **required and non-nullable**; empty maps render
 `{}`, empty arrays `[]` — never omitted, never `null`. This is the verified shape (one valid
@@ -340,13 +340,16 @@ pair, one checksum-flipped quarantine):
 
 ```json
 {
-  "schema_version": "2",
-  "run":   { "command": "clean", "timestamp": "2026-05-31T15:34:44Z", "elapsed_seconds": 0.26 },
+  "schema_version": "3",
+  "run": {
+    "command": "clean", "timestamp": "2026-05-31T15:34:44Z",
+    "elapsed_seconds": 0.26, "failed_files": []
+  },
   "environment": { "tool_version": "0.3.0", "python_version": "3.14.5" },
   "summary": {
     "files_processed": 1, "paired_records": 2, "orphan_entries": 0,
     "input_lines_seen": 4, "clean_count": 1, "quarantined_count": 1,
-    "fix_counts": {}, "quarantine_counts": { "TLE-CHK-001": 1 }
+    "failed_count": 0, "fix_counts": {}, "quarantine_counts": { "TLE-CHK-001": 1 }
   },
   "files": [
     { "src_name": "tle_demo.txt", "elapsed_seconds": 0.028, "bytes": 280,
@@ -358,18 +361,21 @@ pair, one checksum-flipped quarantine):
 }
 ```
 
-`schema_version` is a **string** to leave room for additive tags like `"2.1"`. Adding optional
-fields stays under `"2"`; renaming or removing one bumps the major — which is exactly why the
-`reject_counts` → `quarantine_counts` rename took it from `"1"` to `"2"`.
+`schema_version` is a **string** to leave room for additive tags like `"3.1"`. Adding optional
+fields stays under `"3"`; renaming or removing one bumps the major. History: `"1"` → `"2"` when
+`reject_counts` was renamed `quarantine_counts`; `"2"` → `"3"` when `run.failed_files` and
+`summary.failed_count` were added (issue #83) — both fields are **required** (not
+additive-optional) so the bump is mandatory.
 
 **Top-level / `run` / `environment` / `summary`:**
 
 | Field | Type | Notes |
 |---|---|---|
-| `schema_version` | string | exactly `"2"` in this release |
+| `schema_version` | string | exactly `"3"` in this release |
 | `run.command` | string | `"clean"` (the only CLI-emitted run command) |
 | `run.timestamp` | string | ISO 8601 UTC, suffix `Z` |
 | `run.elapsed_seconds` | float | parent-process wall-clock; `>= 0` |
+| `run.failed_files` | array\<object\> | `[{"file": basename, "error": str}, ...]` sorted by file; `[]` when none |
 | `environment.tool_version` | string | `lintle.__version__` |
 | `environment.python_version` | string | `major.minor.micro` |
 | `summary.files_processed` | int | `== len(files)` |
@@ -378,6 +384,7 @@ fields stays under `"2"`; renaming or removing one bumps the major — which is 
 | `summary.input_lines_seen` | int | corpus-wide sum |
 | `summary.clean_count` | int | corpus-wide sum |
 | `summary.quarantined_count` | int | corpus-wide sum |
+| `summary.failed_count` | int | `== len(run.failed_files)`; `0` when none |
 | `summary.fix_counts` | object\<str,int\> | `FixClass` keys; `{}` when none |
 | `summary.quarantine_counts` | object\<str,int\> | `RuleID` keys; `{}` when none |
 
@@ -408,7 +415,7 @@ absolute paths.
 ### The `report.jsonl` per-record findings stream — `schema_version "1"`
 
 One compact JSON object per quarantined record (sorted keys, LF, UTF-8), used by `lintle diff`.
-This stream stayed `"1"` through the envelope's `"2"` bump. Verified line:
+This stream stayed `"1"` through the envelope's `"2"` and `"3"` bumps. Verified line:
 
 ```json
 {"column_range":[69,69],"expected":"7","file":"tle_demo.txt","norad_id":25544,"note":null,"observed":"0","outcome":"quarantined","related":[],"rule_id":"TLE-CHK-001","schema_version":"1","source_lines":[3],"tier_attempted":"tier-1"}

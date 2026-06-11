@@ -16,18 +16,20 @@ class CleanArtifacts:
     findings_path: str | None = None
 
 
-def write_clean_artifacts(out_dir, all_stats, envelope):
+def write_clean_artifacts(out_dir, all_stats, envelope, failed_files=None):
     """Write the corpus-wide artifacts for a completed ``clean`` run: the
     Markdown ``report.md``, the machine ``report.json`` (the byte-identical twin
     of the ``--report json`` stdout envelope), the ``broken-noradids.ndjson``,
     and the concatenated ``report.jsonl``. All are committed in one place so a
-    successful run leaves a stable artifact set."""
+    successful run leaves a stable artifact set. ``failed_files`` is forwarded
+    to ``write_run_report`` so the ``## Failures`` section appears in report.md
+    when any input files could not be processed (issue #83)."""
     if not all_stats:
         return CleanArtifacts()
     with cli_progress.status("finalizing report…"):
         out = Path(out_dir)
         report_path = str(out / "report.md")
-        report.write_run_report(report_path, all_stats)
+        report.write_run_report(report_path, all_stats, failed_files=failed_files)
         report_json_path = str(out / "report.json")
         report.write_run_json(report_json_path, envelope)
         noradids_path = str(out / "broken-noradids.ndjson")

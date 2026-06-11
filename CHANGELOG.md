@@ -8,6 +8,12 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Added
 
+- Failed input files are now recorded in the run envelope (issue #83). When a worker
+  raises, `run.failed_files` carries a `[{"file": basename, "error": str}]` list
+  (sorted, always present — `[]` on a clean run) and `summary.failed_count` mirrors
+  its length. `report.md` gains a `## Failures` table when any file failed (omitted on
+  a clean run). Exit code 2 is unchanged for this case. Schema version bumped
+  `"2"` → `"3"` because both new fields are required (not additive-optional).
 - `clean --reconstruct-checksum` opts in to tier-2 missing-checksum reconstruction.
 
 ### Fixed

@@ -349,6 +349,7 @@ def _finalize_run(
         command=args.command,
         started_at=run_started_iso,
         elapsed_seconds=run_elapsed,
+        failed_files=failed_files,
     )
 
     # A `clean` run writes a Markdown run report, the machine-readable
@@ -361,7 +362,9 @@ def _finalize_run(
     # finalization (the per-worker shard concat dominates on a large corpus); a
     # no-op off a TTY, and after the progress block exits, so no Live nesting.
     if all_stats:
-        output_artifacts.write_clean_artifacts(args.out_dir, all_stats, envelope)
+        output_artifacts.write_clean_artifacts(
+            args.out_dir, all_stats, envelope, failed_files=failed_files
+        )
 
     if args.report == "json":
         print(json.dumps(envelope, indent=2))
