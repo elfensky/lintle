@@ -624,6 +624,33 @@ class TestOversizedLine:
         assert len(orphans) == 1
         assert orphans[0].diag.rule_id == RuleID.LINE_LENGTH
 
+    def test_oversized_between_l1_and_l2_orphans_all(self, tmp_path, line1, line2):
+        # An oversized line BETWEEN a line-1 and its line-2 must break pairing:
+        # line-1 and line-2 must NOT pair across the corruption (#95 — the
+        # oversized branch flushes `held`). Distinct from the sandwich layout,
+        # where `held` is already None at the oversized line.
+        cap = pipeline._MAX_LINE_BYTES
+        payload = (
+            (line1 + "\n").encode("ascii")
+            + b"X" * (5 * cap)
+            + b"\n"
+            + (line2 + "\n").encode("ascii")
+        )
+        src = tmp_path / "split.txt"
+        src.write_bytes(payload)
+
+        records = list(pipeline.iter_records(str(src)))
+
+        pairs = [r for r in records if isinstance(r, pipeline.RecordCandidate)]
+        orphans = [r for r in records if isinstance(r, pipeline.Orphan)]
+        assert len(pairs) == 0  # must not pair across the oversized line
+        assert len(orphans) == 3  # held line-1, the oversized line, the line-2
+        assert [o.diag.rule_id for o in orphans] == [
+            RuleID.ORPHAN_LINE,
+            RuleID.LINE_LENGTH,
+            RuleID.ORPHAN_LINE,
+        ]
+
     def test_oversized_excerpt_bounded(self, tmp_path):
         # The raw_line on the emitted Orphan must not exceed _MAX_LINE_BYTES.
         cap = pipeline._MAX_LINE_BYTES
