@@ -111,7 +111,7 @@ def _render_plain(console, label, run, s):
     Uses :func:`_format_pct_plain` throughout to guarantee the output is 7-bit
     ASCII — the plain tier is chosen precisely when the console cannot encode
     Unicode, so the em dash from :func:`_format_pct` would cause UnicodeEncodeError
-    (issue #97)."""
+    (issue #97). Prints a ``failures:`` line when any files failed (issue #83)."""
     console.print(Text(f"lintle {label} - {run['timestamp']}"), highlight=False)
     _print_totals(console, run, s, fmt_pct=_format_pct_plain)
     if s["fix_counts"]:
@@ -132,13 +132,18 @@ def _render_plain(console, label, run, s):
             ),
             highlight=False,
         )
+    for entry in run.get("failed_files", []):
+        console.print(
+            Text(f"  failed: {entry['file']} - {entry['error']}"), highlight=False
+        )
 
 
 def _render_sections(console, label, run, s, *, bars):
     """Render a rich-styled section panel (medium: no bars; wide: with bars).
 
     The ``bars`` flag is forwarded only to the "Quarantined by rule" section;
-    "Fixes applied" is always rendered without bars regardless of tier."""
+    "Fixes applied" is always rendered without bars regardless of tier. Adds a
+    "Failures" table when any files failed (issue #83)."""
     console.rule(f"lintle {label} · {run['timestamp']}")
     _print_totals(console, run, s)
 
@@ -165,6 +170,16 @@ def _render_sections(console, label, run, s, *, bars):
         console.print(
             _section("Quarantined by rule", s["quarantine_counts"], with_bars=bars)
         )
+    failed = run.get("failed_files", [])
+    if failed:
+        t = Table(
+            title="Failures", box=box.SIMPLE, pad_edge=False, title_justify="left"
+        )
+        t.add_column("file")
+        t.add_column("error")
+        for entry in failed:
+            t.add_row(entry["file"], entry["error"])
+        console.print(t)
 
 
 def render(envelope, *, console, command_label="clean"):
@@ -181,7 +196,7 @@ def render(envelope, *, console, command_label="clean"):
         _render_sections(console, command_label, run, s, bars=(tier == "wide"))
 
 
-_SCHEMA = "2"
+_SCHEMA = "3"
 
 
 def run(out_dir, fmt):
@@ -233,6 +248,7 @@ _SUMMARY_KEYS = (
     "input_lines_seen",
     "clean_count",
     "quarantined_count",
+    "failed_count",
     "fix_counts",
     "quarantine_counts",
 )
@@ -241,9 +257,9 @@ _SUMMARY_KEYS = (
 def _check_envelope_shape(envelope):
     """Return a human-readable description of the first envelope shape violation
     found, or ``None`` if the envelope looks renderable. Checks that ``run`` and
-    ``summary`` are dicts, ``run`` carries ``timestamp`` and ``elapsed_seconds``,
-    and ``summary`` carries all keys that :func:`render` unconditionally indexes
-    (issue #97)."""
+    ``summary`` are dicts, ``run`` carries ``timestamp``, ``elapsed_seconds``, and
+    the schema-3 ``failed_files`` list, and ``summary`` carries all keys that
+    :func:`render` unconditionally indexes (issue #97, #83)."""
     run = envelope.get("run")
     if not isinstance(run, dict):
         return "missing or non-object 'run' block"
@@ -251,6 +267,8 @@ def _check_envelope_shape(envelope):
         return "'run' block missing 'timestamp'"
     if "elapsed_seconds" not in run:
         return "'run' block missing 'elapsed_seconds'"
+    if not isinstance(run.get("failed_files"), list):
+        return "'run' block missing or non-list 'failed_files'"
     s = envelope.get("summary")
     if not isinstance(s, dict):
         return "missing or non-object 'summary' block"

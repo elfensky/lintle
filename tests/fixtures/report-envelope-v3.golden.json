@@ -1,0 +1,41 @@
+{
+  "schema_version": "3",
+  "run": {
+    "command": "validate",
+    "timestamp": "2026-05-25T13:00:00Z",
+    "elapsed_seconds": 0.75,
+    "failed_files": []
+  },
+  "environment": {
+    "tool_version": "PATCHED-IN-TEST",
+    "python_version": "PATCHED-IN-TEST"
+  },
+  "summary": {
+    "files_processed": 1,
+    "paired_records": 10,
+    "orphan_entries": 0,
+    "input_lines_seen": 20,
+    "clean_count": 9,
+    "quarantined_count": 1,
+    "failed_count": 0,
+    "fix_counts": {"trailing-backslash": 9},
+    "quarantine_counts": {"TLE-CHK-001": 1}
+  },
+  "files": [
+    {
+      "src_name": "tle2099.txt",
+      "elapsed_seconds": 0.5,
+      "bytes": 2048,
+      "records_per_sec": 20.0,
+      "paired_records": 10,
+      "orphan_entries": 0,
+      "input_lines_seen": 20,
+      "clean_count": 9,
+      "quarantined_count": 1,
+      "fix_counts": {"trailing-backslash": 9},
+      "quarantine_counts": {"TLE-CHK-001": 1},
+      "dropped_counts": {},
+      "quarantined_norad_ids": {}
+    }
+  ]
+}

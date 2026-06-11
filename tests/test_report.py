@@ -582,17 +582,24 @@ class TestBuildRunEnvelope:
             "files",
         }
 
-    def test_schema_version_is_string_two(self):
-        # String, not int — leaves room for "2.1" tags in additive
+    def test_schema_version_is_string_three(self):
+        # String, not int — leaves room for "3.1" tags in additive
         # minor revisions without changing the field's JSON type.
+        # Bumped "2" -> "3" when run.failed_files + summary.failed_count
+        # were added (issue #83).
         env = self._envelope()
-        assert env["schema_version"] == "2"
+        assert env["schema_version"] == "3"
         assert isinstance(env["schema_version"], str)
 
     def test_run_block_shape(self):
         env = self._envelope()
         run = env["run"]
-        assert set(run.keys()) == {"command", "timestamp", "elapsed_seconds"}
+        assert set(run.keys()) == {
+            "command",
+            "timestamp",
+            "elapsed_seconds",
+            "failed_files",
+        }
         assert run["command"] == "validate"
         assert run["timestamp"] == "2026-05-25T13:00:00Z"
         assert run["elapsed_seconds"] == 1.25
@@ -641,6 +648,7 @@ class TestBuildRunEnvelope:
             "quarantined_count",
             "fix_counts",
             "quarantine_counts",
+            "failed_count",
         }
         # _two_file_stats: 1000 + 3000 paired = 4000 records, 10 quarantined.
         assert summary["files_processed"] == 2
@@ -693,7 +701,7 @@ class TestBuildRunEnvelope:
         env = self._envelope()
         encoded = json.dumps(env)
         decoded = json.loads(encoded)
-        assert decoded["schema_version"] == "2"
+        assert decoded["schema_version"] == "3"
         assert decoded["run"]["command"] == "validate"
         assert decoded["summary"]["paired_records"] == 4000
         # StrEnum keys serialise as their stable wire tokens.
@@ -712,7 +720,7 @@ class TestBuildRunEnvelope:
 class TestEnvelopeGoldenFixture:
     """Gate R7: a checked-in JSON fixture locks the wire format.
 
-    The fixture (``tests/fixtures/report-envelope-v2.golden.json``) is
+    The fixture (``tests/fixtures/report-envelope-v3.golden.json``) is
     the contract a downstream consumer can copy verbatim and parse —
     any accidental drift in field names, types, or ordering shows up
     as a diff in the test output.
@@ -720,7 +728,7 @@ class TestEnvelopeGoldenFixture:
 
     def test_envelope_matches_golden_fixture(self):
         fixture_path = os.path.join(
-            os.path.dirname(__file__), "fixtures", "report-envelope-v2.golden.json"
+            os.path.dirname(__file__), "fixtures", "report-envelope-v3.golden.json"
         )
         with open(fixture_path, encoding="utf-8") as handle:
             golden = json.load(handle)
@@ -829,3 +837,122 @@ class TestEnvelopeRawNumbers:
         assert isinstance(env["run"]["elapsed_seconds"], float)
         assert isinstance(env["summary"]["files_processed"], int)
         assert isinstance(env["files"][0]["elapsed_seconds"], float)
+
+
+class TestFailedFilesEnvelope:
+    """Issue #83: failed input files are recorded in the run envelope (schema v3)."""
+
+    def _envelope(self, failed_files=None, **overrides):
+        defaults = {
+            "all_stats": _two_file_stats(),
+            "command": "clean",
+            "started_at": "2026-05-25T13:00:00Z",
+            "elapsed_seconds": 1.25,
+        }
+        defaults.update(overrides)
+        if failed_files is not None:
+            defaults["failed_files"] = failed_files
+        return report.build_run_envelope(**defaults)
+
+    def test_schema_version_bumped_to_three(self):
+        env = self._envelope()
+        assert env["schema_version"] == "3"
+        assert isinstance(env["schema_version"], str)
+
+    def test_run_failed_files_present_when_empty(self):
+        # Always present, even with no failures — stable shape for consumers.
+        env = self._envelope()
+        assert "failed_files" in env["run"]
+        assert env["run"]["failed_files"] == []
+
+    def test_summary_failed_count_present_when_zero(self):
+        env = self._envelope()
+        assert "failed_count" in env["summary"]
+        assert env["summary"]["failed_count"] == 0
+
+    def test_failed_files_recorded_in_run_block(self):
+        failed = [("/data/source/tle2099.txt", "OSError: disk full")]
+        env = self._envelope(failed_files=failed)
+        assert env["run"]["failed_files"] == [
+            {"file": "tle2099.txt", "error": "OSError: disk full"}
+        ]
+
+    def test_failed_count_reflects_failures(self):
+        failed = [
+            ("/data/source/tle2099.txt", "OSError: disk full"),
+            ("/data/source/tle2100.txt", "RuntimeError: boom"),
+        ]
+        env = self._envelope(failed_files=failed)
+        assert env["summary"]["failed_count"] == 2
+
+    def test_failed_files_sorted_by_basename(self):
+        # Byte-determinism: list is always sorted by the file key.
+        failed = [
+            ("/data/source/tle_z.txt", "err z"),
+            ("/data/source/tle_a.txt", "err a"),
+        ]
+        env = self._envelope(failed_files=failed)
+        files = env["run"]["failed_files"]
+        assert [f["file"] for f in files] == ["tle_a.txt", "tle_z.txt"]
+
+    def test_failed_files_default_is_empty(self):
+        # Calling without failed_files= still gives empty list + 0 count.
+        env = report.build_run_envelope(
+            _two_file_stats(),
+            command="clean",
+            started_at="2026-05-25T13:00:00Z",
+            elapsed_seconds=1.25,
+        )
+        assert env["run"]["failed_files"] == []
+        assert env["summary"]["failed_count"] == 0
+
+    def test_summary_block_shape_includes_failed_count(self):
+        env = self._envelope()
+        assert set(env["summary"].keys()) == {
+            "files_processed",
+            "paired_records",
+            "orphan_entries",
+            "input_lines_seen",
+            "clean_count",
+            "quarantined_count",
+            "fix_counts",
+            "quarantine_counts",
+            "failed_count",
+        }
+
+    def test_run_block_shape_includes_failed_files(self):
+        env = self._envelope()
+        assert set(env["run"].keys()) == {
+            "command",
+            "timestamp",
+            "elapsed_seconds",
+            "failed_files",
+        }
+
+    def test_failed_file_basename_used_not_full_path(self):
+        # Privacy: only basenames leak through.
+        failed = [("/absolute/path/to/tle2099.txt", "err")]
+        env = self._envelope(failed_files=failed)
+        entry = env["run"]["failed_files"][0]
+        assert entry["file"] == "tle2099.txt"
+        assert "/" not in entry["file"]
+
+    def test_report_md_includes_failures_section_when_failures(self):
+        # format_run_report must produce a Failures section when there are failures.
+        failed = [("/data/source/tle2099.txt", "OSError: disk full")]
+        out = report.format_run_report(_two_file_stats(), failed_files=failed)
+        assert "Failures" in out
+        assert "tle2099.txt" in out
+        assert "OSError: disk full" in out
+
+    def test_report_md_no_failures_section_when_clean(self):
+        # format_run_report must NOT produce a Failures section on a clean run.
+        out = report.format_run_report(_two_file_stats())
+        assert "## Failures" not in out
+
+    def test_envelope_json_serialisable_with_failures(self):
+        failed = [("/data/source/tle2099.txt", "err")]
+        env = self._envelope(failed_files=failed)
+        encoded = json.loads(json.dumps(env))
+        assert encoded["schema_version"] == "3"
+        assert encoded["run"]["failed_files"][0]["file"] == "tle2099.txt"
