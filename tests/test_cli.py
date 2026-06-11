@@ -765,3 +765,43 @@ class TestReportArtifactAndCommand:
         rc = cli.main(["report", str(tmp_path / "nope")])
         assert rc == 2
         assert "no run found" in capsys.readouterr().err
+
+
+class TestReconstructChecksumFlag:
+    """`--reconstruct-checksum` gates tier-2 missing-checksum recovery end to
+    end through the worker pool (#82). Off by default."""
+
+    def _checksumless_src(self, tmp_path, line1, line2):
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "tle2099.txt").write_bytes(
+            (line1[:68] + "\n" + line2[:68] + "\n").encode("ascii")
+        )
+        return src
+
+    def test_default_quarantines_checksumless_record(self, tmp_path, line1, line2):
+        src = self._checksumless_src(tmp_path, line1, line2)
+        out = tmp_path / "out"
+        rc = cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
+        # The record is quarantined (not reconstructed), so the default
+        # quality gate (0 quarantines) fails and nothing is written clean.
+        assert rc == 1
+        assert (out / "cleaned" / "tle2099.cleaned.txt").read_text() == ""
+
+    def test_flag_recovers_checksumless_record(self, tmp_path, line1, line2):
+        src = self._checksumless_src(tmp_path, line1, line2)
+        out = tmp_path / "out"
+        rc = cli.main(
+            [
+                "clean",
+                str(src),
+                "--out-dir",
+                str(out),
+                "--jobs",
+                "1",
+                "--reconstruct-checksum",
+            ]
+        )
+        assert rc == 0
+        cleaned = (out / "cleaned" / "tle2099.cleaned.txt").read_text()
+        assert cleaned == line1 + "\n" + line2 + "\n"

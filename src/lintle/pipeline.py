@@ -190,7 +190,15 @@ def iter_records(path, stats=None):
         )
 
 
-def process_file(src_path, out_dir, mode, progress_queue=None, progress_every=25_000):
+def process_file(
+    src_path,
+    out_dir,
+    mode,
+    progress_queue=None,
+    progress_every=25_000,
+    *,
+    reconstruct_checksum=False,
+):
     """Process one source file and return its ``report.FileStats``.
 
     ``mode`` is ``"validate"`` (audit only — writes nothing) or ``"clean"``
@@ -207,6 +215,9 @@ def process_file(src_path, out_dir, mode, progress_queue=None, progress_every=25
     still emit it), letting the caller track which files are currently in
     flight. With no queue (or ``progress_every`` set to 0) no progress is
     reported.
+
+    ``reconstruct_checksum`` (issue #82; default off) is forwarded to the
+    repairer to gate the tier-2 missing-checksum reconstruction.
     """
     src_name = Path(src_path).name
     stats = report.FileStats(src_name=src_name)
@@ -225,7 +236,15 @@ def process_file(src_path, out_dir, mode, progress_queue=None, progress_every=25
         progress_queue.put(FileStarted(src_name))
 
     try:
-        return _run(src_path, out_dir, mode, stats, progress_queue, progress_every)
+        return _run(
+            src_path,
+            out_dir,
+            mode,
+            stats,
+            progress_queue,
+            progress_every,
+            reconstruct_checksum,
+        )
     finally:
         # ``finally`` always runs before the return value reaches the
         # caller; ``stats`` is the same object ``_run`` returns, so the
@@ -248,7 +267,7 @@ def _record_acceptance(stats, cleaned_handle, result):
         cleaned_handle.write(result.line2 + "\n")
 
 
-def _route_candidate(candidate, stats, sink, cleaned_handle):
+def _route_candidate(candidate, stats, sink, cleaned_handle, reconstruct_checksum):
     """Route one paired record or orphan into accepted/quarantined accounting."""
     if isinstance(candidate, Orphan):
         stats.orphan_entries += 1
@@ -270,6 +289,7 @@ def _route_candidate(candidate, stats, sink, cleaned_handle):
             candidate.src1,
             candidate.raw_line2,
             candidate.src2,
+            reconstruct_checksum=reconstruct_checksum,
         )
     except Exception as exc:  # one bad record must not kill the run
         _record_quarantine(
@@ -327,7 +347,9 @@ def _clean_output_paths(out_dir, src_name):
     )
 
 
-def _run(src_path, out_dir, mode, stats, progress_queue, progress_every):
+def _run(
+    src_path, out_dir, mode, stats, progress_queue, progress_every, reconstruct_checksum
+):
     """Process one file once start/end progress events are accounted for —
     body of :func:`process_file`. Kept separate so the wrapper above can
     own the queue-event lifecycle without doubling this function's
@@ -384,7 +406,9 @@ def _run(src_path, out_dir, mode, stats, progress_queue, progress_every):
                 # tracked by ``iter_records``, counting dropped blank lines and
                 # exact newline widths — so the deltas sum to st_size exactly.
                 progress.item_seen(stats)
-                _route_candidate(candidate, stats, sink, cleaned_handle)
+                _route_candidate(
+                    candidate, stats, sink, cleaned_handle, reconstruct_checksum
+                )
             # Push the trailing partial batch so the caller's tally is exact.
             # ``byte_delta`` can be non-zero with zero records when the file
             # ends in dropped blank lines — still flush it so the byte bar

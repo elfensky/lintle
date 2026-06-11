@@ -150,6 +150,17 @@ a 1-in-10 chance of accepting a wrong line by luck, so inventing an orbital-data
 risk emitting a record that *looks* valid but is silently wrong — the one outcome worse than
 dropping it.
 
+**Reconstruction is opt-in (default off).** Even the checksum exception carries a residual
+risk: a 68-character line is ambiguous — it could be a record exported without its column-69
+digit, *or* a 69-character record that lost its last *data* character, in which case the old
+checksum digit has slid left into a data field and a freshly-appended checksum would certify
+wrong data as clean (issue #82). Because the two cases are indistinguishable from the bytes
+alone, `clean` **quarantines** a checksumless line by default (principle #2 — when in doubt,
+quarantine). The `--reconstruct-checksum` flag opts in to the recompute for corpora where
+dropped checksums are known to be the cause; it is threaded through `cli → pipeline → repair`
+and is part of the resume run-identity, so flipping it makes an in-progress run re-process
+rather than fold mismatched outputs together.
+
 ### The five fix classes
 
 `FixClass` (in `categories.py`) is the single source of truth for the tags that appear in
@@ -159,7 +170,7 @@ decreasing order of safety:
 | Class | Examples | Action |
 |-------|----------|--------|
 | Content-preserving | trailing `\` (`trailing-backslash`), CRLF (`crlf`), trailing whitespace (`trailing-ws`) | auto-fix (checksum survives as an independent check) |
-| Reconstructed-checksum | a record exported without its column-69 digit (`reconstructed-checksum`) | recompute the checksum from intact columns 1–68 |
+| Reconstructed-checksum | a record exported without its column-69 digit (`reconstructed-checksum`) | recompute the checksum from intact columns 1–68 — **opt-in** via `--reconstruct-checksum`; otherwise quarantined (see *redundancy paradox*) |
 | Content-shifting | leading whitespace / BOM (`leading-trim`) | trim, then re-validate; quarantine if it fails |
 | Structural | blank / whitespace-only / CR-only lines | drop, resynchronise pairing |
 | Corrupt | bad checksum, wrong length, orphan line, garbled columns, catalog mismatch | **quarantine** |
@@ -167,8 +178,9 @@ decreasing order of safety:
 The concrete `FixClass` members are `crlf`, `leading-trim`, `trailing-ws`,
 `trailing-backslash`, and `reconstructed-checksum`. Fix order inside `repair_line` is fixed:
 strip CRLF → strip leading whitespace → strip trailing whitespace → strip a trailing backslash
-→ build a 69-character candidate (reconstructing the checksum if the line is 68 chars and its
-body is valid) → a single full re-validation of the candidate.
+→ build a 69-character candidate (reconstructing the checksum only if the line is 68 chars, its
+body is valid, *and* `--reconstruct-checksum` was passed — otherwise the 68-char line is
+quarantined as a length error) → a single full re-validation of the candidate.
 
 ### Repair tiers
 

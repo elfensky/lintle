@@ -34,6 +34,7 @@ def run_workers(args, files, plan, jobs, console, sizes):
                     args.out_dir,
                     args.command,
                     progress_queue,
+                    reconstruct_checksum=args.reconstruct_checksum,
                 ): path
                 for path in plan.files_to_process
             }

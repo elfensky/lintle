@@ -156,6 +156,16 @@ def _add_clean_subparser(subparsers):
             "(default: 0 — any quarantine fails)"
         ),
     )
+    sub.add_argument(
+        "--reconstruct-checksum",
+        action="store_true",
+        help=(
+            "recompute and append a missing column-69 checksum for an "
+            "otherwise-valid 68-char line (tier-2 repair). Off by default: a "
+            "dropped data character is indistinguishable from a dropped "
+            "checksum, so by default such lines are quarantined"
+        ),
+    )
     resume_group = sub.add_mutually_exclusive_group()
     resume_group.add_argument(
         "--resume",

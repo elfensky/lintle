@@ -134,7 +134,10 @@ class TestProcessFile:
         )
         out = tmp_path / "out"
 
-        stats = pipeline.process_file(str(src), str(out), "clean")
+        # The checksumless record is reconstructed only when opted in (#82).
+        stats = pipeline.process_file(
+            str(src), str(out), "clean", reconstruct_checksum=True
+        )
 
         assert stats.paired_records == 2
         assert stats.orphan_entries == 0
