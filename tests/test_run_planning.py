@@ -64,6 +64,9 @@ class TestPreRunShardScrub:
         (src / "tle2099.txt").write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
         out = tmp_path / "out"
         out.mkdir()
+        # The ownership marker is written by the first real run; preseed it here
+        # to represent a prior run that left stale shard state behind (issue #93).
+        (out / run_planning._OUTPUT_MARKER).write_text("")
         # Preseed a finalized shard from a previous run for a file that
         # the current run does NOT process.
         stale_shard_dir = out / ".shards"
@@ -84,6 +87,9 @@ class TestPreRunShardScrub:
         (src / "tle2099.txt").write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
         out = tmp_path / "out"
         out.mkdir()
+        # The ownership marker is written by the first real run; preseed it here
+        # to represent a prior run that left partial shard state behind (issue #93).
+        (out / run_planning._OUTPUT_MARKER).write_text("")
         stale_shard_dir = out / ".shards"
         stale_shard_dir.mkdir()
         stale = stale_shard_dir / "tle1999.findings.jsonl.partial"
@@ -488,3 +494,282 @@ class TestStaleCheckpointNonInteractive:
         # The checkpoint must survive (not silently discarded) so the operator
         # can inspect what changed before choosing to discard or investigate.
         assert (out_partial / resume.CHECKPOINT_NAME).exists()
+
+
+# ---------------------------------------------------------------------------
+# Issue #94 — disk-space guard runs at the right time with the right amount
+# ---------------------------------------------------------------------------
+
+
+class TestDiskGuardOrdering:
+    """Issue #94: the disk-space guard must be charged against the REMAINING
+    work (RESUME branch) or run AFTER scrub (FRESH branch) so a nearly-complete
+    resume is not rejected for a tight disk that would comfortably hold the rest."""
+
+    def _make_two_file_src(self, tmp_path, line1, line2):
+        src = tmp_path / "src"
+        src.mkdir()
+        content = (line1 + "\n" + line2 + "\n").encode("ascii")
+        (src / "tle2000.txt").write_bytes(content)
+        (src / "tle2001.txt").write_bytes(content)
+        return src
+
+    def test_resume_tight_disk_passes_when_remaining_fits(
+        self, tmp_path, line1, line2, monkeypatch
+    ):
+        # Arrange: interrupt after file 1 of 2 is done.
+        src = self._make_two_file_src(tmp_path, line1, line2)
+        paths = cli.discover_paths(str(src))
+        out = tmp_path / "out"
+        _simulate_interrupted_clean(paths, str(out), completed_count=1)
+
+        remaining_size = os.path.getsize(paths[1])
+
+        # Disk is tight: only enough for 2× the REMAINING file (not 2× all).
+        # Under the old code (charging 2× total before classification) this
+        # would have been refused.  Under the new code it must proceed.
+        class _Usage:
+            free = remaining_size * 2 + 1  # just above the 2× remaining guard
+
+        monkeypatch.setattr(run_planning.shutil, "disk_usage", lambda _: _Usage())
+
+        rc = cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
+        # The resume should complete successfully (all records clean → exit 0).
+        assert rc == 0
+
+    def test_resume_disk_error_returns_2(self, tmp_path, line1, line2, monkeypatch):
+        # Even under the new ordering, if the remaining work won't fit → exit 2.
+        src = self._make_two_file_src(tmp_path, line1, line2)
+        paths = cli.discover_paths(str(src))
+        out = tmp_path / "out"
+        _simulate_interrupted_clean(paths, str(out), completed_count=1)
+
+        class _Usage:
+            free = 1  # far below 2× anything
+
+        monkeypatch.setattr(run_planning.shutil, "disk_usage", lambda _: _Usage())
+
+        rc = cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
+        assert rc == 2
+
+    def test_fresh_disk_guard_runs_after_scrub(
+        self, tmp_path, line1, line2, monkeypatch
+    ):
+        # Arrange: run once, then do a fresh --no-resume run with a disk that
+        # is tight relative to the old outputs but fine after scrub.
+        src = self._make_two_file_src(tmp_path, line1, line2)
+        out = tmp_path / "out"
+        cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
+
+        # Disk guard call counter — we want to verify it runs AFTER scrub.
+        calls = []
+        real_check = run_planning.check_disk_space
+
+        def recording_check(out_dir, input_bytes):
+            # Capture whether cleaned/ still exists at the moment of the check.
+            cleaned_exists = (tmp_path / "out" / "cleaned").exists()
+            calls.append({"cleaned_exists": cleaned_exists})
+            return real_check(out_dir, input_bytes)
+
+        monkeypatch.setattr(run_planning, "check_disk_space", recording_check)
+
+        rc = cli.main(
+            [
+                "clean",
+                str(src),
+                "--out-dir",
+                str(out),
+                "--no-resume",
+                "--jobs",
+                "1",
+            ]
+        )
+
+        assert rc == 0
+        # The guard must have been called exactly once for the FRESH branch.
+        assert len(calls) == 1
+        # At the moment the guard ran, the prior cleaned/ tree must be gone
+        # (i.e. scrub happened before the guard).
+        assert not calls[0]["cleaned_exists"], (
+            "disk guard ran before scrub: cleaned/ still present"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Issue #93 — scrub is gated by an ownership marker
+# ---------------------------------------------------------------------------
+
+
+class TestScrubOwnershipGate:
+    """Issue #93: scrub_outputs must not silently destroy user-owned content.
+    The out-dir is safe to scrub iff it is empty (modulo the lock file), already
+    contains the ownership marker (.lintle-output), or already contains a lintle
+    signal (checkpoint or stale-checkpoint archive)."""
+
+    def test_refuses_non_lintle_dir_with_user_content(
+        self, tmp_path, line1, line2, capsys
+    ):
+        # A directory with user content and no lintle ownership signal must be refused.
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "tle2000.txt").write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
+
+        out = tmp_path / "out"
+        out.mkdir()
+        # Place user-owned subdirectory named like a lintle output tree.
+        (out / "cleaned").mkdir()
+        (out / "cleaned" / "my_data.txt").write_text("precious user data")
+
+        rc = cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
+        err = capsys.readouterr().err
+
+        assert rc == 2
+        assert (
+            "refusing to scrub" in err.lower() or "not a lintle output" in err.lower()
+        )
+        # Precious user data must survive.
+        assert (out / "cleaned" / "my_data.txt").exists()
+
+    def test_proceeds_on_empty_dir(self, tmp_path, line1, line2):
+        # An empty out-dir (only the lock is present, held by us) must proceed.
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "tle2000.txt").write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
+        out = tmp_path / "out"
+        # Do NOT pre-create any content — cli.main creates and locks it.
+        rc = cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
+        assert rc == 0
+
+    def test_proceeds_with_marker_present(self, tmp_path, line1, line2):
+        # An out-dir with the ownership marker proceeds even with user-named content.
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "tle2000.txt").write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
+        out = tmp_path / "out"
+        out.mkdir()
+        (out / run_planning._OUTPUT_MARKER).write_text("")
+        (out / "cleaned").mkdir()
+        (out / "cleaned" / "old_output.txt").write_text("prior run output")
+
+        rc = cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
+        # Old output must be scrubbed; a clean 1-file run succeeds.
+        assert rc == 0
+        assert (out / "cleaned" / "tle2000.cleaned.txt").exists()
+        assert not (out / "cleaned" / "old_output.txt").exists()
+
+    def test_proceeds_with_checkpoint_signal(self, tmp_path, line1, line2):
+        # An out-dir that contains a checkpoint (interrupted run) is lintle-owned.
+        src = tmp_path / "src"
+        src.mkdir()
+        content = (line1 + "\n" + line2 + "\n").encode("ascii")
+        (src / "tle2000.txt").write_bytes(content)
+        (src / "tle2001.txt").write_bytes(content)
+        out = tmp_path / "out"
+        paths = cli.discover_paths(str(src))
+        # Simulate an interrupted run (checkpoint present, partial outputs).
+        _simulate_interrupted_clean(paths, str(out), completed_count=1)
+
+        # A fresh --no-resume must see the checkpoint as a lintle-ownership signal
+        # and proceed with the scrub, not refuse.
+        rc = cli.main(
+            ["clean", str(src), "--out-dir", str(out), "--no-resume", "--jobs", "1"]
+        )
+        assert rc == 0
+
+    def test_marker_written_on_first_fresh_run(self, tmp_path, line1, line2):
+        # After a fresh run the marker must be present so subsequent runs
+        # recognise the dir as lintle-owned without needing a checkpoint.
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "tle2000.txt").write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
+        out = tmp_path / "out"
+        cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
+        assert (out / run_planning._OUTPUT_MARKER).exists()
+
+    def test_proceeds_with_stale_checkpoint_archive(self, tmp_path, line1, line2):
+        # A stale-checkpoint archive (.clean-state.json.stale-<timestamp>) is a
+        # lintle-ownership signal — the dir must proceed, not be refused.
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "tle2000.txt").write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
+        out = tmp_path / "out"
+        out.mkdir()
+        # Plant a stale archive (as archive_checkpoint would leave it).
+        stale_name = f"{resume.CHECKPOINT_NAME}.stale-20260101T000000Z"
+        (out / stale_name).write_text("{}")
+
+        rc = cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
+        assert rc == 0
+
+
+# ---------------------------------------------------------------------------
+# Issue #102 — scrub removes prior run's report artifacts
+# ---------------------------------------------------------------------------
+
+
+class TestScrubClearsReportArtifacts:
+    """Issue #102: a fresh run must remove the prior run's report artifacts
+    (report.md, report.json, report.jsonl, broken-noradids.ndjson) during the
+    FRESH scrub, so an interrupted fresh run does not leave a stale prior-run
+    report that `lintle report` would render as current."""
+
+    def _make_src(self, tmp_path, line1, line2):
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "tle2000.txt").write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
+        return src
+
+    def test_scrub_removes_report_json(self, tmp_path, line1, line2):
+        src = self._make_src(tmp_path, line1, line2)
+        out = tmp_path / "out"
+        # First run: writes report artifacts.
+        cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
+        assert (out / "report.json").exists()
+
+        # Plant a stale report.json so we can verify it is removed.
+        stale_json = out / "report.json"
+        stale_json.write_text('{"schema_version":"3","stale":true}', encoding="utf-8")
+
+        # scrub_outputs (called during a fresh run's FRESH branch) must remove it.
+        run_planning.scrub_outputs(str(out))
+        assert not stale_json.exists()
+
+    def test_scrub_removes_all_report_artifacts(self, tmp_path):
+        out = tmp_path / "out"
+        out.mkdir()
+        # Plant all four report artifacts.
+        artifacts = (
+            "report.md",
+            "report.json",
+            "report.jsonl",
+            "broken-noradids.ndjson",
+        )
+        for name in artifacts:
+            (out / name).write_text("stale", encoding="utf-8")
+
+        run_planning.scrub_outputs(str(out))
+
+        for name in artifacts:
+            assert not (out / name).exists(), f"{name} should have been removed"
+
+    def test_fresh_run_does_not_show_stale_report(
+        self, tmp_path, line1, line2, monkeypatch, capsys
+    ):
+        # After an interrupted fresh run the old report.json must be gone so
+        # `lintle report` exits 2 (not found) rather than rendering the prior run.
+        src = self._make_src(tmp_path, line1, line2)
+        out = tmp_path / "out"
+        # First run: writes report.json.
+        cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
+        assert (out / "report.json").exists()
+
+        # Simulate an "interrupted fresh run": scrub removes the old report.json
+        # but the new run never finishes (we just call scrub_outputs directly
+        # here to represent what would happen if workers were killed before
+        # finalization).
+        run_planning.scrub_outputs(str(out))
+
+        # `lintle report` must now fail (no report.json) — not serve the stale one.
+        capsys.readouterr()
+        rc = cli.main(["report", str(out)])
+        assert rc == 2  # "no run found"

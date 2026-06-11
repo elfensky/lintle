@@ -514,8 +514,27 @@ checkpoint. Resolution:
 - `ABSENT`: `--resume` aborts ("no interrupted run to resume"); otherwise fresh.
 
 A fresh run **archives** any existing checkpoint to `.clean-state.json.stale-<timestamp>`
-(never destroying a recoverable run) and scrubs the `cleaned/`, `broken/`, and `.shards/` trees
-so no orphans from a differently-scoped prior run linger.
+(never destroying a recoverable run), then scrubs the `cleaned/`, `broken/`, `.shards/` trees
+and the four report artifacts (`report.md`, `report.json`, `report.jsonl`,
+`broken-noradids.ndjson`) so no orphans from a differently-scoped prior run linger and no stale
+report is left for `lintle report` to render if the fresh run is itself interrupted (issue #102).
+
+**Preflight ordering.** `resolve_clean_plan` executes in this order: build `inputs` +
+`run_identity` → classify checkpoint → resolve resume action → branch:
+
+- **RESUME branch:** disk-space guard runs on `2×` the *remaining* (unprocessed) input bytes,
+  computed after completing-file integrity re-verification. A nearly-complete resume is never
+  refused on a tight disk that would comfortably hold the fraction still to process (issue #94).
+- **FRESH branch:** ownership check (`_is_safe_to_scrub`) → archive checkpoint → scrub (trees +
+  report artifacts) → disk-space guard on `2×` full corpus (now that freed space is reflected) →
+  write `.lintle-output` ownership marker.
+
+**Ownership marker.** `run_planning._OUTPUT_MARKER` (`.lintle-output`) is written into the
+out-dir by the first fresh run. A scrub refuses (exit 2, no data destroyed) when the out-dir is
+non-empty, carries no `.lintle-output` marker, no checkpoint (`.clean-state.json`), and no
+stale-checkpoint archive — indicating it is not a lintle output directory and may contain
+user-owned content (issue #93). Effectively-empty out-dirs (only the lock file present) are
+always safe to use.
 
 ---
 

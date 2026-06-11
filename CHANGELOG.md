@@ -18,6 +18,25 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Fixed
 
+- **`#94` — disk-space guard charged the wrong amount.** The 2× guard now runs at the
+  right moment in each branch. For a `--resume` run it charges 2× the *remaining*
+  (unprocessed) input bytes — so a nearly-complete resume on a tight disk is no longer
+  wrongly refused. For a fresh run it runs *after* `scrub_outputs` so the freed prior
+  outputs are already reflected in the available space before the guard fires.
+- **`#93` — `scrub_outputs` had no ownership check.** A fresh run on a mistyped
+  `--out-dir` pointing at a directory with user content (e.g. a `cleaned/` subdirectory)
+  could silently destroy it. The preflight now refuses (exit 2, no data destroyed) when
+  the out-dir is non-empty and carries no lintle-ownership signal (`.lintle-output`
+  marker, checkpoint, or stale-checkpoint archive). A `.lintle-output` marker is written
+  on every first fresh run so subsequent runs and scrubs recognise the directory.
+- **`#102` — `scrub_outputs` left prior-run report artifacts.** An interrupted fresh run
+  could leave a stale `report.json` (from the prior run) that `lintle report` would then
+  render as current. `scrub_outputs` now also removes `report.md`, `report.json`,
+  `report.jsonl`, and `broken-noradids.ndjson` so the out-dir is truly clean before a
+  new run's workers write fresh outputs.
+
+### Fixed
+
 - Records whose lines carry leading whitespace now pair and repair via the `leading-trim`
   fix class instead of being quarantined as `BAD_PREFIX`. `iter_records` matches the
   `1 `/`2 ` prefix on a whitespace-trimmed view while carrying the raw bytes forward to the
