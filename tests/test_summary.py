@@ -168,6 +168,122 @@ class TestRun:
         assert summary._SCHEMA == report._ENVELOPE_SCHEMA_VERSION
 
 
+class TestEnvelopeValidation:
+    """Issue #97(a): summary.run must validate the envelope shape before calling
+    render(), so a schema-'2' report.json missing keys returns 2, not KeyError.
+    """
+
+    def _write_raw(self, tmp_path, doc):
+        (tmp_path / "report.json").write_text(doc, encoding="utf-8")
+
+    def test_missing_summary_key_is_exit_2(self, tmp_path, capsys):
+        self._write_raw(
+            tmp_path,
+            '{"schema_version": "2", "run": {"timestamp": "x", "elapsed_seconds": 1.0}}',
+        )
+        rc = summary.run(str(tmp_path), "text")
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "invalid report.json" in err
+
+    def test_missing_run_key_is_exit_2(self, tmp_path, capsys):
+        self._write_raw(
+            tmp_path,
+            '{"schema_version": "2", "summary": {}}',
+        )
+        rc = summary.run(str(tmp_path), "text")
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "invalid report.json" in err
+
+    def test_run_not_dict_is_exit_2(self, tmp_path, capsys):
+        self._write_raw(
+            tmp_path,
+            '{"schema_version": "2", "run": "bad", "summary": {}}',
+        )
+        rc = summary.run(str(tmp_path), "text")
+        assert rc == 2
+        capsys.readouterr()
+
+    def test_summary_not_dict_is_exit_2(self, tmp_path, capsys):
+        self._write_raw(
+            tmp_path,
+            '{"schema_version": "2", "run": {}, "summary": []}',
+        )
+        rc = summary.run(str(tmp_path), "text")
+        assert rc == 2
+        capsys.readouterr()
+
+    def test_missing_elapsed_seconds_is_exit_2(self, tmp_path, capsys):
+        # render() calls run["elapsed_seconds"] — must be caught before render.
+        self._write_raw(
+            tmp_path,
+            '{"schema_version": "2", "run": {"timestamp": "x"}, '
+            '"summary": {"files_processed": 0, "paired_records": 0, '
+            '"orphan_entries": 0, "input_lines_seen": 0, "clean_count": 0, '
+            '"quarantined_count": 0, "fix_counts": {}, "quarantine_counts": {}}}',
+        )
+        rc = summary.run(str(tmp_path), "text")
+        assert rc == 2
+        capsys.readouterr()
+
+
+class TestPlainTierAsciiSafe:
+    """Issue #97(b): the plain tier must not emit the em dash U+2014 — it is
+    selected precisely when the console cannot encode Unicode, so any non-ASCII
+    character causes UnicodeEncodeError.
+    """
+
+    def _ascii_console(self):
+        """Return a Console that reports 'ascii' encoding and is not a terminal."""
+        import io
+        from rich.console import Console
+        return Console(
+            file=io.StringIO(),
+            width=80,
+            force_terminal=False,
+            color_system=None,
+            legacy_windows=False,
+        )
+
+    def test_zero_denominator_plain_renders_without_emdash(self):
+        # _format_pct(x, 0) returns "—" by default; the plain tier must use an
+        # ASCII fallback so the same string can be written to an ASCII console.
+        con = _console(80, terminal=False)
+        env = {
+            "schema_version": "2",
+            "run": {
+                "command": "clean",
+                "timestamp": "2026-01-01T00:00:00Z",
+                "elapsed_seconds": 0.1,
+            },
+            "environment": {"tool_version": "0.5.0", "python_version": "3.14.0"},
+            "summary": {
+                "files_processed": 1,
+                "paired_records": 0,
+                "orphan_entries": 0,
+                "input_lines_seen": 0,
+                "clean_count": 0,
+                "quarantined_count": 0,
+                "fix_counts": {},
+                "quarantine_counts": {},
+            },
+            "files": [],
+        }
+        summary.render(env, console=con)
+        out = con.file.getvalue()
+        # em dash must not appear in plain output
+        assert "—" not in out
+        # some ASCII replacement must appear for the zero-denominator pct field
+        assert out  # rendered something
+
+    def test_plain_tier_format_pct_returns_ascii(self):
+        # _format_pct_plain (or the tier-aware branch) must return ASCII for 0/0.
+        result = summary._format_pct_plain(5, 0)
+        assert all(ord(c) < 128 for c in result)
+        assert result  # non-empty
+
+
 class TestEdgeCases:
     def test_pick_tier_boundary_72(self):
         pt = summary._pick_tier

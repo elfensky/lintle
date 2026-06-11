@@ -25,9 +25,27 @@ def _humanize_duration(seconds):
 
 
 def _format_pct(part, whole):
-    """Return a percentage string for ``part / whole``, honest about tiny rates."""
+    """Return a percentage string for ``part / whole``, honest about tiny rates.
+    Uses the Unicode em dash for a zero denominator — suitable for the medium and
+    wide tiers whose consoles can encode it.  Use :func:`_format_pct_plain` for the
+    plain tier (issue #97)."""
     if whole <= 0:
         return "—"
+    if part == 0:
+        return "0%"
+    rate = 100.0 * part / whole
+    if rate < 0.01:
+        return "<0.01%"
+    return f"{rate:.2f}%"
+
+
+def _format_pct_plain(part, whole):
+    """ASCII-safe percentage string for the plain tier (issue #97): returns ``"-"``
+    (a hyphen) for a zero denominator instead of the em dash returned by
+    :func:`_format_pct`.  The plain tier is selected precisely when the console
+    cannot encode Unicode, so any non-ASCII character would raise UnicodeEncodeError."""
+    if whole <= 0:
+        return "-"
     if part == 0:
         return "0%"
     rate = 100.0 * part / whole
@@ -64,17 +82,19 @@ def _sorted_counts(d):
     return sorted(d.items(), key=lambda kv: (-kv[1], kv[0]))
 
 
-def _totals_lines(run, s):
-    """Return a list of ``(label, value_str, pct_str)`` triples for the totals block."""
+def _totals_lines(run, s, *, fmt_pct=_format_pct):
+    """Return a list of ``(label, value_str, pct_str)`` triples for the totals block.
+    ``fmt_pct`` selects the percentage formatter: pass :func:`_format_pct_plain` for
+    the plain tier to avoid emitting the non-ASCII em dash (issue #97)."""
     routed = s["clean_count"] + s["quarantined_count"]
     return [
         ("files", f"{s['files_processed']:,}", ""),
         ("records", f"{s['paired_records']:,}", ""),
-        ("clean", f"{s['clean_count']:,}", _format_pct(s["clean_count"], routed)),
+        ("clean", f"{s['clean_count']:,}", fmt_pct(s["clean_count"], routed)),
         (
             "quarantined",
             f"{s['quarantined_count']:,}",
-            _format_pct(s["quarantined_count"], routed),
+            fmt_pct(s["quarantined_count"], routed),
         ),
         ("orphans", f"{s['orphan_entries']:,}", ""),
         ("lines", f"{s['input_lines_seen']:,}", ""),
@@ -82,9 +102,10 @@ def _totals_lines(run, s):
     ]
 
 
-def _print_totals(console, run, s):
-    """Print one totals field per line to ``console``; right-aligns the value column."""
-    rows = _totals_lines(run, s)
+def _print_totals(console, run, s, *, fmt_pct=_format_pct):
+    """Print one totals field per line to ``console``; right-aligns the value column.
+    ``fmt_pct`` is forwarded to :func:`_totals_lines`."""
+    rows = _totals_lines(run, s, fmt_pct=fmt_pct)
     width = max(len(value) for _, value, _ in rows)
     for label, value, pct in rows:
         line = f"  {label:<12} {value:>{width}}"
@@ -94,9 +115,13 @@ def _print_totals(console, run, s):
 
 
 def _render_plain(console, label, run, s):
-    """Render a plain ASCII-only summary line block (no box, no bars, no arrows)."""
+    """Render a plain ASCII-only summary line block (no box, no bars, no arrows).
+    Uses :func:`_format_pct_plain` throughout to guarantee the output is 7-bit
+    ASCII — the plain tier is chosen precisely when the console cannot encode
+    Unicode, so the em dash from :func:`_format_pct` would cause UnicodeEncodeError
+    (issue #97)."""
     console.print(Text(f"lintle {label} - {run['timestamp']}"), highlight=False)
-    _print_totals(console, run, s)
+    _print_totals(console, run, s, fmt_pct=_format_pct_plain)
     if s["fix_counts"]:
         console.print(
             Text(
@@ -196,8 +221,48 @@ def run(out_dir, fmt):
             f" (expected {_SCHEMA!r})"
         )
         return 2
+    # Issue #97(a): validate the envelope shape before rendering so missing or
+    # wrong-typed keys raise a clean error instead of KeyError/TypeError in render().
+    bad = _check_envelope_shape(envelope)
+    if bad:
+        term.error(f"{path}: invalid report.json ({bad})")
+        return 2
     if fmt == "json":
         print(raw, end="")
         return 0
     render(envelope, console=term.stdout_console, command_label="report")
     return 0
+
+
+_SUMMARY_KEYS = (
+    "files_processed",
+    "paired_records",
+    "orphan_entries",
+    "input_lines_seen",
+    "clean_count",
+    "quarantined_count",
+    "fix_counts",
+    "quarantine_counts",
+)
+
+
+def _check_envelope_shape(envelope):
+    """Return a human-readable description of the first envelope shape violation
+    found, or ``None`` if the envelope looks renderable. Checks that ``run`` and
+    ``summary`` are dicts, ``run`` carries ``timestamp`` and ``elapsed_seconds``,
+    and ``summary`` carries all keys that :func:`render` unconditionally indexes
+    (issue #97)."""
+    run = envelope.get("run")
+    if not isinstance(run, dict):
+        return "missing or non-object 'run' block"
+    if "timestamp" not in run:
+        return "'run' block missing 'timestamp'"
+    if "elapsed_seconds" not in run:
+        return "'run' block missing 'elapsed_seconds'"
+    s = envelope.get("summary")
+    if not isinstance(s, dict):
+        return "missing or non-object 'summary' block"
+    for key in _SUMMARY_KEYS:
+        if key not in s:
+            return f"'summary' block missing '{key}'"
+    return None
