@@ -100,7 +100,7 @@ def read_json_or_none(path):
     try:
         with open(path, encoding="utf-8") as h:
             data = json.load(h)
-    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+    except OSError, json.JSONDecodeError, UnicodeDecodeError:
         return None
     return data if isinstance(data, dict) else None
 
