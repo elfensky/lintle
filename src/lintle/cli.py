@@ -13,6 +13,7 @@ from pathlib import Path
 from lintle import (
     BROKEN_SUFFIX,
     CLEANED_SUFFIX,
+    SHARDS_DIRNAME,
     __version__,
     cli_progress,
     diff,
@@ -386,7 +387,7 @@ def _finalize_run(
     # `report.jsonl` was written from those shards by the report block above.
     if not failed_files:
         resume.delete_checkpoint(args.out_dir)
-        shard_dir = Path(args.out_dir) / ".shards"
+        shard_dir = Path(args.out_dir) / SHARDS_DIRNAME
         if shard_dir.exists():
             shutil.rmtree(shard_dir)
 
