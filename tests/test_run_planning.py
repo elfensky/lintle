@@ -630,6 +630,29 @@ class TestScrubOwnershipGate:
         # Precious user data must survive.
         assert (out / "cleaned" / "my_data.txt").exists()
 
+    def test_refuses_user_file_sharing_checkpoint_prefix(
+        self, tmp_path, line1, line2, capsys
+    ):
+        # A user file whose name merely STARTS WITH the checkpoint name (e.g.
+        # ".clean-state.json.bak") is NOT a stale-checkpoint archive (those are
+        # ".clean-state.json.stale-<ts>") and must not be mistaken for a lintle
+        # ownership signal — else a user dir with such a file + a "cleaned/"
+        # subdir would be wrongly scrubbed (#93 false positive).
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "tle2000.txt").write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
+        out = tmp_path / "out"
+        out.mkdir()
+        (out / (resume.CHECKPOINT_NAME + ".bak")).write_text("user backup")
+        (out / "cleaned").mkdir()
+        (out / "cleaned" / "my_data.txt").write_text("precious user data")
+
+        rc = cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
+
+        assert rc == 2
+        assert "refusing to scrub" in capsys.readouterr().err.lower()
+        assert (out / "cleaned" / "my_data.txt").exists()  # untouched
+
     def test_proceeds_on_empty_dir(self, tmp_path, line1, line2):
         # An empty out-dir (only the lock is present, held by us) must proceed.
         src = tmp_path / "src"
