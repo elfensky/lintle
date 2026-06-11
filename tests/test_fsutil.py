@@ -157,3 +157,88 @@ class TestReadJsonOrNone:
             p = tmp_path / "typed.json"
             p.write_text(doc, encoding="utf-8")
             assert fsutil.read_json_or_none(p) is None
+
+
+class TestFsyncFallback:
+    """Issue #98 — _fsync must fall back to os.fsync when F_FULLFSYNC raises
+    OSError (SMB/NFS/exFAT filesystems that do not implement F_FULLFSYNC).
+    """
+
+    def test_fullfsync_oserror_falls_back_to_os_fsync(self, tmp_path, monkeypatch):
+        # Force _USE_FULLFSYNC True and reset the per-process latch so we
+        # exercise the F_FULLFSYNC path even on Linux CI; monkeypatch
+        # fcntl.fcntl to raise OSError (ENOTSUP); assert os.fsync is called
+        # instead and _fsync does not raise.
+        monkeypatch.setattr(fsutil, "_USE_FULLFSYNC", True)
+        monkeypatch.setattr(fsutil, "_fullfsync_works", None)
+        import fcntl as _fcntl
+
+        called_fsync = []
+
+        def raise_enotsup(fd, op):
+            raise OSError(45, "Operation not supported")  # ENOTSUP
+
+        monkeypatch.setattr(_fcntl, "fcntl", raise_enotsup)
+
+        def spy_fsync(fd):
+            called_fsync.append(fd)
+
+        monkeypatch.setattr(os, "fsync", spy_fsync)
+
+        # _fsync must not raise and must have called os.fsync as fallback.
+        f = tmp_path / "test.bin"
+        f.write_bytes(b"x")
+        fd = os.open(str(f), os.O_RDONLY)
+        try:
+            fsutil._fsync(fd)
+        finally:
+            os.close(fd)
+        assert called_fsync, "os.fsync fallback was not called"
+
+    def test_fullfsync_success_does_not_call_os_fsync(self, tmp_path, monkeypatch):
+        # When F_FULLFSYNC succeeds, os.fsync must NOT be called (no double-sync).
+        monkeypatch.setattr(fsutil, "_USE_FULLFSYNC", True)
+        monkeypatch.setattr(fsutil, "_fullfsync_works", None)
+        import fcntl as _fcntl
+
+        called_fsync = []
+        called_fullfsync = []
+
+        def fake_fcntl(fd, op):
+            called_fullfsync.append(fd)
+
+        monkeypatch.setattr(_fcntl, "fcntl", fake_fcntl)
+
+        def spy_fsync(fd):
+            called_fsync.append(fd)
+
+        monkeypatch.setattr(os, "fsync", spy_fsync)
+
+        f = tmp_path / "test.bin"
+        f.write_bytes(b"x")
+        fd = os.open(str(f), os.O_RDONLY)
+        try:
+            fsutil._fsync(fd)
+        finally:
+            os.close(fd)
+        assert called_fullfsync, "F_FULLFSYNC was not called"
+        assert not called_fsync, "os.fsync must not be called when F_FULLFSYNC succeeds"
+
+    def test_durable_replace_survives_fullfsync_enotsup(self, tmp_path, monkeypatch):
+        # End-to-end: durable_replace must succeed even when F_FULLFSYNC raises
+        # OSError; the fallback path still commits the file.
+        monkeypatch.setattr(fsutil, "_USE_FULLFSYNC", True)
+        monkeypatch.setattr(fsutil, "_fullfsync_works", None)
+        import fcntl as _fcntl
+
+        def raise_enotsup(fd, op):
+            raise OSError(45, "Operation not supported")
+
+        monkeypatch.setattr(_fcntl, "fcntl", raise_enotsup)
+
+        tmp = tmp_path / "data.partial"
+        dest = tmp_path / "data.final"
+        tmp.write_bytes(b"durable content\n")
+        fsutil.durable_replace(str(tmp), str(dest))
+        assert dest.read_bytes() == b"durable content\n"
+        assert not tmp.exists()

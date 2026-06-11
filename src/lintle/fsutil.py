@@ -31,15 +31,29 @@ from pathlib import Path
 # (issue #58). Elsewhere os.fsync is the barrier.
 _USE_FULLFSYNC = sys.platform == "darwin" and hasattr(fcntl, "F_FULLFSYNC")
 
+# Per-process flag: once F_FULLFSYNC proves unsupported (e.g. SMB/NFS/exFAT),
+# skip straight to os.fsync for all subsequent calls (avoids repeated ENOTSUP
+# syscalls). Starts as None — "untried" — so the first call always attempts
+# F_FULLFSYNC on macOS and only latches False on failure (issue #98).
+_fullfsync_works: bool | None = None
+
 
 def _fsync(fd):
     """Flush ``fd`` to stable storage, using the platform's true durability
-    barrier (``F_FULLFSYNC`` on macOS, ``os.fsync`` otherwise).
+    barrier (``F_FULLFSYNC`` on macOS, ``os.fsync`` otherwise). On macOS,
+    if ``F_FULLFSYNC`` raises ``OSError`` (e.g. SMB/NFS/exFAT volumes that
+    don't implement it), fall back to ``os.fsync`` and remember the failure so
+    subsequent calls skip the unsupported syscall (issue #98).
     """
-    if _USE_FULLFSYNC:
-        fcntl.fcntl(fd, fcntl.F_FULLFSYNC)
-    else:
-        os.fsync(fd)
+    global _fullfsync_works
+    if _USE_FULLFSYNC and _fullfsync_works is not False:
+        try:
+            fcntl.fcntl(fd, fcntl.F_FULLFSYNC)
+            _fullfsync_works = True
+            return
+        except OSError:
+            _fullfsync_works = False
+    os.fsync(fd)
 
 
 def durable_replace(tmp, dest):
