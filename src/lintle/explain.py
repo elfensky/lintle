@@ -71,10 +71,18 @@ def _row(label, line):
     return f"{head.ljust(_LABEL_W)}{_visible(line)}"
 
 
-def _caret(column_range):
-    """A caret row pointing at ``column_range`` under an example line."""
+def _caret(line, column_range):
+    """A caret row pointing at ``column_range`` under an example ``line``.
+
+    Aligned to the line's *rendered* width: ``_visible`` escapes a CR or tab
+    to two cells, so the offset is computed from the escaped prefix (and the
+    caret width from the escaped marked span), not the raw source columns.
+    For an all-ASCII line ``_visible`` is the identity, so this is unchanged.
+    """
     low, high = column_range
-    marker = " " * (_LABEL_W + low - 1) + "^" * (high - low + 1)
+    prefix = _visible(line[: low - 1])
+    span = _visible(line[low - 1 : high])
+    marker = " " * (_LABEL_W + len(prefix)) + "^" * len(span)
     label = f"column {low}" if low == high else f"columns {low}-{high}"
     return f"{marker}  {label}"
 
@@ -85,7 +93,7 @@ def _example_block(bad_lines, good_lines, column_range):
     for i, line in enumerate(bad_lines):
         out.append(_row("bad" if i == 0 else "", line))
         if i == 0 and column_range is not None:
-            out.append(_caret(column_range))
+            out.append(_caret(line, column_range))
     for i, line in enumerate(good_lines):
         out.append(_row("good" if i == 0 else "", line))
     return out

@@ -1,13 +1,16 @@
 """Tests for lintle.cli — argument parsing, path discovery, exit codes."""
 
+import io
 import json
 import os
 import signal
+import sys
 
 import pytest
 
 from lintle import (
     cli,
+    explain,
     worker_pool,
 )
 
@@ -658,6 +661,19 @@ class TestExplainCommand:
         assert rc == 2
         assert "NOT-A-REAL-TAG" in err
         assert "TLE-CHK-001" in err  # the error lists valid tags
+
+    def test_explain_survives_non_utf8_stdout(self, monkeypatch):
+        # Every explain output carries non-ASCII characters (the U+00B7
+        # separator in headings, em-dashes in rule titles). On a non-UTF-8
+        # stdout (PYTHONIOENCODING=ascii, a C-locale session) a bare print
+        # crashes with UnicodeEncodeError — the explain branch must degrade
+        # gracefully, never abort. Exercised across every documented tag.
+        for tag in explain.known_tags():
+            buf = io.TextIOWrapper(io.BytesIO(), encoding="ascii", newline="")
+            monkeypatch.setattr(sys, "stdout", buf)
+            rc = cli.main(["explain", tag])
+            buf.flush()
+            assert rc == 0, tag
 
 
 class TestLockWiring:

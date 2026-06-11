@@ -6,6 +6,7 @@ import datetime
 import json
 import os
 import shutil
+import sys
 import time
 from pathlib import Path
 
@@ -291,6 +292,20 @@ def resolve_jobs(explicit, cpu_count, n_files):
     return max(1, min((cpu_count or 1) - 1, n_files))
 
 
+def _print_doc(text):
+    """Print read-only documentation to stdout, surviving a non-UTF-8 stdout.
+
+    The ``explain`` text carries non-ASCII characters (a ``·`` heading
+    separator, em-dashes from rule titles), so a bare ``print`` on an ASCII
+    stdout (``PYTHONIOENCODING=ascii``, a C-locale session) would crash with
+    ``UnicodeEncodeError``. Re-encoding through the stream's own encoding with
+    ``backslashreplace`` escapes only the un-representable characters, leaving
+    a fully-readable document on a capable terminal unchanged."""
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    safe = text.encode(encoding, errors="backslashreplace").decode(encoding)
+    print(safe)
+
+
 def _finalize_run(
     args,
     all_stats,
@@ -393,7 +408,7 @@ def main(argv=None):
     # listed so the operator can correct it.
     if args.command == "explain":
         try:
-            print(explain.render(args.tag))
+            _print_doc(explain.render(args.tag))
         except explain.UnknownTag:
             term.error(
                 f"unknown tag {args.tag!r}.\n"
