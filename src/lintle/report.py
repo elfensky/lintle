@@ -531,7 +531,11 @@ def format_run_report(
         lines.append("| File | Error |")
         lines.append("|------|-------|")
         for path, err in sorted(failed_files, key=lambda fe: os.path.basename(fe[0])):
-            lines.append(f"| {os.path.basename(path)} | {err} |")
+            # Escape ``|`` and collapse newlines so a path/error containing
+            # either can never break the Markdown table row.
+            name = os.path.basename(path).replace("|", r"\|")
+            msg = err.replace("\n", " ").replace("\r", " ").replace("|", r"\|")
+            lines.append(f"| {name} | {msg} |")
 
     lines.append("")
     return "\n".join(lines)
