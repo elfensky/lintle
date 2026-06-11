@@ -242,3 +242,57 @@ class TestFsyncFallback:
         fsutil.durable_replace(str(tmp), str(dest))
         assert dest.read_bytes() == b"durable content\n"
         assert not tmp.exists()
+
+
+class TestDurableWriteText:
+    """Issue #85 — durable_write_text pins LF newlines and deduplicates the
+    .partial / durable_replace boilerplate for bounded text-mode writers.
+    """
+
+    def test_writes_content_to_dest(self, tmp_path):
+        dest = tmp_path / "report.md"
+        fsutil.durable_write_text(str(dest), "hello\nworld\n")
+        assert dest.read_text(encoding="utf-8") == "hello\nworld\n"
+
+    def test_pins_lf_newlines_in_binary(self, tmp_path):
+        # The key contract: text with \n must reach disk as \n, never \r\n.
+        dest = tmp_path / "report.json"
+        fsutil.durable_write_text(str(dest), "line1\nline2\n")
+        raw = dest.read_bytes()
+        assert b"\n" in raw
+        assert b"\r\n" not in raw
+
+    def test_no_partial_left_behind(self, tmp_path):
+        dest = tmp_path / "out.md"
+        fsutil.durable_write_text(str(dest), "content\n")
+        leftovers = list(tmp_path.glob("*.partial"))
+        assert leftovers == []
+
+    def test_ascii_encoding_param(self, tmp_path):
+        dest = tmp_path / "broken-noradids.ndjson"
+        fsutil.durable_write_text(str(dest), '{"id":1}\n', encoding="ascii")
+        assert dest.read_bytes() == b'{"id":1}\n'
+
+    def test_overwrites_existing_dest(self, tmp_path):
+        dest = tmp_path / "report.md"
+        dest.write_bytes(b"stale content\n")
+        fsutil.durable_write_text(str(dest), "fresh content\n")
+        assert dest.read_text(encoding="utf-8") == "fresh content\n"
+
+    def test_routes_through_durable_replace(self, tmp_path, monkeypatch):
+        # Verify the commit is atomic: durable_replace is called, not a
+        # direct rename or copy (so power-loss durability is guaranteed).
+        calls = []
+        real_durable_replace = fsutil.durable_replace
+
+        def spy(tmp, dest):
+            calls.append((tmp, dest))
+            return real_durable_replace(tmp, dest)
+
+        monkeypatch.setattr(fsutil, "durable_replace", spy)
+        dest_path = str(tmp_path / "out.md")
+        fsutil.durable_write_text(dest_path, "hello\n")
+        assert len(calls) == 1
+        tmp_used, dest_used = calls[0]
+        assert tmp_used == dest_path + ".partial"
+        assert dest_used == dest_path

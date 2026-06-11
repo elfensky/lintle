@@ -339,6 +339,31 @@ class TestRunReport:
         assert text.startswith("# lintle clean run report")
         assert "Per-file breakdown" in text
 
+    def test_write_run_report_pins_lf_newlines(self, tmp_path):
+        # Issue #85: report.md must use LF (\n) only — never CRLF (\r\n) —
+        # so the artifact is byte-identical across platforms.
+        out = tmp_path / "report.md"
+        report.write_run_report(str(out), _two_file_stats())
+        raw = out.read_bytes()
+        assert b"\n" in raw
+        assert b"\r\n" not in raw
+
+    def test_write_run_json(self, tmp_path):
+        out = tmp_path / "report.json"
+        envelope = {"schema_version": "1", "files": []}
+        report.write_run_json(str(out), envelope)
+        text = out.read_text(encoding="utf-8")
+        assert json.loads(text) == envelope
+
+    def test_write_run_json_pins_lf_newlines(self, tmp_path):
+        # Issue #85: report.json must use LF (\n) only — byte-identical twin of
+        # the --report json stdout path (Critical Rule #2).
+        out = tmp_path / "report.json"
+        report.write_run_json(str(out), {"schema_version": "1", "files": []})
+        raw = out.read_bytes()
+        assert b"\n" in raw
+        assert b"\r\n" not in raw
+
 
 class TestFileSample:
     """The immutable per-file bounded sample (issue #19 refactor)."""

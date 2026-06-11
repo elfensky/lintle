@@ -561,10 +561,9 @@ def write_run_report(
     ``failed_files`` is forwarded to :func:`format_run_report` so the
     ``## Failures`` section appears when any input files could not be processed.
     """
-    tmp = path + ".partial"
-    with open(tmp, "w", encoding="utf-8") as handle:
-        handle.write(format_run_report(all_stats, failed_files=failed_files))
-    fsutil.durable_replace(tmp, path)
+    fsutil.durable_write_text(
+        path, format_run_report(all_stats, failed_files=failed_files)
+    )
 
 
 def write_run_json(path, envelope):
@@ -573,7 +572,4 @@ def write_run_json(path, envelope):
     Serialised byte-for-byte like the ``--report json`` stdout path: ``indent=2``,
     insertion order, a trailing newline, UTF-8 — so the persisted ``report.json``
     is a byte-identical twin of the stdout envelope (Critical Rules #1/#2)."""
-    tmp = path + ".partial"
-    with open(tmp, "w", encoding="utf-8") as handle:
-        handle.write(json.dumps(envelope, indent=2) + "\n")
-    fsutil.durable_replace(tmp, path)
+    fsutil.durable_write_text(path, json.dumps(envelope, indent=2) + "\n")
