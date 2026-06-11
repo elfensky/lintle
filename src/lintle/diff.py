@@ -58,11 +58,6 @@ def iter_findings(run_dir):
         raise DiffError(f"cannot read {path}: {exc}") from exc
 
 
-def iter_primary_rule_ids(run_dir):
-    """Yield the primary ``rule_id`` of every finding — the file-agnostic view
-    of :func:`iter_findings`, for corpus-level aggregation."""
-    for _file, rule_id in iter_findings(run_dir):
-        yield rule_id
 
 
 def _finding_from_line(path, lineno, line):
@@ -88,13 +83,6 @@ def _finding_from_line(path, lineno, line):
             f"{path}:{lineno}: finding has no string 'file' field (got {file!r})"
         )
     return file, rule_id
-
-
-def aggregate(run_dir):
-    """Return a :class:`collections.Counter` mapping primary ``rule_id`` →
-    number of findings in ``run_dir``. Counts the primary diagnostic only,
-    matching the producer's ``stats.quarantine_counts`` semantics."""
-    return collections.Counter(iter_primary_rule_ids(run_dir))
 
 
 def aggregate_by_file(run_dir):
