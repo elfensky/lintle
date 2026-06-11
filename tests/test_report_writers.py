@@ -992,6 +992,34 @@ class TestQuarantineSink:
         with pytest.raises(ValueError, match="src_name"):
             report_writers.QuarantineSink(cap=5, jsonl_path=jsonl_path)
 
+    # --- Issue #104 --- ExitStack safety in __enter__ ---
+
+    def test_jsonl_enter_failure_does_not_leak_broken_writer(
+        self, tmp_path, monkeypatch
+    ):
+        # If JsonlFindingsWriter.__enter__ raises after BrokenFileWriter
+        # has already been entered, the BrokenFileWriter's __exit__ must
+        # still run so the .body.partial is cleaned up.
+        broken_path = str(tmp_path / "x.broken.txt")
+        jsonl_path = str(tmp_path / "x.findings.jsonl")
+        body_partial = broken_path + ".body.partial"
+
+        def boom(self):
+            raise OSError("simulated jsonl open failure")
+
+        monkeypatch.setattr(report_writers.JsonlFindingsWriter, "__enter__", boom)
+
+        with pytest.raises(OSError, match="simulated jsonl open failure"):
+            sink = report_writers.QuarantineSink(
+                broken_path=broken_path, src_name="x.txt", jsonl_path=jsonl_path
+            )
+            sink.__enter__()
+
+        # BrokenFileWriter's __exit__ must have run — the body partial is gone.
+        import os
+
+        assert not os.path.exists(body_partial)
+
     def test_dropped_from_sample_still_in_jsonl(self, tmp_path):
         # Cap governs the in-memory sample, NOT the on-disk JSONL.
         # 10 entries with cap 3 -> sample has 3, JSONL has all 10.
