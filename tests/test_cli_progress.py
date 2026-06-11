@@ -336,3 +336,76 @@ class TestDrainThreadSurvivesTransientError:
         t.join(timeout=2.0)
         assert not t.is_alive(), "Thread hung — did not exit"
         assert not errors, f"_run propagated exception: {errors}"
+
+
+class TestBracketedFilenamesDoNotCrash:
+    """Issue #114 — filenames containing rich markup brackets must not raise
+    MarkupError in the progress display or the pre-run roster.
+
+    BRACKET_NAME uses ``[red]`` (an open tag) — no ``/`` so it is a valid
+    POSIX filename component. A closing-tag pattern is exercised via the
+    synthetic roster test (passing the name directly as a dict key, no real
+    file needed).
+    """
+
+    # Valid filename on POSIX — square brackets, no embedded slash.
+    BRACKET_NAME = "tle[red]1.txt"
+
+    def test_render_roster_with_bracketed_filename(self):
+        # render_roster does not read the file — it just displays the given
+        # path -> size map. The "file" column must not parse the name as rich
+        # markup, so [red] must appear literally, not as a style tag.
+        fake_path = "/data/source/" + self.BRACKET_NAME
+        console = Console(file=io.StringIO(), width=80)
+        # Must not raise rich.errors.MarkupError, and brackets must survive.
+        cli_progress.render_roster(console, {fake_path: 512})
+        out = console.file.getvalue()
+        assert "[red]" in out, f"brackets eaten by markup: {out!r}"
+
+    def test_render_roster_with_closing_tag_filename(self):
+        # Also exercise a closing-tag pattern via a synthetic path (no real
+        # file needed — render_roster only reads the passed dict).
+        # Path.name of a bare name (no directory separator) is the name itself.
+        fake_name = "tle[bold].txt"
+        console = Console(file=io.StringIO(), width=80)
+        cli_progress.render_roster(console, {fake_name: 512})
+        out = console.file.getvalue()
+        assert "[bold]" in out, f"brackets eaten by markup: {out!r}"
+
+    def test_add_task_with_bracketed_filename_does_not_crash(self):
+        # Drive ProgressDisplay through FileStarted with a bracket-laden name;
+        # neither add_task nor __exit__ (Progress.stop) should raise.
+        q = queue.Queue()
+        console = Console(file=io.StringIO(), force_terminal=True, width=100)
+        disp = cli_progress.ProgressDisplay(
+            total_files=1,
+            progress_queue=q,
+            console=console,
+            sizes={self.BRACKET_NAME: 512},
+        )
+        q.put(pipeline.FileStarted(self.BRACKET_NAME))
+        q.put(pipeline.FileProgress(self.BRACKET_NAME, 100, 3))
+        q.put(pipeline.FileEnded(self.BRACKET_NAME))
+        # __exit__ calls Progress.stop() on the main thread — that's the
+        # crash site when markup=True.
+        with disp:
+            disp._stop.set()
+            disp._thread.join()
+            disp._drain()
+
+    def test_bracketed_label_rendered_literally_in_live_mode(self):
+        # Verify the label text is not silently eaten as markup.
+        q = queue.Queue()
+        buf = io.StringIO()
+        console = Console(file=buf, force_terminal=True, width=100)
+        disp = cli_progress.ProgressDisplay(
+            total_files=1,
+            progress_queue=q,
+            console=console,
+            sizes={self.BRACKET_NAME: 512},
+        )
+        q.put(pipeline.FileStarted(self.BRACKET_NAME))
+        with disp:
+            disp._stop.set()
+            disp._thread.join()
+            disp._drain()

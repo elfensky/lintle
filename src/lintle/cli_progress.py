@@ -100,7 +100,7 @@ class ProgressDisplay:
     def __enter__(self):
         if self._live:
             self._progress = Progress(
-                TextColumn("{task.fields[label]}"),
+                TextColumn("{task.fields[label]}", markup=False),
                 BarColumn(bar_width=None),
                 TaskProgressColumn(),
                 # Overall row: files done / total. Per-file rows: byte
@@ -108,7 +108,7 @@ class ProgressDisplay:
                 _ForKind("overall", MofNCompleteColumn()),
                 _ForKind("file", TransferSpeedColumn()),
                 _ForKind("file", TimeRemainingColumn(compact=True)),
-                TextColumn("{task.fields[detail]}"),
+                TextColumn("{task.fields[detail]}", markup=False),
                 console=self._console,
                 transient=True,
             )
@@ -239,7 +239,7 @@ def render_roster(console, file_sizes):
     total = 0
     for index, (path, size) in enumerate(file_sizes.items(), start=1):
         total += size
-        table.add_row(str(index), Path(path).name, _format_size(size))
+        table.add_row(str(index), Text(Path(path).name), _format_size(size))
     table.add_section()
     table.add_row("", "total", _format_size(total))
     console.print(table)
