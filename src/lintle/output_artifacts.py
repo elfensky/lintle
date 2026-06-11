@@ -3,7 +3,7 @@
 import dataclasses
 from pathlib import Path
 
-from lintle import cli_progress, report, report_writers
+from lintle import cli_progress, report, report_writers, term
 
 
 @dataclasses.dataclass(frozen=True)
@@ -35,7 +35,17 @@ def write_clean_artifacts(out_dir, all_stats, envelope, failed_files=None):
         noradids_path = str(out / "broken-noradids.ndjson")
         report_writers.write_broken_noradids_ndjson(noradids_path, all_stats)
         findings_path = str(out / "report.jsonl")
-        report_writers.concat_findings_shards(out_dir, findings_path, all_stats)
+        missing = report_writers.concat_findings_shards(
+            out_dir, findings_path, all_stats
+        )
+    # Warn about any shard that was missing but had quarantined records — the
+    # gap is surfaced here (stderr ephemera) rather than inside concat_findings_shards
+    # so the function stays return-value-only and cycle-free (issue #117).
+    for src_name in missing:
+        term.warning(
+            f"findings shard missing for {src_name!r}: its quarantine records are "
+            "absent from report.jsonl — re-run with --resume to regenerate it."
+        )
     return CleanArtifacts(
         report_path=report_path,
         report_json_path=report_json_path,

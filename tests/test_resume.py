@@ -5,7 +5,17 @@ import os
 import pytest
 
 import lintle
-from lintle import resume, stem
+from lintle import (
+    BROKEN_DIRNAME,
+    BROKEN_SUFFIX,
+    CLEANED_DIRNAME,
+    CLEANED_SUFFIX,
+    FINDINGS_SUFFIX,
+    SHARDS_DIRNAME,
+    resume,
+    stem,
+)
+from lintle.report import FileStats
 
 
 def _write(path, data: bytes):
@@ -487,3 +497,143 @@ class TestArchiveCheckpoint:
 
     def test_noop_when_absent(self, tmp_path):
         assert resume.archive_checkpoint(str(tmp_path), timestamp="x") is None
+
+    def test_prunes_old_stale_archives_keeping_newest_3(self, tmp_path):
+        # Create 5 stale archives with sortable timestamps — only the newest 3
+        # should survive after the next archive_checkpoint call.
+        prefix = resume.CHECKPOINT_NAME + ".stale-"
+        timestamps = [
+            "20260101T000000Z",
+            "20260102T000000Z",
+            "20260103T000000Z",
+            "20260104T000000Z",
+            "20260105T000000Z",
+        ]
+        for ts in timestamps:
+            (tmp_path / f"{prefix}{ts}").write_text("{}")
+        # Write a fresh checkpoint and archive it — the call triggers pruning.
+        ck = resume.build_checkpoint(inputs={}, completed={}, run_identity={})
+        resume.write_checkpoint(str(tmp_path), ck)
+        resume.archive_checkpoint(str(tmp_path), timestamp="20260106T000000Z")
+        # After archiving there are 6 total; pruning must leave only the 3 newest.
+        remaining = sorted(
+            p.name for p in tmp_path.iterdir() if p.name.startswith(prefix)
+        )
+        assert len(remaining) == 3
+        assert remaining == [
+            f"{prefix}20260104T000000Z",
+            f"{prefix}20260105T000000Z",
+            f"{prefix}20260106T000000Z",
+        ]
+
+    def test_prunes_nothing_when_three_or_fewer(self, tmp_path):
+        # Fewer than _STALE_ARCHIVE_KEEP archives — nothing removed.
+        prefix = resume.CHECKPOINT_NAME + ".stale-"
+        for ts in ("20260101T000000Z", "20260102T000000Z"):
+            (tmp_path / f"{prefix}{ts}").write_text("{}")
+        ck = resume.build_checkpoint(inputs={}, completed={}, run_identity={})
+        resume.write_checkpoint(str(tmp_path), ck)
+        resume.archive_checkpoint(str(tmp_path), timestamp="20260103T000000Z")
+        remaining = [p.name for p in tmp_path.iterdir() if p.name.startswith(prefix)]
+        assert len(remaining) == 3  # all three survive
+
+
+# ---------------------------------------------------------------------------
+# Issue #101 — output_sizes unconditional sidecar + shard recording
+# ---------------------------------------------------------------------------
+
+
+class TestOutputSizes:
+    """output_sizes must record the broken sidecar unconditionally (issue #101a)
+    and the findings shard (issue #117 / #101b), regardless of quarantine count."""
+
+    def _make_stats(self, src_name, quarantined_count=0):
+        return FileStats(src_name=src_name, quarantined_count=quarantined_count)
+
+    def _write(self, path, data=b"content"):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+
+    def test_records_cleaned_file(self, tmp_path):
+        st = self._make_stats("tle2099.txt")
+        cleaned = tmp_path / CLEANED_DIRNAME / ("tle2099" + CLEANED_SUFFIX)
+        self._write(cleaned, b"x" * 200)
+        sizes = resume.output_sizes(str(tmp_path), st)
+        assert "tle2099" + CLEANED_SUFFIX in sizes
+        assert sizes["tle2099" + CLEANED_SUFFIX] == 200
+
+    def test_records_broken_sidecar_even_with_zero_quarantines(self, tmp_path):
+        # Issue #101a: sidecar always written (header-only when nothing is
+        # quarantined), so it must always be recorded — not gated on quarantined_count.
+        st = self._make_stats("tle2099.txt", quarantined_count=0)
+        broken = tmp_path / BROKEN_DIRNAME / ("tle2099" + BROKEN_SUFFIX)
+        self._write(broken, b"# header\n")
+        sizes = resume.output_sizes(str(tmp_path), st)
+        assert "tle2099" + BROKEN_SUFFIX in sizes
+
+    def test_records_findings_shard(self, tmp_path):
+        # Issue #117: the shard must be recorded so a missing shard on resume
+        # triggers reprocessing rather than a silent gap in report.jsonl.
+        st = self._make_stats("tle2099.txt")
+        shard = tmp_path / SHARDS_DIRNAME / ("tle2099" + FINDINGS_SUFFIX)
+        self._write(shard, b'{"outcome":"quarantined"}\n')
+        sizes = resume.output_sizes(str(tmp_path), st)
+        assert "tle2099" + FINDINGS_SUFFIX in sizes
+        assert sizes["tle2099" + FINDINGS_SUFFIX] == len(b'{"outcome":"quarantined"}\n')
+
+    def test_absent_outputs_not_recorded(self, tmp_path):
+        # When a file does not exist (e.g. validate mode) it is simply absent
+        # from the sizes dict — no KeyError, no OSError.
+        st = self._make_stats("tle2099.txt")
+        sizes = resume.output_sizes(str(tmp_path), st)
+        assert "tle2099" + CLEANED_SUFFIX not in sizes
+        assert "tle2099" + BROKEN_SUFFIX not in sizes
+        assert "tle2099" + FINDINGS_SUFFIX not in sizes
+
+
+class TestVerifyCompletedOutputsWithShard:
+    """verify_completed_outputs must flag reprocessing when the shard is missing
+    or truncated (issue #117)."""
+
+    def _completed_with_shard(self, src_name, cleaned_size, shard_size):
+        file_stem = stem(src_name)
+        return {
+            src_name: {
+                "summary": {"src_name": src_name},
+                "outputs": {
+                    file_stem + CLEANED_SUFFIX: cleaned_size,
+                    file_stem + FINDINGS_SUFFIX: shard_size,
+                },
+            }
+        }
+
+    def test_intact_shard_not_flagged(self, tmp_path):
+        (tmp_path / CLEANED_DIRNAME).mkdir()
+        (tmp_path / CLEANED_DIRNAME / "tle2099.cleaned.txt").write_bytes(b"x" * 100)
+        (tmp_path / SHARDS_DIRNAME).mkdir()
+        (tmp_path / SHARDS_DIRNAME / "tle2099.findings.jsonl").write_bytes(b"y" * 50)
+        assert (
+            resume.verify_completed_outputs(
+                self._completed_with_shard("tle2099.txt", 100, 50), str(tmp_path)
+            )
+            == []
+        )
+
+    def test_missing_shard_flags_reprocess(self, tmp_path):
+        # Shard deleted out-of-band → file should be reprocessed.
+        (tmp_path / CLEANED_DIRNAME).mkdir()
+        (tmp_path / CLEANED_DIRNAME / "tle2099.cleaned.txt").write_bytes(b"x" * 100)
+        # No shard directory / shard file created.
+        assert resume.verify_completed_outputs(
+            self._completed_with_shard("tle2099.txt", 100, 50), str(tmp_path)
+        ) == ["tle2099.txt"]
+
+    def test_truncated_shard_flags_reprocess(self, tmp_path):
+        (tmp_path / CLEANED_DIRNAME).mkdir()
+        (tmp_path / CLEANED_DIRNAME / "tle2099.cleaned.txt").write_bytes(b"x" * 100)
+        (tmp_path / SHARDS_DIRNAME).mkdir()
+        # Write only 10 bytes, but checkpoint says 50.
+        (tmp_path / SHARDS_DIRNAME / "tle2099.findings.jsonl").write_bytes(b"y" * 10)
+        assert resume.verify_completed_outputs(
+            self._completed_with_shard("tle2099.txt", 100, 50), str(tmp_path)
+        ) == ["tle2099.txt"]

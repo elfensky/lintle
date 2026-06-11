@@ -34,15 +34,7 @@ def _simulate_interrupted_clean(
     completed = {}
     for path in src_paths[:completed_count]:
         stats = pipeline.process_file(path, out_dir, "clean")
-        cleaned_name = os.path.splitext(os.path.basename(path))[0] + ".cleaned.txt"
-        sizes = {}
-        cleaned_path = os.path.join(out_dir, "cleaned", cleaned_name)
-        if os.path.exists(cleaned_path):
-            sizes[cleaned_name] = os.path.getsize(cleaned_path)
-        broken_name = os.path.splitext(os.path.basename(path))[0] + ".broken.txt"
-        broken_path = os.path.join(out_dir, "broken", broken_name)
-        if os.path.exists(broken_path):
-            sizes[broken_name] = os.path.getsize(broken_path)
+        sizes = resume.output_sizes(out_dir, stats)
         completed[path] = {"summary": report.summary_dict(stats), "outputs": sizes}
     resume.write_checkpoint(
         out_dir,

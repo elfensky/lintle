@@ -82,7 +82,7 @@ diagnostics.py, categories.py, explain_examples.py    pure-data leaves (no I/O)
 | `report_aggregation.py` | Pure corpus aggregation helpers for run totals and per-NORAD rollups consumed by `report.py`. |
 | `report_writers.py` | Structured-file writers leaf: the `.broken.txt` sidecar (`BrokenFileWriter`), the `report.jsonl` findings shards (`JsonlFindingsWriter`), the `QuarantineSink` (bounded sample + streaming), `broken-noradids.ndjson`, and shard concatenation. Imports `report.py` one-way. |
 | `output_artifacts.py` | End-of-clean-run finalization for `report.md`, the machine-readable `report.json`, `broken-noradids.ndjson`, and corpus-wide `report.jsonl` — all committed in one place. |
-| `resume.py` | The single-run `.clean-state.json` checkpoint for `clean --resume`: input fingerprinting, checkpoint build/load, the resume-decision matrix, the run-start timestamp, and per-file output-size capture. |
+| `resume.py` | The single-run `.clean-state.json` checkpoint for `clean --resume`: input fingerprinting, checkpoint build/load, the resume-decision matrix, the run-start timestamp, and per-file output-size capture. Imports only `__version__`, `fsutil`, and `stem`/naming-constants from `lintle.__init__` — deliberately minimal to avoid cycles. |
 | `run_planning.py` | Clean-run preflight: disk-space policy, resume classification, fresh-run output scrubbing, and the resolved `RunPlan`. |
 | `worker_pool.py` | Process-pool dispatch, progress collection, per-file failure handling, checkpoint updates, and interrupt shutdown. |
 | `fsutil.py` | `durable_replace` (the one atomic+fsync commit path) and `out_dir_lock` (the host-aware out-dir lock). Stdlib only. |
@@ -100,6 +100,12 @@ diagnostics.py, categories.py, explain_examples.py    pure-data leaves (no I/O)
 
 `tle.py` and the data leaves carry no I/O. `report_writers.py` depends on `report.py` (never
 the reverse), so the structured writers and the renderers stay acyclic.
+
+**Output-naming constants.** `CLEANED_SUFFIX`, `BROKEN_SUFFIX`, `FINDINGS_SUFFIX`,
+`CLEANED_DIRNAME`, `BROKEN_DIRNAME`, and `SHARDS_DIRNAME` live in `lintle/__init__.py` —
+the single source of truth for the naming convention. `pipeline._clean_output_paths`,
+`resume.output_sizes`, `cli.discover_paths`, and `report_writers.concat_findings_shards`
+all import them from there rather than re-encoding the convention.
 
 ---
 
@@ -498,6 +504,10 @@ shape:
 - **`completed`** maps each fully-processed input to `{summary, outputs}`, where `outputs`
   records each output basename's on-disk size at completion — backing an integrity
   re-verification on resume (a SIGKILL/disk-full truncation that bare existence wouldn't catch).
+  Recorded unconditionally: the cleaned file (`tleYYYY.cleaned.txt`), the broken sidecar
+  (`tleYYYY.broken.txt` — header-only when nothing was quarantined, but always written), and the
+  findings shard (`.shards/tleYYYY.findings.jsonl`). A missing or truncated shard detected on
+  resume triggers full reprocessing of that file so `report.jsonl` stays complete (issue #117).
 - **`run_identity`** pins output-affecting configuration (today: `max_quarantined`) so a
   changed run cannot validate-through a checkpoint.
 
@@ -518,6 +528,9 @@ A fresh run **archives** any existing checkpoint to `.clean-state.json.stale-<ti
 and the four report artifacts (`report.md`, `report.json`, `report.jsonl`,
 `broken-noradids.ndjson`) so no orphans from a differently-scoped prior run linger and no stale
 report is left for `lintle report` to render if the fresh run is itself interrupted (issue #102).
+After archiving, `archive_checkpoint` prunes older stale archives keeping only the newest 3
+(`_STALE_ARCHIVE_KEEP`); the ISO-8601 timestamp suffix is lexicographically sortable so `sorted()`
+orders them chronologically (issue #105).
 
 **Preflight ordering.** `resolve_clean_plan` executes in this order: build `inputs` +
 `run_identity` → classify checkpoint → resolve resume action → branch:
