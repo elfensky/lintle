@@ -152,12 +152,19 @@ class ProgressDisplay:
         target.print(f"[{done}/{self._total_files}] {summary}", markup=False)
 
     def _run(self):
-        # The display is cosmetic: a broken queue (its manager gone at
-        # shutdown) must never crash this thread with a traceback.
-        with contextlib.suppress(Exception):
-            while not self._stop.is_set():
+        # The display is cosmetic: render errors must never kill this thread
+        # permanently (the queue would grow unbounded). Per-iteration errors
+        # are caught and skipped so draining continues; genuine shutdown
+        # errors (manager gone) break the loop cleanly.
+        while not self._stop.is_set():
+            try:
                 self._drain()
-                self._stop.wait(self._REFRESH)
+            except EOFError, BrokenPipeError, ConnectionResetError, OSError:
+                break
+            except Exception:  # transient render glitch — keep draining
+                pass
+            self._stop.wait(self._REFRESH)
+        with contextlib.suppress(Exception):
             self._drain()
 
     def _drain(self):
