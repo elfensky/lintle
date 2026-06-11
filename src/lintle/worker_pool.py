@@ -1,4 +1,4 @@
-"""Process-pool dispatch for validate and clean runs.
+"""Process-pool dispatch for clean runs.
 
 ``run_workers`` returns a 5-tuple:
 ``(all_stats, failed_files, interrupted, interrupted_signo, operational_error)``.
@@ -79,19 +79,18 @@ def run_workers(args, files, plan, jobs, console, sizes):
                         try:
                             all_stats.append(stats)
                             progress.file_done(stats)
-                            if args.command == "clean":
-                                plan.completed[path] = {
-                                    "summary": report.summary_dict(stats),
-                                    "outputs": resume.output_sizes(args.out_dir, stats),
-                                }
-                                resume.write_checkpoint(
-                                    args.out_dir,
-                                    resume.build_checkpoint(
-                                        inputs=plan.inputs,
-                                        completed=plan.completed,
-                                        run_identity=plan.run_identity,
-                                    ),
-                                )
+                            plan.completed[path] = {
+                                "summary": report.summary_dict(stats),
+                                "outputs": resume.output_sizes(args.out_dir, stats),
+                            }
+                            resume.write_checkpoint(
+                                args.out_dir,
+                                resume.build_checkpoint(
+                                    inputs=plan.inputs,
+                                    completed=plan.completed,
+                                    run_identity=plan.run_identity,
+                                ),
+                            )
                         except Exception as exc:
                             # Parent-side bookkeeping failure: tear the pool
                             # down via the KI path; mark as an operational
