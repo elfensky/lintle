@@ -82,7 +82,12 @@ def _finding_from_line(path, lineno, line):
     rule_id = record.get("rule_id")
     if rule_id is None:
         raise DiffError(f"{path}:{lineno}: finding has no rule_id")
-    return record.get("file"), rule_id
+    file = record.get("file")
+    if not isinstance(file, str):
+        raise DiffError(
+            f"{path}:{lineno}: finding has no string 'file' field (got {file!r})"
+        )
+    return file, rule_id
 
 
 def aggregate(run_dir):

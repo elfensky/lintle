@@ -412,6 +412,68 @@ class TestDiffSemanticAlignment:
         assert diff.aggregate(str(run)) == producer_counts
 
 
+class TestFindingFileValidation:
+    """Issue #96: a finding with a missing or non-string ``file`` key must raise
+    DiffError (not let None through to sorting, which triggers TypeError)."""
+
+    def _write_jsonl(self, run_dir, payload):
+        run_dir.mkdir(parents=True, exist_ok=True)
+        (run_dir / "report.jsonl").write_text(
+            __import__("json").dumps(payload) + "\n", encoding="utf-8"
+        )
+
+    def test_missing_file_raises_diff_error(self, tmp_path):
+        from lintle import report_writers
+        payload = report_writers.entry_to_jsonl_dict(
+            _entry(RuleID.CHECKSUM_MISMATCH), file="tle.txt", norad_id=25544
+        )
+        del payload["file"]
+        run = tmp_path / "run"
+        self._write_jsonl(run, payload)
+        with pytest.raises(diff.DiffError, match="file"):
+            list(diff.iter_findings(str(run)))
+
+    def test_null_file_raises_diff_error(self, tmp_path):
+        from lintle import report_writers
+        payload = report_writers.entry_to_jsonl_dict(
+            _entry(RuleID.CHECKSUM_MISMATCH), file="tle.txt", norad_id=25544
+        )
+        payload["file"] = None
+        run = tmp_path / "run"
+        self._write_jsonl(run, payload)
+        with pytest.raises(diff.DiffError, match="file"):
+            list(diff.iter_findings(str(run)))
+
+    def test_non_string_file_raises_diff_error(self, tmp_path):
+        from lintle import report_writers
+        payload = report_writers.entry_to_jsonl_dict(
+            _entry(RuleID.CHECKSUM_MISMATCH), file="tle.txt", norad_id=25544
+        )
+        payload["file"] = 42
+        run = tmp_path / "run"
+        self._write_jsonl(run, payload)
+        with pytest.raises(diff.DiffError, match="file"):
+            list(diff.iter_findings(str(run)))
+
+    def test_lintle_diff_with_missing_file_exits_2(self, tmp_path, capsys):
+        # End-to-end: lintle diff returns 2 with a clear message, not TypeError.
+        from lintle import report_writers
+        run_a = _write_run(tmp_path / "a", [_entry(RuleID.CHECKSUM_MISMATCH)])
+        run_b = tmp_path / "b"
+        run_b.mkdir()
+        payload = report_writers.entry_to_jsonl_dict(
+            _entry(RuleID.CHECKSUM_MISMATCH), file="tle.txt", norad_id=25544
+        )
+        del payload["file"]
+        (run_b / "report.jsonl").write_text(
+            __import__("json").dumps(payload) + "\n", encoding="utf-8"
+        )
+        code = cli.main(["diff", str(run_a), str(run_b)])
+        err = capsys.readouterr().err
+        assert code == 2
+        assert "error:" in err
+
+
 class TestIterFindings:
     """``iter_findings`` is the core reader — it yields ``(file, rule_id)`` for
     every finding, the unit per-file aggregation needs."""
