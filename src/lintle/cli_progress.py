@@ -1,7 +1,7 @@
-"""Live terminal presentation for a ``clean``/``validate`` run: the pre-run file
-roster, a transient status spinner, and the multi-file progress display that
-consumes the worker progress protocol. ``rich``-only rendering, split out of
-``cli`` so the composition root keeps a single responsibility (issue #53)."""
+"""Live terminal presentation for a ``clean`` run: the pre-run file roster, a
+transient status spinner, and the multi-file progress display that consumes the
+worker progress protocol. ``rich``-only rendering, split out of ``cli`` so the
+composition root keeps a single responsibility (issue #53)."""
 
 import contextlib
 import queue

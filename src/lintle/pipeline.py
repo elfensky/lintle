@@ -4,6 +4,7 @@ import contextlib
 import dataclasses
 import time
 from pathlib import Path
+from typing import Literal
 
 from lintle import (
     BROKEN_DIRNAME,
@@ -282,7 +283,7 @@ def iter_records(path, stats=None):
 def process_file(
     src_path,
     out_dir,
-    mode,
+    mode: Literal["clean", "validate"],
     progress_queue=None,
     progress_every=25_000,
     *,
@@ -290,11 +291,13 @@ def process_file(
 ):
     """Process one source file and return its ``report.FileStats``.
 
-    ``mode`` is ``"validate"`` (audit only — writes nothing) or ``"clean"``
-    (also writes ``cleaned/<name>.cleaned.txt`` and
-    ``broken/<name>.broken.txt`` under ``out_dir``). The cleaned file is
-    written to a temp file and atomically renamed, so an interrupted run
-    never leaves a half-written output.
+    ``mode`` is ``"clean"`` (writes ``cleaned/<name>.cleaned.txt`` and
+    ``broken/<name>.broken.txt`` under ``out_dir``) or ``"validate"`` (audit
+    only — writes nothing). The production caller (``worker_pool.run_workers``)
+    always passes ``"clean"``; ``"validate"`` is a test/internal audit surface
+    (e.g. ``test_integration`` re-validates cleaned output without writing).
+    The cleaned file is written to a temp file and atomically renamed, so an
+    interrupted run never leaves a half-written output.
 
     When ``progress_queue`` is given, a :class:`FileProgress` delta is pushed
     every ``progress_every`` records — and once more when the file ends — so the
