@@ -7,7 +7,7 @@ import json
 import shutil
 from pathlib import Path
 
-from lintle import __version__, fsutil, stem
+from lintle import FINDINGS_SUFFIX, SHARDS_DIRNAME, __version__, fsutil, stem
 from lintle.diagnostics import Diagnostic
 from lintle.report import (
     PER_RULE_EXEMPLAR_BOUND,
@@ -397,7 +397,7 @@ def write_broken_noradids_ndjson(path: str, all_stats: list[FileStats]) -> None:
 
 def concat_findings_shards(
     out_dir: str, dest_path: str, all_stats: list[FileStats]
-) -> None:
+) -> list[str]:
     """Concatenate per-file findings shards into the corpus ``report.jsonl``.
 
     Per-worker shards live in ``<out_dir>/.shards/<stem>.findings.jsonl``,
@@ -406,10 +406,14 @@ def concat_findings_shards(
     call) so the concatenated order is alphabetical by source filename —
     deterministic and matching ``report.md``'s per-file table. The
     destination is written via tmp + :func:`fsutil.durable_replace` for
-    atomicity and power-loss durability (issue #58). Always
-    creates the destination even when every shard is empty or missing,
-    matching ``broken-noradids.ndjson``'s "artifact always present after
-    successful clean" contract. Spec §4.6.
+    atomicity and power-loss durability (issue #58). Always creates the
+    destination even when every shard is empty or missing, matching
+    ``broken-noradids.ndjson``'s "artifact always present after successful
+    clean" contract. Spec §4.6.
+
+    Returns the list of source filenames (``stats.src_name``) whose shard was
+    missing but had a non-zero ``quarantined_count`` — a gap the caller should
+    surface as a warning (issue #117). An empty list means no gap.
 
     This function only **reads** the shards — it does not remove ``.shards``.
     Shard cleanup is the caller's responsibility, tied to the resume-checkpoint
@@ -418,15 +422,21 @@ def concat_findings_shards(
     successful run, so an interrupted or failed run keeps its shards and a
     later ``--resume`` can re-read them to rebuild a complete ``report.jsonl``.
     """
-    shard_dir = Path(out_dir) / ".shards"
+    shard_dir = Path(out_dir) / SHARDS_DIRNAME
     tmp_path = dest_path + ".partial"
+    missing_nonempty: list[str] = []
     with open(tmp_path, "wb") as out:
         for stats in all_stats:
-            shard = shard_dir / (stem(stats.src_name) + ".findings.jsonl")
+            shard = shard_dir / (stem(stats.src_name) + FINDINGS_SUFFIX)
             if not shard.exists():
                 # Worker crashed before finalize, validate-mode worker, or
-                # an out-of-band cleanup removed it — skip silently.
+                # an out-of-band cleanup removed it. When the file had
+                # quarantined records the gap is noteworthy — report it so the
+                # caller can warn; otherwise it is silent (issue #117).
+                if stats.quarantined_count:
+                    missing_nonempty.append(stats.src_name)
                 continue
             with open(shard, "rb") as src:
                 shutil.copyfileobj(src, out, length=65536)
     fsutil.durable_replace(tmp_path, dest_path)
+    return missing_nonempty

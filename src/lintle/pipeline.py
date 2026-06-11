@@ -5,7 +5,20 @@ import dataclasses
 import time
 from pathlib import Path
 
-from lintle import fsutil, repair, report, report_writers, stem, tle
+from lintle import (
+    BROKEN_DIRNAME,
+    BROKEN_SUFFIX,
+    CLEANED_DIRNAME,
+    CLEANED_SUFFIX,
+    FINDINGS_SUFFIX,
+    SHARDS_DIRNAME,
+    fsutil,
+    repair,
+    report,
+    report_writers,
+    stem,
+    tle,
+)
 from lintle.diagnostics import Diagnostic, RuleID, diagnostic
 
 
@@ -341,18 +354,19 @@ def _clean_output_paths(out_dir, src_name):
     """Create the cleaned/, broken/, and .shards/ trees under ``out_dir`` and
     return the three per-file output paths. The ``.shards`` findings shard is
     internal staging the cli concatenates into ``report.jsonl`` at end of run
-    and then removes (issue #9, spec §4.6)."""
+    and then removes (issue #9, spec §4.6). Suffix/dirname constants live in
+    ``lintle.__init__`` — the single naming-convention authority."""
     out = Path(out_dir)
-    cleaned_dir = out / "cleaned"
+    cleaned_dir = out / CLEANED_DIRNAME
     cleaned_dir.mkdir(parents=True, exist_ok=True)
-    broken_dir = out / "broken"
+    broken_dir = out / BROKEN_DIRNAME
     broken_dir.mkdir(parents=True, exist_ok=True)
-    shard_dir = out / ".shards"
+    shard_dir = out / SHARDS_DIRNAME
     shard_dir.mkdir(parents=True, exist_ok=True)
     return _CleanPaths(
-        cleaned=str(cleaned_dir / (stem(src_name) + ".cleaned.txt")),
-        broken=str(broken_dir / (stem(src_name) + ".broken.txt")),
-        jsonl=str(shard_dir / (stem(src_name) + ".findings.jsonl")),
+        cleaned=str(cleaned_dir / (stem(src_name) + CLEANED_SUFFIX)),
+        broken=str(broken_dir / (stem(src_name) + BROKEN_SUFFIX)),
+        jsonl=str(shard_dir / (stem(src_name) + FINDINGS_SUFFIX)),
     )
 
 

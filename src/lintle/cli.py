@@ -11,6 +11,8 @@ import time
 from pathlib import Path
 
 from lintle import (
+    BROKEN_SUFFIX,
+    CLEANED_SUFFIX,
     __version__,
     cli_progress,
     diff,
@@ -69,8 +71,8 @@ def discover_paths(path):
             if (
                 name.startswith("tle")
                 and name.endswith(".txt")
-                and not name.endswith(".cleaned.txt")
-                and not name.endswith(".broken.txt")
+                and not name.endswith(CLEANED_SUFFIX)
+                and not name.endswith(BROKEN_SUFFIX)
                 and (directory / name).is_file()  # excludes dangling symlinks + dirs
             )
         ]

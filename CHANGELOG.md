@@ -6,6 +6,34 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Fixed
+
+- **`#101a` — broken sidecar excluded from resume integrity check when no records quarantined.**
+  `resume.output_sizes` previously recorded the `.broken.txt` sidecar only when
+  `stats.quarantined_count > 0`, but `pipeline` always writes a header-only sidecar even
+  for a clean file. A file whose sidecar was deleted or truncated would not be detected
+  on resume. The sidecar is now recorded unconditionally.
+- **`#101b` — output naming convention duplicated across modules.** Suffix and dirname
+  strings (`.cleaned.txt`, `.broken.txt`, `.findings.jsonl`, `cleaned`, `broken`, `.shards`)
+  were re-encoded independently in `pipeline._clean_output_paths`, `resume.output_sizes`,
+  `cli.discover_paths`, and `report_writers.concat_findings_shards`. They now live as
+  module-level constants (`CLEANED_SUFFIX`, `BROKEN_SUFFIX`, `FINDINGS_SUFFIX`,
+  `CLEANED_DIRNAME`, `BROKEN_DIRNAME`, `SHARDS_DIRNAME`) in `lintle/__init__.py` — the
+  single source of truth — and all consumers import from there.
+- **`#117` — `concat_findings_shards` silently skipped a missing shard, causing `report.jsonl`
+  to underreport vs `report.json` on resume.** On a resumed run, completed files' stats come
+  from the checkpoint (not reprocessed), so their findings shards are not regenerated. If a
+  shard was deleted out-of-band, `report.jsonl` would omit those findings while `report.json`
+  counted them — a silent disagreement. Fixed with two defenses: (1) the findings shard is now
+  recorded in `resume.output_sizes`, so a missing or truncated shard on resume triggers
+  reprocessing — regenerating the shard and keeping `report.jsonl` complete; (2)
+  `concat_findings_shards` now returns the list of source filenames whose shard was missing but
+  had quarantined records so the caller (`output_artifacts`) can surface a `warning:` on stderr.
+- **`#105` — stale-checkpoint archives accumulated unboundedly.** `archive_checkpoint` now
+  prunes older archives after creating a new one, keeping only the newest 3
+  (`_STALE_ARCHIVE_KEEP`). The ISO-8601 timestamp suffix is lexicographically sortable so the
+  oldest entries are reliably identified and removed.
+
 ### Added
 
 - Failed input files are now recorded in the run envelope (issue #83). When a worker

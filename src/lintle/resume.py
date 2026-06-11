@@ -18,7 +18,17 @@ import json
 import os
 from pathlib import Path
 
-from lintle import __version__, fsutil, stem
+from lintle import (
+    BROKEN_DIRNAME,
+    BROKEN_SUFFIX,
+    CLEANED_DIRNAME,
+    CLEANED_SUFFIX,
+    FINDINGS_SUFFIX,
+    SHARDS_DIRNAME,
+    __version__,
+    fsutil,
+    stem,
+)
 
 CHECKPOINT_NAME = ".clean-state.json"
 SCHEMA_VERSION = 3
@@ -66,17 +76,26 @@ def run_started_stamp():
 
 def output_sizes(out_dir, stats):
     """Map each output basename this file produced to its on-disk size, captured
-    at completion for the resume integrity check (spec §3.6). The broken sidecar
-    is present only when something was quarantined."""
+    at completion for the resume integrity check (spec §3.6). Clean mode always
+    writes both a cleaned file and a broken sidecar (even when no records are
+    quarantined, ``pipeline`` unconditionally finalizes the sidecar to a
+    header-only file), so both are recorded unconditionally. The findings shard
+    in ``.shards/`` is also recorded so a missing-or-truncated shard detected on
+    resume forces reprocessing — regenerating the shard and keeping ``report.jsonl``
+    complete (issue #117). Suffix/dirname constants are imported from
+    ``lintle.__init__`` — the single naming-convention authority."""
     sizes = {}
     out = Path(out_dir)
-    cleaned = stem(stats.src_name) + ".cleaned.txt"
+    file_stem = stem(stats.src_name)
+    cleaned = file_stem + CLEANED_SUFFIX
     with contextlib.suppress(OSError):
-        sizes[cleaned] = (out / "cleaned" / cleaned).stat().st_size
-    if stats.quarantined_count:
-        broken = stem(stats.src_name) + ".broken.txt"
-        with contextlib.suppress(OSError):
-            sizes[broken] = (out / "broken" / broken).stat().st_size
+        sizes[cleaned] = (out / CLEANED_DIRNAME / cleaned).stat().st_size
+    broken = file_stem + BROKEN_SUFFIX
+    with contextlib.suppress(OSError):
+        sizes[broken] = (out / BROKEN_DIRNAME / broken).stat().st_size
+    shard = file_stem + FINDINGS_SUFFIX
+    with contextlib.suppress(OSError):
+        sizes[shard] = (out / SHARDS_DIRNAME / shard).stat().st_size
     return sizes
 
 
@@ -172,17 +191,31 @@ def classify_checkpoint(out_dir, current_inputs, current_run_identity):
     return Classification(CheckpointStatus.VALID, checkpoint=checkpoint)
 
 
+_STALE_ARCHIVE_KEEP = 3  # how many stale-checkpoint archives to retain
+
+
 def archive_checkpoint(out_dir, *, timestamp):
     """Rename the checkpoint to ``.clean-state.json.stale-<timestamp>`` so a fresh
     run never silently destroys a recoverable interrupted run (spec §2.3): the
     operator can downgrade/revert and recover it. Returns the archived basename,
     or None if there was no checkpoint. ``timestamp`` is supplied by the caller
-    (clock access is forbidden in pure helpers)."""
+    (clock access is forbidden in pure helpers). After archiving, prunes older
+    archives keeping only the newest ``_STALE_ARCHIVE_KEEP`` (default 3) — the
+    stamp is lexicographically sortable (``YYYYmmddTHHMMSSZ``), so ``sorted()``
+    orders them chronologically; each unlink is individually suppressed so a race
+    or permission error on one does not abort the others."""
     src = _checkpoint_path(out_dir)
     if not Path(src).exists():
         return None
     archived = f"{CHECKPOINT_NAME}.stale-{timestamp}"
     os.replace(src, Path(out_dir) / archived)
+    # Prune old stale archives — keep only the newest _STALE_ARCHIVE_KEEP.
+    prefix = CHECKPOINT_NAME + ".stale-"
+    out = Path(out_dir)
+    archives = sorted(p for p in out.iterdir() if p.name.startswith(prefix))
+    for old in archives[:-_STALE_ARCHIVE_KEEP]:
+        with contextlib.suppress(OSError):
+            old.unlink()
     return archived
 
 
@@ -194,17 +227,20 @@ def delete_checkpoint(out_dir):
         Path(_checkpoint_path(out_dir)).unlink()
 
 
-# The output trees a `clean` run writes into, under ``--out-dir``. The
-# filename→tree mapping (``.cleaned.txt`` vs ``.broken.txt``) is owned by
-# report.py; the resume verifier just searches these rather than re-encoding it.
-_OUTPUT_DIRS = ("cleaned", "broken")
+# The output trees a `clean` run writes into, under ``--out-dir``. Suffix and
+# dirname constants live in ``lintle.__init__`` — the single naming-convention
+# authority (pipeline._clean_output_paths, resume.output_sizes, cli.discover_paths,
+# and report_writers.concat_findings_shards all import from there).
+_OUTPUT_DIRS = (CLEANED_DIRNAME, BROKEN_DIRNAME, SHARDS_DIRNAME)
 
 
 def _locate_output(out_dir, name):
     """Return the on-disk path of output basename ``name`` under ``out_dir``'s
     output trees, or None if it is in none of them. Searching the known trees
     (rather than inferring the directory from the filename suffix) keeps the
-    output-naming convention in one place — report.py — not duplicated here."""
+    output-naming convention in one place — ``lintle.__init__`` — not duplicated
+    here. The shards directory is included so findings shards recorded in the
+    checkpoint are located on resume (issue #117)."""
     for sub in _OUTPUT_DIRS:
         candidate = Path(out_dir) / sub / name
         if candidate.exists():

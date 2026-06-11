@@ -532,7 +532,9 @@ class TestBrokenNoradIdsNdjson:
 
 class TestConcatFindingsShards:
     """End-of-run concatenation of per-worker findings shards into the
-    corpus-wide ``report.jsonl`` (issue #9, spec §4.6).
+    corpus-wide ``report.jsonl`` (issue #9, spec §4.6). The function now
+    returns a list of src_names whose shard was missing but had quarantined
+    records — a gap the caller surfaces as a warning (issue #117).
     """
 
     def _make_shard(self, shard_dir, stem_name, payload_lines):
@@ -640,6 +642,44 @@ class TestConcatFindingsShards:
             )
         # Prior content is untouched.
         assert dest.read_text(encoding="utf-8") == "from-prior-run\n"
+
+    # ------------------------------------------------------------------
+    # Issue #117 — return value: missing-but-nonempty shards
+    # ------------------------------------------------------------------
+
+    def test_returns_empty_list_when_all_shards_present(self, tmp_path):
+        shard_dir = tmp_path / ".shards"
+        shard_dir.mkdir()
+        self._make_shard(shard_dir, "tle2022", ['{"file":"tle2022.txt"}'])
+        stats = report.FileStats(src_name="tle2022.txt", quarantined_count=1)
+        dest = tmp_path / "report.jsonl"
+        missing = report_writers.concat_findings_shards(
+            str(tmp_path), str(dest), [stats]
+        )
+        assert missing == []
+
+    def test_returns_src_name_when_shard_missing_and_has_quarantines(self, tmp_path):
+        # Shard missing + quarantined_count > 0 → caller must be warned.
+        shard_dir = tmp_path / ".shards"
+        shard_dir.mkdir()  # dir exists but shard absent
+        stats = report.FileStats(src_name="tle2099.txt", quarantined_count=3)
+        dest = tmp_path / "report.jsonl"
+        missing = report_writers.concat_findings_shards(
+            str(tmp_path), str(dest), [stats]
+        )
+        assert missing == ["tle2099.txt"]
+
+    def test_returns_empty_when_shard_missing_but_no_quarantines(self, tmp_path):
+        # Missing shard with zero quarantines is not a gap — validate-mode
+        # or a zero-finding file. No warning needed.
+        shard_dir = tmp_path / ".shards"
+        shard_dir.mkdir()
+        stats = report.FileStats(src_name="tle2099.txt", quarantined_count=0)
+        dest = tmp_path / "report.jsonl"
+        missing = report_writers.concat_findings_shards(
+            str(tmp_path), str(dest), [stats]
+        )
+        assert missing == []
 
 
 class TestJsonlFindingsWriter:
