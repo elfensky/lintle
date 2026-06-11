@@ -6,6 +6,36 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Performance
+
+- **`#109` — every accepted record was validated twice.** `repair_record` called
+  `tle.validate_record(line1, line2)` after both lines had already passed
+  `repair_line`'s full `validate_line`. The only new information for two
+  individually-valid lines is the catalog-number cross-check. A new
+  `tle.validate_record_catalog(l1, l2)` helper performs only that check,
+  returning the byte-identical error string; `repair_record` now calls it instead.
+  `validate_record` is unchanged. Property tests confirm equivalence for all
+  matching and mismatched valid pairs.
+
+- **`#110A` — `compute_checksum` hot-path: per-char membership tests replaced with
+  a precomputed lookup table.** The original loop called `ch in _DIGIT` then
+  `int(ch)` for every character. A module-level `_CHECKSUM_CONTRIB` dict (ASCII
+  digits `'0'`–`'9'` → their integer value, `'-'` → 1, absent = 0) reduces the
+  loop body to `sum(_CHECKSUM_CONTRIB.get(c, 0) for c in line[:68]) % 10` — one
+  dict lookup per character. Byte-equivalent by construction; the existing
+  checksum property tests confirm invariance.
+
+- **`#123` — pipeline allocation micro-optimisations.**
+  (a) `slots=True` added to `RecordCandidate`, `Orphan`, `_ProgressBatcher`
+  (pipeline.py) and `Accepted`, `Quarantined` (repair.py) — eliminates
+  per-instance `__dict__` allocation on every record; slotted dataclasses
+  pickle correctly across the worker pool.
+  (b) `_record_acceptance` now writes both cleaned lines in a single
+  `handle.write(line1 + "\n" + line2 + "\n")` call — byte-identical output,
+  half the Python-level write calls on the accepted-record hot path.
+  (c) `_ProgressBatcher.enabled` was a `@property` re-evaluated every call;
+  replaced with a `_enabled: bool` field computed once in `__post_init__`.
+
 ### Fixed
 
 - **`#95` — a newline-free or CR-only multi-GB file was materialised as one giant `bytes`
