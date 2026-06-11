@@ -84,6 +84,17 @@ class FileProgress:
 ProgressMessage = FileStarted | FileEnded | FileProgress
 
 
+# Maximum bytes read per logical line. A genuine TLE line is 69 bytes plus a
+# newline; nothing in the real corpus approaches 4 KB. The cap prevents a file
+# with no ``\n`` (or only ``\r`` as line terminators) from materialising as one
+# giant bytes object — a 3.2 GB "line" would consume 3.2 GB of RAM and then be
+# pickled back across the process-pool boundary. When a chunk of exactly this
+# size has no trailing ``\n`` the read loop treats it as the first (and bounded
+# excerpt of the) oversized line, drains the remainder cheaply, and emits a
+# single ``Orphan`` with ``RuleID.LINE_LENGTH``.
+_MAX_LINE_BYTES = 4096
+
+
 @dataclasses.dataclass
 class _ProgressBatcher:
     """Accumulate per-file progress deltas before sending queue messages."""
@@ -144,20 +155,63 @@ def iter_records(path, stats=None):
     spaces/tabs still pairs; the **raw** bytes are carried forward unchanged
     so ``repair_line`` performs the trim and tags it ``leading-trim`` (#88).
 
+    Each logical line is read via ``handle.readline(_MAX_LINE_BYTES)`` — a
+    single C-level call, so throughput equals the ``for raw in handle``
+    iterator on normal lines. A chunk of exactly ``_MAX_LINE_BYTES`` with no
+    trailing ``\\n`` is treated as the first (bounded) excerpt of an oversized
+    line: the remainder is drained in ``_MAX_LINE_BYTES`` chunks, summing their
+    lengths into ``bytes_consumed``, until a ``\\n`` or EOF is seen. One Orphan
+    with ``RuleID.LINE_LENGTH`` and a note explaining the truncation is emitted
+    for the whole logical line (issue #95). This preserves constant memory even
+    for a CR-only or newline-free 3.2 GB file — at most ``_MAX_LINE_BYTES``
+    bytes are ever held for the line's raw excerpt.
+
     When ``stats`` is given, ``stats.input_lines_seen`` is updated to the
     1-indexed lineno of the line just consumed and ``stats.bytes_consumed``
     accumulates each line's raw byte length — both including blanks the
-    pairing loop drops, so the counters reflect every physical line and byte
-    read (``bytes_consumed`` reaches ``st_size`` at EOF).
+    pairing loop drops and including every discarded byte of oversized lines,
+    so ``bytes_consumed`` reaches ``st_size`` at EOF.
     """
     held = None  # (raw_bytes, line_number) of a line-1 awaiting its line-2
+    lineno = 0
 
     with open(path, "rb") as handle:
-        for lineno, raw in enumerate(handle, start=1):
+        while True:
+            chunk = handle.readline(_MAX_LINE_BYTES)
+            if not chunk:
+                break  # EOF
+
+            lineno += 1
+            n_bytes = len(chunk)
+
+            if len(chunk) == _MAX_LINE_BYTES and not chunk.endswith(b"\n"):
+                # Oversized line: this chunk is the bounded excerpt; drain
+                # the remainder without holding it in memory, accumulating
+                # every byte into bytes_consumed so the counter reaches st_size.
+                excerpt = chunk
+                while True:
+                    tail = handle.readline(_MAX_LINE_BYTES)
+                    if not tail:
+                        break
+                    n_bytes += len(tail)
+                    if tail.endswith(b"\n"):
+                        break
+                if stats is not None:
+                    stats.input_lines_seen = lineno
+                    stats.bytes_consumed += n_bytes
+                yield _orphan(
+                    excerpt,
+                    lineno,
+                    RuleID.LINE_LENGTH,
+                    f"line exceeds {_MAX_LINE_BYTES} bytes; truncated",
+                )
+                continue
+
+            # Normal line (≤ _MAX_LINE_BYTES, possibly with trailing \n).
             if stats is not None:
                 stats.input_lines_seen = lineno
-                stats.bytes_consumed += len(raw)
-            line = raw.rstrip(b"\n")
+                stats.bytes_consumed += n_bytes
+            line = chunk.rstrip(b"\n")
             if line.strip(b" \t\r") == b"":
                 continue  # blank, whitespace-only, or CR-only line — dropped
 
@@ -379,7 +433,6 @@ def _run(
     indentation.
     """
     src_name = stats.src_name
-    cleaned_handle = None
     cleaned_tmp = None
     cleaned_path = None
     broken_path = None
@@ -394,11 +447,6 @@ def _run(
         # random-name debris accumulates. open() also honours the umask
         # (typically 0644), whereas mkstemp would force owner-only 0600.
         cleaned_tmp = cleaned_path + ".partial"
-        # SIM115: the handle is long-lived across the record loop and is
-        # closed in the `finally` below — a `with` block does not fit.
-        cleaned_handle = open(  # noqa: SIM115
-            cleaned_tmp, "w", encoding="ascii", newline="\n"
-        )
 
     # The sink owns the BrokenFileWriter lifecycle in clean mode and the
     # bounded in-memory sample in both modes. Issue #19: cap-enforcement
@@ -413,7 +461,20 @@ def _run(
     completed = False
     progress = _ProgressBatcher(progress_queue, progress_every, stats.src_name)
     with sink:
+        # Issue #104: cleaned_handle is opened INSIDE the `with sink:` block
+        # so that a sink.__enter__ failure (e.g. the jsonl writer's open fails)
+        # can never leave the .partial behind — if __enter__ raises, this code
+        # is never reached and no handle exists to leak. The inner finally below
+        # closes and unlinks the handle on every error path just as before.
+        cleaned_handle = None
         try:
+            if mode == "clean":
+                # SIM115: the handle is long-lived across the record loop and
+                # is closed in the `finally` below — a `with` block does not
+                # fit here.
+                cleaned_handle = open(  # noqa: SIM115
+                    cleaned_tmp, "w", encoding="ascii", newline="\n"
+                )
             # Input size for the v1 envelope (issue #20). Captured inside
             # the ``with sink:`` try-block so a missing-source ``OSError``
             # routes through the same cleanup paths as one raised by

@@ -8,6 +8,33 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Fixed
 
+- **`#95` — a newline-free or CR-only multi-GB file was materialised as one giant `bytes`
+  object, violating constant-memory (Critical Rule #3).** `iter_records` previously iterated
+  over the binary handle with `for raw in handle`, which splits only on `\n`; a file with no
+  `\n` (or only `\r` terminators) buffered the entire file as one `raw` chunk — a 3.2 GB file
+  would load whole, OOM the worker, and then be pickled across the pool boundary. Fixed by
+  replacing the iterator with `handle.readline(_MAX_LINE_BYTES)` (C-level, throughput
+  unchanged for normal lines). A chunk of exactly `_MAX_LINE_BYTES = 4096` with no trailing
+  `\n` is the start of an oversized line: the excerpt is kept as a bounded quarantine payload,
+  the remainder is drained in fixed-size chunks (bytes still counted into `bytes_consumed`),
+  and one `Orphan` with `RuleID.LINE_LENGTH` is emitted for the logical line. The raw bytes in
+  the quarantine entry are noted as truncated — the one place byte-faithfulness yields to
+  constant-memory, and only for a pathological input. Normal lines (the entire real corpus) are
+  processed byte-identically. `stats.bytes_consumed` still reaches `st_size` at EOF, and
+  `input_lines_seen` counts each logical line exactly once.
+- **`#104` — `QuarantineSink.__enter__` was not exception-safe; `cleaned_handle` was opened
+  outside the sink's `with` block.** `QuarantineSink.__enter__` entered its `BrokenFileWriter`
+  and then its `JsonlFindingsWriter` sequentially: if the jsonl writer's `open` failed (disk
+  full, unwritable `.shards`), the already-entered `BrokenFileWriter.__exit__` never ran,
+  leaving a leaked body handle and `.broken.txt.body.partial` debris. In `pipeline._run`,
+  `cleaned_handle = open(...)` happened before `with sink:` so a `sink.__enter__` failure
+  leaked the cleaned `.partial`. Fixed with two changes: (1) `QuarantineSink.__enter__` now
+  uses a `contextlib.ExitStack` — each sub-writer is entered onto the stack; on success
+  `stack.pop_all()` transfers ownership to `self._stack` (closed by `__exit__`); a mid-enter
+  failure unwinds already-entered writers via the stack's own cleanup. (2) In `pipeline._run`,
+  `cleaned_handle = open(...)` is now opened inside the `with sink:` block (before the inner
+  try/finally) so a `sink.__enter__` failure cannot leak it — the handle simply doesn't exist
+  at that point.
 - **`#101a` — broken sidecar excluded from resume integrity check when no records quarantined.**
   `resume.output_sizes` previously recorded the `.broken.txt` sidecar only when
   `stats.quarantined_count > 0`, but `pipeline` always writes a header-only sidecar even
