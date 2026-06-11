@@ -171,7 +171,7 @@ decreasing order of safety:
 |-------|----------|--------|
 | Content-preserving | trailing `\` (`trailing-backslash`), CRLF (`crlf`), trailing whitespace (`trailing-ws`) | auto-fix (checksum survives as an independent check) |
 | Reconstructed-checksum | a record exported without its column-69 digit (`reconstructed-checksum`) | recompute the checksum from intact columns 1–68 — **opt-in** via `--reconstruct-checksum`; otherwise quarantined (see *redundancy paradox*) |
-| Content-shifting | leading whitespace / BOM (`leading-trim`) | trim, then re-validate; quarantine if it fails |
+| Content-shifting | leading whitespace (`leading-trim`) | trim, then re-validate; quarantine if it fails. `iter_records` matches the `1 `/`2 ` prefix on a leading-whitespace-trimmed *view* of the line, so an indented record still pairs; the raw bytes are carried forward so `repair_line` owns the trim. A leading BOM is **not** trimmed — it is a non-ASCII byte and is quarantined |
 | Structural | blank / whitespace-only / CR-only lines | drop, resynchronise pairing |
 | Corrupt | bad checksum, wrong length, orphan line, garbled columns, catalog mismatch | **quarantine** |
 
