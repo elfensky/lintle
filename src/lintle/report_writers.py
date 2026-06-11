@@ -234,6 +234,12 @@ class QuarantineSink:
     per entry to a per-file shard. On :meth:`finalize` the sink produces
     an immutable :class:`FileSample` and is sealed — any subsequent
     :meth:`add` raises ``RuntimeError`` so misuse surfaces loudly.
+
+    ``__enter__`` uses an :class:`contextlib.ExitStack` to enter each
+    sub-writer in turn (issue #104): if the second writer's ``__enter__``
+    raises, the stack unwinds the first writer's ``__exit__`` so no handle
+    or partial file is leaked. On success the stack is transferred to
+    ``self._stack`` so ``__exit__`` closes everything in reverse order.
     """
 
     def __init__(
@@ -252,6 +258,7 @@ class QuarantineSink:
         self._dropped = {}
         self._writer = None
         self._jsonl_writer = None
+        self._stack = None
         self._finalized = False
         self._sample = None
         if broken_path is not None:
@@ -264,17 +271,24 @@ class QuarantineSink:
             self._jsonl_writer = JsonlFindingsWriter(jsonl_path, src_name)
 
     def __enter__(self):
-        if self._writer is not None:
-            self._writer.__enter__()
-        if self._jsonl_writer is not None:
-            self._jsonl_writer.__enter__()
+        # Use an ExitStack so a failure mid-__enter__ (e.g. the jsonl writer's
+        # open fails after the broken writer is already open) unwinds already-
+        # entered writers cleanly — no leaked handles or .partial debris.
+        with contextlib.ExitStack() as stack:
+            if self._writer is not None:
+                stack.enter_context(self._writer)
+            if self._jsonl_writer is not None:
+                stack.enter_context(self._jsonl_writer)
+            # Transfer ownership: pop_all() returns a new stack that now owns
+            # the cleanup; assigning it to self._stack means __exit__ will
+            # close it later. If anything above raised, the ``with`` block's
+            # own cleanup fires first (unwinding whatever was entered).
+            self._stack = stack.pop_all()
         return self
 
     def __exit__(self, exc_type, exc, tb):
-        if self._writer is not None:
-            self._writer.__exit__(exc_type, exc, tb)
-        if self._jsonl_writer is not None:
-            self._jsonl_writer.__exit__(exc_type, exc, tb)
+        if self._stack is not None:
+            self._stack.__exit__(exc_type, exc, tb)
         return False
 
     def add(self, entry: QuarantineEntry) -> None:
