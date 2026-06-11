@@ -424,6 +424,7 @@ class TestFindingFileValidation:
 
     def test_missing_file_raises_diff_error(self, tmp_path):
         from lintle import report_writers
+
         payload = report_writers.entry_to_jsonl_dict(
             _entry(RuleID.CHECKSUM_MISMATCH), file="tle.txt", norad_id=25544
         )
@@ -435,6 +436,7 @@ class TestFindingFileValidation:
 
     def test_null_file_raises_diff_error(self, tmp_path):
         from lintle import report_writers
+
         payload = report_writers.entry_to_jsonl_dict(
             _entry(RuleID.CHECKSUM_MISMATCH), file="tle.txt", norad_id=25544
         )
@@ -446,6 +448,7 @@ class TestFindingFileValidation:
 
     def test_non_string_file_raises_diff_error(self, tmp_path):
         from lintle import report_writers
+
         payload = report_writers.entry_to_jsonl_dict(
             _entry(RuleID.CHECKSUM_MISMATCH), file="tle.txt", norad_id=25544
         )
@@ -458,6 +461,7 @@ class TestFindingFileValidation:
     def test_lintle_diff_with_missing_file_exits_2(self, tmp_path, capsys):
         # End-to-end: lintle diff returns 2 with a clear message, not TypeError.
         from lintle import report_writers
+
         run_a = _write_run(tmp_path / "a", [_entry(RuleID.CHECKSUM_MISMATCH)])
         run_b = tmp_path / "b"
         run_b.mkdir()

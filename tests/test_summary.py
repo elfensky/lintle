@@ -179,7 +179,8 @@ class TestEnvelopeValidation:
     def test_missing_summary_key_is_exit_2(self, tmp_path, capsys):
         self._write_raw(
             tmp_path,
-            '{"schema_version": "2", "run": {"timestamp": "x", "elapsed_seconds": 1.0}}',
+            '{"schema_version": "2", "run": {"timestamp": "x",'
+            ' "elapsed_seconds": 1.0}}',
         )
         rc = summary.run(str(tmp_path), "text")
         assert rc == 2
@@ -233,18 +234,6 @@ class TestPlainTierAsciiSafe:
     selected precisely when the console cannot encode Unicode, so any non-ASCII
     character causes UnicodeEncodeError.
     """
-
-    def _ascii_console(self):
-        """Return a Console that reports 'ascii' encoding and is not a terminal."""
-        import io
-        from rich.console import Console
-        return Console(
-            file=io.StringIO(),
-            width=80,
-            force_terminal=False,
-            color_system=None,
-            legacy_windows=False,
-        )
 
     def test_zero_denominator_plain_renders_without_emdash(self):
         # _format_pct(x, 0) returns "—" by default; the plain tier must use an

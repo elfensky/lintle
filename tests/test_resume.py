@@ -308,6 +308,7 @@ class TestValidateCompletedBlock:
         # Manually overwrite with the corrupt completed (write_checkpoint would
         # reject via build_checkpoint, so write raw).
         import json
+
         (tmp_path / resume.CHECKPOINT_NAME).write_text(
             json.dumps(ck, separators=(",", ":"), sort_keys=True),
             encoding="utf-8",

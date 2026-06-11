@@ -127,7 +127,8 @@ class TestOutDirLock:
 
 class TestReadJsonOrNone:
     """``read_json_or_none`` returns a dict or None for any unreadable/malformed/
-    non-dict payload — never raises OSError, json.JSONDecodeError, or UnicodeDecodeError.
+    non-dict payload — never raises OSError, json.JSONDecodeError, or
+    UnicodeDecodeError.
     """
 
     def test_valid_json_object_returns_dict(self, tmp_path):
@@ -152,7 +153,7 @@ class TestReadJsonOrNone:
     def test_json_array_returns_none(self, tmp_path):
         # Issue #91 dict-guard: non-dict JSON (array/string/null/number) → None,
         # so callers get the safe "no usable data" default for any non-object payload.
-        for doc in ('[]', '"hello"', '42', 'null'):
+        for doc in ("[]", '"hello"', "42", "null"):
             p = tmp_path / "typed.json"
             p.write_text(doc, encoding="utf-8")
             assert fsutil.read_json_or_none(p) is None
