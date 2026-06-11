@@ -240,6 +240,82 @@ class TestValidateRunIdentity:
         assert reason and "a.txt" in reason
 
 
+class TestValidateCompletedBlock:
+    """Issue #91(b): validate_run_identity must gate the ``completed`` block shape
+    so corrupt entries never reach resolve_clean_plan's unguarded indexing.
+    """
+
+    def _valid_ckpt(self):
+        return {
+            "schema_version": resume.SCHEMA_VERSION,
+            "lintle_version": __import__("lintle").__version__,
+            "run_identity": {},
+            "inputs": {},
+            "completed": {},
+        }
+
+    def test_missing_completed_key_is_corrupt(self):
+        ck = self._valid_ckpt()
+        del ck["completed"]
+        reason = resume.validate_run_identity(ck, {}, {})
+        assert reason is not None and "completed" in reason.lower()
+
+    def test_completed_not_a_dict_is_corrupt(self):
+        ck = self._valid_ckpt()
+        ck["completed"] = []
+        reason = resume.validate_run_identity(ck, {}, {})
+        assert reason is not None and "completed" in reason.lower()
+
+    def test_entry_missing_summary_is_corrupt(self):
+        ck = self._valid_ckpt()
+        ck["completed"] = {"a.txt": {"outputs": {}}}  # no "summary" key
+        reason = resume.validate_run_identity(ck, {}, {})
+        assert reason is not None
+
+    def test_entry_missing_outputs_is_corrupt(self):
+        ck = self._valid_ckpt()
+        ck["completed"] = {"a.txt": {"summary": {}}}  # no "outputs" key
+        reason = resume.validate_run_identity(ck, {}, {})
+        assert reason is not None
+
+    def test_entry_summary_not_dict_is_corrupt(self):
+        ck = self._valid_ckpt()
+        ck["completed"] = {"a.txt": {"summary": "bad", "outputs": {}}}
+        reason = resume.validate_run_identity(ck, {}, {})
+        assert reason is not None
+
+    def test_entry_outputs_not_dict_is_corrupt(self):
+        ck = self._valid_ckpt()
+        ck["completed"] = {"a.txt": {"summary": {}, "outputs": "bad"}}
+        reason = resume.validate_run_identity(ck, {}, {})
+        assert reason is not None
+
+    def test_well_formed_completed_passes(self):
+        ck = self._valid_ckpt()
+        ck["completed"] = {
+            "a.txt": {"summary": {"clean_count": 1}, "outputs": {"a.cleaned.txt": 99}}
+        }
+        reason = resume.validate_run_identity(ck, {}, {})
+        assert reason is None
+
+    def test_classify_treats_corrupt_completed_as_corrupt(self, tmp_path):
+        # End-to-end: a checkpoint that passes schema_version/lintle_version/
+        # run_identity/inputs but has a corrupt completed block → CORRUPT status,
+        # so the ABORT path is taken instead of KeyError in resolve_clean_plan.
+        ck = self._valid_ckpt()
+        ck["completed"] = {"a.txt": {"outputs": {}}}  # missing summary
+        resume.write_checkpoint(str(tmp_path), ck)
+        # Manually overwrite with the corrupt completed (write_checkpoint would
+        # reject via build_checkpoint, so write raw).
+        import json
+        (tmp_path / resume.CHECKPOINT_NAME).write_text(
+            json.dumps(ck, separators=(",", ":"), sort_keys=True),
+            encoding="utf-8",
+        )
+        c = resume.classify_checkpoint(str(tmp_path), {}, {})
+        assert c.status is resume.CheckpointStatus.CORRUPT
+
+
 class TestClassifyCheckpoint:
     def test_absent(self, tmp_path):
         c = resume.classify_checkpoint(

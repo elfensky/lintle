@@ -150,14 +150,19 @@ class Classification:
 
 def classify_checkpoint(out_dir, current_inputs, current_run_identity):
     """Classify the checkpoint in ``out_dir`` against the current run (spec §2.3).
-    Distinguishes ABSENT (no file), CORRUPT (present but unparseable — never
-    treated as absent, so a damaged interrupted run is surfaced, not silently
-    discarded), VALID, and STALE(reason).
+    Distinguishes ABSENT (no file), CORRUPT (present but unparseable or structurally
+    malformed — never treated as absent, so a damaged interrupted run is surfaced,
+    not silently discarded), VALID, and STALE(reason). A corrupt ``completed`` block
+    is routed to CORRUPT rather than STALE because the payload cannot be consumed at
+    all, regardless of identity (issue #91): ``_validate_completed_shape`` is checked
+    before ``validate_run_identity`` so the stricter structural gate takes precedence.
     """
     if not Path(_checkpoint_path(out_dir)).exists():
         return Classification(CheckpointStatus.ABSENT)
     checkpoint = load_checkpoint(out_dir)
     if checkpoint is None:
+        return Classification(CheckpointStatus.CORRUPT)
+    if _validate_completed_shape(checkpoint) is not None:
         return Classification(CheckpointStatus.CORRUPT)
     reason = validate_run_identity(checkpoint, current_inputs, current_run_identity)
     if reason is not None:
@@ -298,7 +303,9 @@ def validate_run_identity(checkpoint, current_inputs, current_run_identity):
     """Return a human-readable reason the checkpoint cannot be resumed against the
     current run, or None if it can. Refuse-on-change (spec §3.1, all-or-nothing):
     schema, lintle version, output-affecting configuration, or any input identity
-    drift invalidates the whole checkpoint.
+    drift invalidates the whole checkpoint. Also validates the ``completed`` block
+    shape (issue #91): entries missing ``summary`` or ``outputs`` dicts cause a
+    non-None return so callers see the checkpoint as unusable.
     """
     schema = checkpoint.get("schema_version")
     if schema != SCHEMA_VERSION:
@@ -324,4 +331,24 @@ def validate_run_identity(checkpoint, current_inputs, current_run_identity):
     for path in sorted(current_inputs):
         if current_inputs[path] != recorded[path]:
             return f"input changed since the interrupted run: {path}"
+    return _validate_completed_shape(checkpoint)
+
+
+def _validate_completed_shape(checkpoint):
+    """Return a human-readable reason the ``completed`` block is structurally
+    corrupt, or ``None`` if it is well-formed. Checked independently of identity
+    so :func:`classify_checkpoint` can route structural violations to CORRUPT
+    (not STALE) — a malformed ``completed`` block means the checkpoint cannot be
+    consumed at all, not merely that the run configuration has changed (issue #91).
+    """
+    completed = checkpoint.get("completed")
+    if not isinstance(completed, dict):
+        return "checkpoint completed block is missing or not a JSON object"
+    for entry_path, entry in completed.items():
+        if not isinstance(entry, dict):
+            return f"checkpoint completed entry for {entry_path!r} is not a JSON object"
+        if not isinstance(entry.get("summary"), dict):
+            return f"checkpoint completed entry for {entry_path!r} has no summary dict"
+        if not isinstance(entry.get("outputs"), dict):
+            return f"checkpoint completed entry for {entry_path!r} has no outputs dict"
     return None
