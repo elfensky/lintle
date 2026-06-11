@@ -55,10 +55,11 @@ See `lintle <command> --help` for command-specific options.
 
 
 def discover_paths(path):
-    """Expand ``path``: a directory becomes its sorted ``tle*.txt`` files
-    (excluding ``*.cleaned.txt`` / ``*.broken.txt`` tool output); a file is
-    returned as a single-element list. A nonexistent entry yields ``[]`` —
-    callers should validate inputs with :func:`check_paths` first.
+    """Expand ``path``: a directory becomes its sorted ``tle*.txt`` regular
+    files (excluding ``*.cleaned.txt`` / ``*.broken.txt`` tool output, and
+    excluding dangling symlinks and directories even when named ``tle*.txt``);
+    a file is returned as a single-element list. A nonexistent entry yields
+    ``[]`` — callers should validate inputs with :func:`check_paths` first.
     """
     directory = Path(path)
     if directory.is_dir():
@@ -70,6 +71,7 @@ def discover_paths(path):
                 and name.endswith(".txt")
                 and not name.endswith(".cleaned.txt")
                 and not name.endswith(".broken.txt")
+                and (directory / name).is_file()  # excludes dangling symlinks + dirs
             )
         ]
     if Path(path).is_file():
@@ -472,14 +474,23 @@ def main(argv=None):
     # the disk-space guard, the pre-run roster, and the live byte-bar
     # denominators, so those three readouts can never silently diverge. Ordered
     # by discovery so the roster lists files in a stable order.
-    file_sizes = {p: Path(p).stat().st_size for p in files}
+    try:
+        file_sizes = {p: Path(p).stat().st_size for p in files}
+    except OSError as exc:
+        term.error(f"cannot read input file: {exc}")
+        return 2
 
     # ExitStack holds the out-dir lock for the clean run. Closed in the finally
     # block below — so every exit path (LockHeldError aside, which returns
     # before entering the try, leaving the stack empty) releases the lock.
     _lock_stack = contextlib.ExitStack()
 
-    Path(args.out_dir).mkdir(parents=True, exist_ok=True)
+    try:
+        Path(args.out_dir).mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        term.error(f"cannot create output directory {args.out_dir!r}: {exc}")
+        return 2
+
     try:
         _lock_stack.enter_context(
             fsutil.out_dir_lock(args.out_dir, started=resume.run_started_stamp())

@@ -577,6 +577,79 @@ class TestMain:
         assert not list(out.rglob("*.partial"))
 
 
+class TestDiscoverPathsSymlinkAndIsFile:
+    """Issue #86: discover_paths must exclude dangling symlinks and directories
+    named tle*.txt, returning only real regular files."""
+
+    def test_dangling_symlink_excluded_from_directory_scan(self, tmp_path):
+        src = tmp_path / "src"
+        src.mkdir()
+        # Real file — must be found.
+        (src / "tle2099.txt").write_text("x")
+        # Dangling symlink named tle*.txt — must be excluded.
+        link = src / "tle2098.txt"
+        link.symlink_to(src / "nonexistent_target.txt")
+        assert not link.exists()  # confirm it really is dangling
+
+        found = cli.discover_paths(str(src))
+
+        names = sorted(p.split("/")[-1] for p in found)
+        assert names == ["tle2099.txt"]
+        # Must not include the dangling symlink
+        assert not any("tle2098" in p for p in found)
+
+    def test_directory_named_tle_txt_excluded(self, tmp_path):
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "tle2099.txt").write_text("x")
+        # A directory with a TLE-like name — must be excluded.
+        (src / "tle_dir.txt").mkdir()
+
+        found = cli.discover_paths(str(src))
+
+        names = sorted(p.split("/")[-1] for p in found)
+        assert names == ["tle2099.txt"]
+
+
+class TestPreflightOSErrors:
+    """Issue #86: preflight I/O errors (stat, mkdir) must return exit 2 with
+    a friendly message, never a raw traceback."""
+
+    def test_dangling_symlink_in_src_dir_returns_2(self, tmp_path, capsys):
+        # A dangling symlink named tle*.txt in the source directory previously
+        # made it through discover_paths, causing a stat() FileNotFoundError
+        # in main(). After the fix, discover_paths excludes it so a directory
+        # containing only a dangling symlink yields no real files → exit 2.
+        src = tmp_path / "src"
+        src.mkdir()
+        link = src / "tle2098.txt"
+        link.symlink_to(src / "nonexistent_target.txt")
+        out = tmp_path / "out"
+
+        rc = cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
+
+        # No real files left after filtering the dangling symlink → exit 2.
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "Traceback" not in err
+
+    def test_outdir_is_regular_file_returns_2(self, tmp_path, line1, line2, capsys):
+        # When --out-dir names an existing regular file, mkdir() raises
+        # FileExistsError / NotADirectoryError. Must return exit 2, no traceback.
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "tle2099.txt").write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
+        # Create a regular file where --out-dir expects a directory.
+        out_file = tmp_path / "out_is_a_file"
+        out_file.write_text("I am a regular file")
+
+        rc = cli.main(["clean", str(src), "--out-dir", str(out_file), "--jobs", "1"])
+
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "Traceback" not in err
+
+
 class TestReportJsonl:
     """Issue #9 spec §8.5: ``clean`` mode emits ``<out_dir>/report.jsonl``
     after every successful run; validate mode does not.
