@@ -1,10 +1,27 @@
 """Clean-run preflight planning and resume resolution."""
 
+import contextlib
 import dataclasses
 import shutil
 from pathlib import Path
 
-from lintle import report, resume, term
+from lintle import fsutil, report, resume, term
+
+# Marker written into the out-dir on the first fresh run.  Its presence (or the
+# presence of a checkpoint / stale-checkpoint archive) is the ownership signal
+# that lets scrub_outputs proceed safely.  Any other non-empty directory that
+# lacks all three signals is treated as user-owned and scrub refuses (issue #93).
+_OUTPUT_MARKER = ".lintle-output"
+
+# Report artifacts written by output_artifacts.write_clean_artifacts.  Removed
+# during a fresh-run scrub so an interrupted fresh run leaves no stale reports
+# for ``lintle report`` to render (issue #102).
+_REPORT_ARTIFACTS = (
+    "report.md",
+    "report.json",
+    "report.jsonl",
+    "broken-noradids.ndjson",
+)
 
 
 @dataclasses.dataclass
@@ -49,23 +66,61 @@ def check_disk_space(out_dir, input_bytes):
     return None
 
 
+def _is_safe_to_scrub(out_dir):
+    """Return ``True`` when ``out_dir`` is safe to scrub without risking user
+    data, ``False`` otherwise (issue #93).  A directory is safe when:
+
+    - it does not exist;
+    - its only entries are the lock file (``fsutil.LOCK_NAME``) and/or the
+      ownership marker (``_OUTPUT_MARKER``) — i.e. effectively empty modulo the
+      files ``clean`` itself wrote this run; or
+    - it already carries a lintle-ownership signal: the ownership marker, the
+      resume checkpoint (``resume.CHECKPOINT_NAME``), or a stale-checkpoint
+      archive (any file whose name starts with ``resume.CHECKPOINT_NAME``).
+
+    The lock file is always present when this function is called (``cli.main``
+    acquires the lock before calling ``resolve_clean_plan``), so it is excluded
+    from the emptiness check to avoid spuriously refusing a brand-new out-dir.
+    """
+    p = Path(out_dir)
+    if not p.exists():
+        return True
+    entries = {e.name for e in p.iterdir()}
+    # Exclude the lock (always present this run) and the marker (written by us).
+    noise = {fsutil.LOCK_NAME, _OUTPUT_MARKER}
+    real_entries = entries - noise
+    if not real_entries:
+        return True
+    # Presence of any lintle-ownership signal is sufficient.
+    if _OUTPUT_MARKER in entries:
+        return True
+    if resume.CHECKPOINT_NAME in entries:
+        return True
+    return any(name.startswith(resume.CHECKPOINT_NAME) for name in entries)
+
+
 def scrub_outputs(out_dir):
-    """Clear the cleaned/, broken/, and .shards/ trees so a fresh run starts from
-    a clean slate and never leaves orphaned outputs from a prior, differently
-    scoped input set (spec §3.4). Idempotent — missing trees are ignored."""
+    """Clear the cleaned/, broken/, and .shards/ trees and remove prior-run
+    report artifacts so a fresh run starts from a clean slate and never leaves
+    orphaned outputs from a prior, differently-scoped input set (spec §3.4) or
+    a stale report that ``lintle report`` would render as current (issue #102).
+    Idempotent — missing trees/files are ignored.  Does NOT check ownership;
+    callers that need the ownership gate call :func:`_is_safe_to_scrub` first."""
+    out = Path(out_dir)
     for sub in ("cleaned", "broken", ".shards"):
-        shutil.rmtree(Path(out_dir) / sub, ignore_errors=True)
+        shutil.rmtree(out / sub, ignore_errors=True)
+    for name in _REPORT_ARTIFACTS:
+        with contextlib.suppress(OSError):
+            (out / name).unlink()
 
 
 def resolve_clean_plan(args, files, file_sizes):
-    """Resolve disk-space, resume, and fresh-run state for ``clean``."""
-    disk_status = check_disk_space(args.out_dir, sum(file_sizes.values()))
-    if disk_status is not None:
-        severity, msg = disk_status
-        term.emit(severity, msg)
-        if severity is term.Severity.ERROR:
-            return RunPlan(exit_code=2)
+    """Resolve disk-space, resume, and fresh-run state for ``clean``.
 
+    Execution order: build inputs + run_identity → classify checkpoint →
+    resolve resume action → branch RESUME (disk guard on remaining) or FRESH
+    (ownership check, scrub, disk guard on full corpus, marker write).
+    """
     inputs = {path: resume.input_fingerprint(path) for path in files}
     # reconstruct_checksum changes which records are accepted vs quarantined,
     # so a resume with a flipped flag must re-run (STALE), not fold mismatched
@@ -86,6 +141,7 @@ def resolve_clean_plan(args, files, file_sizes):
     if decision.action is resume.ResumeAction.ABORT:
         term.error(decision.message)
         return RunPlan(exit_code=decision.exit_code)
+
     if decision.action is resume.ResumeAction.RESUME:
         checkpoint = classification.checkpoint
         completed = dict(checkpoint["completed"])
@@ -102,6 +158,15 @@ def resolve_clean_plan(args, files, file_sizes):
             f"processing {len(files_to_process)}"
             " — pass --no-resume for a fresh run"
         )
+        # Issue #94: charge the guard against the REMAINING input only, AFTER
+        # we know which files still need processing.
+        remaining_bytes = sum(file_sizes[f] for f in files_to_process)
+        disk_status = check_disk_space(args.out_dir, remaining_bytes)
+        if disk_status is not None:
+            severity, msg = disk_status
+            term.emit(severity, msg)
+            if severity is term.Severity.ERROR:
+                return RunPlan(exit_code=2)
         return RunPlan(
             files_to_process=files_to_process,
             reused_stats=reused_stats,
@@ -110,9 +175,35 @@ def resolve_clean_plan(args, files, file_sizes):
             run_identity=run_identity,
         )
 
-    # FRESH: archive any checkpoint, then scrub output trees so no orphans linger.
+    # FRESH branch.
+    # Issue #93: gate the scrub on an ownership check before destroying anything.
+    if not _is_safe_to_scrub(args.out_dir):
+        term.error(
+            f"refusing to scrub {args.out_dir!r}: not a lintle output directory "
+            f"(no {_OUTPUT_MARKER} marker); "
+            f"use an empty or new --out-dir, or remove it yourself"
+        )
+        return RunPlan(exit_code=2)
+
+    # Archive any prior checkpoint (preserves recoverability) then scrub outputs.
     resume.archive_checkpoint(args.out_dir, timestamp=resume.run_started_stamp())
+    # Issue #102: scrub also removes prior-run report artifacts.
     scrub_outputs(args.out_dir)
+
+    # Issue #94: disk guard runs AFTER scrub so freed prior-output space is
+    # already counted as available.
+    disk_status = check_disk_space(args.out_dir, sum(file_sizes.values()))
+    if disk_status is not None:
+        severity, msg = disk_status
+        term.emit(severity, msg)
+        if severity is term.Severity.ERROR:
+            return RunPlan(exit_code=2)
+
+    # Write the ownership marker so subsequent runs (and scrubs) recognise the
+    # directory as lintle-owned without needing a checkpoint (issue #93).
+    with contextlib.suppress(OSError):
+        Path(args.out_dir, _OUTPUT_MARKER).write_text("", encoding="utf-8")
+
     return RunPlan(
         files_to_process=files,
         inputs=inputs,
