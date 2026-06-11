@@ -409,3 +409,8 @@ class TestBracketedFilenamesDoNotCrash:
             disp._stop.set()
             disp._thread.join()
             disp._drain()
+            disp._progress.refresh()
+            # markup=False: the brackets render verbatim instead of being
+            # parsed (and silently eaten, or raising MarkupError). Assert
+            # inside the `with` — the transient display is erased on exit.
+            assert "[red]" in buf.getvalue()
