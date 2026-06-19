@@ -85,7 +85,7 @@ diagnostics.py, categories.py, explain_examples.py    pure-data leaves (no I/O)
 | `resume.py` | The single-run `.clean-state.json` checkpoint for `clean --resume`: input fingerprinting, checkpoint build/load, the resume-decision matrix, the run-start timestamp, per-file output-size capture, and the typed `CompletedEntry` dataclass (issue #118). Module-level imports only `__version__`, `fsutil`, and `stem`/naming-constants; `CompletedEntry.from_stats` does a local `from lintle import report` to avoid a module-level cycle. |
 | `run_planning.py` | Clean-run preflight: disk-space policy, resume classification, fresh-run output scrubbing, and the resolved `RunPlan` (slots=True). Also owns `CleanConfig` (issue #121) — the typed `clean`-command configuration snapshot built once in `cli.main` and passed to both leaf functions instead of a raw argparse `Namespace`. Imports `fsutil`, `report`, `resume`, `term`. |
 | `worker_pool.py` | Process-pool dispatch, progress collection, per-file failure handling, checkpoint updates via `resume.CompletedEntry.from_stats` (issue #118), and interrupt shutdown. Now imports `run_planning` for the `CleanConfig` type (one-way, no cycle). |
-| `fsutil.py` | `durable_replace` (the one atomic+fsync commit path) and `out_dir_lock` (the host-aware out-dir lock). Stdlib only. |
+| `fsutil.py` | `durable_replace` (the one atomic+fsync commit path) and `out_dir_lock` (the advisory-flock out-dir lock). Stdlib only. |
 | `diff.py` | Read-only: per-rule delta between two runs' `report.jsonl` (`lintle diff`). |
 | `explain.py` | Read-only: renders rule/fix documentation (`lintle explain`). |
 | `summary.py` | Responsive aggregate-panel renderer over the `build_run_envelope` dict (plain/medium/wide tiers + ASCII-bar fallback), keyed off the target Console; backs `clean`'s end-of-run stderr panel and the read-only `lintle report` (renders `<out-dir>/report.json`: text → panel on stdout, json → file bytes verbatim). Imports `humanize` for human-readable panel durations (`precisedelta`). Styled UI, not byte-bound. |
@@ -273,14 +273,27 @@ per platform at import time. Outputs are written to deterministic `.partial` tem
 killed run leaves at most one stale `.partial` per file (truncated next run), never random
 debris.
 
-### Host-aware out-dir lock
+### Out-dir lock
 
 `fsutil.out_dir_lock` prevents two concurrent `clean` runs from corrupting a shared
-`--out-dir`. It writes a JSON sidecar `.clean.lock` carrying host id, PID, and start time. It
-**refuses** (`LockHeldError`, exit 2) when the lock is held by a live process on this host or by
-*any* process on a different host; it **reclaims** only a same-host lock whose PID is dead.
-Cross-host locks are never reclaimed (so a dead PID on host A is never falsely reclaimed from
-host B). Host identity is `hostname` plus Linux `boot_id` where available.
+`--out-dir`. It holds an **advisory `fcntl.flock`** on a `.clean.lock` sidecar for the life of
+the run and **refuses** (`LockHeldError`, exit 2) when another live run already holds it. The
+kernel owns the lock's lifetime — it is released the instant the holder closes its fd, exits, is
+killed, or the host reboots — so liveness needs no PID check or boot-id and there is no
+stale-lock reclaim step. This is what makes the lock robust against the two failure modes a
+hand-rolled pidfile suffered (issues #87/#99): a crashed run frees its lock automatically
+(no reboot wedge, no PID-reuse hostage), and because release is just closing *our own* fd, a
+refused or raced run can never delete a live holder's lock (no TOCTOU reclaim race, no blind
+release). The file is **never unlinked** — `flock` binds to the inode, so removing the path
+would let a concurrent opener lock an orphaned inode while a fresh file is created in its place;
+the leftover sidecar is reused next run and `run_planning` already treats it as scrub noise. The
+sidecar still records `{host, pid, started}`, but now purely as informational text for the
+`LockHeldError` message (which also names the file and the manual-removal escape hatch).
+
+Concurrent runs **on one host** (the common case) are fully serialized. A `--out-dir` written
+concurrently from **multiple hosts** over a network filesystem relies on `flock` propagating
+server-side (modern NFSv4) and is not a tested configuration — give each host its own
+`--out-dir`. POSIX-only (`fcntl.flock`); Windows is out of scope (use WSL).
 
 ### Single-run resume
 
@@ -619,8 +632,8 @@ dependency is rejected if it would:
   `.broken.txt` sidecar, the `--report json` envelope, the `.clean-state.json` checkpoint, and
   `cleaned/*.txt` all stay exactly as their contracts assert (`report.json` is byte-identical to
   the `--report json` stdout envelope); `rich` styling is confined to the stderr/stdout panel UI;
-- weaken the **atomic + durable commit** (`durable_replace`) or the **host-aware out-dir lock**
-  semantics; or
+- weaken the **atomic + durable commit** (`durable_replace`) or the **advisory-flock out-dir
+  lock** semantics; or
 - violate **validated transformation / correctness over recovery** (principles #1/#2).
 
 These gate a dependency's *behaviour*, not its file location — there is deliberately no layering
@@ -647,7 +660,7 @@ judgement under the relaxed bar that can be revisited.
 | `pydantic` | Reject (hard invariant) | Second coercion/validation path (#4); would drift byte-deterministic outputs (#1/#2); `pydantic-core` native at scale. |
 | `orjson` / `ujson` / `msgspec` | Reject (hard invariant) | Changes on-disk bytes (`sort_keys`, separators, `ensure_ascii=False`, LF) the diff contract + resume round-trip assert. |
 | `tabulate` | Reject (hard invariant) | `report.md` is asserted byte-for-byte; padding rules rewrite every byte. |
-| `filelock` | Reject (hard invariant) | Cannot express the host-aware lock (cross-host refuse + same-host dead-PID reclaim); unsafe on a shared network out-dir. |
+| `filelock` | Reject (lean runtime) | The lock is now a ~25-line `fcntl.flock` wrapper (issues #87/#99); `filelock` is itself a flock/lockfile wrapper, so it would add a runtime dependency without removing meaningful burden. Its cross-platform layer targets Windows, which is out of scope. |
 | atomic-write libs (`atomicwrites`, `boltons`) | Reject (hard invariant) | None implements the macOS `F_FULLFSYNC` + dir-fsync ordering `durable_replace` needs; `atomicwrites` is unmaintained. |
 | file-hashing libs (`dirhash`, `xxhash`) | Reject (hard invariant) | The resume fingerprint is a bounded head+tail 64 KB window; whole-file hashing would read the full 3.2 GB (#3). |
 | `click` / `typer` | Reject (not worth it) | `argparse` is stdlib with zero supply-chain surface; ~0 net lines deleted; would change `--help`/error text the e2e tests assert. |

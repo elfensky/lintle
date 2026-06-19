@@ -507,8 +507,9 @@ def main(argv=None):
 
     # The try/finally guarantees _lock_stack.close() runs on every exit path
     # that reaches here: disk-error return, ABORT return, interrupt return,
-    # failed-files return, and normal success — so the lock file is always
-    # removed.
+    # failed-files return, and normal success — so the advisory flock is always
+    # released (the kernel would drop it on process death regardless; the file
+    # itself is intentionally left in place — see out_dir_lock).
     try:
         # Build the typed config snapshot from args ONCE so the two leaves
         # (resolve_clean_plan, run_workers) receive named, statically-typed

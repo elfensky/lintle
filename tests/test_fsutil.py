@@ -79,50 +79,110 @@ class TestPlatformBarrier:
             assert fsutil._USE_FULLFSYNC is False
 
 
-class TestOutDirLock:
-    def test_acquires_and_releases(self, tmp_path):
-        with fsutil.out_dir_lock(str(tmp_path)):
-            assert os.path.exists(os.path.join(str(tmp_path), ".clean.lock"))
-        with fsutil.out_dir_lock(str(tmp_path)):
-            pass  # re-acquire succeeds after release
+def _hold_lock_forever(out_dir, ready):
+    """Child-process target: acquire the out-dir lock, signal, then block so the
+    parent can observe a live hold and (after kill) the kernel's auto-release."""
+    import time
 
-    def test_refuses_when_held_by_live_same_host(self, tmp_path):
+    from lintle import fsutil as _fsutil
+
+    with _fsutil.out_dir_lock(out_dir):
+        ready.set()
+        time.sleep(30)
+
+
+class TestOutDirLock:
+    def test_acquires_releases_and_keeps_the_file(self, tmp_path):
+        lock = os.path.join(str(tmp_path), ".clean.lock")
+        with fsutil.out_dir_lock(str(tmp_path)):
+            assert os.path.exists(lock)
+        # The file is intentionally NOT unlinked on release: flock binds to the
+        # inode, so unlinking would let a racing opener lock an orphaned inode.
+        assert os.path.exists(lock)
+        with fsutil.out_dir_lock(str(tmp_path)):
+            pass  # re-acquire succeeds — the kernel dropped the flock on close
+
+    def test_refuses_while_a_live_holder_has_it(self, tmp_path):
+        # flock binds to the open file description, so even a second acquire in
+        # this same process (a distinct os.open) is denied while the first holds
+        # — the same mechanism that excludes two separate processes.
         with fsutil.out_dir_lock(str(tmp_path)):  # noqa: SIM117
             with pytest.raises(fsutil.LockHeldError):
                 with fsutil.out_dir_lock(str(tmp_path)):
                     pass
 
-    def test_reclaims_dead_same_host_pid(self, tmp_path):
+    def test_reclaims_a_stale_lock_file_with_no_live_holder(self, tmp_path):
+        # Issues #87/#99: liveness is the kernel's flock, not the recorded
+        # identity. A leftover lock file from a crashed/rebooted run holds no
+        # flock, so it is acquired no matter what it names — even a currently
+        # LIVE pid (PID reuse), a different host (post-reboot), or corrupt bytes.
         lock = os.path.join(str(tmp_path), ".clean.lock")
-        payload = f'{{"host": "{fsutil._host_id()}", "pid": 999999999, "started": "x"}}'
-        with open(lock, "w") as h:
-            h.write(payload)
+        for payload in (
+            f'{{"host": "{fsutil._host_id()}", "pid": {os.getpid()}, "started": "x"}}',
+            '{"host": "some-other-host-xyz", "pid": 999999999, "started": "x"}',
+            "not even json",
+        ):
+            with open(lock, "w") as h:
+                h.write(payload)
+            with fsutil.out_dir_lock(str(tmp_path)):
+                pass  # reclaimed cleanly — no LockHeldError, no crash
+
+    def test_invalid_utf8_lock_does_not_crash(self, tmp_path):
+        # Issue #92: invalid-UTF-8 bytes in .clean.lock must never surface as a
+        # UnicodeDecodeError. With no live holder the lock is simply reclaimed.
+        (tmp_path / fsutil.LOCK_NAME).write_bytes(b"\xff\xfe")
         with fsutil.out_dir_lock(str(tmp_path)):
-            pass  # reclaimed, no error
+            pass
 
-    def test_refuses_cross_host_even_if_pid_dead(self, tmp_path):
-        lock = os.path.join(str(tmp_path), ".clean.lock")
-        with open(lock, "w") as h:
-            h.write('{"host": "some-other-host-xyz", "pid": 999999999, "started": "x"}')
-        with pytest.raises(fsutil.LockHeldError):  # noqa: SIM117
-            with fsutil.out_dir_lock(str(tmp_path)):
-                pass
+    def test_a_refused_run_does_not_disturb_the_holder(self, tmp_path):
+        # Issue #87 (blind release): a refused run must not delete or release the
+        # live holder's lock. Hold it, get refused twice, and confirm the holder
+        # keeps exclusive possession throughout.
+        with fsutil.out_dir_lock(str(tmp_path)):  # holder A  # noqa: SIM117
+            for _ in range(2):
+                with (
+                    pytest.raises(fsutil.LockHeldError),
+                    fsutil.out_dir_lock(str(tmp_path)),
+                ):
+                    pass
+        with fsutil.out_dir_lock(str(tmp_path)):
+            pass  # A released — next run acquires
 
-    def test_invalid_utf8_lock_treated_as_unreadable(self, tmp_path):
-        # Issue #92: invalid-UTF-8 bytes in .clean.lock must not crash with a
-        # UnicodeDecodeError traceback; the lock should be treated as unreadable
-        # (same-host dead-PID reclaim path or LockHeldError, not AttributeError).
-        lock = tmp_path / fsutil.LOCK_NAME
-        lock.write_bytes(b"\xff\xfe")
-        # We can't reclaim (not a dead same-host PID), so we expect LockHeldError
-        # OR the lock to be quietly treated as corrupt and an error raised — but
-        # crucially, NOT an unhandled UnicodeDecodeError.
+    def test_lockheld_message_names_the_file_and_escape_hatch(self, tmp_path):
+        # Issue #99: name the lock file and the manual-removal escape hatch so an
+        # operator facing a (truly) stuck lock isn't left guessing.
+        with fsutil.out_dir_lock(str(tmp_path)):  # noqa: SIM117
+            with pytest.raises(fsutil.LockHeldError) as excinfo:
+                with fsutil.out_dir_lock(str(tmp_path)):
+                    pass
+        msg = str(excinfo.value)
+        assert fsutil.LOCK_NAME in msg and "remove" in msg
+
+    def test_auto_releases_when_the_holding_process_is_killed(self, tmp_path):
+        # The crux of the redesign (#87/#99): the lock IS the kernel's flock on
+        # the holder's fd, so a holder that is SIGKILLed — no clean release, no
+        # unlink — frees it automatically. No stale-lock reclaim, no wedge.
+        import multiprocessing as mp
+
+        ctx = mp.get_context("spawn")
+        ready = ctx.Event()
+        proc = ctx.Process(target=_hold_lock_forever, args=(str(tmp_path), ready))
+        proc.start()
         try:
-            with fsutil.out_dir_lock(str(tmp_path)):
+            assert ready.wait(timeout=15), "child never acquired the lock"
+            with (  # live child holds it
+                pytest.raises(fsutil.LockHeldError),
+                fsutil.out_dir_lock(str(tmp_path)),
+            ):
                 pass
-        except fsutil.LockHeldError:
-            pass  # expected — corrupt lock treated as unrecognised holder
-        # The key assertion: no UnicodeDecodeError was raised above.
+            proc.kill()  # SIGKILL: no chance to clean up — mimics a crash
+            proc.join(timeout=15)
+            with fsutil.out_dir_lock(str(tmp_path)):
+                pass  # kernel dropped the dead holder's flock — we acquire freely
+        finally:
+            if proc.is_alive():
+                proc.kill()
+                proc.join(timeout=15)
 
 
 class TestReadJsonOrNone:
