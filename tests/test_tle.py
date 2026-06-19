@@ -119,13 +119,15 @@ class TestValidateRecord:
         assert any("catalog" in e for e in tle.validate_record(line1, other))
 
 
-class TestChecksumRoutingWordIsPinned:
-    """repair.py routes a failed repair to the public RuleID CHECKSUM_MISMATCH
-    vs INVALID_COLUMN_LAYOUT by substring-matching ``"checksum"`` in the
-    validator's prose (``any("checksum" in e for e in errors)``). That contract
-    is unpinned, so a future reword could silently misroute a never-recycled
-    RuleID. Pin it from both sides (issue #106): checksum errors MUST carry the
-    word; column/semantic errors and field descriptions MUST NOT.
+class TestChecksumWordVocabularyIsPinned:
+    """Since #120, repair routes on the typed ``FieldError.kind`` ("checksum" vs
+    "column"/"semantic"), so the prose word no longer steers a never-recycled
+    RuleID — that contract is structural now, not textual. What remains worth
+    pinning is human-output *vocabulary* consistency (the original #106 concern,
+    from the other side): the word "checksum" must appear in checksum-error prose
+    and must NOT leak into column/semantic errors or field descriptions, so a
+    reader (and the secondary ``"checksum" in note`` eyeballing) stays aligned
+    with the kind. A reword can no longer misroute; it could still confuse.
     """
 
     def test_checksum_errors_contain_the_word(self, line1):
