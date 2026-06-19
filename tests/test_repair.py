@@ -35,6 +35,27 @@ class TestRepairLine:
         assert diag is None and clean == line1
         assert FixClass.RECONSTRUCTED_CHECKSUM in fixes
 
+    def test_legit_col68_space_checksumless_quarantines_even_with_reconstruct(
+        self, line1
+    ):
+        # Issue #108: trailing-whitespace stripping runs before the length is
+        # measured, so a checksum-less 68-char body whose column 68 is a
+        # legitimately-allowed space (the _DIGIT_SPACE element-set-number field)
+        # is normalized to 67 chars and quarantined as LINE_LENGTH (observed=67)
+        # — even under reconstruct_checksum. This is intentional: a trailing
+        # space on a checksum-less line is ambiguous (last data column vs. junk),
+        # so Critical Rule #2 dictates quarantine over a guessed reconstruction.
+        body = line1[:67] + " "  # 68 cols, col 68 a legit space, checksum absent
+        assert tle.validate_body(body, 1) == []  # the body itself is valid...
+        assert tle.validate_line(body + str(tle.compute_checksum(body)), 1) == []
+        clean, fixes, diag = repair.repair_line(
+            body.encode("ascii"), 1, source_line_no=9, reconstruct_checksum=True
+        )
+        assert clean is None  # ...yet repair conservatively quarantines it
+        assert diag.rule_id == RuleID.LINE_LENGTH and diag.observed == "67"
+        assert FixClass.TRAILING_WS in fixes
+        assert FixClass.RECONSTRUCTED_CHECKSUM not in fixes
+
     def test_reconstruct_with_backslash_artifact(self, line1):
         raw = (line1[:68] + "\\").encode("ascii")  # 69 bytes: 68 columns + '\'
         clean, fixes, diag = repair.repair_line(

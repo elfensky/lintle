@@ -188,6 +188,15 @@ strip CRLF → strip leading whitespace → strip trailing whitespace → strip 
 body is valid, *and* `--reconstruct-checksum` was passed — otherwise the 68-char line is
 quarantined as a length error) → a single full re-validation of the candidate.
 
+Because trailing-whitespace stripping runs *before* the length is measured, a checksum-less
+68-character line whose column 68 is a legitimately-allowed space (the `_DIGIT_SPACE`
+element-set-number and revolution-number fields permit one) is normalized to 67 characters and
+quarantined as a `LINE_LENGTH` error (`observed=67`) rather than taking the missing-checksum
+path — *even under `--reconstruct-checksum`* (issue #108). This is intentional, not a gap: a
+trailing space on a checksum-less line is genuinely ambiguous (last data column vs. junk
+whitespace), so Critical Rule #2 dictates quarantine over a guessed reconstruction. The
+conservative outcome (never wrong output) holds either way; only the diagnosis differs.
+
 ### Repair tiers
 
 A `Diagnostic` records which **`RepairTier`** was attempted before it fired, so consumers can
