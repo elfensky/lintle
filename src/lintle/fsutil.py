@@ -159,7 +159,7 @@ def out_dir_lock(out_dir, *, started="unknown"):
             raise LockHeldError(
                 f"another lintle clean is using {out_dir!r} "
                 f"(held by {holder}; lock file {os.fspath(path)!r}); wait for it "
-                f"to finish, or remove that file if no run is active"
+                f"to finish, or remove that lock file if no run is active"
             ) from None
         # We hold the lock — record informational holder identity for any peer
         # that finds itself blocked on this live hold.
