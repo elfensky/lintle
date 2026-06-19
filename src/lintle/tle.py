@@ -105,71 +105,182 @@ _LINE2_FIELDS = [
 _LINE_SPEC = {1: (_LINE1_CHARS, _LINE1_FIELDS), 2: (_LINE2_CHARS, _LINE2_FIELDS)}
 
 
-def _check_columns(body: str, lineno: int) -> list[str]:
+class FieldError(str):
+    """A validation error that is also its own human-readable message.
+
+    Subclasses ``str`` so every consumer that treats a validator error as text
+    — substring tests, ``"; ".join(...)``, f-string interpolation — keeps
+    working byte-for-byte, while :mod:`repair` reads the structured fields to
+    route on the error *kind* (not by grepping prose, #106) and to populate
+    ``report.jsonl``'s ``column_range``/``observed``/``expected`` for column and
+    semantic findings (#120). ``kind`` is one of ``"length"``, ``"column"``,
+    ``"semantic"``, ``"checksum"``, ``"catalog"``. ``column_range`` is a 1-indexed
+    inclusive ``(low, high)`` span (or ``None``). Instances are only ever *read*
+    — never sliced or concatenated — so the str-subclass caveat that operations
+    return a plain ``str`` never bites.
+    """
+
+    __slots__ = ("kind", "column_range", "observed", "expected")
+
+    def __new__(cls, message, *, kind, column_range=None, observed=None, expected=None):
+        self = super().__new__(cls, message)
+        self.kind = kind
+        self.column_range = column_range
+        self.observed = observed
+        self.expected = expected
+        return self
+
+
+def _check_columns(body: str, lineno: int) -> list[FieldError]:
     """Validate the fixed-position column layout of a 68-character ``body``.
 
-    ``lineno`` is 1 or 2. Returns a list of human-readable error strings;
-    an empty list means the column layout is valid.
+    ``lineno`` is 1 or 2. Returns a list of :class:`FieldError` (each also its
+    own prose string); an empty list means the column layout is valid.
     """
     if len(body) != 68:
-        return [f"body length {len(body)}, expected 68 columns"]
+        return [
+            FieldError(
+                f"body length {len(body)}, expected 68 columns",
+                kind="length",
+                observed=str(len(body)),
+                expected="68",
+            )
+        ]
     chars, fields = _LINE_SPEC[lineno]
     errors = []
     for idx, allowed, desc in chars:
         if body[idx] not in allowed:
             errors.append(
-                f"column {idx + 1} ({desc}): got {body[idx]!r}, "
-                f"expected one of {allowed!r}"
+                FieldError(
+                    f"column {idx + 1} ({desc}): got {body[idx]!r}, "
+                    f"expected one of {allowed!r}",
+                    kind="column",
+                    column_range=(idx + 1, idx + 1),
+                    observed=body[idx],
+                    expected=allowed,
+                )
             )
     for start, end, allowed, desc in fields:
         if any(c not in allowed for c in body[start:end]):
+            # A multi-char field violation is "some char in this span is outside
+            # the allowed set" — there is no single expected *value*, only a
+            # charset constraint, which the prose note carries in full. Leaving
+            # `expected` null is more honest than a charset truncated to 16 chars
+            # (e.g. the 37-char alnum-space set) in report.jsonl. `observed` still
+            # carries the offending substring; `column_range` the span.
             errors.append(
-                f"columns {start + 1}-{end} ({desc}): "
-                f"contains a character outside {allowed!r}"
+                FieldError(
+                    f"columns {start + 1}-{end} ({desc}): "
+                    f"contains a character outside {allowed!r}",
+                    kind="column",
+                    column_range=(start + 1, end),
+                    observed=body[start:end],
+                )
             )
     return errors
 
 
-def _check_semantics(body: str, lineno: int) -> list[str]:
+def _semantic(
+    message: str,
+    column_range: tuple[int, int],
+    observed: object,
+    expected: str,
+) -> FieldError:
+    """Build a ``kind="semantic"`` :class:`FieldError` for an out-of-range field."""
+    return FieldError(
+        message,
+        kind="semantic",
+        column_range=column_range,
+        observed=str(observed),
+        expected=expected,
+    )
+
+
+def _check_semantics(body: str, lineno: int) -> list[FieldError]:
     """Validate that numeric fields fall in their physically valid ranges.
 
     Assumes ``body`` already passed ``_check_columns`` for ``lineno``.
-    Returns a list of error strings; empty means valid.
+    Returns a list of :class:`FieldError`; empty means valid.
     """
     errors = []
     try:
         if lineno == 1:
             day = float(body[20:23] + "." + body[24:32])
             if not 0.0 < day < 367.0:
-                errors.append(f"epoch day-of-year {day} outside (0, 367)")
+                errors.append(
+                    _semantic(
+                        f"epoch day-of-year {day} outside (0, 367)",
+                        (21, 32),
+                        day,
+                        "(0, 367)",
+                    )
+                )
         else:
             inc = float(body[8:16])
             if not 0.0 <= inc <= 180.0:
-                errors.append(f"inclination {inc} outside [0, 180]")
+                errors.append(
+                    _semantic(
+                        f"inclination {inc} outside [0, 180]", (9, 16), inc, "[0, 180]"
+                    )
+                )
             raan = float(body[17:25])
             if not 0.0 <= raan < 360.0:
-                errors.append(f"RAAN {raan} outside [0, 360)")
+                errors.append(
+                    _semantic(
+                        f"RAAN {raan} outside [0, 360)", (18, 25), raan, "[0, 360)"
+                    )
+                )
             ecc = int(body[26:33]) / 1e7
             if not 0.0 <= ecc < 1.0:
-                errors.append(f"eccentricity {ecc} outside [0, 1)")
+                errors.append(
+                    _semantic(
+                        f"eccentricity {ecc} outside [0, 1)", (27, 33), ecc, "[0, 1)"
+                    )
+                )
             argp = float(body[34:42])
             if not 0.0 <= argp < 360.0:
-                errors.append(f"argument of perigee {argp} outside [0, 360)")
+                errors.append(
+                    _semantic(
+                        f"argument of perigee {argp} outside [0, 360)",
+                        (35, 42),
+                        argp,
+                        "[0, 360)",
+                    )
+                )
             mean_anom = float(body[43:51])
             if not 0.0 <= mean_anom < 360.0:
-                errors.append(f"mean anomaly {mean_anom} outside [0, 360)")
+                errors.append(
+                    _semantic(
+                        f"mean anomaly {mean_anom} outside [0, 360)",
+                        (44, 51),
+                        mean_anom,
+                        "[0, 360)",
+                    )
+                )
             mean_motion = float(body[52:63])
             if mean_motion <= 0.0:
-                errors.append(f"mean motion {mean_motion} is not strictly positive")
+                errors.append(
+                    _semantic(
+                        f"mean motion {mean_motion} is not strictly positive",
+                        (53, 63),
+                        mean_motion,
+                        "> 0",
+                    )
+                )
     except ValueError:
-        errors.append("a numeric field could not be parsed for semantic checks")
+        errors.append(
+            FieldError(
+                "a numeric field could not be parsed for semantic checks",
+                kind="semantic",
+            )
+        )
     return errors
 
 
-def validate_body(body: str, lineno: int) -> list[str]:
+def validate_body(body: str, lineno: int) -> list[FieldError]:
     """Validate columns 1-68 of a TLE line: column layout then semantics.
 
-    ``lineno`` is 1 or 2. Returns a list of error strings (empty = valid).
+    ``lineno`` is 1 or 2. Returns a list of :class:`FieldError` (empty = valid).
     The checksum (column 69) is intentionally NOT checked here — see
     ``validate_line``. Semantics are only checked if the column layout is
     sound, so callers get the more fundamental error first.
@@ -180,27 +291,49 @@ def validate_body(body: str, lineno: int) -> list[str]:
     return _check_semantics(body, lineno)
 
 
-def checksum_error(line: str) -> str | None:
-    """Return an error string if the column-69 checksum of a 69-char
-    ``line`` is wrong or non-numeric, else ``None``.
+def checksum_error(line: str) -> FieldError | None:
+    """Return a ``kind="checksum"`` :class:`FieldError` if the column-69 checksum
+    of a 69-char ``line`` is wrong or non-numeric, else ``None``. ``observed`` is
+    the column-69 character and ``expected`` is the recomputed checksum digit (for
+    both the non-digit and the numeric-mismatch case, matching the structured
+    fields ``repair`` records).
     """
     actual = line[68]
-    if actual not in _DIGIT:
-        return f"checksum column 69 is {actual!r}, not a digit"
     expected = compute_checksum(line)
+    if actual not in _DIGIT:
+        return FieldError(
+            f"checksum column 69 is {actual!r}, not a digit",
+            kind="checksum",
+            column_range=(69, 69),
+            observed=actual,
+            expected=str(expected),
+        )
     if int(actual) != expected:
-        return f"checksum mismatch: column 69 is {actual!r}, computed {expected}"
+        return FieldError(
+            f"checksum mismatch: column 69 is {actual!r}, computed {expected}",
+            kind="checksum",
+            column_range=(69, 69),
+            observed=actual,
+            expected=str(expected),
+        )
     return None
 
 
-def validate_line(line: str, lineno: int) -> list[str]:
+def validate_line(line: str, lineno: int) -> list[FieldError]:
     """Fully validate a single 69-character TLE line.
 
-    ``lineno`` is 1 or 2. Returns a list of error strings (empty = valid):
+    ``lineno`` is 1 or 2. Returns a list of :class:`FieldError` (empty = valid):
     length, column layout, semantic ranges, and the column-69 checksum.
     """
     if len(line) != LINE_LENGTH:
-        return [f"line length {len(line)}, expected {LINE_LENGTH}"]
+        return [
+            FieldError(
+                f"line length {len(line)}, expected {LINE_LENGTH}",
+                kind="length",
+                observed=str(len(line)),
+                expected=str(LINE_LENGTH),
+            )
+        ]
     errors = validate_body(line[:68], lineno)
     if errors:
         return errors
@@ -232,34 +365,52 @@ def extract_norad_id(line: str | bytes) -> int | None:
     return int(field)
 
 
-def validate_record(line1: str, line2: str) -> list[str]:
+def validate_record(line1: str, line2: str) -> list[FieldError]:
     """Validate a paired TLE record: each line valid, and the satellite
-    catalog numbers (columns 3-7) match. Returns a list of error strings.
+    catalog numbers (columns 3-7) match. Returns a list of :class:`FieldError`
+    (each also its own prose string, prefixed ``"line 1: "`` / ``"line 2: "``
+    for the per-line errors). The catalog cross-check is delegated to
+    :func:`validate_record_catalog` so that mismatch error is defined in one
+    place. Test/oracle helper — ``repair`` uses ``validate_line`` plus the
+    catalog fast path directly (#109).
     """
     errors = []
     for label, line, lineno in (("line 1", line1, 1), ("line 2", line2, 2)):
         for err in validate_line(line, lineno):
-            errors.append(f"{label}: {err}")
-    if not errors and line1[2:7] != line2[2:7]:
-        errors.append(
-            f"catalog number mismatch: line 1 {line1[2:7]!r} vs line 2 {line2[2:7]!r}"
-        )
+            errors.append(
+                FieldError(
+                    f"{label}: {err}",
+                    kind=err.kind,
+                    column_range=err.column_range,
+                    observed=err.observed,
+                    expected=err.expected,
+                )
+            )
+    if not errors:
+        errors.extend(validate_record_catalog(line1, line2))
     return errors
 
 
-def validate_record_catalog(line1: str, line2: str) -> list[str]:
+def validate_record_catalog(line1: str, line2: str) -> list[FieldError]:
     """Check only the catalog-number cross-match for two individually-valid lines.
 
     Assumes both ``line1`` and ``line2`` have already passed ``validate_line``
     for their respective line numbers. Returns the same error list that
-    ``validate_record`` would return for two valid lines — i.e. either an
-    empty list (catalog numbers match) or a single catalog-mismatch string —
-    without re-running per-line layout, semantics, or checksum validation.
-    This is the record-level fast path for callers like ``repair_record`` where
-    each line has already been individually validated.
+    ``validate_record`` would return for two valid lines — i.e. either an empty
+    list (catalog numbers match) or a single ``kind="catalog"`` mismatch
+    :class:`FieldError` — without re-running per-line layout, semantics, or
+    checksum validation. The record-level fast path for callers like
+    ``repair_record`` where each line has already been individually validated.
     """
     if line1[2:7] != line2[2:7]:
         return [
-            f"catalog number mismatch: line 1 {line1[2:7]!r} vs line 2 {line2[2:7]!r}"
+            FieldError(
+                f"catalog number mismatch: "
+                f"line 1 {line1[2:7]!r} vs line 2 {line2[2:7]!r}",
+                kind="catalog",
+                column_range=(3, 7),
+                observed=line1[2:7],
+                expected=line2[2:7],
+            )
         ]
     return []

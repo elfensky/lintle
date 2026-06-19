@@ -126,29 +126,33 @@ def repair_line(
             if FixClass.RECONSTRUCTED_CHECKSUM in fixes
             else RepairTier.NORMALIZATION
         )
-        # Route on the validator's own error wording. Body (column/semantic)
-        # errors fire before the checksum check in validate_line, so a record
-        # with both a bad layout and a bad checksum stays INVALID_COLUMN_LAYOUT.
-        # Do not reroute on checksum_error() alone — it reads only column 69 and
-        # would misroute such a record to CHECKSUM_MISMATCH (a public RuleID).
-        if any("checksum" in e for e in errors):
+        # Route on the validator's typed FieldError.kind, not on prose (#106,
+        # #120). Body (column/semantic) errors fire before the checksum check in
+        # validate_line, so a record with both a bad layout and a bad checksum
+        # carries no "checksum" FieldError here and stays INVALID_COLUMN_LAYOUT.
+        # The structured fields (column_range/observed/expected) flow straight
+        # from the primary FieldError, so report.jsonl carries them for column
+        # and semantic findings too — not just for checksum mismatches.
+        checksum_errs = [e for e in errors if e.kind == "checksum"]
+        if checksum_errs:
+            ce = checksum_errs[0]
             diag = diagnostic(
                 RuleID.CHECKSUM_MISMATCH,
                 source_line_nos=src,
                 tier_attempted=tier,
-                column_range=(69, 69),
-                # candidate is invariantly 69 chars here: the branch above
-                # assigns it from either a length-69 line or a length-68 line
-                # plus its recomputed checksum digit; every other length
-                # returns early. So column 69 (index 68) always exists.
-                observed=candidate[68],
-                expected=str(tle.compute_checksum(candidate)),
+                column_range=ce.column_range,
+                observed=ce.observed,
+                expected=ce.expected,
             )
         else:
+            primary = errors[0]
             diag = diagnostic(
                 RuleID.INVALID_COLUMN_LAYOUT,
                 source_line_nos=src,
                 tier_attempted=tier,
+                column_range=primary.column_range,
+                observed=primary.observed,
+                expected=primary.expected,
                 note="; ".join(errors),
             )
         return None, fixes, diag
@@ -224,6 +228,7 @@ def repair_record(
             if FixClass.RECONSTRUCTED_CHECKSUM in fixes1 + fixes2
             else RepairTier.NORMALIZATION
         )
+        catalog = record_errors[0]
         return Quarantined(
             [raw_line1, raw_line2],
             [src1, src2],
@@ -231,6 +236,9 @@ def repair_record(
                 RuleID.CATALOG_MISMATCH,
                 source_line_nos=(src1, src2),
                 tier_attempted=tier,
+                column_range=catalog.column_range,
+                observed=catalog.observed,
+                expected=catalog.expected,
                 note="; ".join(record_errors),
             ),
         )
