@@ -409,6 +409,16 @@ def write_broken_noradids_ndjson(path: str, all_stats: list[FileStats]) -> None:
     )
 
 
+def shard_path(out_dir: str, src_name: str) -> Path:
+    """Return the per-file findings-shard path
+    ``<out_dir>/.shards/<stem>.findings.jsonl``. The single place that
+    expression is built, so the pipeline's write side and this module's read
+    side (``concat_findings_shards``) can never drift (issue #119); the dirname
+    and suffix themselves come from the naming-convention authority in
+    ``lintle.__init__``."""
+    return Path(out_dir) / SHARDS_DIRNAME / (stem(src_name) + FINDINGS_SUFFIX)
+
+
 def concat_findings_shards(
     out_dir: str, dest_path: str, all_stats: list[FileStats]
 ) -> list[str]:
@@ -436,12 +446,11 @@ def concat_findings_shards(
     successful run, so an interrupted or failed run keeps its shards and a
     later ``--resume`` can re-read them to rebuild a complete ``report.jsonl``.
     """
-    shard_dir = Path(out_dir) / SHARDS_DIRNAME
     tmp_path = dest_path + ".partial"
     missing_nonempty: list[str] = []
     with open(tmp_path, "wb") as out:
         for stats in all_stats:
-            shard = shard_dir / (stem(stats.src_name) + FINDINGS_SUFFIX)
+            shard = shard_path(out_dir, stats.src_name)
             if not shard.exists():
                 # Worker crashed before finalize, validate-mode worker, or
                 # an out-of-band cleanup removed it. When the file had

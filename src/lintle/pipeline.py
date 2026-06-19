@@ -11,7 +11,6 @@ from lintle import (
     BROKEN_SUFFIX,
     CLEANED_DIRNAME,
     CLEANED_SUFFIX,
-    FINDINGS_SUFFIX,
     SHARDS_DIRNAME,
     fsutil,
     repair,
@@ -432,12 +431,11 @@ def _clean_output_paths(out_dir, src_name):
     cleaned_dir.mkdir(parents=True, exist_ok=True)
     broken_dir = out / BROKEN_DIRNAME
     broken_dir.mkdir(parents=True, exist_ok=True)
-    shard_dir = out / SHARDS_DIRNAME
-    shard_dir.mkdir(parents=True, exist_ok=True)
+    (out / SHARDS_DIRNAME).mkdir(parents=True, exist_ok=True)
     return _CleanPaths(
         cleaned=str(cleaned_dir / (stem(src_name) + CLEANED_SUFFIX)),
         broken=str(broken_dir / (stem(src_name) + BROKEN_SUFFIX)),
-        jsonl=str(shard_dir / (stem(src_name) + FINDINGS_SUFFIX)),
+        jsonl=str(report_writers.shard_path(out_dir, src_name)),
     )
 
 
