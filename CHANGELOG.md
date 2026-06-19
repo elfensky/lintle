@@ -36,6 +36,23 @@ All notable changes to this project are documented in this file. The format is b
   (c) `_ProgressBatcher.enabled` was a `@property` re-evaluated every call;
   replaced with a `_enabled: bool` field computed once in `__post_init__`.
 
+### Changed
+
+- **`#120`/`#106` — the validator now returns a typed `tle.FieldError` instead of
+  a bare error string.** `FieldError` subclasses `str` (so every consumer that
+  treats an error as text — substring tests, `"; ".join(...)`, f-string interpolation
+  — keeps working byte-for-byte) while carrying structured fields: `kind`
+  (`"length"`/`"column"`/`"semantic"`/`"checksum"`/`"catalog"`), a 1-indexed
+  inclusive `column_range`, and `observed`/`expected`. `repair` now routes on
+  `FieldError.kind` rather than grepping the prose for `"checksum"` (the brittle
+  contract #106 pinned as a tripwire), and populates `report.jsonl`'s
+  `column_range`/`observed`/`expected` for **column, semantic, and catalog**
+  findings — previously they were filled only for checksum mismatches. The
+  `report.jsonl` line schema stays `"1"`: the field set and types are unchanged;
+  only previously-`null` optional values are now filled in. Human-facing output
+  (`report.md`, the `.broken.txt` sidecar, the `note` field) is byte-identical —
+  pinned by the sgp4 oracle and the full existing suite.
+
 ### Fixed
 
 - **`#95` — a newline-free or CR-only multi-GB file was materialised as one giant `bytes`

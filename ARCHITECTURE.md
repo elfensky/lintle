@@ -453,6 +453,19 @@ This stream stayed `"1"` through the envelope's `"2"` and `"3"` bumps. Verified 
 | `note` | string \| null | bounded to 80 chars, non-printables sanitized; `null` when empty |
 | `related` | array\<object\> | secondary diagnostics, each the same nested shape (minus the envelope fields) |
 
+> `column_range`/`observed` are populated for **column, semantic, catalog, and
+> checksum** findings (issue #120) — the validator returns a typed
+> `tle.FieldError` (a `str` subclass carrying `kind` + the column span), so
+> `repair` routes on `FieldError.kind` instead of grepping the prose and records
+> the structured fields. `expected` is filled where the rule has a single
+> expected token (a checksum digit, a semantic bound like `[0, 180]`, the other
+> line's catalog number, a single-char column's allowed set); it stays `null` for
+> a *multi-character* column field, whose constraint is a charset best left to the
+> prose `note` rather than a 16-char-truncated value. All three are `null` for rules with
+> no single column locus (e.g. `BAD_PREFIX`, `ORPHAN_LINE`). The `note` still
+> carries the full prose. The line schema stays `"1"`: the field set and types are
+> unchanged — only previously-`null` optional values are now filled in.
+
 ### The `.broken.txt` sidecar
 
 Byte-faithful quarantine catalog, one per input file. A three-line ASCII header (title, source

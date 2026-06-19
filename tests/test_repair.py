@@ -217,6 +217,41 @@ class TestRepairContractProperties:
         assert FixClass.RECONSTRUCTED_CHECKSUM in result.fixes
 
 
+class TestStructuredDiagnostics:
+    """#120: repair routes on the validator's typed FieldError.kind (not by
+    grepping prose), and column/semantic/catalog findings now carry the
+    structured column_range/observed/expected fields in their Diagnostic
+    (previously populated only for checksum mismatches)."""
+
+    def test_invalid_column_layout_carries_structured_fields(self, line1):
+        bad = "3" + line1[1:]  # valid length, wrong line-number column
+        clean, _, diag = repair.repair_line(bad.encode("ascii"), 1, 1)
+        assert clean is None and diag.rule_id == RuleID.INVALID_COLUMN_LAYOUT
+        assert diag.column_range == (1, 1)
+        assert diag.observed == "3" and diag.expected == "1"
+        assert "line number" in diag.note  # full prose preserved in the note
+
+    def test_checksum_mismatch_routes_by_kind_with_fields(self, line1):
+        bad = line1[:68] + "9"  # canonical checksum is 3
+        clean, _, diag = repair.repair_line(bad.encode("ascii"), 1, 1)
+        assert clean is None and diag.rule_id == RuleID.CHECKSUM_MISMATCH
+        assert diag.column_range == (69, 69)
+        assert diag.observed == "9"
+        assert diag.expected == str(tle.compute_checksum(bad))
+
+    def test_catalog_mismatch_carries_structured_fields(self, line1, line2):
+        other_body = "2 09999" + line2[7:68]
+        other = other_body + str(tle.compute_checksum(other_body))
+        result = repair.repair_record(
+            line1.encode("ascii"), 1, other.encode("ascii"), 2
+        )
+        assert isinstance(result, repair.Quarantined)
+        assert result.primary.rule_id == RuleID.CATALOG_MISMATCH
+        assert result.primary.column_range == (3, 7)
+        assert result.primary.observed == line1[2:7]
+        assert result.primary.expected == other[2:7]
+
+
 class TestRepairRecordComboCases:
     """Multi-line failure orchestration: primary/related selection + tiers."""
 

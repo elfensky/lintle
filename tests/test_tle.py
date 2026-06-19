@@ -204,6 +204,54 @@ class TestValidateRecordCatalog:
         assert tle.validate_record_catalog(l1, l2) == tle.validate_record(l1, l2)
 
 
+class TestFieldError:
+    """The validator's structured error type (#120): each error is its own
+    prose string (so all human output and substring checks are byte-identical)
+    AND carries typed routing/column fields for repair + report.jsonl."""
+
+    def test_column_error_is_str_with_structured_fields(self, line1):
+        body = "9" + line1[1:68]  # bad line-number column (column 1)
+        (err,) = [e for e in tle._check_columns(body, 1) if "line number" in e]
+        assert isinstance(err, str)  # byte-compatible prose
+        assert err == "column 1 (line number): got '9', expected one of '1'"
+        assert err.kind == "column"
+        assert err.column_range == (1, 1)
+        assert err.observed == "9"
+        assert err.expected == "1"
+
+    def test_field_error_in_a_multi_char_field(self, line1):
+        body = line1[:18] + "X" + line1[19:68]  # letter in the epoch-year field
+        (err,) = [e for e in tle._check_columns(body, 1) if "epoch year" in e]
+        assert err.kind == "column"
+        assert err.column_range == (19, 20)  # epoch year is columns 19-20
+        assert err.observed == body[18:20]  # the offending field substring
+        # A multi-char field constraint is a charset, not a single value:
+        # `expected` stays None (the full set is in the prose), avoiding a
+        # misleading 16-char-truncated charset in report.jsonl.
+        assert err.expected is None
+
+    def test_checksum_error_kind_and_fields(self, line1):
+        err = tle.checksum_error(line1[:68] + "9")  # wrong checksum digit
+        assert err.kind == "checksum"
+        assert err.column_range == (69, 69)
+        assert err.observed == "9"
+        assert err.expected == str(tle.compute_checksum(line1[:68] + "9"))
+
+    def test_semantic_error_carries_field_span(self, line2):
+        body = line2[:8] + "999.2682" + line2[16:68]  # inclination out of range
+        (err,) = [e for e in tle.validate_body(body, 2) if "inclination" in e]
+        assert err.kind == "semantic"
+        assert err.column_range == (9, 16)
+
+    def test_catalog_error_kind_and_fields(self, line1, line2):
+        other_body = "2 09999" + line2[7:68]
+        other = other_body + str(tle.compute_checksum(other_body))
+        (err,) = tle.validate_record_catalog(line1, other)
+        assert err.kind == "catalog"
+        assert err.column_range == (3, 7)
+        assert err.observed == line1[2:7] and err.expected == other[2:7]
+
+
 class TestExtractNoradId:
     def test_extracts_from_canonical_line1(self, line1):
         assert tle.extract_norad_id(line1) == 5
