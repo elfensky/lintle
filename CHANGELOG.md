@@ -55,6 +55,25 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Fixed
 
+- **`#87` / `#99` — the out-dir lock had a TOCTOU reclaim race, a blind release, a
+  post-reboot wedge, and a PID-reuse hostage.** The hand-rolled pidfile read the
+  holder's PID, checked liveness with `os.kill(pid, 0)`, and `unlink`+retried to
+  reclaim a dead lock — none of which re-verified the file it was deleting, so two
+  runs could both reclaim and proceed (`#87`, P0, reproduced), and a run whose lock
+  was raced away blind-unlinked the *current* holder's lock on exit. Identity also
+  embedded Linux `boot_id`, so a crash-then-reboot left an unreclaimable "different
+  host" lock (`#99`), and a recycled PID kept a dead lock alive. Replaced the whole
+  scheme with an advisory **`fcntl.flock`** held for the run: the kernel releases it
+  the instant the holder closes its fd, exits, is killed, or the host reboots, so
+  liveness needs no PID check or boot-id and there is no reclaim step to race.
+  Release is the bare `os.close` of *our own* fd — a run can only ever drop its own
+  lock, never a successor's. The `.clean.lock` file is deliberately never unlinked
+  (`flock` binds to the inode; unlinking would let a racing opener lock an orphaned
+  inode), and now records `{host, pid, started}` only as informational text for the
+  `LockHeldError` message, which names the file and the manual-removal escape hatch.
+  POSIX-only; Windows is out of scope (use WSL). A shared out-dir across hosts over a
+  network FS is documented as untested (relies on server-side `flock` propagation).
+
 - **`#95` — a newline-free or CR-only multi-GB file was materialised as one giant `bytes`
   object, violating constant-memory (Critical Rule #3).** `iter_records` previously iterated
   over the binary handle with `for raw in handle`, which splits only on `\n`; a file with no
