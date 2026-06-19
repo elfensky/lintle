@@ -177,6 +177,7 @@ class TestOutDirLock:
                 pass
             proc.kill()  # SIGKILL: no chance to clean up — mimics a crash
             proc.join(timeout=15)
+            assert not proc.is_alive(), "child did not die within 15s of SIGKILL"
             with fsutil.out_dir_lock(str(tmp_path)):
                 pass  # kernel dropped the dead holder's flock — we acquire freely
         finally:

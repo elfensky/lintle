@@ -504,6 +504,12 @@ def main(argv=None):
         # Stack is still empty — no lock to release.
         term.error(str(exc))
         return 2
+    except OSError as exc:
+        # A non-contention error acquiring the lock (e.g. ENOLCK, a read-only
+        # out-dir). out_dir_lock has already closed its fd; surface it as a clean
+        # exit 2 rather than an unhandled traceback.
+        term.error(f"cannot lock output directory {args.out_dir!r}: {exc}")
+        return 2
 
     # The try/finally guarantees _lock_stack.close() runs on every exit path
     # that reaches here: disk-error return, ABORT return, interrupt return,
