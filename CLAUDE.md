@@ -28,7 +28,7 @@ retired — those four (popular · maintained · reduces-our-burden · sensible 
 invariants**: one validator definition (Critical Rule #4), constant-memory streaming (#3),
 `sgp4`-never-at-runtime, byte-deterministic *unstyled* structured/stdout output (#1/#2 —
 `report.*`, NDJSON, sidecar, `--report json`, checkpoint, `cleaned/*`), and the atomic-durable
-commit + host-aware lock. The canonical rule and the considered/deferred table live in
+commit + advisory-flock out-dir lock. The canonical rule and the considered/deferred table live in
 [`ARCHITECTURE.md` §7](ARCHITECTURE.md#7-runtime-dependency-policy); the original rationale is
 archived under `docs/superpowers/archive/specs/2026-05-28-runtime-dependency-policy-design.md`.
 **Current runtime deps: `rich>=15,<16`** (terminal rendering for `clean`) and
