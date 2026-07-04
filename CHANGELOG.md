@@ -6,35 +6,17 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
-### Performance
+## [0.6.0] - 2026-07-04
 
-- **`#109` — every accepted record was validated twice.** `repair_record` called
-  `tle.validate_record(line1, line2)` after both lines had already passed
-  `repair_line`'s full `validate_line`. The only new information for two
-  individually-valid lines is the catalog-number cross-check. A new
-  `tle.validate_record_catalog(l1, l2)` helper performs only that check,
-  returning the byte-identical error string; `repair_record` now calls it instead.
-  `validate_record` is unchanged. Property tests confirm equivalence for all
-  matching and mismatched valid pairs.
+### Added
 
-- **`#110A` — `compute_checksum` hot-path: per-char membership tests replaced with
-  a precomputed lookup table.** The original loop called `ch in _DIGIT` then
-  `int(ch)` for every character. A module-level `_CHECKSUM_CONTRIB` dict (ASCII
-  digits `'0'`–`'9'` → their integer value, `'-'` → 1, absent = 0) reduces the
-  loop body to `sum(_CHECKSUM_CONTRIB.get(c, 0) for c in line[:68]) % 10` — one
-  dict lookup per character. Byte-equivalent by construction; the existing
-  checksum property tests confirm invariance.
-
-- **`#123` — pipeline allocation micro-optimisations.**
-  (a) `slots=True` added to `RecordCandidate`, `Orphan`, `_ProgressBatcher`
-  (pipeline.py) and `Accepted`, `Quarantined` (repair.py) — eliminates
-  per-instance `__dict__` allocation on every record; slotted dataclasses
-  pickle correctly across the worker pool.
-  (b) `_record_acceptance` now writes both cleaned lines in a single
-  `handle.write(line1 + "\n" + line2 + "\n")` call — byte-identical output,
-  half the Python-level write calls on the accepted-record hot path.
-  (c) `_ProgressBatcher.enabled` was a `@property` re-evaluated every call;
-  replaced with a `_enabled: bool` field computed once in `__post_init__`.
+- Failed input files are now recorded in the run envelope (issue #83). When a worker
+  raises, `run.failed_files` carries a `[{"file": basename, "error": str}]` list
+  (sorted, always present — `[]` on a clean run) and `summary.failed_count` mirrors
+  its length. `report.md` gains a `## Failures` table when any file failed (omitted on
+  a clean run). Exit code 2 is unchanged for this case. Schema version bumped
+  `"2"` → `"3"` because both new fields are required (not additive-optional).
+- `clean --reconstruct-checksum` opts in to tier-2 missing-checksum reconstruction.
 
 ### Changed
 
@@ -52,6 +34,12 @@ All notable changes to this project are documented in this file. The format is b
   only previously-`null` optional values are now filled in. Human-facing output
   (`report.md`, the `.broken.txt` sidecar, the `note` field) is byte-identical —
   pinned by the sgp4 oracle and the full existing suite.
+- **Missing-checksum reconstruction is now opt-in (default off).** A checksumless 68-char
+  line is quarantined by default rather than having a recomputed checksum appended: a dropped
+  trailing *data* character is indistinguishable from a dropped checksum, so reconstructing it
+  by default could silently emit wrong-but-valid data (Critical Rule #2, issue #82). Pass
+  `--reconstruct-checksum` to restore the recompute. The flag is part of the resume
+  run-identity, so changing it forces a re-run rather than folding mismatched outputs.
 
 ### Fixed
 
@@ -73,7 +61,6 @@ All notable changes to this project are documented in this file. The format is b
   `LockHeldError` message, which names the file and the manual-removal escape hatch.
   POSIX-only; Windows is out of scope (use WSL). A shared out-dir across hosts over a
   network FS is documented as untested (relies on server-side `flock` propagation).
-
 - **`#95` — a newline-free or CR-only multi-GB file was materialised as one giant `bytes`
   object, violating constant-memory (Critical Rule #3).** `iter_records` previously iterated
   over the binary handle with `for raw in handle`, which splits only on `\n`; a file with no
@@ -126,19 +113,6 @@ All notable changes to this project are documented in this file. The format is b
   prunes older archives after creating a new one, keeping only the newest 3
   (`_STALE_ARCHIVE_KEEP`). The ISO-8601 timestamp suffix is lexicographically sortable so the
   oldest entries are reliably identified and removed.
-
-### Added
-
-- Failed input files are now recorded in the run envelope (issue #83). When a worker
-  raises, `run.failed_files` carries a `[{"file": basename, "error": str}]` list
-  (sorted, always present — `[]` on a clean run) and `summary.failed_count` mirrors
-  its length. `report.md` gains a `## Failures` table when any file failed (omitted on
-  a clean run). Exit code 2 is unchanged for this case. Schema version bumped
-  `"2"` → `"3"` because both new fields are required (not additive-optional).
-- `clean --reconstruct-checksum` opts in to tier-2 missing-checksum reconstruction.
-
-### Fixed
-
 - **`#94` — disk-space guard charged the wrong amount.** The 2× guard now runs at the
   right moment in each branch. For a `--resume` run it charges 2× the *remaining*
   (unprocessed) input bytes — so a nearly-complete resume on a tight disk is no longer
@@ -155,22 +129,38 @@ All notable changes to this project are documented in this file. The format is b
   render as current. `scrub_outputs` now also removes `report.md`, `report.json`,
   `report.jsonl`, and `broken-noradids.ndjson` so the out-dir is truly clean before a
   new run's workers write fresh outputs.
-
-### Fixed
-
 - Records whose lines carry leading whitespace now pair and repair via the `leading-trim`
   fix class instead of being quarantined as `BAD_PREFIX`. `iter_records` matches the
   `1 `/`2 ` prefix on a whitespace-trimmed view while carrying the raw bytes forward to the
   repairer (issue #88).
 
-### Changed
+### Performance
 
-- **Missing-checksum reconstruction is now opt-in (default off).** A checksumless 68-char
-  line is quarantined by default rather than having a recomputed checksum appended: a dropped
-  trailing *data* character is indistinguishable from a dropped checksum, so reconstructing it
-  by default could silently emit wrong-but-valid data (Critical Rule #2, issue #82). Pass
-  `--reconstruct-checksum` to restore the recompute. The flag is part of the resume
-  run-identity, so changing it forces a re-run rather than folding mismatched outputs.
+- **`#109` — every accepted record was validated twice.** `repair_record` called
+  `tle.validate_record(line1, line2)` after both lines had already passed
+  `repair_line`'s full `validate_line`. The only new information for two
+  individually-valid lines is the catalog-number cross-check. A new
+  `tle.validate_record_catalog(l1, l2)` helper performs only that check,
+  returning the byte-identical error string; `repair_record` now calls it instead.
+  `validate_record` is unchanged. Property tests confirm equivalence for all
+  matching and mismatched valid pairs.
+- **`#110A` — `compute_checksum` hot-path: per-char membership tests replaced with
+  a precomputed lookup table.** The original loop called `ch in _DIGIT` then
+  `int(ch)` for every character. A module-level `_CHECKSUM_CONTRIB` dict (ASCII
+  digits `'0'`–`'9'` → their integer value, `'-'` → 1, absent = 0) reduces the
+  loop body to `sum(_CHECKSUM_CONTRIB.get(c, 0) for c in line[:68]) % 10` — one
+  dict lookup per character. Byte-equivalent by construction; the existing
+  checksum property tests confirm invariance.
+- **`#123` — pipeline allocation micro-optimisations.**
+  (a) `slots=True` added to `RecordCandidate`, `Orphan`, `_ProgressBatcher`
+  (pipeline.py) and `Accepted`, `Quarantined` (repair.py) — eliminates
+  per-instance `__dict__` allocation on every record; slotted dataclasses
+  pickle correctly across the worker pool.
+  (b) `_record_acceptance` now writes both cleaned lines in a single
+  `handle.write(line1 + "\n" + line2 + "\n")` call — byte-identical output,
+  half the Python-level write calls on the accepted-record hot path.
+  (c) `_ProgressBatcher.enabled` was a `@property` re-evaluated every call;
+  replaced with a `_enabled: bool` field computed once in `__post_init__`.
 
 ## [0.5.0] - 2026-06-08
 

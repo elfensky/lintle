@@ -710,7 +710,7 @@ The dated design specs, implementation plans, and corpus-run summaries now live 
 design *rationale* only. They include the authoritative cleaner design
 (`2026-05-21-tle-corpus-cleaner-design.md`, whose §3.1 first stated the dependency policy now
 consolidated in [§7](#7-runtime-dependency-policy)), the
-`--report json` envelope design (`2026-05-25-report-json-envelope.md`, schema now `"2"`), the
+`--report json` envelope design (`2026-05-25-report-json-envelope.md`, schema now `"3"`), the
 structured findings design (`2026-05-25-report-jsonl-structured-findings.md`), the
 runtime-dependency-policy rationale (`2026-05-28-runtime-dependency-policy-design.md`), and the
 resume-by-default design (`2026-05-30-resume-by-default-design.md`), among others.
