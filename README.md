@@ -15,8 +15,11 @@ into a per-file sidecar detailed enough to file a defect report with space-track
 - **Byte-deterministic output** — same input → identical bytes every run (diff-able,
   CI-friendly).
 
-On the bundled 29-file corpus (~232 M records): **99.96 % cleaned, 0.044 % quarantined** —
-every quarantined record fell into an anticipated defect category.
+On the bundled 29-file corpus (~232 M records), run with `--reconstruct-checksum`:
+**99.96 % cleaned, 0.044 % quarantined** — every quarantined record fell into an anticipated
+defect category. (Missing-checksum reconstruction is opt-in as of 0.6.0; without the flag the
+71.3 M checksumless records are quarantined instead of cleaned — see
+[Results](#results-on-the-bundled-corpus).)
 
 ---
 
@@ -75,6 +78,7 @@ uv run lintle diff <run-a> <run-b>
 | `--report text\|json` | `text` | Summary format. |
 | `--max-quarantined N[%]` | `0` | Exit non-zero only if MORE than N records were quarantined; or, with a trailing `%`, more than `N%` of routed records (`clean + quarantined`). Default `0` ≡ "any quarantine fails". |
 | `--resume` / `--no-resume` | — | (`clean` only) Resume an interrupted run without prompting / ignore any checkpoint and start fresh. See [Cancelling and resuming](#cancelling-and-resuming). |
+| `--reconstruct-checksum` | off | (`clean` only) Opt in to tier-2 missing-checksum reconstruction: recompute and append a dropped column-69 checksum instead of quarantining the 68-char line. Off by default because a dropped trailing *data* character is indistinguishable from a dropped checksum. Part of the resume run-identity, so toggling it forces a fresh run. |
 
 **Examples:**
 
@@ -128,6 +132,11 @@ character risks a record that *looks* valid but is silently wrong — the one ou
 than dropping it. So anything requiring such a guess (bad checksum, wrong length, orphan
 line, garbled columns) is **quarantined**, not repaired.
 
+Even the checksum recompute is **opt-in** as of 0.6.0 (`--reconstruct-checksum`): by
+default a checksumless 68-char line is quarantined, because a dropped trailing *data*
+character is indistinguishable from a dropped checksum, so reconstructing one by default
+could silently emit wrong-but-valid data.
+
 Fixes fall into five classes in decreasing order of safety — content-preserving (trailing
 `\`, CRLF, trailing whitespace), reconstructed-checksum, content-shifting (leading trim),
 structural (drop blanks), and corrupt (quarantine).
@@ -157,7 +166,8 @@ A `clean` run lays `--out-dir` out like this:
 - **`broken-noradids.ndjson`** — one `{"noradId":N}` per line, the deduplicated, sorted set
   of NORAD catalog numbers quarantined anywhere in the run (for programmatic consumers).
 - **`report.md`** — human-readable run report: corpus totals, % cleaned/quarantined, fix
-  counts, the per-rule defect breakdown, a per-file table, and a per-NORAD breakdown.
+  counts, the per-rule defect breakdown, a per-file table, a per-NORAD breakdown, and — when
+  any input file failed to process — a `## Failures` table naming each failed file and its error.
 - **`report.json`** — the machine-readable run envelope, **byte-identical** to the
   `--report json` stdout output. Persisted on every clean run so `lintle report` can
   re-render the summary later without re-processing the corpus.
@@ -184,12 +194,18 @@ format, the checkpoint): [`ARCHITECTURE.md` §6](ARCHITECTURE.md#6-outputs--mach
 
 ## Results on the bundled corpus
 
-A full run over the 29-file corpus (`tle2004`–`tle2025`, ~232 million records):
+A full run over the 29-file corpus (`tle2004`–`tle2025`, ~232 million records), **with
+`--reconstruct-checksum`**:
 
 - **99.96 % cleaned** — 187.9 M trailing-`\` artifacts stripped, 71.3 M missing checksums
   reconstructed.
 - **0.044 % quarantined** (103,228 records) as genuinely corrupt — every quarantined record
   fell into an anticipated category; no unknown defect type surfaced.
+
+Since 0.6.0 the missing-checksum recompute is opt-in (default off). A **default** run over the
+same corpus quarantines those 71.3 M checksumless records instead of reconstructing them, so
+the default-mode cleaned rate is correspondingly lower — pass `--reconstruct-checksum` to
+reproduce the figures above.
 
 ## Operational notes
 
