@@ -21,8 +21,21 @@ def fix(line: str) -> str:
 
 def mutated_l2() -> str:
     """L2 with one inclination digit changed (34.2682 -> 34.3682): still a valid
-    record, same catalog and epoch, different element bytes."""
+    record, same catalog and epoch, different orbital elements."""
     return fix(L2[:13] + "3" + L2[14:])
+
+
+def reissued_l1() -> str:
+    """L1 with a bumped element-set number (cols 65-68) — a normal space-track
+    re-issue: same catalog, epoch, and orbital state, only the admin field and
+    checksum change. Must NOT be treated as a contradiction."""
+    return fix(L1[:64] + "9999")
+
+
+def reissued_l2() -> str:
+    """L2 with a bumped revolution number (cols 64-68) — same orbital state; the
+    other admin-only re-issue shape seen in the real corpus."""
+    return fix(L2[:63] + "99999")
 
 
 def rec(line1=L1, line2=L2, src="tle01", idx=0) -> CleanedRecord:
@@ -108,11 +121,23 @@ class TestConflicts:
         stream = [rec(idx=0), rec(idx=1)]  # identical bytes, same (catalog, epoch)
         assert list(checks.find_conflicts(iter(stream))) == []
 
-    def test_same_epoch_different_bytes_conflicts(self):
-        stream = [rec(idx=0), rec(line2=mutated_l2(), idx=1)]
+    def test_different_orbital_elements_conflict(self):
+        stream = [rec(idx=0), rec(line2=mutated_l2(), idx=1)]  # inclination differs
         out = list(checks.find_conflicts(iter(stream)))
         assert len(out) == 1
         assert out[0].rule is VrfyRule.EPOCH_CONFLICT
+
+    def test_element_set_reissue_is_not_a_conflict(self):
+        # same orbital state, only the element-set number (cols 65-68) differs
+        r0, r1 = rec(idx=0), rec(line1=reissued_l1(), idx=1)
+        assert r0.line1[:64] == r1.line1[:64] and r0.line1 != r1.line1
+        assert list(checks.find_conflicts(iter([r0, r1]))) == []
+
+    def test_revolution_number_reissue_is_not_a_conflict(self):
+        # same orbital state, only the revolution number (cols 64-68) differs
+        r0, r1 = rec(idx=0), rec(line2=reissued_l2(), idx=1)
+        assert r0.line2[:63] == r1.line2[:63] and r0.line2 != r1.line2
+        assert list(checks.find_conflicts(iter([r0, r1]))) == []
 
     def test_different_satellites_no_conflict(self):
         other1 = fix(L1[:2] + "00006" + L1[7:])  # different catalog
