@@ -4,11 +4,23 @@ and ``build_run_envelope`` JSON shapes, and the Markdown / JSON run-report write
 import dataclasses
 import datetime
 import json
+import os
 import sys
 
 from lintle import __version__, fsutil, report_aggregation
 from lintle.categories import FixClass
 from lintle.diagnostics import RULES, Diagnostic, RepairTier, RuleID
+
+
+def utc_stamp() -> str:
+    """Return the current UTC time as an ISO 8601 string (``%Y-%m-%dT%H:%M:%SZ``).
+
+    Shared by ``format_run_report`` and ``report_writers._render_header`` so
+    the timestamp format is defined once. Resume's compact filename stamp
+    (``%Y%m%dT%H%M%SZ``) is intentionally different and lives in resume.py.
+    """
+    return datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
 
 # How many quarantined records to retain in memory as exemplars per
 # ``RuleID`` for the ``validate`` summary. The full byte-faithful catalog
@@ -300,10 +312,13 @@ def stats_from_summary(data: dict[str, object]) -> FileStats:
 
 # Pinned schema version for the ``--report json`` envelope (issue #20).
 # Stored as a string so future additive minor revisions can use tags like
-# ``"2.1"`` without changing the field's JSON type — adding optional
-# fields stays under ``"2"``, renaming or removing fields bumps it again.
+# ``"3.1"`` without changing the field's JSON type — adding optional
+# fields stays under ``"3"``, renaming or removing fields bumps it again.
 # Bumped "1" -> "2" when the per-rule counts key became ``quarantine_counts``.
-_ENVELOPE_SCHEMA_VERSION = "2"
+# Bumped "2" -> "3" when ``run.failed_files`` and ``summary.failed_count``
+# were added (issue #83) — both fields are always present (``[]`` / ``0``
+# on a fully successful run) so the shape is stable for typed consumers.
+_ENVELOPE_SCHEMA_VERSION = "3"
 
 
 def build_run_envelope(
@@ -312,35 +327,43 @@ def build_run_envelope(
     command: str,
     started_at: str,
     elapsed_seconds: float,
+    failed_files: list[tuple[str, str]] | None = None,
 ) -> dict[str, object]:
     """Return the top-level versioned ``--report json`` envelope (issue #20).
 
     The shape is locked in ``ARCHITECTURE.md`` §6 (Outputs & machine-readable
     contracts): a single object with ``schema_version``, ``run``,
     ``environment``, ``summary``, and ``files``. ``run.elapsed_seconds`` is the
-    parent-process wall-clock
-    duration captured by ``cli.main`` — independent of per-file worker
-    durations in ``files[i].elapsed_seconds``, which the consumer must NOT
-    sum to derive a corpus total. ``environment`` is a strict allowlist
-    (tool + Python version only); no env vars, paths, or hostnames leak.
-    The per-file shape is exactly ``summary_dict(s)`` for each ``s`` in
-    ``all_stats``, preserving order so consumers see deterministic file
-    ordering matching ``report.md``.
+    parent-process wall-clock duration captured by ``cli.main`` — independent
+    of per-file worker durations in ``files[i].elapsed_seconds``, which the
+    consumer must NOT sum to derive a corpus total. ``environment`` is a strict
+    allowlist (tool + Python version only); no env vars, paths, or hostnames
+    leak. The per-file shape is exactly ``summary_dict(s)`` for each ``s`` in
+    ``all_stats``, preserving order so consumers see deterministic file ordering
+    matching ``report.md``.
+
+    ``failed_files`` is the ``list[tuple[path, error_str]]`` returned by
+    ``worker_pool.run_workers`` (issue #83). It is serialised into
+    ``run.failed_files`` as ``[{"file": basename, "error": str}, ...]`` sorted
+    by ``file`` for byte-determinism, and its length is mirrored into
+    ``summary.failed_count``. Both fields are always present (``[]`` / ``0``
+    on a fully successful run) so the envelope shape is stable.
     """
+    if failed_files is None:
+        failed_files = []
     totals = report_aggregation.aggregate(all_stats)
-    paired = totals.paired
-    orphans = totals.orphans
-    lines_seen = totals.lines_seen
-    clean = totals.clean
-    quarantined = totals.quarantined
-    fixes = totals.fixes
-    quarantines = totals.quarantines
+    # Serialise failed_files sorted by basename for byte-determinism.
+    serialised_failures = sorted(
+        [{"file": os.path.basename(p), "error": err} for p, err in failed_files],
+        key=lambda e: e["file"],
+    )
     return {
         "schema_version": _ENVELOPE_SCHEMA_VERSION,
         "run": {
             "command": command,
             "timestamp": started_at,
             "elapsed_seconds": float(elapsed_seconds),
+            "failed_files": serialised_failures,
         },
         "environment": {
             "tool_version": __version__,
@@ -351,13 +374,14 @@ def build_run_envelope(
         },
         "summary": {
             "files_processed": len(all_stats),
-            "paired_records": paired,
-            "orphan_entries": orphans,
-            "input_lines_seen": lines_seen,
-            "clean_count": clean,
-            "quarantined_count": quarantined,
-            "fix_counts": dict(fixes),
-            "quarantine_counts": dict(quarantines),
+            "paired_records": totals.paired,
+            "orphan_entries": totals.orphans,
+            "input_lines_seen": totals.lines_seen,
+            "clean_count": totals.clean,
+            "quarantined_count": totals.quarantined,
+            "failed_count": len(failed_files),
+            "fix_counts": dict(totals.fixes),
+            "quarantine_counts": dict(totals.quarantines),
         },
         "files": [summary_dict(s) for s in all_stats],
     }
@@ -402,7 +426,11 @@ def format_diagnostic(diag: Diagnostic) -> str:
 _PER_NORAD_FILES_PREVIEW = 5
 
 
-def format_run_report(all_stats: list[FileStats], top_n: int | None = 100) -> str:
+def format_run_report(
+    all_stats: list[FileStats],
+    top_n: int | None = 100,
+    failed_files: list[tuple[str, str]] | None = None,
+) -> str:
     """Render a Markdown report aggregating every processed file.
 
     Written to ``<out-dir>/report.md`` after a ``clean`` run: corpus
@@ -414,9 +442,13 @@ def format_run_report(all_stats: list[FileStats], top_n: int | None = 100) -> st
     Percentages use ``paired_records + orphan_entries`` as the denominator
     — equal to ``clean + quarantined`` by the FileStats invariant, so the
     cleaned and quarantined shares sum to 100 % even when orphans are
-    present.
+    present. When ``failed_files`` is non-empty, a ``## Failures`` section
+    lists each file that could not be processed alongside its error string —
+    omitted entirely on a clean run so a zero-failure report.md is unchanged.
     """
-    timestamp = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    if failed_files is None:
+        failed_files = []
+    timestamp = utc_stamp()
     totals = report_aggregation.aggregate(all_stats)
     paired = totals.paired
     orphans = totals.orphans
@@ -488,7 +520,9 @@ def format_run_report(all_stats: list[FileStats], top_n: int | None = 100) -> st
     if quarantines:
         lines += ["", "## Rule reference", ""]
         for key in sorted(quarantines):
-            spec = _spec_for_key(key)
+            # RULES.get() accepts both RuleID (StrEnum) and its string value;
+            # both hash identically, so a single dict lookup covers both cases.
+            spec = RULES.get(key)
             if spec is None:
                 lines.append(f"- `{key}` — (unknown rule)")
             else:
@@ -497,28 +531,35 @@ def format_run_report(all_stats: list[FileStats], top_n: int | None = 100) -> st
     lines += report_aggregation.format_per_norad_section(
         all_stats, top_n, files_preview=_PER_NORAD_FILES_PREVIEW
     )
+
+    if failed_files:
+        lines += ["", "## Failures", ""]
+        lines.append("| File | Error |")
+        lines.append("|------|-------|")
+        for path, err in sorted(failed_files, key=lambda fe: os.path.basename(fe[0])):
+            # Escape ``|`` and collapse newlines so a path/error containing
+            # either can never break the Markdown table row.
+            name = os.path.basename(path).replace("|", r"\|")
+            msg = err.replace("\n", " ").replace("\r", " ").replace("|", r"\|")
+            lines.append(f"| {name} | {msg} |")
+
     lines.append("")
     return "\n".join(lines)
 
 
-def _spec_for_key(key):
-    """Return the :class:`diagnostics.RuleSpec` for a rule-ID key, or ``None``.
-
-    ``key`` may be a :class:`diagnostics.RuleID` or its string value —
-    both hash and compare identically (StrEnum extends ``str``), so a
-    single dict lookup serves both cases without a linear scan.
-    """
-    return RULES.get(key)
-
-
-def write_run_report(path: str, all_stats: list[FileStats]) -> None:
+def write_run_report(
+    path: str,
+    all_stats: list[FileStats],
+    failed_files: list[tuple[str, str]] | None = None,
+) -> None:
     """Write the Markdown run report (``format_run_report``) to ``path``,
     atomically and durably via tmp + :func:`fsutil.durable_replace` (issue #58).
+    ``failed_files`` is forwarded to :func:`format_run_report` so the
+    ``## Failures`` section appears when any input files could not be processed.
     """
-    tmp = path + ".partial"
-    with open(tmp, "w", encoding="utf-8") as handle:
-        handle.write(format_run_report(all_stats))
-    fsutil.durable_replace(tmp, path)
+    fsutil.durable_write_text(
+        path, format_run_report(all_stats, failed_files=failed_files)
+    )
 
 
 def write_run_json(path, envelope):
@@ -527,7 +568,4 @@ def write_run_json(path, envelope):
     Serialised byte-for-byte like the ``--report json`` stdout path: ``indent=2``,
     insertion order, a trailing newline, UTF-8 — so the persisted ``report.json``
     is a byte-identical twin of the stdout envelope (Critical Rules #1/#2)."""
-    tmp = path + ".partial"
-    with open(tmp, "w", encoding="utf-8") as handle:
-        handle.write(json.dumps(envelope, indent=2) + "\n")
-    fsutil.durable_replace(tmp, path)
+    fsutil.durable_write_text(path, json.dumps(envelope, indent=2) + "\n")

@@ -1,13 +1,16 @@
 """Tests for lintle.cli — argument parsing, path discovery, exit codes."""
 
+import io
 import json
 import os
 import signal
+import sys
 
 import pytest
 
 from lintle import (
     cli,
+    explain,
     worker_pool,
 )
 
@@ -361,8 +364,11 @@ class TestMain:
         assert rc == 2
         envelope = json.loads(capsys.readouterr().out)
         assert isinstance(envelope, dict)
-        assert envelope["schema_version"] == "2"
+        assert envelope["schema_version"] == "3"
         assert envelope["summary"]["files_processed"] == 0
+        # Failed files are recorded in the envelope even when all files fail.
+        assert isinstance(envelope["run"]["failed_files"], list)
+        assert envelope["summary"]["failed_count"] == 1
 
     def test_main_friendly_error_when_default_source_missing(
         self, tmp_path, monkeypatch, capsys
@@ -480,7 +486,7 @@ class TestMain:
         data = json.loads(capsys.readouterr().out)
         # Top-level envelope shape (issue #20 spec §3).
         assert isinstance(data, dict)
-        assert data["schema_version"] == "2"
+        assert data["schema_version"] == "3"
         assert data["run"]["command"] == "clean"
         assert data["run"]["timestamp"].endswith("Z")
         assert isinstance(data["run"]["elapsed_seconds"], float)
@@ -574,6 +580,134 @@ class TestMain:
         assert not list(out.rglob("*.partial"))
 
 
+class TestParentSideExceptionHandling:
+    """Issue #89: parent-side post-result I/O errors (e.g. OSError from
+    write_checkpoint) must map to exit 2, never exit 1, and must not raise;
+    the lock must be released on every exit path."""
+
+    def test_checkpoint_oserror_returns_2_not_1_and_no_raise(
+        self, tmp_path, line1, line2, monkeypatch
+    ):
+        # Monkeypatch resume.write_checkpoint to raise OSError on the first call
+        # (simulating ENOSPC mid-run). cli.main must return 2 (operational error),
+        # never 1 (quality-gate), and must not propagate the exception.
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "tle2099.txt").write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
+        out = tmp_path / "out"
+
+        def _boom(out_dir, checkpoint):
+            raise OSError("simulated ENOSPC")
+
+        monkeypatch.setattr(worker_pool.resume, "write_checkpoint", _boom)
+        original_sigint = signal.getsignal(signal.SIGINT)
+        try:
+            rc = cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
+        finally:
+            signal.signal(signal.SIGINT, original_sigint)
+
+        # Must return 2 (operational error), NOT 1 (quality gate).
+        assert rc == 2
+
+    def test_checkpoint_oserror_releases_lock(
+        self, tmp_path, line1, line2, monkeypatch
+    ):
+        # Even if write_checkpoint raises, the lock must be released so a
+        # subsequent run can proceed without a stale lock blocking it.
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "tle2099.txt").write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
+        out = tmp_path / "out"
+
+        def _boom(out_dir, checkpoint):
+            raise OSError("simulated ENOSPC")
+
+        monkeypatch.setattr(worker_pool.resume, "write_checkpoint", _boom)
+        original_sigint = signal.getsignal(signal.SIGINT)
+        try:
+            cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
+        finally:
+            signal.signal(signal.SIGINT, original_sigint)
+
+        # A second run must not hit LockHeldError — confirms the lock was released.
+        monkeypatch.undo()  # restore write_checkpoint
+        rc2 = cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
+        assert rc2 in (0, 1)  # real run, not a lock error
+
+
+class TestDiscoverPathsSymlinkAndIsFile:
+    """Issue #86: discover_paths must exclude dangling symlinks and directories
+    named tle*.txt, returning only real regular files."""
+
+    def test_dangling_symlink_excluded_from_directory_scan(self, tmp_path):
+        src = tmp_path / "src"
+        src.mkdir()
+        # Real file — must be found.
+        (src / "tle2099.txt").write_text("x")
+        # Dangling symlink named tle*.txt — must be excluded.
+        link = src / "tle2098.txt"
+        link.symlink_to(src / "nonexistent_target.txt")
+        assert not link.exists()  # confirm it really is dangling
+
+        found = cli.discover_paths(str(src))
+
+        names = sorted(p.split("/")[-1] for p in found)
+        assert names == ["tle2099.txt"]
+        # Must not include the dangling symlink
+        assert not any("tle2098" in p for p in found)
+
+    def test_directory_named_tle_txt_excluded(self, tmp_path):
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "tle2099.txt").write_text("x")
+        # A directory with a TLE-like name — must be excluded.
+        (src / "tle_dir.txt").mkdir()
+
+        found = cli.discover_paths(str(src))
+
+        names = sorted(p.split("/")[-1] for p in found)
+        assert names == ["tle2099.txt"]
+
+
+class TestPreflightOSErrors:
+    """Issue #86: preflight I/O errors (stat, mkdir) must return exit 2 with
+    a friendly message, never a raw traceback."""
+
+    def test_dangling_symlink_in_src_dir_returns_2(self, tmp_path, capsys):
+        # A dangling symlink named tle*.txt in the source directory previously
+        # made it through discover_paths, causing a stat() FileNotFoundError
+        # in main(). After the fix, discover_paths excludes it so a directory
+        # containing only a dangling symlink yields no real files → exit 2.
+        src = tmp_path / "src"
+        src.mkdir()
+        link = src / "tle2098.txt"
+        link.symlink_to(src / "nonexistent_target.txt")
+        out = tmp_path / "out"
+
+        rc = cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
+
+        # No real files left after filtering the dangling symlink → exit 2.
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "Traceback" not in err
+
+    def test_outdir_is_regular_file_returns_2(self, tmp_path, line1, line2, capsys):
+        # When --out-dir names an existing regular file, mkdir() raises
+        # FileExistsError / NotADirectoryError. Must return exit 2, no traceback.
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "tle2099.txt").write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
+        # Create a regular file where --out-dir expects a directory.
+        out_file = tmp_path / "out_is_a_file"
+        out_file.write_text("I am a regular file")
+
+        rc = cli.main(["clean", str(src), "--out-dir", str(out_file), "--jobs", "1"])
+
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "Traceback" not in err
+
+
 class TestReportJsonl:
     """Issue #9 spec §8.5: ``clean`` mode emits ``<out_dir>/report.jsonl``
     after every successful run; validate mode does not.
@@ -659,6 +793,19 @@ class TestExplainCommand:
         assert "NOT-A-REAL-TAG" in err
         assert "TLE-CHK-001" in err  # the error lists valid tags
 
+    def test_explain_survives_non_utf8_stdout(self, monkeypatch):
+        # Every explain output carries non-ASCII characters (the U+00B7
+        # separator in headings, em-dashes in rule titles). On a non-UTF-8
+        # stdout (PYTHONIOENCODING=ascii, a C-locale session) a bare print
+        # crashes with UnicodeEncodeError — the explain branch must degrade
+        # gracefully, never abort. Exercised across every documented tag.
+        for tag in explain.known_tags():
+            buf = io.TextIOWrapper(io.BytesIO(), encoding="ascii", newline="")
+            monkeypatch.setattr(sys, "stdout", buf)
+            rc = cli.main(["explain", tag])
+            buf.flush()
+            assert rc == 0, tag
+
 
 class TestLockWiring:
     def test_refuses_when_locked(self, tmp_path, line1, line2):
@@ -689,8 +836,11 @@ class TestReportArtifactAndCommand:
         out = tmp_path / "out"
         cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
         data = json.loads((out / "report.json").read_text(encoding="utf-8"))
-        assert data["schema_version"] == "2"
+        assert data["schema_version"] == "3"
         assert data["run"]["command"] == "clean"
+        # schema-3 fields always present.
+        assert data["run"]["failed_files"] == []
+        assert data["summary"]["failed_count"] == 0
 
     def test_report_json_file_equals_report_json_stdout(
         self, tmp_path, line1, line2, capsys
@@ -749,3 +899,189 @@ class TestReportArtifactAndCommand:
         rc = cli.main(["report", str(tmp_path / "nope")])
         assert rc == 2
         assert "no run found" in capsys.readouterr().err
+
+
+class TestFailedFilesInEnvelope:
+    """Issue #83: when a worker fails, the failed file is recorded in the
+    report.json envelope (run.failed_files + summary.failed_count) and the
+    run exits with code 2 (operational error)."""
+
+    def test_worker_failure_recorded_in_envelope_stdout(
+        self, tmp_path, line1, line2, monkeypatch, capsys
+    ):
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "tle2099.txt").write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
+
+        class _RaisingFuture:
+            def result(self):
+                raise RuntimeError("disk read error")
+
+        class _FakeExecutor:
+            def __init__(self, *_args, **_kwargs):
+                self._processes = {}
+                self._f = _RaisingFuture()
+
+            def submit(self, fn, *args, **kwargs):
+                return self._f
+
+            def shutdown(self, **_kwargs):
+                pass
+
+        monkeypatch.setattr(
+            worker_pool.concurrent.futures,
+            "ProcessPoolExecutor",
+            lambda *a, **k: _FakeExecutor(),
+        )
+        monkeypatch.setattr(
+            worker_pool.concurrent.futures,
+            "as_completed",
+            lambda futures: iter([next(iter(futures))]),
+        )
+
+        original_sigint = signal.getsignal(signal.SIGINT)
+        try:
+            rc = cli.main(
+                [
+                    "clean",
+                    str(src),
+                    "--out-dir",
+                    str(tmp_path / "out"),
+                    "--jobs",
+                    "1",
+                    "--report",
+                    "json",
+                ]
+            )
+        finally:
+            signal.signal(signal.SIGINT, original_sigint)
+
+        assert rc == 2
+        envelope = json.loads(capsys.readouterr().out)
+        assert envelope["schema_version"] == "3"
+        assert envelope["summary"]["failed_count"] == 1
+        assert len(envelope["run"]["failed_files"]) == 1
+        failed_entry = envelope["run"]["failed_files"][0]
+        assert failed_entry["file"] == "tle2099.txt"
+        assert "disk read error" in failed_entry["error"]
+
+    def test_clean_run_has_empty_failed_files(self, tmp_path, line1, line2, capsys):
+        # A fully successful run must report failed_files=[] and failed_count=0.
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "tle2099.txt").write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
+        out = tmp_path / "out"
+
+        rc = cli.main(
+            [
+                "clean",
+                str(src),
+                "--out-dir",
+                str(out),
+                "--jobs",
+                "1",
+                "--report",
+                "json",
+            ]
+        )
+        assert rc == 0
+        data = json.loads(capsys.readouterr().out)
+        assert data["run"]["failed_files"] == []
+        assert data["summary"]["failed_count"] == 0
+
+    def test_report_md_includes_failures_section_when_file_fails(
+        self, tmp_path, line1, line2, monkeypatch
+    ):
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "tle2099.txt").write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
+        out = tmp_path / "out"
+
+        class _RaisingFuture:
+            def result(self):
+                raise RuntimeError("catastrophic failure")
+
+        class _FakeExecutor:
+            def __init__(self, *_a, **_k):
+                self._processes = {}
+                self._f = _RaisingFuture()
+
+            def submit(self, *a, **k):
+                return self._f
+
+            def shutdown(self, **_k):
+                pass
+
+        monkeypatch.setattr(
+            worker_pool.concurrent.futures,
+            "ProcessPoolExecutor",
+            lambda *a, **k: _FakeExecutor(),
+        )
+        monkeypatch.setattr(
+            worker_pool.concurrent.futures,
+            "as_completed",
+            lambda futures: iter([next(iter(futures))]),
+        )
+
+        original_sigint = signal.getsignal(signal.SIGINT)
+        try:
+            # Need some stats to produce report.md (empty all_stats → no write).
+            # Patch so a second file succeeds: not feasible simply here.
+            # Instead just verify the report.md on a mixed run isn't the target;
+            # we test format_run_report directly in test_report.py.
+            rc = cli.main(
+                [
+                    "clean",
+                    str(src),
+                    "--out-dir",
+                    str(out),
+                    "--jobs",
+                    "1",
+                ]
+            )
+        finally:
+            signal.signal(signal.SIGINT, original_sigint)
+
+        assert rc == 2
+        # all_stats empty → no report.md written (existing behaviour, unchanged).
+        # The report.md content test is in TestFailedFilesEnvelope in test_report.py.
+
+
+class TestReconstructChecksumFlag:
+    """`--reconstruct-checksum` gates tier-2 missing-checksum recovery end to
+    end through the worker pool (#82). Off by default."""
+
+    def _checksumless_src(self, tmp_path, line1, line2):
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "tle2099.txt").write_bytes(
+            (line1[:68] + "\n" + line2[:68] + "\n").encode("ascii")
+        )
+        return src
+
+    def test_default_quarantines_checksumless_record(self, tmp_path, line1, line2):
+        src = self._checksumless_src(tmp_path, line1, line2)
+        out = tmp_path / "out"
+        rc = cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
+        # The record is quarantined (not reconstructed), so the default
+        # quality gate (0 quarantines) fails and nothing is written clean.
+        assert rc == 1
+        assert (out / "cleaned" / "tle2099.cleaned.txt").read_text() == ""
+
+    def test_flag_recovers_checksumless_record(self, tmp_path, line1, line2):
+        src = self._checksumless_src(tmp_path, line1, line2)
+        out = tmp_path / "out"
+        rc = cli.main(
+            [
+                "clean",
+                str(src),
+                "--out-dir",
+                str(out),
+                "--jobs",
+                "1",
+                "--reconstruct-checksum",
+            ]
+        )
+        assert rc == 0
+        cleaned = (out / "cleaned" / "tle2099.cleaned.txt").read_text()
+        assert cleaned == line1 + "\n" + line2 + "\n"

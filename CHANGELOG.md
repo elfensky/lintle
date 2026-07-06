@@ -6,6 +6,162 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-07-04
+
+### Added
+
+- Failed input files are now recorded in the run envelope (issue #83). When a worker
+  raises, `run.failed_files` carries a `[{"file": basename, "error": str}]` list
+  (sorted, always present — `[]` on a clean run) and `summary.failed_count` mirrors
+  its length. `report.md` gains a `## Failures` table when any file failed (omitted on
+  a clean run). Exit code 2 is unchanged for this case. Schema version bumped
+  `"2"` → `"3"` because both new fields are required (not additive-optional).
+- `clean --reconstruct-checksum` opts in to tier-2 missing-checksum reconstruction.
+
+### Changed
+
+- **`#120`/`#106` — the validator now returns a typed `tle.FieldError` instead of
+  a bare error string.** `FieldError` subclasses `str` (so every consumer that
+  treats an error as text — substring tests, `"; ".join(...)`, f-string interpolation
+  — keeps working byte-for-byte) while carrying structured fields: `kind`
+  (`"length"`/`"column"`/`"semantic"`/`"checksum"`/`"catalog"`), a 1-indexed
+  inclusive `column_range`, and `observed`/`expected`. `repair` now routes on
+  `FieldError.kind` rather than grepping the prose for `"checksum"` (the brittle
+  contract #106 pinned as a tripwire), and populates `report.jsonl`'s
+  `column_range`/`observed`/`expected` for **column, semantic, and catalog**
+  findings — previously they were filled only for checksum mismatches. The
+  `report.jsonl` line schema stays `"1"`: the field set and types are unchanged;
+  only previously-`null` optional values are now filled in. Human-facing output
+  (`report.md`, the `.broken.txt` sidecar, the `note` field) is byte-identical —
+  pinned by the sgp4 oracle and the full existing suite.
+- **Missing-checksum reconstruction is now opt-in (default off).** A checksumless 68-char
+  line is quarantined by default rather than having a recomputed checksum appended: a dropped
+  trailing *data* character is indistinguishable from a dropped checksum, so reconstructing it
+  by default could silently emit wrong-but-valid data (Critical Rule #2, issue #82). Pass
+  `--reconstruct-checksum` to restore the recompute. The flag is part of the resume
+  run-identity, so changing it forces a re-run rather than folding mismatched outputs.
+
+### Fixed
+
+- **`#87` / `#99` — the out-dir lock had a TOCTOU reclaim race, a blind release, a
+  post-reboot wedge, and a PID-reuse hostage.** The hand-rolled pidfile read the
+  holder's PID, checked liveness with `os.kill(pid, 0)`, and `unlink`+retried to
+  reclaim a dead lock — none of which re-verified the file it was deleting, so two
+  runs could both reclaim and proceed (`#87`, P0, reproduced), and a run whose lock
+  was raced away blind-unlinked the *current* holder's lock on exit. Identity also
+  embedded Linux `boot_id`, so a crash-then-reboot left an unreclaimable "different
+  host" lock (`#99`), and a recycled PID kept a dead lock alive. Replaced the whole
+  scheme with an advisory **`fcntl.flock`** held for the run: the kernel releases it
+  the instant the holder closes its fd, exits, is killed, or the host reboots, so
+  liveness needs no PID check or boot-id and there is no reclaim step to race.
+  Release is the bare `os.close` of *our own* fd — a run can only ever drop its own
+  lock, never a successor's. The `.clean.lock` file is deliberately never unlinked
+  (`flock` binds to the inode; unlinking would let a racing opener lock an orphaned
+  inode), and now records `{host, pid, started}` only as informational text for the
+  `LockHeldError` message, which names the file and the manual-removal escape hatch.
+  POSIX-only; Windows is out of scope (use WSL). A shared out-dir across hosts over a
+  network FS is documented as untested (relies on server-side `flock` propagation).
+- **`#95` — a newline-free or CR-only multi-GB file was materialised as one giant `bytes`
+  object, violating constant-memory (Critical Rule #3).** `iter_records` previously iterated
+  over the binary handle with `for raw in handle`, which splits only on `\n`; a file with no
+  `\n` (or only `\r` terminators) buffered the entire file as one `raw` chunk — a 3.2 GB file
+  would load whole, OOM the worker, and then be pickled across the pool boundary. Fixed by
+  replacing the iterator with `handle.readline(_MAX_LINE_BYTES)` (C-level, throughput
+  unchanged for normal lines). A chunk of exactly `_MAX_LINE_BYTES = 4096` with no trailing
+  `\n` is the start of an oversized line: the excerpt is kept as a bounded quarantine payload,
+  the remainder is drained in fixed-size chunks (bytes still counted into `bytes_consumed`),
+  and one `Orphan` with `RuleID.LINE_LENGTH` is emitted for the logical line. The raw bytes in
+  the quarantine entry are noted as truncated — the one place byte-faithfulness yields to
+  constant-memory, and only for a pathological input. Normal lines (the entire real corpus) are
+  processed byte-identically. `stats.bytes_consumed` still reaches `st_size` at EOF, and
+  `input_lines_seen` counts each logical line exactly once.
+- **`#104` — `QuarantineSink.__enter__` was not exception-safe; `cleaned_handle` was opened
+  outside the sink's `with` block.** `QuarantineSink.__enter__` entered its `BrokenFileWriter`
+  and then its `JsonlFindingsWriter` sequentially: if the jsonl writer's `open` failed (disk
+  full, unwritable `.shards`), the already-entered `BrokenFileWriter.__exit__` never ran,
+  leaving a leaked body handle and `.broken.txt.body.partial` debris. In `pipeline._run`,
+  `cleaned_handle = open(...)` happened before `with sink:` so a `sink.__enter__` failure
+  leaked the cleaned `.partial`. Fixed with two changes: (1) `QuarantineSink.__enter__` now
+  uses a `contextlib.ExitStack` — each sub-writer is entered onto the stack; on success
+  `stack.pop_all()` transfers ownership to `self._stack` (closed by `__exit__`); a mid-enter
+  failure unwinds already-entered writers via the stack's own cleanup. (2) In `pipeline._run`,
+  `cleaned_handle = open(...)` is now opened inside the `with sink:` block (before the inner
+  try/finally) so a `sink.__enter__` failure cannot leak it — the handle simply doesn't exist
+  at that point.
+- **`#101a` — broken sidecar excluded from resume integrity check when no records quarantined.**
+  `resume.output_sizes` previously recorded the `.broken.txt` sidecar only when
+  `stats.quarantined_count > 0`, but `pipeline` always writes a header-only sidecar even
+  for a clean file. A file whose sidecar was deleted or truncated would not be detected
+  on resume. The sidecar is now recorded unconditionally.
+- **`#101b` — output naming convention duplicated across modules.** Suffix and dirname
+  strings (`.cleaned.txt`, `.broken.txt`, `.findings.jsonl`, `cleaned`, `broken`, `.shards`)
+  were re-encoded independently in `pipeline._clean_output_paths`, `resume.output_sizes`,
+  `cli.discover_paths`, and `report_writers.concat_findings_shards`. They now live as
+  module-level constants (`CLEANED_SUFFIX`, `BROKEN_SUFFIX`, `FINDINGS_SUFFIX`,
+  `CLEANED_DIRNAME`, `BROKEN_DIRNAME`, `SHARDS_DIRNAME`) in `lintle/__init__.py` — the
+  single source of truth — and all consumers import from there.
+- **`#117` — `concat_findings_shards` silently skipped a missing shard, causing `report.jsonl`
+  to underreport vs `report.json` on resume.** On a resumed run, completed files' stats come
+  from the checkpoint (not reprocessed), so their findings shards are not regenerated. If a
+  shard was deleted out-of-band, `report.jsonl` would omit those findings while `report.json`
+  counted them — a silent disagreement. Fixed with two defenses: (1) the findings shard is now
+  recorded in `resume.output_sizes`, so a missing or truncated shard on resume triggers
+  reprocessing — regenerating the shard and keeping `report.jsonl` complete; (2)
+  `concat_findings_shards` now returns the list of source filenames whose shard was missing but
+  had quarantined records so the caller (`output_artifacts`) can surface a `warning:` on stderr.
+- **`#105` — stale-checkpoint archives accumulated unboundedly.** `archive_checkpoint` now
+  prunes older archives after creating a new one, keeping only the newest 3
+  (`_STALE_ARCHIVE_KEEP`). The ISO-8601 timestamp suffix is lexicographically sortable so the
+  oldest entries are reliably identified and removed.
+- **`#94` — disk-space guard charged the wrong amount.** The 2× guard now runs at the
+  right moment in each branch. For a `--resume` run it charges 2× the *remaining*
+  (unprocessed) input bytes — so a nearly-complete resume on a tight disk is no longer
+  wrongly refused. For a fresh run it runs *after* `scrub_outputs` so the freed prior
+  outputs are already reflected in the available space before the guard fires.
+- **`#93` — `scrub_outputs` had no ownership check.** A fresh run on a mistyped
+  `--out-dir` pointing at a directory with user content (e.g. a `cleaned/` subdirectory)
+  could silently destroy it. The preflight now refuses (exit 2, no data destroyed) when
+  the out-dir is non-empty and carries no lintle-ownership signal (`.lintle-output`
+  marker, checkpoint, or stale-checkpoint archive). A `.lintle-output` marker is written
+  on every first fresh run so subsequent runs and scrubs recognise the directory.
+- **`#102` — `scrub_outputs` left prior-run report artifacts.** An interrupted fresh run
+  could leave a stale `report.json` (from the prior run) that `lintle report` would then
+  render as current. `scrub_outputs` now also removes `report.md`, `report.json`,
+  `report.jsonl`, and `broken-noradids.ndjson` so the out-dir is truly clean before a
+  new run's workers write fresh outputs.
+- Records whose lines carry leading whitespace now pair and repair via the `leading-trim`
+  fix class instead of being quarantined as `BAD_PREFIX`. `iter_records` matches the
+  `1 `/`2 ` prefix on a whitespace-trimmed view while carrying the raw bytes forward to the
+  repairer (issue #88).
+
+### Performance
+
+- **`#109` — every accepted record was validated twice.** `repair_record` called
+  `tle.validate_record(line1, line2)` after both lines had already passed
+  `repair_line`'s full `validate_line`. The only new information for two
+  individually-valid lines is the catalog-number cross-check. A new
+  `tle.validate_record_catalog(l1, l2)` helper performs only that check,
+  returning the byte-identical error string; `repair_record` now calls it instead.
+  `validate_record` is unchanged. Property tests confirm equivalence for all
+  matching and mismatched valid pairs.
+- **`#110A` — `compute_checksum` hot-path: per-char membership tests replaced with
+  a precomputed lookup table.** The original loop called `ch in _DIGIT` then
+  `int(ch)` for every character. A module-level `_CHECKSUM_CONTRIB` dict (ASCII
+  digits `'0'`–`'9'` → their integer value, `'-'` → 1, absent = 0) reduces the
+  loop body to `sum(_CHECKSUM_CONTRIB.get(c, 0) for c in line[:68]) % 10` — one
+  dict lookup per character. Byte-equivalent by construction; the existing
+  checksum property tests confirm invariance.
+- **`#123` — pipeline allocation micro-optimisations.**
+  (a) `slots=True` added to `RecordCandidate`, `Orphan`, `_ProgressBatcher`
+  (pipeline.py) and `Accepted`, `Quarantined` (repair.py) — eliminates
+  per-instance `__dict__` allocation on every record; slotted dataclasses
+  pickle correctly across the worker pool.
+  (b) `_record_acceptance` now writes both cleaned lines in a single
+  `handle.write(line1 + "\n" + line2 + "\n")` call — byte-identical output,
+  half the Python-level write calls on the accepted-record hot path.
+  (c) `_ProgressBatcher.enabled` was a `@property` re-evaluated every call;
+  replaced with a `_enabled: bool` field computed once in `__post_init__`.
+
 ## [0.5.0] - 2026-06-08
 
 ### Added

@@ -2,12 +2,11 @@
 findings shards, the corpus ``broken-noradids.ndjson``, and shard concat."""
 
 import contextlib
-import datetime
 import json
 import shutil
 from pathlib import Path
 
-from lintle import __version__, fsutil, stem
+from lintle import FINDINGS_SUFFIX, SHARDS_DIRNAME, __version__, fsutil, stem
 from lintle.diagnostics import Diagnostic
 from lintle.report import (
     PER_RULE_EXEMPLAR_BOUND,
@@ -15,6 +14,7 @@ from lintle.report import (
     FileStats,
     QuarantineEntry,
     format_diagnostic,
+    utc_stamp,
 )
 
 
@@ -96,12 +96,12 @@ def _render_header(src_name: str, quarantined: int, entries: int) -> bytes:
     that became findings or clean output, which is the meaningful denominator
     for ``quarantined``.
     """
-    timestamp = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    timestamp = utc_stamp()
     return (
         f"# {stem(src_name)}.broken.txt - quarantined records\n"
         f"# source: {src_name} | generated: {timestamp} | lintle {__version__}\n"
         f"# {quarantined} quarantined of {entries} entries\n\n"
-    ).encode("ascii")
+    ).encode("ascii", errors="replace")
 
 
 class BrokenFileWriter:
@@ -234,6 +234,12 @@ class QuarantineSink:
     per entry to a per-file shard. On :meth:`finalize` the sink produces
     an immutable :class:`FileSample` and is sealed — any subsequent
     :meth:`add` raises ``RuntimeError`` so misuse surfaces loudly.
+
+    ``__enter__`` uses an :class:`contextlib.ExitStack` to enter each
+    sub-writer in turn (issue #104): if the second writer's ``__enter__``
+    raises, the stack unwinds the first writer's ``__exit__`` so no handle
+    or partial file is leaked. On success the stack is transferred to
+    ``self._stack`` so ``__exit__`` closes everything in reverse order.
     """
 
     def __init__(
@@ -252,6 +258,7 @@ class QuarantineSink:
         self._dropped = {}
         self._writer = None
         self._jsonl_writer = None
+        self._stack = None
         self._finalized = False
         self._sample = None
         if broken_path is not None:
@@ -264,17 +271,24 @@ class QuarantineSink:
             self._jsonl_writer = JsonlFindingsWriter(jsonl_path, src_name)
 
     def __enter__(self):
-        if self._writer is not None:
-            self._writer.__enter__()
-        if self._jsonl_writer is not None:
-            self._jsonl_writer.__enter__()
+        # Use an ExitStack so a failure mid-__enter__ (e.g. the jsonl writer's
+        # open fails after the broken writer is already open) unwinds already-
+        # entered writers cleanly — no leaked handles or .partial debris.
+        with contextlib.ExitStack() as stack:
+            if self._writer is not None:
+                stack.enter_context(self._writer)
+            if self._jsonl_writer is not None:
+                stack.enter_context(self._jsonl_writer)
+            # Transfer ownership: pop_all() returns a new stack that now owns
+            # the cleanup; assigning it to self._stack means __exit__ will
+            # close it later. If anything above raised, the ``with`` block's
+            # own cleanup fires first (unwinding whatever was entered).
+            self._stack = stack.pop_all()
         return self
 
     def __exit__(self, exc_type, exc, tb):
-        if self._writer is not None:
-            self._writer.__exit__(exc_type, exc, tb)
-        if self._jsonl_writer is not None:
-            self._jsonl_writer.__exit__(exc_type, exc, tb)
+        if self._stack is not None:
+            self._stack.__exit__(exc_type, exc, tb)
         return False
 
     def add(self, entry: QuarantineEntry) -> None:
@@ -390,15 +404,24 @@ def write_broken_noradids_ndjson(path: str, all_stats: list[FileStats]) -> None:
     Written atomically and durably via tmp + :func:`fsutil.durable_replace`
     (issue #58).
     """
-    tmp = path + ".partial"
-    with open(tmp, "w", encoding="ascii", newline="\n") as handle:
-        handle.write(format_broken_noradids_ndjson(all_stats))
-    fsutil.durable_replace(tmp, path)
+    fsutil.durable_write_text(
+        path, format_broken_noradids_ndjson(all_stats), encoding="ascii"
+    )
+
+
+def shard_path(out_dir: str, src_name: str) -> Path:
+    """Return the per-file findings-shard path
+    ``<out_dir>/.shards/<stem>.findings.jsonl``. The single place that
+    expression is built, so the pipeline's write side and this module's read
+    side (``concat_findings_shards``) can never drift (issue #119); the dirname
+    and suffix themselves come from the naming-convention authority in
+    ``lintle.__init__``."""
+    return Path(out_dir) / SHARDS_DIRNAME / (stem(src_name) + FINDINGS_SUFFIX)
 
 
 def concat_findings_shards(
     out_dir: str, dest_path: str, all_stats: list[FileStats]
-) -> None:
+) -> list[str]:
     """Concatenate per-file findings shards into the corpus ``report.jsonl``.
 
     Per-worker shards live in ``<out_dir>/.shards/<stem>.findings.jsonl``,
@@ -407,10 +430,14 @@ def concat_findings_shards(
     call) so the concatenated order is alphabetical by source filename —
     deterministic and matching ``report.md``'s per-file table. The
     destination is written via tmp + :func:`fsutil.durable_replace` for
-    atomicity and power-loss durability (issue #58). Always
-    creates the destination even when every shard is empty or missing,
-    matching ``broken-noradids.ndjson``'s "artifact always present after
-    successful clean" contract. Spec §4.6.
+    atomicity and power-loss durability (issue #58). Always creates the
+    destination even when every shard is empty or missing, matching
+    ``broken-noradids.ndjson``'s "artifact always present after successful
+    clean" contract. Spec §4.6.
+
+    Returns the list of source filenames (``stats.src_name``) whose shard was
+    missing but had a non-zero ``quarantined_count`` — a gap the caller should
+    surface as a warning (issue #117). An empty list means no gap.
 
     This function only **reads** the shards — it does not remove ``.shards``.
     Shard cleanup is the caller's responsibility, tied to the resume-checkpoint
@@ -419,15 +446,20 @@ def concat_findings_shards(
     successful run, so an interrupted or failed run keeps its shards and a
     later ``--resume`` can re-read them to rebuild a complete ``report.jsonl``.
     """
-    shard_dir = Path(out_dir) / ".shards"
     tmp_path = dest_path + ".partial"
+    missing_nonempty: list[str] = []
     with open(tmp_path, "wb") as out:
         for stats in all_stats:
-            shard = shard_dir / (stem(stats.src_name) + ".findings.jsonl")
+            shard = shard_path(out_dir, stats.src_name)
             if not shard.exists():
                 # Worker crashed before finalize, validate-mode worker, or
-                # an out-of-band cleanup removed it — skip silently.
+                # an out-of-band cleanup removed it. When the file had
+                # quarantined records the gap is noteworthy — report it so the
+                # caller can warn; otherwise it is silent (issue #117).
+                if stats.quarantined_count:
+                    missing_nonempty.append(stats.src_name)
                 continue
             with open(shard, "rb") as src:
                 shutil.copyfileobj(src, out, length=65536)
     fsutil.durable_replace(tmp_path, dest_path)
+    return missing_nonempty

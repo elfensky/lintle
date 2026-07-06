@@ -15,15 +15,52 @@ class TestRepairLine:
         assert diag is None and clean == line1
         assert FixClass.TRAILING_BACKSLASH in fixes
 
+    def test_missing_checksum_quarantined_by_default(self, line1):
+        # Default: a checksumless 68-char line is quarantined as the wrong
+        # length, not reconstructed (Critical Rule #2 — when in doubt,
+        # quarantine). Reconstruction is opt-in via reconstruct_checksum.
+        raw = line1[:68].encode("ascii")  # 68 columns, checksum absent
+        clean, fixes, diag = repair.repair_line(raw, 1, source_line_no=7)
+        assert clean is None
+        assert diag.rule_id == RuleID.LINE_LENGTH
+        assert diag.observed == "68" and diag.expected == "69"
+        assert FixClass.RECONSTRUCTED_CHECKSUM not in fixes
+        assert diag.source_line_nos == (7,)
+
     def test_reconstruct_missing_checksum(self, line1):
         raw = line1[:68].encode("ascii")  # 68 columns, checksum absent
-        clean, fixes, diag = repair.repair_line(raw, 1, source_line_no=1)
+        clean, fixes, diag = repair.repair_line(
+            raw, 1, source_line_no=1, reconstruct_checksum=True
+        )
         assert diag is None and clean == line1
         assert FixClass.RECONSTRUCTED_CHECKSUM in fixes
 
+    def test_legit_col68_space_checksumless_quarantines_even_with_reconstruct(
+        self, line1
+    ):
+        # Issue #108: trailing-whitespace stripping runs before the length is
+        # measured, so a checksum-less 68-char body whose column 68 is a
+        # legitimately-allowed space (the _DIGIT_SPACE element-set-number field)
+        # is normalized to 67 chars and quarantined as LINE_LENGTH (observed=67)
+        # — even under reconstruct_checksum. This is intentional: a trailing
+        # space on a checksum-less line is ambiguous (last data column vs. junk),
+        # so Critical Rule #2 dictates quarantine over a guessed reconstruction.
+        body = line1[:67] + " "  # 68 cols, col 68 a legit space, checksum absent
+        assert tle.validate_body(body, 1) == []  # the body itself is valid...
+        assert tle.validate_line(body + str(tle.compute_checksum(body)), 1) == []
+        clean, fixes, diag = repair.repair_line(
+            body.encode("ascii"), 1, source_line_no=9, reconstruct_checksum=True
+        )
+        assert clean is None  # ...yet repair conservatively quarantines it
+        assert diag.rule_id == RuleID.LINE_LENGTH and diag.observed == "67"
+        assert FixClass.TRAILING_WS in fixes
+        assert FixClass.RECONSTRUCTED_CHECKSUM not in fixes
+
     def test_reconstruct_with_backslash_artifact(self, line1):
         raw = (line1[:68] + "\\").encode("ascii")  # 69 bytes: 68 columns + '\'
-        clean, fixes, diag = repair.repair_line(raw, 1, source_line_no=1)
+        clean, fixes, diag = repair.repair_line(
+            raw, 1, source_line_no=1, reconstruct_checksum=True
+        )
         assert diag is None and clean == line1
         assert FixClass.TRAILING_BACKSLASH in fixes
         assert FixClass.RECONSTRUCTED_CHECKSUM in fixes
@@ -93,10 +130,18 @@ class TestProcessRecord:
         assert result.line1 == line1 and result.line2 == line2
         assert result.fixes == []
 
+    def test_record_with_missing_checksum_quarantined_by_default(self, line1, line2):
+        # Default: a checksumless record is quarantined, not reconstructed.
+        result = repair.repair_record(
+            line1[:68].encode("ascii"), 1, line2[:68].encode("ascii"), 2
+        )
+        assert isinstance(result, repair.Quarantined)
+        assert result.primary.rule_id == RuleID.LINE_LENGTH
+
     def test_process_repairs_backslash_and_checksum(self, line1, line2):
         raw1 = (line1[:68] + "\\").encode("ascii")  # checksumless + backslash
         raw2 = line2[:68].encode("ascii")  # checksumless
-        result = repair.repair_record(raw1, 4, raw2, 5)
+        result = repair.repair_record(raw1, 4, raw2, 5, reconstruct_checksum=True)
         assert isinstance(result, repair.Accepted)
         assert result.line1 == line1 and result.line2 == line2
         assert FixClass.TRAILING_BACKSLASH in result.fixes
@@ -133,7 +178,7 @@ class TestProcessRecord:
         # 68-char checksumless versions of each line:
         raw1 = line1[:68].encode("ascii")
         raw2 = other_body.encode("ascii")
-        result = repair.repair_record(raw1, 1, raw2, 2)
+        result = repair.repair_record(raw1, 1, raw2, 2, reconstruct_checksum=True)
         assert isinstance(result, repair.Quarantined)
         assert result.primary.rule_id == RuleID.CATALOG_MISMATCH
         assert result.primary.tier_attempted == RepairTier.CHECKSUM_RECONSTRUCT
@@ -183,10 +228,49 @@ class TestRepairContractProperties:
         # Drop line-2's checksum so its repair reaches RECONSTRUCTED_CHECKSUM;
         # the record-level fixes include it even though line-1 needed none.
         result = repair.repair_record(
-            line1.encode("ascii"), 1, line2[:68].encode("ascii"), 2
+            line1.encode("ascii"),
+            1,
+            line2[:68].encode("ascii"),
+            2,
+            reconstruct_checksum=True,
         )
         assert isinstance(result, repair.Accepted)
         assert FixClass.RECONSTRUCTED_CHECKSUM in result.fixes
+
+
+class TestStructuredDiagnostics:
+    """#120: repair routes on the validator's typed FieldError.kind (not by
+    grepping prose), and column/semantic/catalog findings now carry the
+    structured column_range/observed/expected fields in their Diagnostic
+    (previously populated only for checksum mismatches)."""
+
+    def test_invalid_column_layout_carries_structured_fields(self, line1):
+        bad = "3" + line1[1:]  # valid length, wrong line-number column
+        clean, _, diag = repair.repair_line(bad.encode("ascii"), 1, 1)
+        assert clean is None and diag.rule_id == RuleID.INVALID_COLUMN_LAYOUT
+        assert diag.column_range == (1, 1)
+        assert diag.observed == "3" and diag.expected == "1"
+        assert "line number" in diag.note  # full prose preserved in the note
+
+    def test_checksum_mismatch_routes_by_kind_with_fields(self, line1):
+        bad = line1[:68] + "9"  # canonical checksum is 3
+        clean, _, diag = repair.repair_line(bad.encode("ascii"), 1, 1)
+        assert clean is None and diag.rule_id == RuleID.CHECKSUM_MISMATCH
+        assert diag.column_range == (69, 69)
+        assert diag.observed == "9"
+        assert diag.expected == str(tle.compute_checksum(bad))
+
+    def test_catalog_mismatch_carries_structured_fields(self, line1, line2):
+        other_body = "2 09999" + line2[7:68]
+        other = other_body + str(tle.compute_checksum(other_body))
+        result = repair.repair_record(
+            line1.encode("ascii"), 1, other.encode("ascii"), 2
+        )
+        assert isinstance(result, repair.Quarantined)
+        assert result.primary.rule_id == RuleID.CATALOG_MISMATCH
+        assert result.primary.column_range == (3, 7)
+        assert result.primary.observed == line1[2:7]
+        assert result.primary.expected == other[2:7]
 
 
 class TestRepairRecordComboCases:

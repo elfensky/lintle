@@ -19,11 +19,12 @@ def _console(width, *, terminal):
 
 def _demo_envelope():
     return {
-        "schema_version": "2",
+        "schema_version": "3",
         "run": {
             "command": "clean",
             "timestamp": "2026-05-31T12:00:00Z",
             "elapsed_seconds": 124.0,
+            "failed_files": [],
         },
         "environment": {"tool_version": "0.5.0", "python_version": "3.14.0"},
         "summary": {
@@ -33,6 +34,7 @@ def _demo_envelope():
             "input_lines_seen": 463615084,
             "clean_count": 232275043,
             "quarantined_count": 103228,
+            "failed_count": 0,
             "fix_counts": {
                 "reconstructed-checksum": 108304512,
                 "trailing-backslash": 167594304,
@@ -138,11 +140,35 @@ class TestRun:
         assert rc == 2
         assert "schema" in capsys.readouterr().err.lower()
 
+    def test_schema_v2_report_is_rejected_as_unsupported(self, tmp_path, capsys):
+        # A schema-2 report.json (missing failed_files / failed_count) must
+        # fail the schema_version check in summary.run with a clear message —
+        # the intended behaviour after the "2" -> "3" bump.
+        (tmp_path / "report.json").write_text(
+            '{"schema_version": "2", "run": {"timestamp": "x",'
+            ' "elapsed_seconds": 1.0}}',
+            encoding="utf-8",
+        )
+        rc = summary.run(str(tmp_path), "text")
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "unsupported schema_version" in err
+        assert "expected" in err
+
     def test_invalid_json_is_exit_2(self, tmp_path, capsys):
         (tmp_path / "report.json").write_text("{not json", encoding="utf-8")
         rc = summary.run(str(tmp_path), "text")
         assert rc == 2
         assert "invalid report.json" in capsys.readouterr().err
+
+    def test_invalid_utf8_report_json_is_exit_2(self, tmp_path, capsys):
+        # Issue #92: UnicodeDecodeError from report.json must be caught, not
+        # propagated — `lintle report` must return 2 with a clear message.
+        (tmp_path / "report.json").write_bytes(b"\xff\xfe")
+        rc = summary.run(str(tmp_path), "text")
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "invalid report.json" in err or "no run found" in err
 
     def test_non_object_report_json_is_exit_2(self, tmp_path, capsys):
         # Well-formed JSON that is not an object (null / array / scalar) must
@@ -159,19 +185,117 @@ class TestRun:
         assert summary._SCHEMA == report._ENVELOPE_SCHEMA_VERSION
 
 
-class TestEdgeCases:
-    def test_pick_tier_boundary_72(self):
-        pt = summary._pick_tier
-        assert pt(is_terminal=True, width=71, unicode_ok=True) == "plain"
-        assert pt(is_terminal=True, width=72, unicode_ok=True) == "medium"
+class TestEnvelopeValidation:
+    """Issue #97(a): summary.run must validate the envelope shape before calling
+    render(), so a schema-'3' report.json missing keys returns 2, not KeyError.
+    """
 
-    def test_zero_records_run_renders_without_sections(self):
+    def _write_raw(self, tmp_path, doc):
+        (tmp_path / "report.json").write_text(doc, encoding="utf-8")
+
+    def test_missing_summary_key_is_exit_2(self, tmp_path, capsys):
+        self._write_raw(
+            tmp_path,
+            '{"schema_version": "3", "run": {"timestamp": "x",'
+            ' "elapsed_seconds": 1.0, "failed_files": []}}',
+        )
+        rc = summary.run(str(tmp_path), "text")
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "invalid report.json" in err
+
+    def test_missing_run_key_is_exit_2(self, tmp_path, capsys):
+        self._write_raw(
+            tmp_path,
+            '{"schema_version": "3", "summary": {}}',
+        )
+        rc = summary.run(str(tmp_path), "text")
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "invalid report.json" in err
+
+    def test_run_not_dict_is_exit_2(self, tmp_path, capsys):
+        self._write_raw(
+            tmp_path,
+            '{"schema_version": "3", "run": "bad", "summary": {}}',
+        )
+        rc = summary.run(str(tmp_path), "text")
+        assert rc == 2
+        capsys.readouterr()
+
+    def test_summary_not_dict_is_exit_2(self, tmp_path, capsys):
+        self._write_raw(
+            tmp_path,
+            '{"schema_version": "3", "run": {}, "summary": []}',
+        )
+        rc = summary.run(str(tmp_path), "text")
+        assert rc == 2
+        capsys.readouterr()
+
+    def test_missing_elapsed_seconds_is_exit_2(self, tmp_path, capsys):
+        # render() calls run["elapsed_seconds"] — must be caught before render.
+        s = (
+            '{"schema_version": "3",'
+            ' "run": {"timestamp": "x", "failed_files": []},'
+            ' "summary": {"files_processed": 0, "paired_records": 0,'
+            ' "orphan_entries": 0, "input_lines_seen": 0, "clean_count": 0,'
+            ' "quarantined_count": 0, "failed_count": 0,'
+            ' "fix_counts": {}, "quarantine_counts": {}}}'
+        )
+        self._write_raw(tmp_path, s)
+        rc = summary.run(str(tmp_path), "text")
+        assert rc == 2
+        capsys.readouterr()
+
+    def test_missing_failed_count_is_exit_2(self, tmp_path, capsys):
+        # schema-3: failed_count is required in summary; absent → shape violation.
+        s = (
+            '{"schema_version": "3",'
+            ' "run": {"timestamp": "x", "elapsed_seconds": 1.0, "failed_files": []},'
+            ' "summary": {"files_processed": 0, "paired_records": 0,'
+            ' "orphan_entries": 0, "input_lines_seen": 0, "clean_count": 0,'
+            ' "quarantined_count": 0, "fix_counts": {}, "quarantine_counts": {}}}'
+        )
+        self._write_raw(tmp_path, s)
+        rc = summary.run(str(tmp_path), "text")
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "invalid report.json" in err
+
+    def test_missing_run_failed_files_is_exit_2(self, tmp_path, capsys):
+        # schema-3: run.failed_files is required; absent → shape violation.
+        s = (
+            '{"schema_version": "3",'
+            ' "run": {"timestamp": "x", "elapsed_seconds": 1.0},'
+            ' "summary": {"files_processed": 0, "paired_records": 0,'
+            ' "orphan_entries": 0, "input_lines_seen": 0, "clean_count": 0,'
+            ' "quarantined_count": 0, "failed_count": 0,'
+            ' "fix_counts": {}, "quarantine_counts": {}}}'
+        )
+        self._write_raw(tmp_path, s)
+        rc = summary.run(str(tmp_path), "text")
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "invalid report.json" in err
+
+
+class TestPlainTierAsciiSafe:
+    """Issue #97(b): the plain tier must not emit the em dash U+2014 — it is
+    selected precisely when the console cannot encode Unicode, so any non-ASCII
+    character causes UnicodeEncodeError.
+    """
+
+    def test_zero_denominator_plain_renders_without_emdash(self):
+        # _format_pct(x, 0) returns "—" by default; the plain tier must use an
+        # ASCII fallback so the same string can be written to an ASCII console.
+        con = _console(80, terminal=False)
         env = {
-            "schema_version": "2",
+            "schema_version": "3",
             "run": {
                 "command": "clean",
                 "timestamp": "2026-01-01T00:00:00Z",
                 "elapsed_seconds": 0.1,
+                "failed_files": [],
             },
             "environment": {"tool_version": "0.5.0", "python_version": "3.14.0"},
             "summary": {
@@ -181,6 +305,109 @@ class TestEdgeCases:
                 "input_lines_seen": 0,
                 "clean_count": 0,
                 "quarantined_count": 0,
+                "failed_count": 0,
+                "fix_counts": {},
+                "quarantine_counts": {},
+            },
+            "files": [],
+        }
+        summary.render(env, console=con)
+        out = con.file.getvalue()
+        # em dash must not appear in plain output
+        assert "—" not in out
+        # some ASCII replacement must appear for the zero-denominator pct field
+        assert out  # rendered something
+
+    def test_plain_tier_format_pct_returns_ascii(self):
+        # _format_pct_plain (or the tier-aware branch) must return ASCII for 0/0.
+        result = summary._format_pct_plain(5, 0)
+        assert all(ord(c) < 128 for c in result)
+        assert result  # non-empty
+
+
+class TestFailedFilesRendering:
+    """Issue #83: summary.render must show a Failures section when
+    failed_count > 0 and omit it when failed_count == 0."""
+
+    def _env_with_failures(self, failed_files):
+        return {
+            "schema_version": "3",
+            "run": {
+                "command": "clean",
+                "timestamp": "2026-05-31T12:00:00Z",
+                "elapsed_seconds": 10.0,
+                "failed_files": failed_files,
+            },
+            "environment": {"tool_version": "0.5.0", "python_version": "3.14.0"},
+            "summary": {
+                "files_processed": 1,
+                "paired_records": 100,
+                "orphan_entries": 0,
+                "input_lines_seen": 200,
+                "clean_count": 100,
+                "quarantined_count": 0,
+                "failed_count": len(failed_files),
+                "fix_counts": {},
+                "quarantine_counts": {},
+            },
+            "files": [],
+        }
+
+    def test_failures_section_appears_when_failures(self):
+        env = self._env_with_failures(
+            [{"file": "tle2099.txt", "error": "OSError: disk full"}]
+        )
+        con = _console(120, terminal=True)
+        summary.render(env, console=con)
+        out = con.file.getvalue()
+        assert "tle2099.txt" in out
+        assert "disk full" in out
+
+    def test_no_failures_section_when_clean(self):
+        env = self._env_with_failures([])
+        con = _console(120, terminal=True)
+        summary.render(env, console=con)
+        out = con.file.getvalue()
+        # A clean run must NOT add any failures-related text. (No `or "0"`
+        # escape hatch — the panel always shows "quarantined 0", which would
+        # make the disjunction vacuously true and hide a regression.)
+        assert "failed" not in out.lower()
+
+    def test_failures_section_appears_in_plain_tier(self):
+        env = self._env_with_failures(
+            [{"file": "tle_err.txt", "error": "RuntimeError: boom"}]
+        )
+        con = _console(80, terminal=False)
+        summary.render(env, console=con)
+        out = con.file.getvalue()
+        assert "tle_err.txt" in out
+        assert "boom" in out
+
+
+class TestEdgeCases:
+    def test_pick_tier_boundary_72(self):
+        pt = summary._pick_tier
+        assert pt(is_terminal=True, width=71, unicode_ok=True) == "plain"
+        assert pt(is_terminal=True, width=72, unicode_ok=True) == "medium"
+
+    def test_zero_records_run_renders_without_sections(self):
+        env = {
+            "schema_version": "3",
+            "run": {
+                "command": "clean",
+                "timestamp": "2026-01-01T00:00:00Z",
+                "elapsed_seconds": 0.1,
+                "failed_files": [],
+            },
+            "environment": {"tool_version": "0.5.0", "python_version": "3.14.0"},
+            "summary": {
+                "files_processed": 1,
+                "paired_records": 0,
+                "orphan_entries": 0,
+                "input_lines_seen": 0,
+                "clean_count": 0,
+                "quarantined_count": 0,
+                "failed_count": 0,
                 "fix_counts": {},
                 "quarantine_counts": {},
             },

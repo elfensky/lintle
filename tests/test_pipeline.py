@@ -7,6 +7,7 @@ import queue
 import pytest
 
 from lintle import pipeline, report, report_writers
+from lintle.categories import FixClass
 from lintle.diagnostics import RuleID
 
 
@@ -73,6 +74,20 @@ class TestIterRecords:
         assert isinstance(records[0], pipeline.RecordCandidate)
         assert records[0].src1 == 1 and records[0].src2 == 2
 
+    def test_pairs_lines_with_leading_whitespace_preserving_raw_bytes(
+        self, tmp_path, line1, line2
+    ):
+        # Leading whitespace must not block pairing: the prefix is matched on a
+        # trimmed view, but the RAW bytes (whitespace intact) are carried so
+        # repair_line trims and tags leading-trim (#88).
+        src = tmp_path / "in.txt"
+        src.write_bytes(("  " + line1 + "\n\t" + line2 + "\n").encode("ascii"))
+        records = list(pipeline.iter_records(str(src)))
+        assert len(records) == 1
+        assert isinstance(records[0], pipeline.RecordCandidate)
+        assert records[0].raw_line1 == b"  " + line1.encode("ascii")
+        assert records[0].raw_line2 == b"\t" + line2.encode("ascii")
+
     def test_blank_and_cr_only_lines_dropped(self, tmp_path, line1, line2):
         src = tmp_path / "in.txt"
         src.write_bytes((line1 + "\n\n" + "\r\n" + line2 + "\n").encode("ascii"))
@@ -134,7 +149,10 @@ class TestProcessFile:
         )
         out = tmp_path / "out"
 
-        stats = pipeline.process_file(str(src), str(out), "clean")
+        # The checksumless record is reconstructed only when opted in (#82).
+        stats = pipeline.process_file(
+            str(src), str(out), "clean", reconstruct_checksum=True
+        )
 
         assert stats.paired_records == 2
         assert stats.orphan_entries == 0
@@ -144,6 +162,24 @@ class TestProcessFile:
         cleaned = (out / "cleaned" / "tle2099.cleaned.txt").read_text()
         assert cleaned == line1 + "\n" + line2 + "\n" + line1 + "\n" + line2 + "\n"
         assert (out / "broken" / "tle2099.broken.txt").exists()
+
+    def test_leading_whitespace_record_pairs_and_repairs(self, tmp_path, line1, line2):
+        # A record whose lines carry leading whitespace must pair and repair
+        # via the documented leading-trim fix class — not quarantine as
+        # BAD_PREFIX before repair can run (#88, ARCHITECTURE §4).
+        src = tmp_path / "tle2099.txt"
+        src.write_bytes(("  " + line1 + "\n" + " " + line2 + "\n").encode("ascii"))
+        out = tmp_path / "out"
+
+        stats = pipeline.process_file(str(src), str(out), "clean")
+
+        assert stats.paired_records == 1
+        assert stats.orphan_entries == 0
+        assert stats.clean_count == 1
+        assert stats.quarantined_count == 0
+        assert stats.fix_counts.get(FixClass.LEADING_TRIM) == 2
+        cleaned = (out / "cleaned" / "tle2099.cleaned.txt").read_text()
+        assert cleaned == line1 + "\n" + line2 + "\n"
 
     def test_orphan_does_not_count_as_paired_record(self, tmp_path, line1, line2):
         # One paired record, then an orphan line 1 at EOF. Orphans must not
@@ -352,6 +388,26 @@ class TestProcessFile:
             pipeline.FileEnded("tle2099.txt")
         )
 
+    def test_sink_enter_failure_does_not_leak_cleaned_partial(
+        self, tmp_path, line1, line2, monkeypatch
+    ):
+        # Issue #104: if QuarantineSink.__enter__ (or a writer it enters)
+        # raises, the cleaned .partial must not be left behind.
+        src = tmp_path / "tle2099.txt"
+        src.write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
+        out = tmp_path / "out"
+
+        def boom(self):
+            raise OSError("simulated sink enter failure")
+
+        monkeypatch.setattr(report_writers.QuarantineSink, "__enter__", boom)
+
+        with pytest.raises(OSError, match="simulated sink enter failure"):
+            pipeline.process_file(str(src), str(out), "clean")
+
+        # No .partial should survive a failed __enter__.
+        assert not list(out.rglob("*.partial"))
+
     def test_end_event_emitted_even_on_failure(self, tmp_path):
         # A failing open would otherwise leave FileStarted lingering forever in
         # the display's active set — emit FileEnded from a finally so cleanup
@@ -494,6 +550,133 @@ class TestStreamingQuarantines:
             len(stats.quarantine_sample.buckets[RuleID.INTERNAL_ERROR])
             == report.PER_RULE_EXEMPLAR_BOUND
         )
+
+
+class TestOversizedLine:
+    """Issue #95 — a newline-free or CR-only multi-GB file must not be
+    materialised as one giant bytes object. ``iter_records`` must cap line
+    length at ``_MAX_LINE_BYTES`` so constant-memory is preserved."""
+
+    def test_single_oversized_line_yields_one_orphan(self, tmp_path):
+        # A file whose sole content is 10× the cap with no newline must
+        # yield exactly one Orphan (LINE_LENGTH), not buffer the whole thing.
+        cap = pipeline._MAX_LINE_BYTES
+        payload = b"X" * (10 * cap)
+        src = tmp_path / "huge.txt"
+        src.write_bytes(payload)
+
+        records = list(pipeline.iter_records(str(src)))
+
+        assert len(records) == 1
+        assert isinstance(records[0], pipeline.Orphan)
+        assert records[0].diag.rule_id == RuleID.LINE_LENGTH
+        assert "exceeds" in records[0].diag.note
+        assert len(records[0].raw_line) <= cap
+
+    def test_oversized_bytes_consumed_equals_file_size(self, tmp_path):
+        # bytes_consumed must still reach st_size even when the line is
+        # oversized and the remainder is discarded without being yielded.
+        cap = pipeline._MAX_LINE_BYTES
+        payload = b"Y" * (10 * cap)
+        src = tmp_path / "huge.txt"
+        src.write_bytes(payload)
+        from lintle import report as rpt
+
+        stats = rpt.FileStats(src_name="huge.txt")
+
+        list(pipeline.iter_records(str(src), stats))
+
+        assert stats.bytes_consumed == src.stat().st_size
+
+    def test_oversized_counts_as_one_input_line(self, tmp_path):
+        # input_lines_seen must be 1 for a file with one oversized line.
+        cap = pipeline._MAX_LINE_BYTES
+        src = tmp_path / "huge.txt"
+        src.write_bytes(b"Z" * (5 * cap))
+        from lintle import report as rpt
+
+        stats = rpt.FileStats(src_name="huge.txt")
+
+        list(pipeline.iter_records(str(src), stats))
+
+        assert stats.input_lines_seen == 1
+
+    def test_normal_lines_unchanged_around_oversized(self, tmp_path, line1, line2):
+        # An oversized line sandwiched between two valid TLE records must
+        # quarantine the oversized line but still pair the surrounding records.
+        cap = pipeline._MAX_LINE_BYTES
+        payload = (
+            (line1 + "\n").encode("ascii")
+            + (line2 + "\n").encode("ascii")
+            + b"B" * (5 * cap)
+            + b"\n"
+            + (line1 + "\n").encode("ascii")
+            + (line2 + "\n").encode("ascii")
+        )
+        src = tmp_path / "mixed.txt"
+        src.write_bytes(payload)
+
+        records = list(pipeline.iter_records(str(src)))
+
+        pairs = [r for r in records if isinstance(r, pipeline.RecordCandidate)]
+        orphans = [r for r in records if isinstance(r, pipeline.Orphan)]
+        assert len(pairs) == 2
+        assert len(orphans) == 1
+        assert orphans[0].diag.rule_id == RuleID.LINE_LENGTH
+
+    def test_oversized_between_l1_and_l2_orphans_all(self, tmp_path, line1, line2):
+        # An oversized line BETWEEN a line-1 and its line-2 must break pairing:
+        # line-1 and line-2 must NOT pair across the corruption (#95 — the
+        # oversized branch flushes `held`). Distinct from the sandwich layout,
+        # where `held` is already None at the oversized line.
+        cap = pipeline._MAX_LINE_BYTES
+        payload = (
+            (line1 + "\n").encode("ascii")
+            + b"X" * (5 * cap)
+            + b"\n"
+            + (line2 + "\n").encode("ascii")
+        )
+        src = tmp_path / "split.txt"
+        src.write_bytes(payload)
+
+        records = list(pipeline.iter_records(str(src)))
+
+        pairs = [r for r in records if isinstance(r, pipeline.RecordCandidate)]
+        orphans = [r for r in records if isinstance(r, pipeline.Orphan)]
+        assert len(pairs) == 0  # must not pair across the oversized line
+        assert len(orphans) == 3  # held line-1, the oversized line, the line-2
+        assert [o.diag.rule_id for o in orphans] == [
+            RuleID.ORPHAN_LINE,
+            RuleID.LINE_LENGTH,
+            RuleID.ORPHAN_LINE,
+        ]
+
+    def test_oversized_excerpt_bounded(self, tmp_path):
+        # The raw_line on the emitted Orphan must not exceed _MAX_LINE_BYTES.
+        cap = pipeline._MAX_LINE_BYTES
+        src = tmp_path / "huge2.txt"
+        src.write_bytes(b"A" * (20 * cap))
+
+        records = list(pipeline.iter_records(str(src)))
+
+        assert isinstance(records[0], pipeline.Orphan)
+        assert len(records[0].raw_line) <= cap
+
+    def test_normal_multiline_file_unchanged(self, tmp_path, line1, line2):
+        # Introducing the cap must not alter byte handling of normal-length
+        # lines. A two-record file must pair, and raw bytes must be identical.
+        body = (line1 + "\n" + line2 + "\n" + line1 + "\n" + line2 + "\n").encode(
+            "ascii"
+        )
+        src = tmp_path / "normal.txt"
+        src.write_bytes(body)
+
+        records = list(pipeline.iter_records(str(src)))
+
+        assert len(records) == 2
+        assert all(isinstance(r, pipeline.RecordCandidate) for r in records)
+        assert records[0].raw_line1 == line1.encode("ascii")
+        assert records[0].raw_line2 == line2.encode("ascii")
 
 
 class TestQuarantinedNoradIds:

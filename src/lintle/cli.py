@@ -2,14 +2,17 @@
 
 import argparse
 import contextlib
-import datetime
 import json
 import os
 import shutil
+import sys
 import time
 from pathlib import Path
 
 from lintle import (
+    BROKEN_SUFFIX,
+    CLEANED_SUFFIX,
+    SHARDS_DIRNAME,
     __version__,
     cli_progress,
     diff,
@@ -54,10 +57,11 @@ See `lintle <command> --help` for command-specific options.
 
 
 def discover_paths(path):
-    """Expand ``path``: a directory becomes its sorted ``tle*.txt`` files
-    (excluding ``*.cleaned.txt`` / ``*.broken.txt`` tool output); a file is
-    returned as a single-element list. A nonexistent entry yields ``[]`` —
-    callers should validate inputs with :func:`check_paths` first.
+    """Expand ``path``: a directory becomes its sorted ``tle*.txt`` regular
+    files (excluding ``*.cleaned.txt`` / ``*.broken.txt`` tool output, and
+    excluding dangling symlinks and directories even when named ``tle*.txt``);
+    a file is returned as a single-element list. A nonexistent entry yields
+    ``[]`` — callers should validate inputs with :func:`check_paths` first.
     """
     directory = Path(path)
     if directory.is_dir():
@@ -67,8 +71,9 @@ def discover_paths(path):
             if (
                 name.startswith("tle")
                 and name.endswith(".txt")
-                and not name.endswith(".cleaned.txt")
-                and not name.endswith(".broken.txt")
+                and not name.endswith(CLEANED_SUFFIX)
+                and not name.endswith(BROKEN_SUFFIX)
+                and (directory / name).is_file()  # excludes dangling symlinks + dirs
             )
         ]
     if Path(path).is_file():
@@ -153,6 +158,16 @@ def _add_clean_subparser(subparsers):
             "exit non-zero only if MORE than N records were quarantined; "
             "or, with a trailing `%%`, more than N%% of routed records "
             "(default: 0 — any quarantine fails)"
+        ),
+    )
+    sub.add_argument(
+        "--reconstruct-checksum",
+        action="store_true",
+        help=(
+            "recompute and append a missing column-69 checksum for an "
+            "otherwise-valid 68-char line (tier-2 repair). Off by default: a "
+            "dropped data character is indistinguishable from a dropped "
+            "checksum, so by default such lines are quarantined"
         ),
     )
     resume_group = sub.add_mutually_exclusive_group()
@@ -291,6 +306,20 @@ def resolve_jobs(explicit, cpu_count, n_files):
     return max(1, min((cpu_count or 1) - 1, n_files))
 
 
+def _print_doc(text):
+    """Print read-only documentation to stdout, surviving a non-UTF-8 stdout.
+
+    The ``explain`` text carries non-ASCII characters (a ``·`` heading
+    separator, em-dashes from rule titles), so a bare ``print`` on an ASCII
+    stdout (``PYTHONIOENCODING=ascii``, a C-locale session) would crash with
+    ``UnicodeEncodeError``. Re-encoding through the stream's own encoding with
+    ``backslashreplace`` escapes only the un-representable characters, leaving
+    a fully-readable document on a capable terminal unchanged."""
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    safe = text.encode(encoding, errors="backslashreplace").decode(encoding)
+    print(safe)
+
+
 def _finalize_run(
     args,
     all_stats,
@@ -322,6 +351,7 @@ def _finalize_run(
         command=args.command,
         started_at=run_started_iso,
         elapsed_seconds=run_elapsed,
+        failed_files=failed_files,
     )
 
     # A `clean` run writes a Markdown run report, the machine-readable
@@ -334,7 +364,9 @@ def _finalize_run(
     # finalization (the per-worker shard concat dominates on a large corpus); a
     # no-op off a TTY, and after the progress block exits, so no Live nesting.
     if all_stats:
-        output_artifacts.write_clean_artifacts(args.out_dir, all_stats, envelope)
+        output_artifacts.write_clean_artifacts(
+            args.out_dir, all_stats, envelope, failed_files=failed_files
+        )
 
     if args.report == "json":
         print(json.dumps(envelope, indent=2))
@@ -354,7 +386,7 @@ def _finalize_run(
     # `report.jsonl` was written from those shards by the report block above.
     if not failed_files:
         resume.delete_checkpoint(args.out_dir)
-        shard_dir = Path(args.out_dir) / ".shards"
+        shard_dir = Path(args.out_dir) / SHARDS_DIRNAME
         if shard_dir.exists():
             shutil.rmtree(shard_dir)
 
@@ -393,7 +425,7 @@ def main(argv=None):
     # listed so the operator can correct it.
     if args.command == "explain":
         try:
-            print(explain.render(args.tag))
+            _print_doc(explain.render(args.tag))
         except explain.UnknownTag:
             term.error(
                 f"unknown tag {args.tag!r}.\n"
@@ -447,14 +479,23 @@ def main(argv=None):
     # the disk-space guard, the pre-run roster, and the live byte-bar
     # denominators, so those three readouts can never silently diverge. Ordered
     # by discovery so the roster lists files in a stable order.
-    file_sizes = {p: Path(p).stat().st_size for p in files}
+    try:
+        file_sizes = {p: Path(p).stat().st_size for p in files}
+    except OSError as exc:
+        term.error(f"cannot read input file: {exc}")
+        return 2
 
     # ExitStack holds the out-dir lock for the clean run. Closed in the finally
     # block below — so every exit path (LockHeldError aside, which returns
     # before entering the try, leaving the stack empty) releases the lock.
     _lock_stack = contextlib.ExitStack()
 
-    Path(args.out_dir).mkdir(parents=True, exist_ok=True)
+    try:
+        Path(args.out_dir).mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        term.error(f"cannot create output directory {args.out_dir!r}: {exc}")
+        return 2
+
     try:
         _lock_stack.enter_context(
             fsutil.out_dir_lock(args.out_dir, started=resume.run_started_stamp())
@@ -463,19 +504,36 @@ def main(argv=None):
         # Stack is still empty — no lock to release.
         term.error(str(exc))
         return 2
+    except OSError as exc:
+        # A non-contention error acquiring the lock (e.g. ENOLCK, a read-only
+        # out-dir). out_dir_lock has already closed its fd; surface it as a clean
+        # exit 2 rather than an unhandled traceback.
+        term.error(f"cannot lock output directory {args.out_dir!r}: {exc}")
+        return 2
 
     # The try/finally guarantees _lock_stack.close() runs on every exit path
     # that reaches here: disk-error return, ABORT return, interrupt return,
-    # failed-files return, and normal success — so the lock file is always
-    # removed.
+    # failed-files return, and normal success — so the advisory flock is always
+    # released (the kernel would drop it on process death regardless; the file
+    # itself is intentionally left in place — see out_dir_lock).
     try:
-        plan = run_planning.resolve_clean_plan(args, files, file_sizes)
+        # Build the typed config snapshot from args ONCE so the two leaves
+        # (resolve_clean_plan, run_workers) receive named, statically-typed
+        # fields rather than a raw argparse Namespace.  A flag rename that
+        # breaks from_args surfaces at this single construction site rather
+        # than mid-run as an AttributeError inside a leaf (issue #121).
+        config = run_planning.CleanConfig.from_args(args)
+        try:
+            plan = run_planning.resolve_clean_plan(config, files, file_sizes)
+        except OSError as exc:
+            term.error(f"preflight error: {exc}")
+            return 2
         if plan.exit_code is not None:
             return plan.exit_code
         # Resolve the worker count now that files_to_process is final: an
         # explicit --jobs is honoured as-is; the default is CPU count - 1,
         # capped at the file count and floored at one (issue #53 §2.3).
-        jobs = resolve_jobs(args.jobs, os.cpu_count(), len(plan.files_to_process))
+        jobs = resolve_jobs(config.jobs, os.cpu_count(), len(plan.files_to_process))
 
         # The shared rich Console on stderr (term.stderr_console) drives both the
         # roster and the live progress block; off a TTY each degrades to plain
@@ -500,14 +558,23 @@ def main(argv=None):
         # subtraction using a monotonic clock so NTP jitter mid-run cannot
         # produce a negative duration. Per spec §4, this aggregate is
         # intentionally NOT the sum of per-file worker durations.
-        run_started_iso = datetime.datetime.now(datetime.UTC).strftime(
-            "%Y-%m-%dT%H:%M:%SZ"
-        )
+        run_started_iso = report.utc_stamp()
         run_monotonic_start = time.monotonic()
 
-        all_stats, failed_files, interrupted, interrupted_signo = (
-            worker_pool.run_workers(args, files, plan, jobs, console, sizes)
+        all_stats, failed_files, interrupted, interrupted_signo, operational_error = (
+            worker_pool.run_workers(config, files, plan, jobs, console, sizes)
         )
+
+        if operational_error is not None:
+            # Issue #89: parent-side bookkeeping failure (e.g. ENOSPC from
+            # write_checkpoint). The pool has already been torn down via the
+            # KI path; surface a clean error and return 2 (operational error).
+            # Exit 1 is reserved exclusively for the quarantine quality gate.
+            term.error(
+                f"run aborted due to an operational error: {operational_error}\n"
+                "  if some files completed, re-run with --resume to finish."
+            )
+            return 2
 
         if interrupted:
             return process_control.signal_exit_code(interrupted_signo)
@@ -521,5 +588,16 @@ def main(argv=None):
             threshold_mode=threshold_mode,
             quarantine_threshold=quarantine_threshold,
         )
+    except Exception as exc:
+        # Issue #89: catch-all backstop — any unhandled exception in the clean
+        # orchestration (that isn't a KeyboardInterrupt, which propagates
+        # naturally) maps to a clean exit-2 operational error so exit 1 stays
+        # unambiguous as the quality-gate signal. A brief resume hint tells the
+        # operator that partial progress may be recoverable.
+        term.error(
+            f"unexpected error during clean: {exc}\n"
+            "  if some files completed, re-run with --resume to finish."
+        )
+        return 2
     finally:
         _lock_stack.close()

@@ -1,7 +1,7 @@
-"""Live terminal presentation for a ``clean``/``validate`` run: the pre-run file
-roster, a transient status spinner, and the multi-file progress display that
-consumes the worker progress protocol. ``rich``-only rendering, split out of
-``cli`` so the composition root keeps a single responsibility (issue #53)."""
+"""Live terminal presentation for a ``clean`` run: the pre-run file roster, a
+transient status spinner, and the multi-file progress display that consumes the
+worker progress protocol. ``rich``-only rendering, split out of ``cli`` so the
+composition root keeps a single responsibility (issue #53)."""
 
 import contextlib
 import queue
@@ -100,7 +100,7 @@ class ProgressDisplay:
     def __enter__(self):
         if self._live:
             self._progress = Progress(
-                TextColumn("{task.fields[label]}"),
+                TextColumn("{task.fields[label]}", markup=False),
                 BarColumn(bar_width=None),
                 TaskProgressColumn(),
                 # Overall row: files done / total. Per-file rows: byte
@@ -108,7 +108,7 @@ class ProgressDisplay:
                 _ForKind("overall", MofNCompleteColumn()),
                 _ForKind("file", TransferSpeedColumn()),
                 _ForKind("file", TimeRemainingColumn(compact=True)),
-                TextColumn("{task.fields[detail]}"),
+                TextColumn("{task.fields[detail]}", markup=False),
                 console=self._console,
                 transient=True,
             )
@@ -152,12 +152,19 @@ class ProgressDisplay:
         target.print(f"[{done}/{self._total_files}] {summary}", markup=False)
 
     def _run(self):
-        # The display is cosmetic: a broken queue (its manager gone at
-        # shutdown) must never crash this thread with a traceback.
-        with contextlib.suppress(Exception):
-            while not self._stop.is_set():
+        # The display is cosmetic: render errors must never kill this thread
+        # permanently (the queue would grow unbounded). Per-iteration errors
+        # are caught and skipped so draining continues; genuine shutdown
+        # errors (manager gone) break the loop cleanly.
+        while not self._stop.is_set():
+            try:
                 self._drain()
-                self._stop.wait(self._REFRESH)
+            except EOFError, BrokenPipeError, ConnectionResetError, OSError:
+                break
+            except Exception:  # transient render glitch — keep draining
+                pass
+            self._stop.wait(self._REFRESH)
+        with contextlib.suppress(Exception):
             self._drain()
 
     def _drain(self):
@@ -232,7 +239,7 @@ def render_roster(console, file_sizes):
     total = 0
     for index, (path, size) in enumerate(file_sizes.items(), start=1):
         total += size
-        table.add_row(str(index), Path(path).name, _format_size(size))
+        table.add_row(str(index), Text(Path(path).name), _format_size(size))
     table.add_section()
     table.add_row("", "total", _format_size(total))
     console.print(table)

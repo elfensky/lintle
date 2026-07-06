@@ -105,8 +105,14 @@ class TestFixExamplesMatchRepairer:
 
     def test_before_repairs_to_after_producing_this_fix(self):
         for entry in FIX_EXPLAIN.values():
+            # reconstruct_checksum is opt-in (#82); the documented
+            # reconstructed-checksum example depends on it, and it is a no-op
+            # for the other fix tags, so enable it for every entry here.
             clean, fixes, diag = repair.repair_line(
-                entry.before.encode("latin-1"), entry.lineno, 1
+                entry.before.encode("latin-1"),
+                entry.lineno,
+                1,
+                reconstruct_checksum=True,
             )
             assert diag is None, entry.fix_class
             assert clean == entry.after
@@ -184,6 +190,20 @@ class TestRenderFix:
         assert explain.render("RECONSTRUCTED_CHECKSUM") == explain.render(
             "reconstructed-checksum"
         )
+
+
+class TestCaretAlignment:
+    """The caret must sit under the *rendered* column, accounting for control
+    characters that ``_visible`` escapes to two cells."""
+
+    def test_caret_aligns_under_escaped_control_char(self):
+        # A tab before the marked column renders as two cells ("\\t"), so the
+        # caret offset must derive from the escaped prefix width, not the raw
+        # source column. Source column 5 of "\t1 25544U" is the first '5'.
+        rows = explain._example_block(["\t1 25544U"], [], (5, 5))
+        bad_row, caret_row = rows[0], rows[1]
+        caret_idx = caret_row.index("^")
+        assert bad_row[caret_idx] == "5"
 
 
 class TestRenderUnknownTag:

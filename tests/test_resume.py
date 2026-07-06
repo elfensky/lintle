@@ -5,7 +5,17 @@ import os
 import pytest
 
 import lintle
-from lintle import resume, stem
+from lintle import (
+    BROKEN_DIRNAME,
+    BROKEN_SUFFIX,
+    CLEANED_DIRNAME,
+    CLEANED_SUFFIX,
+    FINDINGS_SUFFIX,
+    SHARDS_DIRNAME,
+    resume,
+    stem,
+)
+from lintle.report import FileStats
 
 
 def _write(path, data: bytes):
@@ -106,6 +116,19 @@ class TestCheckpointRoundTrip:
         with open(tmp_path / resume.CHECKPOINT_NAME, "w") as handle:
             handle.write("{ not valid json")
         assert resume.load_checkpoint(str(tmp_path)) is None
+
+    def test_load_invalid_utf8_returns_none(self, tmp_path):
+        # Issue #92: a .clean-state.json with invalid-UTF-8 bytes must return
+        # None, not raise UnicodeDecodeError.
+        (tmp_path / resume.CHECKPOINT_NAME).write_bytes(b"\xff\xfe")
+        assert resume.load_checkpoint(str(tmp_path)) is None
+
+    def test_load_non_dict_json_returns_none(self, tmp_path):
+        # Issue #91 dict-guard: a valid JSON array/string/null is not a usable
+        # checkpoint — must return None so callers see "no checkpoint".
+        for doc in ("[]", '"hello"', "42", "null"):
+            (tmp_path / resume.CHECKPOINT_NAME).write_text(doc, encoding="utf-8")
+            assert resume.load_checkpoint(str(tmp_path)) is None
 
     def test_delete_removes_checkpoint(self, tmp_path):
         resume.write_checkpoint(
@@ -225,6 +248,83 @@ class TestValidateRunIdentity:
         changed[field] = 999 if field in int_fields else "CHANGED"
         reason = resume.validate_run_identity(ckpt, {"a.txt": changed}, {"args": []})
         assert reason and "a.txt" in reason
+
+
+class TestValidateCompletedBlock:
+    """Issue #91(b): validate_run_identity must gate the ``completed`` block shape
+    so corrupt entries never reach resolve_clean_plan's unguarded indexing.
+    """
+
+    def _valid_ckpt(self):
+        return {
+            "schema_version": resume.SCHEMA_VERSION,
+            "lintle_version": __import__("lintle").__version__,
+            "run_identity": {},
+            "inputs": {},
+            "completed": {},
+        }
+
+    def test_missing_completed_key_is_corrupt(self):
+        ck = self._valid_ckpt()
+        del ck["completed"]
+        reason = resume.validate_run_identity(ck, {}, {})
+        assert reason is not None and "completed" in reason.lower()
+
+    def test_completed_not_a_dict_is_corrupt(self):
+        ck = self._valid_ckpt()
+        ck["completed"] = []
+        reason = resume.validate_run_identity(ck, {}, {})
+        assert reason is not None and "completed" in reason.lower()
+
+    def test_entry_missing_summary_is_corrupt(self):
+        ck = self._valid_ckpt()
+        ck["completed"] = {"a.txt": {"outputs": {}}}  # no "summary" key
+        reason = resume.validate_run_identity(ck, {}, {})
+        assert reason is not None
+
+    def test_entry_missing_outputs_is_corrupt(self):
+        ck = self._valid_ckpt()
+        ck["completed"] = {"a.txt": {"summary": {}}}  # no "outputs" key
+        reason = resume.validate_run_identity(ck, {}, {})
+        assert reason is not None
+
+    def test_entry_summary_not_dict_is_corrupt(self):
+        ck = self._valid_ckpt()
+        ck["completed"] = {"a.txt": {"summary": "bad", "outputs": {}}}
+        reason = resume.validate_run_identity(ck, {}, {})
+        assert reason is not None
+
+    def test_entry_outputs_not_dict_is_corrupt(self):
+        ck = self._valid_ckpt()
+        ck["completed"] = {"a.txt": {"summary": {}, "outputs": "bad"}}
+        reason = resume.validate_run_identity(ck, {}, {})
+        assert reason is not None
+
+    def test_well_formed_completed_passes(self):
+        ck = self._valid_ckpt()
+        ck["completed"] = {
+            "a.txt": {"summary": {"clean_count": 1}, "outputs": {"a.cleaned.txt": 99}}
+        }
+        reason = resume.validate_run_identity(ck, {}, {})
+        assert reason is None
+
+    def test_classify_treats_corrupt_completed_as_corrupt(self, tmp_path):
+        # End-to-end: a checkpoint that passes schema_version/lintle_version/
+        # run_identity/inputs but has a corrupt completed block → CORRUPT status,
+        # so the ABORT path is taken instead of KeyError in resolve_clean_plan.
+        ck = self._valid_ckpt()
+        ck["completed"] = {"a.txt": {"outputs": {}}}  # missing summary
+        resume.write_checkpoint(str(tmp_path), ck)
+        # Manually overwrite with the corrupt completed (write_checkpoint would
+        # reject via build_checkpoint, so write raw).
+        import json
+
+        (tmp_path / resume.CHECKPOINT_NAME).write_text(
+            json.dumps(ck, separators=(",", ":"), sort_keys=True),
+            encoding="utf-8",
+        )
+        c = resume.classify_checkpoint(str(tmp_path), {}, {})
+        assert c.status is resume.CheckpointStatus.CORRUPT
 
 
 class TestClassifyCheckpoint:
@@ -397,3 +497,234 @@ class TestArchiveCheckpoint:
 
     def test_noop_when_absent(self, tmp_path):
         assert resume.archive_checkpoint(str(tmp_path), timestamp="x") is None
+
+    def test_prunes_old_stale_archives_keeping_newest_3(self, tmp_path):
+        # Create 5 stale archives with sortable timestamps — only the newest 3
+        # should survive after the next archive_checkpoint call.
+        prefix = resume.CHECKPOINT_NAME + ".stale-"
+        timestamps = [
+            "20260101T000000Z",
+            "20260102T000000Z",
+            "20260103T000000Z",
+            "20260104T000000Z",
+            "20260105T000000Z",
+        ]
+        for ts in timestamps:
+            (tmp_path / f"{prefix}{ts}").write_text("{}")
+        # Write a fresh checkpoint and archive it — the call triggers pruning.
+        ck = resume.build_checkpoint(inputs={}, completed={}, run_identity={})
+        resume.write_checkpoint(str(tmp_path), ck)
+        resume.archive_checkpoint(str(tmp_path), timestamp="20260106T000000Z")
+        # After archiving there are 6 total; pruning must leave only the 3 newest.
+        remaining = sorted(
+            p.name for p in tmp_path.iterdir() if p.name.startswith(prefix)
+        )
+        assert len(remaining) == 3
+        assert remaining == [
+            f"{prefix}20260104T000000Z",
+            f"{prefix}20260105T000000Z",
+            f"{prefix}20260106T000000Z",
+        ]
+
+    def test_prunes_nothing_when_three_or_fewer(self, tmp_path):
+        # Fewer than _STALE_ARCHIVE_KEEP archives — nothing removed.
+        prefix = resume.CHECKPOINT_NAME + ".stale-"
+        for ts in ("20260101T000000Z", "20260102T000000Z"):
+            (tmp_path / f"{prefix}{ts}").write_text("{}")
+        ck = resume.build_checkpoint(inputs={}, completed={}, run_identity={})
+        resume.write_checkpoint(str(tmp_path), ck)
+        resume.archive_checkpoint(str(tmp_path), timestamp="20260103T000000Z")
+        remaining = [p.name for p in tmp_path.iterdir() if p.name.startswith(prefix)]
+        assert len(remaining) == 3  # all three survive
+
+
+# ---------------------------------------------------------------------------
+# Issue #101 — output_sizes unconditional sidecar + shard recording
+# ---------------------------------------------------------------------------
+
+
+class TestOutputSizes:
+    """output_sizes must record the broken sidecar unconditionally (issue #101a)
+    and the findings shard (issue #117 / #101b), regardless of quarantine count."""
+
+    def _make_stats(self, src_name, quarantined_count=0):
+        return FileStats(src_name=src_name, quarantined_count=quarantined_count)
+
+    def _write(self, path, data=b"content"):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+
+    def test_records_cleaned_file(self, tmp_path):
+        st = self._make_stats("tle2099.txt")
+        cleaned = tmp_path / CLEANED_DIRNAME / ("tle2099" + CLEANED_SUFFIX)
+        self._write(cleaned, b"x" * 200)
+        sizes = resume.output_sizes(str(tmp_path), st)
+        assert "tle2099" + CLEANED_SUFFIX in sizes
+        assert sizes["tle2099" + CLEANED_SUFFIX] == 200
+
+    def test_records_broken_sidecar_even_with_zero_quarantines(self, tmp_path):
+        # Issue #101a: sidecar always written (header-only when nothing is
+        # quarantined), so it must always be recorded — not gated on quarantined_count.
+        st = self._make_stats("tle2099.txt", quarantined_count=0)
+        broken = tmp_path / BROKEN_DIRNAME / ("tle2099" + BROKEN_SUFFIX)
+        self._write(broken, b"# header\n")
+        sizes = resume.output_sizes(str(tmp_path), st)
+        assert "tle2099" + BROKEN_SUFFIX in sizes
+
+    def test_records_findings_shard(self, tmp_path):
+        # Issue #117: the shard must be recorded so a missing shard on resume
+        # triggers reprocessing rather than a silent gap in report.jsonl.
+        st = self._make_stats("tle2099.txt")
+        shard = tmp_path / SHARDS_DIRNAME / ("tle2099" + FINDINGS_SUFFIX)
+        self._write(shard, b'{"outcome":"quarantined"}\n')
+        sizes = resume.output_sizes(str(tmp_path), st)
+        assert "tle2099" + FINDINGS_SUFFIX in sizes
+        assert sizes["tle2099" + FINDINGS_SUFFIX] == len(b'{"outcome":"quarantined"}\n')
+
+    def test_absent_outputs_not_recorded(self, tmp_path):
+        # When a file does not exist (e.g. validate mode) it is simply absent
+        # from the sizes dict — no KeyError, no OSError.
+        st = self._make_stats("tle2099.txt")
+        sizes = resume.output_sizes(str(tmp_path), st)
+        assert "tle2099" + CLEANED_SUFFIX not in sizes
+        assert "tle2099" + BROKEN_SUFFIX not in sizes
+        assert "tle2099" + FINDINGS_SUFFIX not in sizes
+
+
+class TestVerifyCompletedOutputsWithShard:
+    """verify_completed_outputs must flag reprocessing when the shard is missing
+    or truncated (issue #117)."""
+
+    def _completed_with_shard(self, src_name, cleaned_size, shard_size):
+        file_stem = stem(src_name)
+        return {
+            src_name: {
+                "summary": {"src_name": src_name},
+                "outputs": {
+                    file_stem + CLEANED_SUFFIX: cleaned_size,
+                    file_stem + FINDINGS_SUFFIX: shard_size,
+                },
+            }
+        }
+
+    def test_intact_shard_not_flagged(self, tmp_path):
+        (tmp_path / CLEANED_DIRNAME).mkdir()
+        (tmp_path / CLEANED_DIRNAME / "tle2099.cleaned.txt").write_bytes(b"x" * 100)
+        (tmp_path / SHARDS_DIRNAME).mkdir()
+        (tmp_path / SHARDS_DIRNAME / "tle2099.findings.jsonl").write_bytes(b"y" * 50)
+        assert (
+            resume.verify_completed_outputs(
+                self._completed_with_shard("tle2099.txt", 100, 50), str(tmp_path)
+            )
+            == []
+        )
+
+    def test_missing_shard_flags_reprocess(self, tmp_path):
+        # Shard deleted out-of-band → file should be reprocessed.
+        (tmp_path / CLEANED_DIRNAME).mkdir()
+        (tmp_path / CLEANED_DIRNAME / "tle2099.cleaned.txt").write_bytes(b"x" * 100)
+        # No shard directory / shard file created.
+        assert resume.verify_completed_outputs(
+            self._completed_with_shard("tle2099.txt", 100, 50), str(tmp_path)
+        ) == ["tle2099.txt"]
+
+    def test_truncated_shard_flags_reprocess(self, tmp_path):
+        (tmp_path / CLEANED_DIRNAME).mkdir()
+        (tmp_path / CLEANED_DIRNAME / "tle2099.cleaned.txt").write_bytes(b"x" * 100)
+        (tmp_path / SHARDS_DIRNAME).mkdir()
+        # Write only 10 bytes, but checkpoint says 50.
+        (tmp_path / SHARDS_DIRNAME / "tle2099.findings.jsonl").write_bytes(b"y" * 10)
+        assert resume.verify_completed_outputs(
+            self._completed_with_shard("tle2099.txt", 100, 50), str(tmp_path)
+        ) == ["tle2099.txt"]
+
+
+# ---------------------------------------------------------------------------
+# Issue #118 — CompletedEntry round-trip and verify_completed_outputs wiring
+# ---------------------------------------------------------------------------
+
+
+class TestCompletedEntryRoundTrip:
+    """CompletedEntry.from_stats → as_dict → verify_completed_outputs round-trip
+    (issue #118): the typed constructor must produce a dict shape that
+    verify_completed_outputs accepts and actually inspects on disk."""
+
+    def _write_output(self, root, dirname, name, data=b"x" * 50):
+        d = root / dirname
+        d.mkdir(parents=True, exist_ok=True)
+        (d / name).write_bytes(data)
+
+    def test_as_dict_has_summary_and_outputs_keys(self, tmp_path):
+        # The wire shape must match the checkpoint contract exactly.
+        entry = resume.CompletedEntry(summary={"src_name": "tle2099.txt"}, outputs={})
+        d = entry.as_dict()
+        assert set(d) == {"summary", "outputs"}
+        assert d["summary"] == {"src_name": "tle2099.txt"}
+        assert d["outputs"] == {}
+
+    def test_from_stats_builds_valid_entry(self, tmp_path):
+        # from_stats must produce an entry with a summary dict and an outputs
+        # dict; the summary must include at least src_name.
+        st = FileStats(src_name="tle2099.txt")
+        self._write_output(tmp_path, CLEANED_DIRNAME, "tle2099" + CLEANED_SUFFIX)
+        entry = resume.CompletedEntry.from_stats(str(tmp_path), st)
+        assert isinstance(entry.summary, dict)
+        assert isinstance(entry.outputs, dict)
+        assert entry.summary.get("src_name") == "tle2099.txt"
+        # The cleaned file was present — it must be in outputs.
+        assert "tle2099" + CLEANED_SUFFIX in entry.outputs
+
+    def test_round_trip_verify_passes_intact_outputs(self, tmp_path):
+        # The dict produced by as_dict() must satisfy verify_completed_outputs
+        # when all named output files are on disk at the recorded size.
+        st = FileStats(src_name="tle2099.txt")
+        data = b"y" * 80
+        self._write_output(tmp_path, CLEANED_DIRNAME, "tle2099" + CLEANED_SUFFIX, data)
+        entry = resume.CompletedEntry.from_stats(str(tmp_path), st)
+        completed = {"tle2099.txt": entry.as_dict()}
+        assert resume.verify_completed_outputs(completed, str(tmp_path)) == []
+
+    def test_round_trip_verify_flags_missing_output(self, tmp_path):
+        # If the output file is absent after as_dict() is serialised, the
+        # round-trip must flag it for reprocessing.
+        st = FileStats(src_name="tle2099.txt")
+        data = b"z" * 60
+        self._write_output(tmp_path, CLEANED_DIRNAME, "tle2099" + CLEANED_SUFFIX, data)
+        entry = resume.CompletedEntry.from_stats(str(tmp_path), st)
+        # Remove the output file to simulate a post-completion corruption.
+        (tmp_path / CLEANED_DIRNAME / ("tle2099" + CLEANED_SUFFIX)).unlink()
+        completed = {"tle2099.txt": entry.as_dict()}
+        assert resume.verify_completed_outputs(completed, str(tmp_path)) == [
+            "tle2099.txt"
+        ]
+
+    def test_checkpoint_bytes_unchanged_after_refactor(self, tmp_path):
+        # Byte-determinism check (issue #118): the JSON bytes produced by
+        # build_checkpoint when using CompletedEntry.as_dict() must be
+        # identical to those produced by the pre-refactor inline dict.
+        import json
+
+        summary = {"src_name": "tle2099.txt", "clean_count": 5, "quarantined_count": 1}
+        outputs = {"tle2099.cleaned.txt": 200, "tle2099.broken.txt": 50}
+
+        # Pre-refactor inline dict (the old write path).
+        pre_refactor_entry = {"summary": summary, "outputs": outputs}
+        # Post-refactor typed path.
+        post_refactor_entry = resume.CompletedEntry(
+            summary=summary, outputs=outputs
+        ).as_dict()
+
+        completed = {"data/source/tle2099.txt": pre_refactor_entry}
+        completed_new = {"data/source/tle2099.txt": post_refactor_entry}
+
+        ckpt_old = resume.build_checkpoint(
+            inputs={}, completed=completed, run_identity={}
+        )
+        ckpt_new = resume.build_checkpoint(
+            inputs={}, completed=completed_new, run_identity={}
+        )
+
+        # json.dumps with sort_keys=True must produce identical bytes.
+        old_bytes = json.dumps(ckpt_old, separators=(",", ":"), sort_keys=True)
+        new_bytes = json.dumps(ckpt_new, separators=(",", ":"), sort_keys=True)
+        assert old_bytes == new_bytes

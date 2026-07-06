@@ -253,6 +253,31 @@ class TestWriteBrokenFile:
         assert b"rule: TLE-PAIR-002" in text  # BAD_PREFIX
         assert b"1 garbage" in text
 
+    def test_non_ascii_source_name_does_not_crash_header(self, tmp_path):
+        # A non-ASCII source filename must not raise UnicodeEncodeError at
+        # finalize (which would fail the whole file after all its work). The
+        # header encodes with errors="replace", matching the body renderer.
+        stats = report.FileStats(src_name="tlé.txt")
+        stats.paired_records = 3
+        stats.quarantined_count = 1
+        stats.quarantine_sample = report.FileSample.from_bounded(
+            cap=5,
+            entries_by_rule={
+                RuleID.BAD_PREFIX: [
+                    report.QuarantineEntry(
+                        raw_lines=[b"1 garbage"],
+                        source_lines=[1],
+                        primary=_diag(RuleID.BAD_PREFIX, src=1),
+                    )
+                ]
+            },
+        )
+        out = tmp_path / "out.broken.txt"
+
+        report_writers.write_broken_file(str(out), "tlé.txt", stats)
+
+        assert b"# source: tl?.txt" in out.read_bytes()
+
     def test_broken_file_is_byte_faithful(self, tmp_path):
         # A line quarantined for a non-ASCII byte must appear verbatim.
         stats = report.FileStats(src_name="x.txt")
@@ -507,7 +532,9 @@ class TestBrokenNoradIdsNdjson:
 
 class TestConcatFindingsShards:
     """End-of-run concatenation of per-worker findings shards into the
-    corpus-wide ``report.jsonl`` (issue #9, spec §4.6).
+    corpus-wide ``report.jsonl`` (issue #9, spec §4.6). The function now
+    returns a list of src_names whose shard was missing but had quarantined
+    records — a gap the caller surfaces as a warning (issue #117).
     """
 
     def _make_shard(self, shard_dir, stem_name, payload_lines):
@@ -615,6 +642,44 @@ class TestConcatFindingsShards:
             )
         # Prior content is untouched.
         assert dest.read_text(encoding="utf-8") == "from-prior-run\n"
+
+    # ------------------------------------------------------------------
+    # Issue #117 — return value: missing-but-nonempty shards
+    # ------------------------------------------------------------------
+
+    def test_returns_empty_list_when_all_shards_present(self, tmp_path):
+        shard_dir = tmp_path / ".shards"
+        shard_dir.mkdir()
+        self._make_shard(shard_dir, "tle2022", ['{"file":"tle2022.txt"}'])
+        stats = report.FileStats(src_name="tle2022.txt", quarantined_count=1)
+        dest = tmp_path / "report.jsonl"
+        missing = report_writers.concat_findings_shards(
+            str(tmp_path), str(dest), [stats]
+        )
+        assert missing == []
+
+    def test_returns_src_name_when_shard_missing_and_has_quarantines(self, tmp_path):
+        # Shard missing + quarantined_count > 0 → caller must be warned.
+        shard_dir = tmp_path / ".shards"
+        shard_dir.mkdir()  # dir exists but shard absent
+        stats = report.FileStats(src_name="tle2099.txt", quarantined_count=3)
+        dest = tmp_path / "report.jsonl"
+        missing = report_writers.concat_findings_shards(
+            str(tmp_path), str(dest), [stats]
+        )
+        assert missing == ["tle2099.txt"]
+
+    def test_returns_empty_when_shard_missing_but_no_quarantines(self, tmp_path):
+        # Missing shard with zero quarantines is not a gap — validate-mode
+        # or a zero-finding file. No warning needed.
+        shard_dir = tmp_path / ".shards"
+        shard_dir.mkdir()
+        stats = report.FileStats(src_name="tle2099.txt", quarantined_count=0)
+        dest = tmp_path / "report.jsonl"
+        missing = report_writers.concat_findings_shards(
+            str(tmp_path), str(dest), [stats]
+        )
+        assert missing == []
 
 
 class TestJsonlFindingsWriter:
@@ -926,6 +991,34 @@ class TestQuarantineSink:
         jsonl_path = str(tmp_path / "x.findings.jsonl")
         with pytest.raises(ValueError, match="src_name"):
             report_writers.QuarantineSink(cap=5, jsonl_path=jsonl_path)
+
+    # --- Issue #104 --- ExitStack safety in __enter__ ---
+
+    def test_jsonl_enter_failure_does_not_leak_broken_writer(
+        self, tmp_path, monkeypatch
+    ):
+        # If JsonlFindingsWriter.__enter__ raises after BrokenFileWriter
+        # has already been entered, the BrokenFileWriter's __exit__ must
+        # still run so the .body.partial is cleaned up.
+        broken_path = str(tmp_path / "x.broken.txt")
+        jsonl_path = str(tmp_path / "x.findings.jsonl")
+        body_partial = broken_path + ".body.partial"
+
+        def boom(self):
+            raise OSError("simulated jsonl open failure")
+
+        monkeypatch.setattr(report_writers.JsonlFindingsWriter, "__enter__", boom)
+
+        with pytest.raises(OSError, match="simulated jsonl open failure"):
+            sink = report_writers.QuarantineSink(
+                broken_path=broken_path, src_name="x.txt", jsonl_path=jsonl_path
+            )
+            sink.__enter__()
+
+        # BrokenFileWriter's __exit__ must have run — the body partial is gone.
+        import os
+
+        assert not os.path.exists(body_partial)
 
     def test_dropped_from_sample_still_in_jsonl(self, tmp_path):
         # Cap governs the in-memory sample, NOT the on-disk JSONL.

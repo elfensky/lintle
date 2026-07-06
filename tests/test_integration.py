@@ -28,7 +28,10 @@ class TestEndToEnd:
         )
         out = tmp_path / "out"
 
-        stats = pipeline.process_file(str(src), str(out), "clean")
+        # Record B is checksumless on both lines; reconstruction is opt-in (#82).
+        stats = pipeline.process_file(
+            str(src), str(out), "clean", reconstruct_checksum=True
+        )
 
         assert stats.paired_records == 3
         assert stats.orphan_entries == 0
@@ -51,10 +54,12 @@ class TestEndToEnd:
         src.write_bytes((line1[:68] + "\\\n" + line2[:68] + "\n").encode("ascii"))
 
         out1 = tmp_path / "out1"
-        pipeline.process_file(str(src), str(out1), "clean")
+        pipeline.process_file(str(src), str(out1), "clean", reconstruct_checksum=True)
         cleaned1 = out1 / "cleaned" / "tle2099.cleaned.txt"
 
         # Re-clean the cleaned output. stem("tle2099.cleaned.txt") == "tle2099.cleaned".
+        # The cleaned record is already 69 chars, so no reconstruction is needed —
+        # idempotence must hold even with the flag off.
         out2 = tmp_path / "out2"
         stats2 = pipeline.process_file(str(cleaned1), str(out2), "clean")
         cleaned2 = out2 / "cleaned" / "tle2099.cleaned.cleaned.txt"
@@ -68,7 +73,7 @@ class TestEndToEnd:
         src = tmp_path / "tle2099.txt"
         src.write_bytes((line1[:68] + "\\\n" + line2[:68] + "\n").encode("ascii"))
         out = tmp_path / "out"
-        pipeline.process_file(str(src), str(out), "clean")
+        pipeline.process_file(str(src), str(out), "clean", reconstruct_checksum=True)
 
         stats = pipeline.process_file(
             str(out / "cleaned" / "tle2099.cleaned.txt"),
@@ -82,7 +87,7 @@ class TestEndToEnd:
         src = tmp_path / "tle2099.txt"
         src.write_bytes((line1[:68] + "\n" + line2[:68] + "\n").encode("ascii"))
         out = tmp_path / "out"
-        pipeline.process_file(str(src), str(out), "clean")
+        pipeline.process_file(str(src), str(out), "clean", reconstruct_checksum=True)
 
         lines = (out / "cleaned" / "tle2099.cleaned.txt").read_text().splitlines()
         assert tle.validate_line(lines[0], 1) == []

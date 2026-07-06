@@ -86,15 +86,31 @@ class TestIsInteractive:
         monkeypatch.setenv("CI", "true")
         assert term.is_interactive() is False
 
-    def test_interactive_when_stdin_tty_and_no_ci(self, monkeypatch):
+    def test_interactive_when_stdin_and_stderr_tty_and_no_ci(self, monkeypatch):
         class _TTY(io.StringIO):
             def isatty(self):
                 return True
 
         monkeypatch.setattr(term.sys, "stdin", _TTY())
+        monkeypatch.setattr(term.sys, "stderr", _TTY())
         monkeypatch.delenv("CI", raising=False)
         monkeypatch.delenv("NONINTERACTIVE", raising=False)
         assert term.is_interactive() is True
+
+    def test_not_interactive_when_stderr_redirected(self, monkeypatch):
+        # The resume prompt is written to stderr; if stderr is redirected
+        # (e.g. `lintle clean 2>errors.log`) the question is invisible, so a
+        # stdin-only check would block on an unseen prompt. A run is
+        # interactive only when the prompt's own stream is a TTY too.
+        class _TTY(io.StringIO):
+            def isatty(self):
+                return True
+
+        monkeypatch.setattr(term.sys, "stdin", _TTY())
+        monkeypatch.setattr(term.sys, "stderr", io.StringIO())  # not a tty
+        monkeypatch.delenv("CI", raising=False)
+        monkeypatch.delenv("NONINTERACTIVE", raising=False)
+        assert term.is_interactive() is False
 
 
 class TestPromptYesNo:

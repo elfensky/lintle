@@ -4,12 +4,25 @@ import contextlib
 import dataclasses
 import time
 from pathlib import Path
+from typing import Literal
 
-from lintle import fsutil, repair, report, report_writers, stem, tle
+from lintle import (
+    BROKEN_DIRNAME,
+    BROKEN_SUFFIX,
+    CLEANED_DIRNAME,
+    CLEANED_SUFFIX,
+    SHARDS_DIRNAME,
+    fsutil,
+    repair,
+    report,
+    report_writers,
+    stem,
+    tle,
+)
 from lintle.diagnostics import Diagnostic, RuleID, diagnostic
 
 
-@dataclasses.dataclass
+@dataclasses.dataclass(slots=True)
 class RecordCandidate:
     """A line-1 / line-2 pair, with their 1-indexed source line numbers."""
 
@@ -19,7 +32,7 @@ class RecordCandidate:
     src2: int
 
 
-@dataclasses.dataclass
+@dataclasses.dataclass(slots=True)
 class Orphan:
     """A line that could not be paired into a record. ``diag`` carries the
     rule ID and source line; the raw bytes survive verbatim for the
@@ -71,7 +84,18 @@ class FileProgress:
 ProgressMessage = FileStarted | FileEnded | FileProgress
 
 
-@dataclasses.dataclass
+# Maximum bytes read per logical line. A genuine TLE line is 69 bytes plus a
+# newline; nothing in the real corpus approaches 4 KB. The cap prevents a file
+# with no ``\n`` (or only ``\r`` as line terminators) from materialising as one
+# giant bytes object — a 3.2 GB "line" would consume 3.2 GB of RAM and then be
+# pickled back across the process-pool boundary. When a chunk of exactly this
+# size has no trailing ``\n`` the read loop treats it as the first (and bounded
+# excerpt of the) oversized line, drains the remainder cheaply, and emits a
+# single ``Orphan`` with ``RuleID.LINE_LENGTH``.
+_MAX_LINE_BYTES = 4096
+
+
+@dataclasses.dataclass(slots=True)
 class _ProgressBatcher:
     """Accumulate per-file progress deltas before sending queue messages."""
 
@@ -81,15 +105,17 @@ class _ProgressBatcher:
     entries_processed: int = 0
     bytes_flushed: int = 0
     records_since_flush: int = 0
+    # Precomputed once so per-record hot path avoids re-evaluating the
+    # condition (two attribute reads + a bool() call) on every item_seen call.
+    _enabled: bool = dataclasses.field(init=False)
 
-    @property
-    def enabled(self):
-        return self.progress_queue is not None and bool(self.progress_every)
+    def __post_init__(self):
+        self._enabled = self.progress_queue is not None and bool(self.progress_every)
 
     def item_seen(self, stats):
         """Record one routed candidate and emit a batch when due."""
         self.entries_processed += 1
-        if not self.enabled:
+        if not self._enabled:
             return
         self.records_since_flush += 1
         if self.entries_processed % self.progress_every == 0:
@@ -97,7 +123,7 @@ class _ProgressBatcher:
 
     def flush(self, stats):
         """Emit the trailing partial batch so the caller's tally is exact."""
-        if not self.enabled:
+        if not self._enabled:
             return
         byte_delta = stats.bytes_consumed - self.bytes_flushed
         if byte_delta or self.records_since_flush:
@@ -125,26 +151,89 @@ def iter_records(path, stats=None):
     The file is read in binary so ``\\r`` and stray bytes are observed
     exactly. Blank, whitespace-only, and CR-only lines are dropped.
     Pairing is prefix-driven and resynchronises on every ``1 `` line, so
-    one missing line cannot cascade into a run of mispaired records.
+    one missing line cannot cascade into a run of mispaired records. The
+    prefix is matched on a leading-whitespace-trimmed *view* of the line
+    (mirroring what ``repair_line`` will lstrip), so a record indented with
+    spaces/tabs still pairs; the **raw** bytes are carried forward unchanged
+    so ``repair_line`` performs the trim and tags it ``leading-trim`` (#88).
+
+    Each logical line is read via ``handle.readline(_MAX_LINE_BYTES)`` — a
+    single C-level call, so throughput equals the ``for raw in handle``
+    iterator on normal lines. A chunk of exactly ``_MAX_LINE_BYTES`` with no
+    trailing ``\\n`` is treated as the first (bounded) excerpt of an oversized
+    line: the remainder is drained in ``_MAX_LINE_BYTES`` chunks, summing their
+    lengths into ``bytes_consumed``, until a ``\\n`` or EOF is seen. One Orphan
+    with ``RuleID.LINE_LENGTH`` and a note explaining the truncation is emitted
+    for the whole logical line (issue #95). This preserves constant memory even
+    for a CR-only or newline-free 3.2 GB file — at most ``_MAX_LINE_BYTES``
+    bytes are ever held for the line's raw excerpt.
 
     When ``stats`` is given, ``stats.input_lines_seen`` is updated to the
     1-indexed lineno of the line just consumed and ``stats.bytes_consumed``
     accumulates each line's raw byte length — both including blanks the
-    pairing loop drops, so the counters reflect every physical line and byte
-    read (``bytes_consumed`` reaches ``st_size`` at EOF).
+    pairing loop drops and including every discarded byte of oversized lines,
+    so ``bytes_consumed`` reaches ``st_size`` at EOF.
     """
     held = None  # (raw_bytes, line_number) of a line-1 awaiting its line-2
+    lineno = 0
 
     with open(path, "rb") as handle:
-        for lineno, raw in enumerate(handle, start=1):
+        while True:
+            chunk = handle.readline(_MAX_LINE_BYTES)
+            if not chunk:
+                break  # EOF
+
+            lineno += 1
+            n_bytes = len(chunk)
+
+            if len(chunk) == _MAX_LINE_BYTES and not chunk.endswith(b"\n"):
+                # Oversized line: this chunk is the bounded excerpt; drain
+                # the remainder without holding it in memory, accumulating
+                # every byte into bytes_consumed so the counter reaches st_size.
+                excerpt = chunk
+                while True:
+                    tail = handle.readline(_MAX_LINE_BYTES)
+                    if not tail:
+                        break
+                    n_bytes += len(tail)
+                    if tail.endswith(b"\n"):
+                        break
+                if stats is not None:
+                    stats.input_lines_seen = lineno
+                    stats.bytes_consumed += n_bytes
+                # An oversized (garbage) line breaks pairing: flush any held
+                # line-1 as an orphan so it cannot pair with a line-2 across the
+                # corruption (mirrors the BAD_PREFIX branch).
+                if held is not None:
+                    yield _orphan(
+                        held[0],
+                        held[1],
+                        RuleID.ORPHAN_LINE,
+                        "orphan line 1: followed by an oversized line",
+                    )
+                    held = None
+                yield _orphan(
+                    excerpt,
+                    lineno,
+                    RuleID.LINE_LENGTH,
+                    f"line exceeds {_MAX_LINE_BYTES} bytes; truncated",
+                )
+                continue
+
+            # Normal line (≤ _MAX_LINE_BYTES, possibly with trailing \n).
             if stats is not None:
                 stats.input_lines_seen = lineno
-                stats.bytes_consumed += len(raw)
-            line = raw.rstrip(b"\n")
+                stats.bytes_consumed += n_bytes
+            line = chunk.rstrip(b"\n")
             if line.strip(b" \t\r") == b"":
                 continue  # blank, whitespace-only, or CR-only line — dropped
 
-            prefix = line[:2]
+            # Route on a leading-whitespace-trimmed view (repair_line lstrips
+            # the same " \t"), but keep ``line`` — the raw bytes — so repair
+            # owns the trim and tags it ``leading-trim``. A leading BOM/\r is
+            # not trimmed here (nor by repair), so such lines still fall
+            # through to BAD_PREFIX, matching repair's behaviour.
+            prefix = line.lstrip(b" \t")[:2]
             if prefix == b"1 ":
                 if held is not None:
                     yield _orphan(
@@ -190,14 +279,24 @@ def iter_records(path, stats=None):
         )
 
 
-def process_file(src_path, out_dir, mode, progress_queue=None, progress_every=25_000):
+def process_file(
+    src_path,
+    out_dir,
+    mode: Literal["clean", "validate"],
+    progress_queue=None,
+    progress_every=25_000,
+    *,
+    reconstruct_checksum=False,
+):
     """Process one source file and return its ``report.FileStats``.
 
-    ``mode`` is ``"validate"`` (audit only — writes nothing) or ``"clean"``
-    (also writes ``cleaned/<name>.cleaned.txt`` and
-    ``broken/<name>.broken.txt`` under ``out_dir``). The cleaned file is
-    written to a temp file and atomically renamed, so an interrupted run
-    never leaves a half-written output.
+    ``mode`` is ``"clean"`` (writes ``cleaned/<name>.cleaned.txt`` and
+    ``broken/<name>.broken.txt`` under ``out_dir``) or ``"validate"`` (audit
+    only — writes nothing). The production caller (``worker_pool.run_workers``)
+    always passes ``"clean"``; ``"validate"`` is a test/internal audit surface
+    (e.g. ``test_integration`` re-validates cleaned output without writing).
+    The cleaned file is written to a temp file and atomically renamed, so an
+    interrupted run never leaves a half-written output.
 
     When ``progress_queue`` is given, a :class:`FileProgress` delta is pushed
     every ``progress_every`` records — and once more when the file ends — so the
@@ -207,6 +306,9 @@ def process_file(src_path, out_dir, mode, progress_queue=None, progress_every=25
     still emit it), letting the caller track which files are currently in
     flight. With no queue (or ``progress_every`` set to 0) no progress is
     reported.
+
+    ``reconstruct_checksum`` (issue #82; default off) is forwarded to the
+    repairer to gate the tier-2 missing-checksum reconstruction.
     """
     src_name = Path(src_path).name
     stats = report.FileStats(src_name=src_name)
@@ -225,7 +327,15 @@ def process_file(src_path, out_dir, mode, progress_queue=None, progress_every=25
         progress_queue.put(FileStarted(src_name))
 
     try:
-        return _run(src_path, out_dir, mode, stats, progress_queue, progress_every)
+        return _run(
+            src_path,
+            out_dir,
+            mode,
+            stats,
+            progress_queue,
+            progress_every,
+            reconstruct_checksum,
+        )
     finally:
         # ``finally`` always runs before the return value reaches the
         # caller; ``stats`` is the same object ``_run`` returns, so the
@@ -244,11 +354,12 @@ def _record_acceptance(stats, cleaned_handle, result):
     for fix in result.fixes:
         stats.fix_counts[fix] = stats.fix_counts.get(fix, 0) + 1
     if cleaned_handle is not None:
-        cleaned_handle.write(result.line1 + "\n")
-        cleaned_handle.write(result.line2 + "\n")
+        # Single write keeps the two-line record together in one syscall,
+        # halving write calls on the hot accept path (byte-identical output).
+        cleaned_handle.write(result.line1 + "\n" + result.line2 + "\n")
 
 
-def _route_candidate(candidate, stats, sink, cleaned_handle):
+def _route_candidate(candidate, stats, sink, cleaned_handle, reconstruct_checksum):
     """Route one paired record or orphan into accepted/quarantined accounting."""
     if isinstance(candidate, Orphan):
         stats.orphan_entries += 1
@@ -270,6 +381,7 @@ def _route_candidate(candidate, stats, sink, cleaned_handle):
             candidate.src1,
             candidate.raw_line2,
             candidate.src2,
+            reconstruct_checksum=reconstruct_checksum,
         )
     except Exception as exc:  # one bad record must not kill the run
         _record_quarantine(
@@ -312,29 +424,30 @@ def _clean_output_paths(out_dir, src_name):
     """Create the cleaned/, broken/, and .shards/ trees under ``out_dir`` and
     return the three per-file output paths. The ``.shards`` findings shard is
     internal staging the cli concatenates into ``report.jsonl`` at end of run
-    and then removes (issue #9, spec §4.6)."""
+    and then removes (issue #9, spec §4.6). Suffix/dirname constants live in
+    ``lintle.__init__`` — the single naming-convention authority."""
     out = Path(out_dir)
-    cleaned_dir = out / "cleaned"
+    cleaned_dir = out / CLEANED_DIRNAME
     cleaned_dir.mkdir(parents=True, exist_ok=True)
-    broken_dir = out / "broken"
+    broken_dir = out / BROKEN_DIRNAME
     broken_dir.mkdir(parents=True, exist_ok=True)
-    shard_dir = out / ".shards"
-    shard_dir.mkdir(parents=True, exist_ok=True)
+    (out / SHARDS_DIRNAME).mkdir(parents=True, exist_ok=True)
     return _CleanPaths(
-        cleaned=str(cleaned_dir / (stem(src_name) + ".cleaned.txt")),
-        broken=str(broken_dir / (stem(src_name) + ".broken.txt")),
-        jsonl=str(shard_dir / (stem(src_name) + ".findings.jsonl")),
+        cleaned=str(cleaned_dir / (stem(src_name) + CLEANED_SUFFIX)),
+        broken=str(broken_dir / (stem(src_name) + BROKEN_SUFFIX)),
+        jsonl=str(report_writers.shard_path(out_dir, src_name)),
     )
 
 
-def _run(src_path, out_dir, mode, stats, progress_queue, progress_every):
+def _run(
+    src_path, out_dir, mode, stats, progress_queue, progress_every, reconstruct_checksum
+):
     """Process one file once start/end progress events are accounted for —
     body of :func:`process_file`. Kept separate so the wrapper above can
     own the queue-event lifecycle without doubling this function's
     indentation.
     """
     src_name = stats.src_name
-    cleaned_handle = None
     cleaned_tmp = None
     cleaned_path = None
     broken_path = None
@@ -349,11 +462,6 @@ def _run(src_path, out_dir, mode, stats, progress_queue, progress_every):
         # random-name debris accumulates. open() also honours the umask
         # (typically 0644), whereas mkstemp would force owner-only 0600.
         cleaned_tmp = cleaned_path + ".partial"
-        # SIM115: the handle is long-lived across the record loop and is
-        # closed in the `finally` below — a `with` block does not fit.
-        cleaned_handle = open(  # noqa: SIM115
-            cleaned_tmp, "w", encoding="ascii", newline="\n"
-        )
 
     # The sink owns the BrokenFileWriter lifecycle in clean mode and the
     # bounded in-memory sample in both modes. Issue #19: cap-enforcement
@@ -368,7 +476,20 @@ def _run(src_path, out_dir, mode, stats, progress_queue, progress_every):
     completed = False
     progress = _ProgressBatcher(progress_queue, progress_every, stats.src_name)
     with sink:
+        # Issue #104: cleaned_handle is opened INSIDE the `with sink:` block
+        # so that a sink.__enter__ failure (e.g. the jsonl writer's open fails)
+        # can never leave the .partial behind — if __enter__ raises, this code
+        # is never reached and no handle exists to leak. The inner finally below
+        # closes and unlinks the handle on every error path just as before.
+        cleaned_handle = None
         try:
+            if mode == "clean":
+                # SIM115: the handle is long-lived across the record loop and
+                # is closed in the `finally` below — a `with` block does not
+                # fit here.
+                cleaned_handle = open(  # noqa: SIM115
+                    cleaned_tmp, "w", encoding="ascii", newline="\n"
+                )
             # Input size for the v1 envelope (issue #20). Captured inside
             # the ``with sink:`` try-block so a missing-source ``OSError``
             # routes through the same cleanup paths as one raised by
@@ -384,7 +505,9 @@ def _run(src_path, out_dir, mode, stats, progress_queue, progress_every):
                 # tracked by ``iter_records``, counting dropped blank lines and
                 # exact newline widths — so the deltas sum to st_size exactly.
                 progress.item_seen(stats)
-                _route_candidate(candidate, stats, sink, cleaned_handle)
+                _route_candidate(
+                    candidate, stats, sink, cleaned_handle, reconstruct_checksum
+                )
             # Push the trailing partial batch so the caller's tally is exact.
             # ``byte_delta`` can be non-zero with zero records when the file
             # ends in dropped blank lines — still flush it so the byte bar

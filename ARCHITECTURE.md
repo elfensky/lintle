@@ -58,10 +58,10 @@ cli.py ──▶ pipeline.py ──▶ repair.py ──▶ tle.py
   │             └──▶ report_writers.py ──┘ (imports report.py one-way)
   │
   ├──▶ cli_progress.py  (rich live progress + roster; imports pipeline's progress messages)
-  ├──▶ resume.py        (single-run checkpoint + run-stamp/output-size helpers; → __version__, fsutil, stem)
-  ├──▶ run_planning.py  (disk-space guard + output scrub + resume/fresh-run decision; → report, resume, term)
-  ├──▶ worker_pool.py   (process-pool dispatch + progress collection; → pipeline, cli_progress, process_control, report, resume, term + stdlib futures/mp/signal)
-  ├──▶ output_artifacts.py (clean-run report.md/json + NDJSON/JSONL finalization; → report, report_writers, cli_progress)
+  ├──▶ resume.py        (single-run checkpoint + run-stamp/output-size helpers; → __version__, fsutil, stem, naming-constants)
+  ├──▶ run_planning.py  (disk-space guard + output scrub + resume/fresh-run decision; CleanConfig + RunPlan; → fsutil, report, resume, term)
+  ├──▶ worker_pool.py   (process-pool dispatch + progress collection; → pipeline, cli_progress, process_control, resume, run_planning, term + stdlib futures/mp/signal)
+  ├──▶ output_artifacts.py (clean-run report.md/json + NDJSON/JSONL finalization; → report, report_writers, cli_progress, term)
   ├──▶ thresholds.py    (--max-quarantined parsing + quality-gate exit policy; pure, no internal deps)
   ├──▶ process_control.py (worker SIGINT setup + fast pool termination; → term; also used by worker_pool)
   ├──▶ diff.py          (read-only consumer of report.jsonl)
@@ -82,10 +82,10 @@ diagnostics.py, categories.py, explain_examples.py    pure-data leaves (no I/O)
 | `report_aggregation.py` | Pure corpus aggregation helpers for run totals and per-NORAD rollups consumed by `report.py`. |
 | `report_writers.py` | Structured-file writers leaf: the `.broken.txt` sidecar (`BrokenFileWriter`), the `report.jsonl` findings shards (`JsonlFindingsWriter`), the `QuarantineSink` (bounded sample + streaming), `broken-noradids.ndjson`, and shard concatenation. Imports `report.py` one-way. |
 | `output_artifacts.py` | End-of-clean-run finalization for `report.md`, the machine-readable `report.json`, `broken-noradids.ndjson`, and corpus-wide `report.jsonl` — all committed in one place. |
-| `resume.py` | The single-run `.clean-state.json` checkpoint for `clean --resume`: input fingerprinting, checkpoint build/load, the resume-decision matrix, the run-start timestamp, and per-file output-size capture. |
-| `run_planning.py` | Clean-run preflight: disk-space policy, resume classification, fresh-run output scrubbing, and the resolved `RunPlan`. |
-| `worker_pool.py` | Process-pool dispatch, progress collection, per-file failure handling, checkpoint updates, and interrupt shutdown. |
-| `fsutil.py` | `durable_replace` (the one atomic+fsync commit path) and `out_dir_lock` (the host-aware out-dir lock). Stdlib only. |
+| `resume.py` | The single-run `.clean-state.json` checkpoint for `clean --resume`: input fingerprinting, checkpoint build/load, the resume-decision matrix, the run-start timestamp, per-file output-size capture, and the typed `CompletedEntry` dataclass (issue #118). Module-level imports only `__version__`, `fsutil`, and `stem`/naming-constants; `CompletedEntry.from_stats` does a local `from lintle import report` to avoid a module-level cycle. |
+| `run_planning.py` | Clean-run preflight: disk-space policy, resume classification, fresh-run output scrubbing, and the resolved `RunPlan` (slots=True). Also owns `CleanConfig` (issue #121) — the typed `clean`-command configuration snapshot built once in `cli.main` and passed to both leaf functions instead of a raw argparse `Namespace`. Imports `fsutil`, `report`, `resume`, `term`. |
+| `worker_pool.py` | Process-pool dispatch, progress collection, per-file failure handling, checkpoint updates via `resume.CompletedEntry.from_stats` (issue #118), and interrupt shutdown. Now imports `run_planning` for the `CleanConfig` type (one-way, no cycle). |
+| `fsutil.py` | `durable_replace` (the one atomic+fsync commit path) and `out_dir_lock` (the advisory-flock out-dir lock). Stdlib only. |
 | `diff.py` | Read-only: per-rule delta between two runs' `report.jsonl` (`lintle diff`). |
 | `explain.py` | Read-only: renders rule/fix documentation (`lintle explain`). |
 | `summary.py` | Responsive aggregate-panel renderer over the `build_run_envelope` dict (plain/medium/wide tiers + ASCII-bar fallback), keyed off the target Console; backs `clean`'s end-of-run stderr panel and the read-only `lintle report` (renders `<out-dir>/report.json`: text → panel on stdout, json → file bytes verbatim). Imports `humanize` for human-readable panel durations (`precisedelta`). Styled UI, not byte-bound. |
@@ -100,6 +100,12 @@ diagnostics.py, categories.py, explain_examples.py    pure-data leaves (no I/O)
 
 `tle.py` and the data leaves carry no I/O. `report_writers.py` depends on `report.py` (never
 the reverse), so the structured writers and the renderers stay acyclic.
+
+**Output-naming constants.** `CLEANED_SUFFIX`, `BROKEN_SUFFIX`, `FINDINGS_SUFFIX`,
+`CLEANED_DIRNAME`, `BROKEN_DIRNAME`, and `SHARDS_DIRNAME` live in `lintle/__init__.py` —
+the single source of truth for the naming convention. `pipeline._clean_output_paths`,
+`resume.output_sizes`, `cli.discover_paths`, and `report_writers.concat_findings_shards`
+all import them from there rather than re-encoding the convention.
 
 ---
 
@@ -150,6 +156,17 @@ a 1-in-10 chance of accepting a wrong line by luck, so inventing an orbital-data
 risk emitting a record that *looks* valid but is silently wrong — the one outcome worse than
 dropping it.
 
+**Reconstruction is opt-in (default off).** Even the checksum exception carries a residual
+risk: a 68-character line is ambiguous — it could be a record exported without its column-69
+digit, *or* a 69-character record that lost its last *data* character, in which case the old
+checksum digit has slid left into a data field and a freshly-appended checksum would certify
+wrong data as clean (issue #82). Because the two cases are indistinguishable from the bytes
+alone, `clean` **quarantines** a checksumless line by default (principle #2 — when in doubt,
+quarantine). The `--reconstruct-checksum` flag opts in to the recompute for corpora where
+dropped checksums are known to be the cause; it is threaded through `cli → pipeline → repair`
+and is part of the resume run-identity, so flipping it makes an in-progress run re-process
+rather than fold mismatched outputs together.
+
 ### The five fix classes
 
 `FixClass` (in `categories.py`) is the single source of truth for the tags that appear in
@@ -159,16 +176,26 @@ decreasing order of safety:
 | Class | Examples | Action |
 |-------|----------|--------|
 | Content-preserving | trailing `\` (`trailing-backslash`), CRLF (`crlf`), trailing whitespace (`trailing-ws`) | auto-fix (checksum survives as an independent check) |
-| Reconstructed-checksum | a record exported without its column-69 digit (`reconstructed-checksum`) | recompute the checksum from intact columns 1–68 |
-| Content-shifting | leading whitespace / BOM (`leading-trim`) | trim, then re-validate; quarantine if it fails |
+| Reconstructed-checksum | a record exported without its column-69 digit (`reconstructed-checksum`) | recompute the checksum from intact columns 1–68 — **opt-in** via `--reconstruct-checksum`; otherwise quarantined (see *redundancy paradox*) |
+| Content-shifting | leading whitespace (`leading-trim`) | trim, then re-validate; quarantine if it fails. `iter_records` matches the `1 `/`2 ` prefix on a leading-whitespace-trimmed *view* of the line, so an indented record still pairs; the raw bytes are carried forward so `repair_line` owns the trim. A leading BOM is **not** trimmed — it is a non-ASCII byte and is quarantined |
 | Structural | blank / whitespace-only / CR-only lines | drop, resynchronise pairing |
 | Corrupt | bad checksum, wrong length, orphan line, garbled columns, catalog mismatch | **quarantine** |
 
 The concrete `FixClass` members are `crlf`, `leading-trim`, `trailing-ws`,
 `trailing-backslash`, and `reconstructed-checksum`. Fix order inside `repair_line` is fixed:
 strip CRLF → strip leading whitespace → strip trailing whitespace → strip a trailing backslash
-→ build a 69-character candidate (reconstructing the checksum if the line is 68 chars and its
-body is valid) → a single full re-validation of the candidate.
+→ build a 69-character candidate (reconstructing the checksum only if the line is 68 chars, its
+body is valid, *and* `--reconstruct-checksum` was passed — otherwise the 68-char line is
+quarantined as a length error) → a single full re-validation of the candidate.
+
+Because trailing-whitespace stripping runs *before* the length is measured, a checksum-less
+68-character line whose column 68 is a legitimately-allowed space (the `_DIGIT_SPACE`
+element-set-number and revolution-number fields permit one) is normalized to 67 characters and
+quarantined as a `LINE_LENGTH` error (`observed=67`) rather than taking the missing-checksum
+path — *even under `--reconstruct-checksum`* (issue #108). This is intentional, not a gap: a
+trailing space on a checksum-less line is genuinely ambiguous (last data column vs. junk
+whitespace), so Critical Rule #2 dictates quarantine over a guessed reconstruction. The
+conservative outcome (never wrong output) holds either way; only the diagnosis differs.
 
 ### Repair tiers
 
@@ -206,11 +233,23 @@ import-time guard fails fast if a `RuleID` lacks a matching `RuleSpec`.
 ### Constant-memory streaming
 
 `pipeline.iter_records` opens each file in **binary** so `\r` and stray bytes are observed
-exactly, reads it line by line, and pairs lines with a prefix-driven state machine that holds
-**at most two lines** (a line-1 awaiting its line-2). Blank, whitespace-only, and CR-only lines
-are dropped. Pairing resynchronises on every `1 ` line, so one missing line cannot cascade into
-a run of mispaired records. Memory is constant regardless of file size — a 3.2 GB file never
-loads whole.
+exactly, reads it line by line via `handle.readline(_MAX_LINE_BYTES)` (C-level, throughput
+equal to the iterator on normal lines), and pairs lines with a prefix-driven state machine that
+holds **at most two lines** (a line-1 awaiting its line-2). Blank, whitespace-only, and CR-only
+lines are dropped. Pairing resynchronises on every `1 ` line, so one missing line cannot cascade
+into a run of mispaired records. Memory is constant regardless of file size — a 3.2 GB file
+never loads whole.
+
+**Line-length cap (issue #95).** A genuine TLE line is 69 bytes; `_MAX_LINE_BYTES = 4096`
+is the cap applied to each `readline` call. A chunk of exactly that size with no trailing `\n`
+is treated as (the start of) an oversized line: the excerpt is kept as a bounded quarantine
+payload, the remainder is drained cheaply in fixed-size chunks (summing their lengths into
+`stats.bytes_consumed` so the counter still reaches `st_size`), and one `Orphan` with
+`RuleID.LINE_LENGTH` is emitted for the logical line. This prevents a CR-only or newline-free
+multi-GB file from materialising as one giant `bytes` object in the worker process and across
+the pool's pickle boundary. The raw bytes in the quarantine entry are truncated (noted in the
+`Diagnostic.note`); this is the one place byte-faithfulness yields to constant-memory, and only
+for a pathological input — every real corpus file has `\n`-terminated lines well under the cap.
 
 ### Per-file parallelism
 
@@ -234,14 +273,27 @@ per platform at import time. Outputs are written to deterministic `.partial` tem
 killed run leaves at most one stale `.partial` per file (truncated next run), never random
 debris.
 
-### Host-aware out-dir lock
+### Out-dir lock
 
 `fsutil.out_dir_lock` prevents two concurrent `clean` runs from corrupting a shared
-`--out-dir`. It writes a JSON sidecar `.clean.lock` carrying host id, PID, and start time. It
-**refuses** (`LockHeldError`, exit 2) when the lock is held by a live process on this host or by
-*any* process on a different host; it **reclaims** only a same-host lock whose PID is dead.
-Cross-host locks are never reclaimed (so a dead PID on host A is never falsely reclaimed from
-host B). Host identity is `hostname` plus Linux `boot_id` where available.
+`--out-dir`. It holds an **advisory `fcntl.flock`** on a `.clean.lock` sidecar for the life of
+the run and **refuses** (`LockHeldError`, exit 2) when another live run already holds it. The
+kernel owns the lock's lifetime — it is released the instant the holder closes its fd, exits, is
+killed, or the host reboots — so liveness needs no PID check or boot-id and there is no
+stale-lock reclaim step. This is what makes the lock robust against the two failure modes a
+hand-rolled pidfile suffered (issues #87/#99): a crashed run frees its lock automatically
+(no reboot wedge, no PID-reuse hostage), and because release is just closing *our own* fd, a
+refused or raced run can never delete a live holder's lock (no TOCTOU reclaim race, no blind
+release). The file is **never unlinked** — `flock` binds to the inode, so removing the path
+would let a concurrent opener lock an orphaned inode while a fresh file is created in its place;
+the leftover sidecar is reused next run and `run_planning` already treats it as scrub noise. The
+sidecar still records `{host, pid, started}`, but now purely as informational text for the
+`LockHeldError` message (which also names the file and the manual-removal escape hatch).
+
+Concurrent runs **on one host** (the common case) are fully serialized. A `--out-dir` written
+concurrently from **multiple hosts** over a network filesystem relies on `flock` propagating
+server-side (modern NFSv4) and is not a tested configuration — give each host its own
+`--out-dir`. POSIX-only (`fcntl.flock`); Windows is out of scope (use WSL).
 
 ### Single-run resume
 
@@ -320,7 +372,7 @@ A hard channel rule, so output is safely pipeable:
 `%` (percentage of routed records = `clean + quarantined`, cross-multiplied to avoid
 divide-by-zero and float drift). The default `0` means "any quarantine fails."
 
-### The `--report json` envelope — `schema_version "2"`
+### The `--report json` envelope — `schema_version "3"`
 
 A single top-level JSON object. Every field is **required and non-nullable**; empty maps render
 `{}`, empty arrays `[]` — never omitted, never `null`. This is the verified shape (one valid
@@ -328,13 +380,16 @@ pair, one checksum-flipped quarantine):
 
 ```json
 {
-  "schema_version": "2",
-  "run":   { "command": "clean", "timestamp": "2026-05-31T15:34:44Z", "elapsed_seconds": 0.26 },
+  "schema_version": "3",
+  "run": {
+    "command": "clean", "timestamp": "2026-05-31T15:34:44Z",
+    "elapsed_seconds": 0.26, "failed_files": []
+  },
   "environment": { "tool_version": "0.3.0", "python_version": "3.14.5" },
   "summary": {
     "files_processed": 1, "paired_records": 2, "orphan_entries": 0,
     "input_lines_seen": 4, "clean_count": 1, "quarantined_count": 1,
-    "fix_counts": {}, "quarantine_counts": { "TLE-CHK-001": 1 }
+    "failed_count": 0, "fix_counts": {}, "quarantine_counts": { "TLE-CHK-001": 1 }
   },
   "files": [
     { "src_name": "tle_demo.txt", "elapsed_seconds": 0.028, "bytes": 280,
@@ -346,18 +401,21 @@ pair, one checksum-flipped quarantine):
 }
 ```
 
-`schema_version` is a **string** to leave room for additive tags like `"2.1"`. Adding optional
-fields stays under `"2"`; renaming or removing one bumps the major — which is exactly why the
-`reject_counts` → `quarantine_counts` rename took it from `"1"` to `"2"`.
+`schema_version` is a **string** to leave room for additive tags like `"3.1"`. Adding optional
+fields stays under `"3"`; renaming or removing one bumps the major. History: `"1"` → `"2"` when
+`reject_counts` was renamed `quarantine_counts`; `"2"` → `"3"` when `run.failed_files` and
+`summary.failed_count` were added (issue #83) — both fields are **required** (not
+additive-optional) so the bump is mandatory.
 
 **Top-level / `run` / `environment` / `summary`:**
 
 | Field | Type | Notes |
 |---|---|---|
-| `schema_version` | string | exactly `"2"` in this release |
+| `schema_version` | string | exactly `"3"` in this release |
 | `run.command` | string | `"clean"` (the only CLI-emitted run command) |
 | `run.timestamp` | string | ISO 8601 UTC, suffix `Z` |
 | `run.elapsed_seconds` | float | parent-process wall-clock; `>= 0` |
+| `run.failed_files` | array\<object\> | `[{"file": basename, "error": str}, ...]` sorted by file; `[]` when none |
 | `environment.tool_version` | string | `lintle.__version__` |
 | `environment.python_version` | string | `major.minor.micro` |
 | `summary.files_processed` | int | `== len(files)` |
@@ -366,6 +424,7 @@ fields stays under `"2"`; renaming or removing one bumps the major — which is 
 | `summary.input_lines_seen` | int | corpus-wide sum |
 | `summary.clean_count` | int | corpus-wide sum |
 | `summary.quarantined_count` | int | corpus-wide sum |
+| `summary.failed_count` | int | `== len(run.failed_files)`; `0` when none |
 | `summary.fix_counts` | object\<str,int\> | `FixClass` keys; `{}` when none |
 | `summary.quarantine_counts` | object\<str,int\> | `RuleID` keys; `{}` when none |
 
@@ -396,7 +455,7 @@ absolute paths.
 ### The `report.jsonl` per-record findings stream — `schema_version "1"`
 
 One compact JSON object per quarantined record (sorted keys, LF, UTF-8), used by `lintle diff`.
-This stream stayed `"1"` through the envelope's `"2"` bump. Verified line:
+This stream stayed `"1"` through the envelope's `"2"` and `"3"` bumps. Verified line:
 
 ```json
 {"column_range":[69,69],"expected":"7","file":"tle_demo.txt","norad_id":25544,"note":null,"observed":"0","outcome":"quarantined","related":[],"rule_id":"TLE-CHK-001","schema_version":"1","source_lines":[3],"tier_attempted":"tier-1"}
@@ -415,6 +474,19 @@ This stream stayed `"1"` through the envelope's `"2"` bump. Verified line:
 | `observed`, `expected` | string \| null | bounded to 16 chars |
 | `note` | string \| null | bounded to 80 chars, non-printables sanitized; `null` when empty |
 | `related` | array\<object\> | secondary diagnostics, each the same nested shape (minus the envelope fields) |
+
+> `column_range`/`observed` are populated for **column, semantic, catalog, and
+> checksum** findings (issue #120) — the validator returns a typed
+> `tle.FieldError` (a `str` subclass carrying `kind` + the column span), so
+> `repair` routes on `FieldError.kind` instead of grepping the prose and records
+> the structured fields. `expected` is filled where the rule has a single
+> expected token (a checksum digit, a semantic bound like `[0, 180]`, the other
+> line's catalog number, a single-char column's allowed set); it stays `null` for
+> a *multi-character* column field, whose constraint is a charset best left to the
+> prose `note` rather than a 16-char-truncated value. All three are `null` for rules with
+> no single column locus (e.g. `BAD_PREFIX`, `ORPHAN_LINE`). The `note` still
+> carries the full prose. The line schema stays `"1"`: the field set and types are
+> unchanged — only previously-`null` optional values are now filled in.
 
 ### The `.broken.txt` sidecar
 
@@ -479,6 +551,10 @@ shape:
 - **`completed`** maps each fully-processed input to `{summary, outputs}`, where `outputs`
   records each output basename's on-disk size at completion — backing an integrity
   re-verification on resume (a SIGKILL/disk-full truncation that bare existence wouldn't catch).
+  Recorded unconditionally: the cleaned file (`tleYYYY.cleaned.txt`), the broken sidecar
+  (`tleYYYY.broken.txt` — header-only when nothing was quarantined, but always written), and the
+  findings shard (`.shards/tleYYYY.findings.jsonl`). A missing or truncated shard detected on
+  resume triggers full reprocessing of that file so `report.jsonl` stays complete (issue #117).
 - **`run_identity`** pins output-affecting configuration (today: `max_quarantined`) so a
   changed run cannot validate-through a checkpoint.
 
@@ -495,8 +571,30 @@ checkpoint. Resolution:
 - `ABSENT`: `--resume` aborts ("no interrupted run to resume"); otherwise fresh.
 
 A fresh run **archives** any existing checkpoint to `.clean-state.json.stale-<timestamp>`
-(never destroying a recoverable run) and scrubs the `cleaned/`, `broken/`, and `.shards/` trees
-so no orphans from a differently-scoped prior run linger.
+(never destroying a recoverable run), then scrubs the `cleaned/`, `broken/`, `.shards/` trees
+and the four report artifacts (`report.md`, `report.json`, `report.jsonl`,
+`broken-noradids.ndjson`) so no orphans from a differently-scoped prior run linger and no stale
+report is left for `lintle report` to render if the fresh run is itself interrupted (issue #102).
+After archiving, `archive_checkpoint` prunes older stale archives keeping only the newest 3
+(`_STALE_ARCHIVE_KEEP`); the ISO-8601 timestamp suffix is lexicographically sortable so `sorted()`
+orders them chronologically (issue #105).
+
+**Preflight ordering.** `resolve_clean_plan` executes in this order: build `inputs` +
+`run_identity` → classify checkpoint → resolve resume action → branch:
+
+- **RESUME branch:** disk-space guard runs on `2×` the *remaining* (unprocessed) input bytes,
+  computed after completing-file integrity re-verification. A nearly-complete resume is never
+  refused on a tight disk that would comfortably hold the fraction still to process (issue #94).
+- **FRESH branch:** ownership check (`_is_safe_to_scrub`) → archive checkpoint → scrub (trees +
+  report artifacts) → disk-space guard on `2×` full corpus (now that freed space is reflected) →
+  write `.lintle-output` ownership marker.
+
+**Ownership marker.** `run_planning._OUTPUT_MARKER` (`.lintle-output`) is written into the
+out-dir by the first fresh run. A scrub refuses (exit 2, no data destroyed) when the out-dir is
+non-empty, carries no `.lintle-output` marker, no checkpoint (`.clean-state.json`), and no
+stale-checkpoint archive — indicating it is not a lintle output directory and may contain
+user-owned content (issue #93). Effectively-empty out-dirs (only the lock file present) are
+always safe to use.
 
 ---
 
@@ -534,8 +632,8 @@ dependency is rejected if it would:
   `.broken.txt` sidecar, the `--report json` envelope, the `.clean-state.json` checkpoint, and
   `cleaned/*.txt` all stay exactly as their contracts assert (`report.json` is byte-identical to
   the `--report json` stdout envelope); `rich` styling is confined to the stderr/stdout panel UI;
-- weaken the **atomic + durable commit** (`durable_replace`) or the **host-aware out-dir lock**
-  semantics; or
+- weaken the **atomic + durable commit** (`durable_replace`) or the **advisory-flock out-dir
+  lock** semantics; or
 - violate **validated transformation / correctness over recovery** (principles #1/#2).
 
 These gate a dependency's *behaviour*, not its file location — there is deliberately no layering
@@ -562,7 +660,7 @@ judgement under the relaxed bar that can be revisited.
 | `pydantic` | Reject (hard invariant) | Second coercion/validation path (#4); would drift byte-deterministic outputs (#1/#2); `pydantic-core` native at scale. |
 | `orjson` / `ujson` / `msgspec` | Reject (hard invariant) | Changes on-disk bytes (`sort_keys`, separators, `ensure_ascii=False`, LF) the diff contract + resume round-trip assert. |
 | `tabulate` | Reject (hard invariant) | `report.md` is asserted byte-for-byte; padding rules rewrite every byte. |
-| `filelock` | Reject (hard invariant) | Cannot express the host-aware lock (cross-host refuse + same-host dead-PID reclaim); unsafe on a shared network out-dir. |
+| `filelock` | Reject (lean runtime) | The lock is now a ~25-line `fcntl.flock` wrapper (issues #87/#99); `filelock` is itself a flock/lockfile wrapper, so it would add a runtime dependency without removing meaningful burden. Its cross-platform layer targets Windows, which is out of scope. |
 | atomic-write libs (`atomicwrites`, `boltons`) | Reject (hard invariant) | None implements the macOS `F_FULLFSYNC` + dir-fsync ordering `durable_replace` needs; `atomicwrites` is unmaintained. |
 | file-hashing libs (`dirhash`, `xxhash`) | Reject (hard invariant) | The resume fingerprint is a bounded head+tail 64 KB window; whole-file hashing would read the full 3.2 GB (#3). |
 | `click` / `typer` | Reject (not worth it) | `argparse` is stdlib with zero supply-chain surface; ~0 net lines deleted; would change `--help`/error text the e2e tests assert. |
@@ -612,7 +710,7 @@ The dated design specs, implementation plans, and corpus-run summaries now live 
 design *rationale* only. They include the authoritative cleaner design
 (`2026-05-21-tle-corpus-cleaner-design.md`, whose §3.1 first stated the dependency policy now
 consolidated in [§7](#7-runtime-dependency-policy)), the
-`--report json` envelope design (`2026-05-25-report-json-envelope.md`, schema now `"2"`), the
+`--report json` envelope design (`2026-05-25-report-json-envelope.md`, schema now `"3"`), the
 structured findings design (`2026-05-25-report-jsonl-structured-findings.md`), the
 runtime-dependency-policy rationale (`2026-05-28-runtime-dependency-policy-design.md`), and the
 resume-by-default design (`2026-05-30-resume-by-default-design.md`), among others.

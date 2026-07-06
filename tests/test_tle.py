@@ -23,6 +23,12 @@ class TestComputeChecksum:
     def test_non_digit_non_minus_counts_as_zero(self):
         assert tle.compute_checksum("ABCDE.+ " * 8 + "    ") == 0
 
+    def test_unicode_digit_counts_as_zero_not_value(self):
+        # '²' (SUPERSCRIPT TWO) is str.isdigit()-True but int('²')
+        # raises ValueError; only ASCII 0-9 may contribute to the checksum,
+        # so it must be treated as a zero-contributing character, not crash.
+        assert tle.compute_checksum("²" + " " * 67) == 0
+
 
 class TestCheckColumns:
     def test_valid_line1_passes_column_checks(self, line1):
@@ -80,6 +86,15 @@ class TestChecksumError:
         err = tle.checksum_error(bad)
         assert err is not None and "not a digit" in err
 
+    def test_checksum_error_rejects_unicode_digit(self, line1):
+        # '٣' (ARABIC-INDIC DIGIT THREE) is str.isdigit()-True and int()==3,
+        # which equals the canonical checksum — so it would spuriously
+        # validate the line as perfect. Only ASCII 0-9 are valid in column 69.
+        assert tle.compute_checksum(line1) == 3  # canonical checksum is 3
+        bad = line1[:68] + "٣"
+        err = tle.checksum_error(bad)
+        assert err is not None and "not a digit" in err
+
 
 class TestValidateLine:
     def test_validate_line_accepts_canonical(self, line1, line2):
@@ -102,6 +117,141 @@ class TestValidateRecord:
         other_body = "2 09999" + line2[7:68]
         other = other_body + str(tle.compute_checksum(other_body))
         assert any("catalog" in e for e in tle.validate_record(line1, other))
+
+
+class TestChecksumWordVocabularyIsPinned:
+    """Since #120, repair routes on the typed ``FieldError.kind`` ("checksum" vs
+    "column"/"semantic"), so the prose word no longer steers a never-recycled
+    RuleID — that contract is structural now, not textual. What remains worth
+    pinning is human-output *vocabulary* consistency (the original #106 concern,
+    from the other side): the word "checksum" must appear in checksum-error prose
+    and must NOT leak into column/semantic errors or field descriptions, so a
+    reader (and the secondary ``"checksum" in note`` eyeballing) stays aligned
+    with the kind. A reword can no longer misroute; it could still confuse.
+    """
+
+    def test_checksum_errors_contain_the_word(self, line1):
+        assert "checksum" in tle.checksum_error(line1[:68] + "X")  # non-digit
+        assert "checksum" in tle.checksum_error(line1[:68] + "9")  # wrong digit
+
+    def test_no_column_or_semantic_error_contains_checksum(self, line1, line2):
+        cases = [
+            ("9" + line1[1:68], 1),  # bad line-number prefix (column)
+            (line1[:18] + "X" + line1[19:68], 1),  # letter in digit field (column)
+            (line2[:8] + "999.2682" + line2[16:68], 2),  # inclination range (semantic)
+            (line2[:52] + "00.00000000" + line2[63:68], 2),  # mean motion (semantic)
+        ]
+        for body, lineno in cases:
+            errs = tle.validate_body(body, lineno)
+            assert errs, (body, lineno)  # genuinely invalid
+            assert not any("checksum" in e for e in errs), (lineno, errs)
+
+    def test_no_field_description_mentions_checksum(self):
+        for chars, fields in tle._LINE_SPEC.values():
+            for *_, desc in chars:
+                assert "checksum" not in desc.lower()
+            for *_, desc in fields:
+                assert "checksum" not in desc.lower()
+
+
+class TestValidateRecordCatalog:
+    """Tests for the fast catalog-only cross-check (issue #109)."""
+
+    def test_matching_catalog_returns_empty(self, line1, line2):
+        assert tle.validate_record_catalog(line1, line2) == []
+
+    def test_mismatch_returns_same_error_as_validate_record(self, line1, line2):
+        other_body = "2 09999" + line2[7:68]
+        other = other_body + str(tle.compute_checksum(other_body))
+        cat_errors = tle.validate_record_catalog(line1, other)
+        full_errors = tle.validate_record(line1, other)
+        # validate_record on two valid lines returns only the catalog error.
+        assert cat_errors == full_errors
+
+    @given(
+        satnum=st.integers(min_value=0, max_value=99999),
+    )
+    @settings(
+        max_examples=200,
+        suppress_health_check=[HealthCheck.function_scoped_fixture],
+    )
+    def test_equivalence_for_any_valid_pair(self, line1, line2, satnum):
+        """validate_record_catalog == validate_record for two valid lines."""
+        sat_field = f"{satnum:05d}"
+        body1 = line1[:2] + sat_field + line1[7:68]
+        body2 = line2[:2] + sat_field + line2[7:68]
+        l1 = body1 + str(tle.compute_checksum(body1))
+        l2 = body2 + str(tle.compute_checksum(body2))
+        # Both are valid; catalog cross-check fast path must agree with full check.
+        assert tle.validate_record_catalog(l1, l2) == tle.validate_record(l1, l2)
+
+    @given(
+        satnum1=st.integers(min_value=0, max_value=99999),
+        satnum2=st.integers(min_value=0, max_value=99999),
+    )
+    @settings(
+        max_examples=200,
+        suppress_health_check=[HealthCheck.function_scoped_fixture],
+    )
+    def test_equivalence_for_mismatched_valid_pair(
+        self, line1, line2, satnum1, satnum2
+    ):
+        """Mismatch case: both functions return the same single catalog error."""
+        sat1 = f"{satnum1:05d}"
+        sat2 = f"{satnum2:05d}"
+        body1 = line1[:2] + sat1 + line1[7:68]
+        body2 = line2[:2] + sat2 + line2[7:68]
+        l1 = body1 + str(tle.compute_checksum(body1))
+        l2 = body2 + str(tle.compute_checksum(body2))
+        assert tle.validate_record_catalog(l1, l2) == tle.validate_record(l1, l2)
+
+
+class TestFieldError:
+    """The validator's structured error type (#120): each error is its own
+    prose string (so all human output and substring checks are byte-identical)
+    AND carries typed routing/column fields for repair + report.jsonl."""
+
+    def test_column_error_is_str_with_structured_fields(self, line1):
+        body = "9" + line1[1:68]  # bad line-number column (column 1)
+        (err,) = [e for e in tle._check_columns(body, 1) if "line number" in e]
+        assert isinstance(err, str)  # byte-compatible prose
+        assert err == "column 1 (line number): got '9', expected one of '1'"
+        assert err.kind == "column"
+        assert err.column_range == (1, 1)
+        assert err.observed == "9"
+        assert err.expected == "1"
+
+    def test_field_error_in_a_multi_char_field(self, line1):
+        body = line1[:18] + "X" + line1[19:68]  # letter in the epoch-year field
+        (err,) = [e for e in tle._check_columns(body, 1) if "epoch year" in e]
+        assert err.kind == "column"
+        assert err.column_range == (19, 20)  # epoch year is columns 19-20
+        assert err.observed == body[18:20]  # the offending field substring
+        # A multi-char field constraint is a charset, not a single value:
+        # `expected` stays None (the full set is in the prose), avoiding a
+        # misleading 16-char-truncated charset in report.jsonl.
+        assert err.expected is None
+
+    def test_checksum_error_kind_and_fields(self, line1):
+        err = tle.checksum_error(line1[:68] + "9")  # wrong checksum digit
+        assert err.kind == "checksum"
+        assert err.column_range == (69, 69)
+        assert err.observed == "9"
+        assert err.expected == str(tle.compute_checksum(line1[:68] + "9"))
+
+    def test_semantic_error_carries_field_span(self, line2):
+        body = line2[:8] + "999.2682" + line2[16:68]  # inclination out of range
+        (err,) = [e for e in tle.validate_body(body, 2) if "inclination" in e]
+        assert err.kind == "semantic"
+        assert err.column_range == (9, 16)
+
+    def test_catalog_error_kind_and_fields(self, line1, line2):
+        other_body = "2 09999" + line2[7:68]
+        other = other_body + str(tle.compute_checksum(other_body))
+        (err,) = tle.validate_record_catalog(line1, other)
+        assert err.kind == "catalog"
+        assert err.column_range == (3, 7)
+        assert err.observed == line1[2:7] and err.expected == other[2:7]
 
 
 class TestExtractNoradId:

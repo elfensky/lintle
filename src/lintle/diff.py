@@ -58,13 +58,6 @@ def iter_findings(run_dir):
         raise DiffError(f"cannot read {path}: {exc}") from exc
 
 
-def iter_primary_rule_ids(run_dir):
-    """Yield the primary ``rule_id`` of every finding — the file-agnostic view
-    of :func:`iter_findings`, for corpus-level aggregation."""
-    for _file, rule_id in iter_findings(run_dir):
-        yield rule_id
-
-
 def _finding_from_line(path, lineno, line):
     """Parse one ``report.jsonl`` line and return its ``(file, rule_id)``.
     Raises :class:`DiffError` (citing ``path:lineno``) on malformed JSON, an
@@ -82,14 +75,12 @@ def _finding_from_line(path, lineno, line):
     rule_id = record.get("rule_id")
     if rule_id is None:
         raise DiffError(f"{path}:{lineno}: finding has no rule_id")
-    return record.get("file"), rule_id
-
-
-def aggregate(run_dir):
-    """Return a :class:`collections.Counter` mapping primary ``rule_id`` →
-    number of findings in ``run_dir``. Counts the primary diagnostic only,
-    matching the producer's ``stats.quarantine_counts`` semantics."""
-    return collections.Counter(iter_primary_rule_ids(run_dir))
+    file = record.get("file")
+    if not isinstance(file, str):
+        raise DiffError(
+            f"{path}:{lineno}: finding has no string 'file' field (got {file!r})"
+        )
+    return file, rule_id
 
 
 def aggregate_by_file(run_dir):

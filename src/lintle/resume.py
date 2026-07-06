@@ -18,7 +18,17 @@ import json
 import os
 from pathlib import Path
 
-from lintle import __version__, fsutil, stem
+from lintle import (
+    BROKEN_DIRNAME,
+    BROKEN_SUFFIX,
+    CLEANED_DIRNAME,
+    CLEANED_SUFFIX,
+    FINDINGS_SUFFIX,
+    SHARDS_DIRNAME,
+    __version__,
+    fsutil,
+    stem,
+)
 
 CHECKPOINT_NAME = ".clean-state.json"
 SCHEMA_VERSION = 3
@@ -66,18 +76,76 @@ def run_started_stamp():
 
 def output_sizes(out_dir, stats):
     """Map each output basename this file produced to its on-disk size, captured
-    at completion for the resume integrity check (spec §3.6). The broken sidecar
-    is present only when something was quarantined."""
+    at completion for the resume integrity check (spec §3.6). Clean mode always
+    writes both a cleaned file and a broken sidecar (even when no records are
+    quarantined, ``pipeline`` unconditionally finalizes the sidecar to a
+    header-only file), so both are recorded unconditionally. The findings shard
+    in ``.shards/`` is also recorded so a missing-or-truncated shard detected on
+    resume forces reprocessing — regenerating the shard and keeping ``report.jsonl``
+    complete (issue #117). Suffix/dirname constants are imported from
+    ``lintle.__init__`` — the single naming-convention authority."""
     sizes = {}
     out = Path(out_dir)
-    cleaned = stem(stats.src_name) + ".cleaned.txt"
+    file_stem = stem(stats.src_name)
+    cleaned = file_stem + CLEANED_SUFFIX
     with contextlib.suppress(OSError):
-        sizes[cleaned] = (out / "cleaned" / cleaned).stat().st_size
-    if stats.quarantined_count:
-        broken = stem(stats.src_name) + ".broken.txt"
-        with contextlib.suppress(OSError):
-            sizes[broken] = (out / "broken" / broken).stat().st_size
+        sizes[cleaned] = (out / CLEANED_DIRNAME / cleaned).stat().st_size
+    broken = file_stem + BROKEN_SUFFIX
+    with contextlib.suppress(OSError):
+        sizes[broken] = (out / BROKEN_DIRNAME / broken).stat().st_size
+    shard = file_stem + FINDINGS_SUFFIX
+    with contextlib.suppress(OSError):
+        sizes[shard] = (out / SHARDS_DIRNAME / shard).stat().st_size
     return sizes
+
+
+@dataclasses.dataclass(slots=True, frozen=True)
+class CompletedEntry:
+    """Typed record for one file's per-run checkpoint entry (issue #118).
+
+    Owns the ``{"summary": ..., "outputs": ...}`` shape that worker_pool
+    builds after each file completes and that resume readers consume.
+    ``from_stats`` is the single construction site so key names cannot drift;
+    ``as_dict`` serialises to the exact wire shape consumed by
+    ``build_checkpoint`` and the resume readers. ``summary`` holds the
+    :func:`report.summary_dict` result; ``outputs`` holds the
+    :func:`output_sizes` result. Both are plain dicts so the checkpoint JSON
+    is byte-identical to the pre-refactor form — ``build_checkpoint`` passes
+    the whole ``completed`` mapping through ``json.dumps(sort_keys=True)``,
+    which sorts ``"outputs"`` before ``"summary"`` regardless of field order.
+    """
+
+    summary: dict
+    outputs: dict
+
+    @classmethod
+    def from_stats(cls, out_dir, stats) -> CompletedEntry:
+        """Build a CompletedEntry from a completed file's stats and out_dir.
+
+        ``report`` is imported locally rather than at module level: resume is a
+        deliberately minimal leaf, so a top-level ``report`` import would widen
+        its dependency surface (worker_pool also dropped its module-level
+        ``report`` import in the #118 refactor). Called as
+        ``CompletedEntry.from_stats(out_dir, stats)`` from worker_pool after
+        each file's future resolves.
+        """
+        from lintle import report  # local import keeps resume a minimal leaf
+
+        return cls(
+            summary=report.summary_dict(stats),
+            outputs=output_sizes(out_dir, stats),
+        )
+
+    def as_dict(self) -> dict:
+        """Serialise to the ``{"summary": ..., "outputs": ...}`` wire shape.
+
+        The key order here is irrelevant: ``build_checkpoint`` calls
+        ``json.dumps(sort_keys=True)``, which sorts to ``outputs`` before
+        ``summary`` regardless. The dict is what ``plan.completed`` stores
+        so the resume readers (``run_planning`` and ``verify_completed_outputs``)
+        continue to see a plain dict — no reader changes needed.
+        """
+        return {"summary": self.summary, "outputs": self.outputs}
 
 
 def build_checkpoint(*, inputs, completed, run_identity):
@@ -109,23 +177,21 @@ def write_checkpoint(out_dir, checkpoint):
     destination path.
     """
     dest = _checkpoint_path(out_dir)
-    tmp = dest + ".partial"
-    with open(tmp, "w", encoding="utf-8", newline="\n") as handle:
-        json.dump(checkpoint, handle, separators=(",", ":"), sort_keys=True)
-    fsutil.durable_replace(tmp, dest)
+    fsutil.durable_write_text(
+        dest,
+        json.dumps(checkpoint, separators=(",", ":"), sort_keys=True),
+    )
     return dest
 
 
 def load_checkpoint(out_dir):
-    """Return the parsed checkpoint from ``out_dir``, or ``None`` if it is absent
-    or unparseable. A corrupt checkpoint is treated as no checkpoint — the safe
-    default is to redo work, never to resume against garbage.
+    """Return the parsed checkpoint from ``out_dir``, or ``None`` if it is absent,
+    unparseable, or not a JSON object. A corrupt checkpoint is treated as no
+    checkpoint — the safe default is to redo work, never to resume against garbage.
+    Routes through :func:`fsutil.read_json_or_none` so ``UnicodeDecodeError`` on
+    invalid-UTF-8 bytes and non-dict payloads are both caught (issues #91, #92).
     """
-    try:
-        with open(_checkpoint_path(out_dir), encoding="utf-8") as handle:
-            return json.load(handle)
-    except OSError, json.JSONDecodeError:
-        return None
+    return fsutil.read_json_or_none(_checkpoint_path(out_dir))
 
 
 class CheckpointStatus(enum.Enum):
@@ -152,14 +218,19 @@ class Classification:
 
 def classify_checkpoint(out_dir, current_inputs, current_run_identity):
     """Classify the checkpoint in ``out_dir`` against the current run (spec §2.3).
-    Distinguishes ABSENT (no file), CORRUPT (present but unparseable — never
-    treated as absent, so a damaged interrupted run is surfaced, not silently
-    discarded), VALID, and STALE(reason).
+    Distinguishes ABSENT (no file), CORRUPT (present but unparseable or structurally
+    malformed — never treated as absent, so a damaged interrupted run is surfaced,
+    not silently discarded), VALID, and STALE(reason). A corrupt ``completed`` block
+    is routed to CORRUPT rather than STALE because the payload cannot be consumed at
+    all, regardless of identity (issue #91): ``_validate_completed_shape`` is checked
+    before ``validate_run_identity`` so the stricter structural gate takes precedence.
     """
     if not Path(_checkpoint_path(out_dir)).exists():
         return Classification(CheckpointStatus.ABSENT)
     checkpoint = load_checkpoint(out_dir)
     if checkpoint is None:
+        return Classification(CheckpointStatus.CORRUPT)
+    if _validate_completed_shape(checkpoint) is not None:
         return Classification(CheckpointStatus.CORRUPT)
     reason = validate_run_identity(checkpoint, current_inputs, current_run_identity)
     if reason is not None:
@@ -169,17 +240,31 @@ def classify_checkpoint(out_dir, current_inputs, current_run_identity):
     return Classification(CheckpointStatus.VALID, checkpoint=checkpoint)
 
 
+_STALE_ARCHIVE_KEEP = 3  # how many stale-checkpoint archives to retain
+
+
 def archive_checkpoint(out_dir, *, timestamp):
     """Rename the checkpoint to ``.clean-state.json.stale-<timestamp>`` so a fresh
     run never silently destroys a recoverable interrupted run (spec §2.3): the
     operator can downgrade/revert and recover it. Returns the archived basename,
     or None if there was no checkpoint. ``timestamp`` is supplied by the caller
-    (clock access is forbidden in pure helpers)."""
+    (clock access is forbidden in pure helpers). After archiving, prunes older
+    archives keeping only the newest ``_STALE_ARCHIVE_KEEP`` (default 3) — the
+    stamp is lexicographically sortable (``YYYYmmddTHHMMSSZ``), so ``sorted()``
+    orders them chronologically; each unlink is individually suppressed so a race
+    or permission error on one does not abort the others."""
     src = _checkpoint_path(out_dir)
     if not Path(src).exists():
         return None
     archived = f"{CHECKPOINT_NAME}.stale-{timestamp}"
     os.replace(src, Path(out_dir) / archived)
+    # Prune old stale archives — keep only the newest _STALE_ARCHIVE_KEEP.
+    prefix = CHECKPOINT_NAME + ".stale-"
+    out = Path(out_dir)
+    archives = sorted(p for p in out.iterdir() if p.name.startswith(prefix))
+    for old in archives[:-_STALE_ARCHIVE_KEEP]:
+        with contextlib.suppress(OSError):
+            old.unlink()
     return archived
 
 
@@ -191,17 +276,20 @@ def delete_checkpoint(out_dir):
         Path(_checkpoint_path(out_dir)).unlink()
 
 
-# The output trees a `clean` run writes into, under ``--out-dir``. The
-# filename→tree mapping (``.cleaned.txt`` vs ``.broken.txt``) is owned by
-# report.py; the resume verifier just searches these rather than re-encoding it.
-_OUTPUT_DIRS = ("cleaned", "broken")
+# The output trees a `clean` run writes into, under ``--out-dir``. Suffix and
+# dirname constants live in ``lintle.__init__`` — the single naming-convention
+# authority (pipeline._clean_output_paths, resume.output_sizes, cli.discover_paths,
+# and report_writers.concat_findings_shards all import from there).
+_OUTPUT_DIRS = (CLEANED_DIRNAME, BROKEN_DIRNAME, SHARDS_DIRNAME)
 
 
 def _locate_output(out_dir, name):
     """Return the on-disk path of output basename ``name`` under ``out_dir``'s
     output trees, or None if it is in none of them. Searching the known trees
     (rather than inferring the directory from the filename suffix) keeps the
-    output-naming convention in one place — report.py — not duplicated here."""
+    output-naming convention in one place — ``lintle.__init__`` — not duplicated
+    here. The shards directory is included so findings shards recorded in the
+    checkpoint are located on resume (issue #117)."""
     for sub in _OUTPUT_DIRS:
         candidate = Path(out_dir) / sub / name
         if candidate.exists():
@@ -300,7 +388,9 @@ def validate_run_identity(checkpoint, current_inputs, current_run_identity):
     """Return a human-readable reason the checkpoint cannot be resumed against the
     current run, or None if it can. Refuse-on-change (spec §3.1, all-or-nothing):
     schema, lintle version, output-affecting configuration, or any input identity
-    drift invalidates the whole checkpoint.
+    drift invalidates the whole checkpoint. Also validates the ``completed`` block
+    shape (issue #91): entries missing ``summary`` or ``outputs`` dicts cause a
+    non-None return so callers see the checkpoint as unusable.
     """
     schema = checkpoint.get("schema_version")
     if schema != SCHEMA_VERSION:
@@ -326,4 +416,24 @@ def validate_run_identity(checkpoint, current_inputs, current_run_identity):
     for path in sorted(current_inputs):
         if current_inputs[path] != recorded[path]:
             return f"input changed since the interrupted run: {path}"
+    return _validate_completed_shape(checkpoint)
+
+
+def _validate_completed_shape(checkpoint):
+    """Return a human-readable reason the ``completed`` block is structurally
+    corrupt, or ``None`` if it is well-formed. Checked independently of identity
+    so :func:`classify_checkpoint` can route structural violations to CORRUPT
+    (not STALE) — a malformed ``completed`` block means the checkpoint cannot be
+    consumed at all, not merely that the run configuration has changed (issue #91).
+    """
+    completed = checkpoint.get("completed")
+    if not isinstance(completed, dict):
+        return "checkpoint completed block is missing or not a JSON object"
+    for entry_path, entry in completed.items():
+        if not isinstance(entry, dict):
+            return f"checkpoint completed entry for {entry_path!r} is not a JSON object"
+        if not isinstance(entry.get("summary"), dict):
+            return f"checkpoint completed entry for {entry_path!r} has no summary dict"
+        if not isinstance(entry.get("outputs"), dict):
+            return f"checkpoint completed entry for {entry_path!r} has no outputs dict"
     return None
