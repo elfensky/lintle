@@ -6,6 +6,18 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Added
+
+- `lintle verify` — post-run correctness auditing of a clean run's output
+  (Increment 1, `sgp4`-free): re-validates every cleaned record against the one
+  validator, flags any `(catalog, epoch)` contradiction, and — when the source
+  tree is available — confirms every cleaned line is a *sanctioned* edit of a
+  real source line (no interior mutation) via a bounded-window source
+  alignment. Writes a deterministic suspects report under `<out-dir>/verify`;
+  exit 1 on any hard suspect. Constant-memory: the group-by-satellite pass uses
+  an external merge sort that spills to disk. The clean/validate/repair path is
+  barred from importing `lintle.verify` (or `sgp4`) by an import-graph test.
+
 ## [0.6.0] - 2026-07-04
 
 ### Added
