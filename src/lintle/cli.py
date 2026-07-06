@@ -29,6 +29,9 @@ from lintle import (
     verify,
     worker_pool,
 )
+from lintle import (
+    config as user_config,
+)
 
 _DEFAULT_SOURCE = "data/source"
 _DEFAULT_OUTPUT = "data/output"
@@ -252,9 +255,12 @@ def _add_report_subparser(subparsers):
     report_parser.add_argument(
         "out_dir",
         nargs="?",
-        default=_DEFAULT_OUTPUT,
+        default=None,
         metavar="OUT-DIR",
-        help=f"clean run output directory (default: {_DEFAULT_OUTPUT})",
+        help=(
+            "clean run output directory "
+            f"(default: stored config, else {_DEFAULT_OUTPUT})"
+        ),
     )
     report_parser.add_argument(
         "--report",
@@ -287,16 +293,20 @@ def _add_verify_subparser(subparsers):
     verify_parser.add_argument(
         "out_dir",
         nargs="?",
-        default=_DEFAULT_OUTPUT,
+        default=None,
         metavar="OUT-DIR",
-        help=f"clean run output directory to verify (default: {_DEFAULT_OUTPUT})",
+        help=(
+            "clean run output directory to verify "
+            f"(default: stored config, else {_DEFAULT_OUTPUT})"
+        ),
     )
     verify_parser.add_argument(
         "--source",
-        default=_DEFAULT_SOURCE,
+        default=None,
         metavar="DIR",
         help=(
-            f"original source directory for the byte-diff (default: {_DEFAULT_SOURCE})"
+            "original source directory for the byte-diff "
+            f"(default: stored config, else {_DEFAULT_SOURCE})"
         ),
     )
     verify_parser.add_argument(
@@ -328,7 +338,7 @@ def build_parser():
     )
     subparsers = parser.add_subparsers(
         dest="command",
-        required=True,
+        required=False,
         metavar="{clean,diff,explain,report,verify}",
         title="commands",
     )
@@ -444,6 +454,29 @@ def _finalize_run(
     )
 
 
+def _flag_present(argv, flag):
+    """True if ``flag`` was passed on the command line (``--x`` or ``--x=…``)."""
+    return any(a == flag or a.startswith(flag + "=") for a in argv)
+
+
+def _apply_config_paths(args, argv, config):
+    """Fill path arguments left at their defaults from the stored project config,
+    so ``clean``/``verify``/``report`` can run without repeating paths. Precedence
+    is always explicit CLI arg > stored config > built-in default — an explicit
+    argument is never overridden. Mutates ``args`` in place."""
+    match args.command:
+        case "clean":
+            if args.path is None and config.get("source"):
+                args.path = config["source"]
+            if not _flag_present(argv, "--out-dir") and config.get("output"):
+                args.out_dir = config["output"]
+        case "verify":
+            args.out_dir = args.out_dir or config.get("output") or _DEFAULT_OUTPUT
+            args.source = args.source or config.get("source") or _DEFAULT_SOURCE
+        case "report":
+            args.out_dir = args.out_dir or config.get("output") or _DEFAULT_OUTPUT
+
+
 def main(argv=None):
     """Entry point for the ``lintle`` console script.
 
@@ -457,6 +490,22 @@ def main(argv=None):
     (``--max-quarantined 1%``); see :func:`thresholds.parse_quarantine_threshold`.
     """
     args = build_parser().parse_args(argv)
+
+    # No subcommand: launch the interactive wizard on a TTY; off a TTY (scripts,
+    # CI, pipes) keep the old "pick a command" behaviour by printing help and
+    # exiting 2, so nothing that pipes `lintle` ever blocks on a prompt.
+    if args.command is None:
+        if term.is_interactive():
+            from lintle import wizard  # lazy: avoid the cli <-> wizard import cycle
+
+            return wizard.run()
+        build_parser().print_help(sys.stderr)
+        return 2
+
+    # Fill unset path arguments from the stored project config before any command
+    # dispatches (explicit CLI arg > stored config > built-in default).
+    argv_list = list(sys.argv[1:] if argv is None else argv)
+    _apply_config_paths(args, argv_list, user_config.load())
 
     # `diff` is a read-only consumer of two report.jsonl files; it shares none
     # of the `clean` argument surface (paths, jobs, out-dir, threshold), so
