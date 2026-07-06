@@ -39,12 +39,27 @@ def revalidate(rec: CleanedRecord) -> Suspect | None:
     return None
 
 
+# Orbital-state column slices for the contradiction check. Line 1 cols 1-64
+# hold the identity + orbital fields; cols 65-68 are the *element-set number*
+# and col 69 the checksum. Line 2 cols 1-63 hold the orbital elements; cols
+# 64-68 are the *revolution number* and col 69 the checksum. Comparing only the
+# orbital slices ignores administrative re-issue churn — space-track routinely
+# re-issues the same satellite at the same epoch with an incremented set/rev
+# number (and recomputed checksum) but identical orbit — which is NOT a
+# contradiction. Comparing full bytes flags every such re-issue (~0.15% of real
+# records → hundreds of thousands of bogus hard suspects), the classic
+# noisy-verifier failure. A genuinely different orbit still differs here.
+_L1_ORBITAL = 64
+_L2_ORBITAL = 63
+
+
 def find_conflicts(sorted_records: Iterator[CleanedRecord]) -> Iterator[Suspect]:
     """Over a stream sorted by ``(catalog, epoch_key)``, flag any group that
-    holds more than one distinct element-byte pair for the same satellite and
-    epoch — a flat contradiction (at least one is wrong). Exact duplicates are
-    harmless and not flagged. Constant memory: only the current group's distinct
-    pairs are held."""
+    holds more than one distinct **orbital state** for the same satellite and
+    epoch — a flat contradiction (at least one is wrong). Records that differ
+    only in administrative fields (element-set / revolution number, checksums)
+    are normal re-issues, not conflicts, and are ignored. Constant memory: only
+    the current group's distinct orbital states are held."""
     group_key: tuple[int, float] | None = None
     seen: set[tuple[str, str]] = set()
     for rec in sorted_records:
@@ -52,9 +67,10 @@ def find_conflicts(sorted_records: Iterator[CleanedRecord]) -> Iterator[Suspect]
         if key != group_key:
             group_key = key
             seen = set()
-        pair = (rec.line1, rec.line2)
+        # Orbital state only — mask element-set/revolution numbers and checksums.
+        pair = (rec.line1[:_L1_ORBITAL], rec.line2[:_L2_ORBITAL])
         if pair not in seen:
-            if seen:  # a different pair already exists for this (catalog, epoch)
+            if seen:  # a different orbital state already exists for (catalog, epoch)
                 yield Suspect(
                     VrfyRule.EPOCH_CONFLICT,
                     rec.catalog,
@@ -62,7 +78,7 @@ def find_conflicts(sorted_records: Iterator[CleanedRecord]) -> Iterator[Suspect]
                     rec.src_file,
                     rec.index,
                     f"catalog {rec.catalog} shares epoch {rec.epoch_key} with "
-                    "different element bytes",
+                    "different orbital elements",
                 )
             seen.add(pair)
 
