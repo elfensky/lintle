@@ -41,8 +41,10 @@ wrong, not merely suboptimal.
    once. A 3.2 GB file must never be loaded whole, and no per-file structure grows with record
    count.
 4. **One validator definition.** "Perfect" is defined once, in `tle.py`. There is never a
-   second, divergent validation path — which is precisely why `sgp4` is a dev-only test oracle
-   and must never be imported at runtime.
+   second, divergent validation path — which is precisely why `sgp4` (a *permissive* parser) is
+   walled out of the clean/validate/repair path. `sgp4` is a physics engine used only by `lintle
+   verify` to measure orbit *consistency*, never a validity authority; an import-graph test
+   enforces the wall.
 
 ---
 
@@ -605,8 +607,10 @@ The runtime is lean by policy, not dogma. The current runtime dependencies are *
 durations and sizes in the human display — `precisedelta` for the panel duration, `naturalsize`
 for the roster sizes). `humanize` is confined to the human stderr/stdout display and never
 touches structured or byte-deterministic output (`report.*`, the `.broken.txt` sidecar, the
-checkpoint, `cleaned/*`, the `--report json` envelope, `broken-noradids.ndjson`). `sgp4` and
-`pytest` are dev-only; `sgp4` is a test oracle and must never be imported at runtime.
+checkpoint, `cleaned/*`, the `--report json` envelope, `broken-noradids.ndjson`). `pytest` is
+dev-only. `sgp4` is the test oracle **and** the physics engine for `lintle verify`; it is never
+imported by the clean/validate/repair path (the hard invariant below), and is being promoted
+from dev-only to a verify-scoped runtime dependency with the `verify` physics pass.
 
 **The bar is relaxed.** A third-party runtime dependency may be added when it advances the aim
 of a stable, maintainable, easy-to-understand app — i.e. when it is **popular, actively
@@ -624,9 +628,11 @@ necessary conditions and none is a veto:
 **Hard correctness invariants (the only vetoes — immovable however popular a library is).** A
 dependency is rejected if it would:
 
-- form a **second validation path** (principle #4 — why `sgp4` is dev-only);
+- form a **second validation path** (principle #4 — why `sgp4` is walled out of the clean path);
 - **load a file whole** or make any per-file structure grow with record count (principle #3);
-- import **`sgp4` or another orbital parser at runtime**;
+- import **`sgp4` or another orbital parser into the clean/validate/repair path** — `sgp4` is
+  permitted only inside `lintle verify`, as a consistency *measurer*, never a validity authority;
+  the clean path is barred from importing it or `lintle.verify` by an import-graph test;
 - make any **structured/machine-readable output or stdout-pipeable data non-byte-deterministic
   or styled** — `report.md`, `report.json`, `report.jsonl`, `broken-noradids.ndjson`, the
   `.broken.txt` sidecar, the `--report json` envelope, the `.clean-state.json` checkpoint, and
@@ -656,7 +662,7 @@ judgement under the relaxed bar that can be revisited.
 
 | Tool | Disposition | Reason |
 |---|---|---|
-| TLE/orbital libs (`sgp4`, `Skyfield`, `tletools`, `astropy`) | Reject (hard invariant) | A parser/validator would be a second validation path (#4); `sgp4` is fine as a dev-only test oracle. |
+| TLE/orbital libs (`sgp4`, `Skyfield`, `tletools`, `astropy`) | Reject in the clean path (hard invariant) | A parser/validator in the clean path would be a second validation path (#4). `sgp4` is permitted only inside `lintle verify` (consistency metrics, never validity) and as the test oracle; other orbital libs stay out. |
 | `pydantic` | Reject (hard invariant) | Second coercion/validation path (#4); would drift byte-deterministic outputs (#1/#2); `pydantic-core` native at scale. |
 | `orjson` / `ujson` / `msgspec` | Reject (hard invariant) | Changes on-disk bytes (`sort_keys`, separators, `ensure_ascii=False`, LF) the diff contract + resume round-trip assert. |
 | `tabulate` | Reject (hard invariant) | `report.md` is asserted byte-for-byte; padding rules rewrite every byte. |
@@ -677,7 +683,8 @@ judgement under the relaxed bar that can be revisited.
 | **`humanize`** | **Adopted (2026-06-07)** | Human-display durations (`precisedelta`) and roster sizes (`naturalsize(gnu=True)`); pure-Python, zero transitive deps; confined to `summary.py` and `cli_progress.py` — stderr/stdout panel only, never structured output. A 2026-06-07 re-audit re-confirmed all other candidates as rejected or deferred for the reasons already tabled. |
 | `zstandard` | Defer (trigger-gated) | Only on a *measured* output-size / transfer bottleneck; until then stdlib `gzip`. |
 
-Dev-only (exempt; record purpose if nontrivial): `sgp4` (test oracle), `pytest`, `pytest-cov`,
+Dev-only (exempt; record purpose if nontrivial): `sgp4` (test oracle; being promoted to a
+verify-scoped runtime dependency with the `verify` physics pass), `pytest`, `pytest-cov`,
 `ruff`, `hypothesis` (property-based validator/repair tests), `pytest-xdist` (parallel suite —
 default run is `pytest -n auto`).
 
