@@ -26,6 +26,7 @@ from lintle import (
     summary,
     term,
     thresholds,
+    verify,
     worker_pool,
 )
 
@@ -266,6 +267,48 @@ def _add_report_subparser(subparsers):
     )
 
 
+def _add_verify_subparser(subparsers):
+    """Add the ``verify`` subparser: audit a clean run's output for
+    cleaning-corruption (goal 1) and structural contradictions (goal 3). Reads
+    ``<out-dir>/cleaned`` and the source tree; writes only ``<out-dir>/verify``."""
+    verify_parser = subparsers.add_parser(
+        "verify",
+        help="audit a clean run's cleaned output for corruption and contradictions",
+        description=(
+            "Post-run correctness auditing: re-validate every cleaned record, "
+            "flag any (catalog, epoch) contradiction, and — when the original "
+            "source is available — confirm every cleaned line is a sanctioned "
+            "edit of a real source line (no interior mutation). Writes a suspects "
+            "report under <out-dir>/verify. Exit 1 if any hard suspect is found."
+        ),
+        epilog=_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    verify_parser.add_argument(
+        "out_dir",
+        nargs="?",
+        default=_DEFAULT_OUTPUT,
+        metavar="OUT-DIR",
+        help=f"clean run output directory to verify (default: {_DEFAULT_OUTPUT})",
+    )
+    verify_parser.add_argument(
+        "--source",
+        default=_DEFAULT_SOURCE,
+        metavar="DIR",
+        help=(
+            f"original source directory for the byte-diff (default: {_DEFAULT_SOURCE})"
+        ),
+    )
+    verify_parser.add_argument(
+        "--no-source-diff",
+        action="store_true",
+        help=(
+            "skip the source byte-diff (goal 1); only re-validate and "
+            "check contradictions"
+        ),
+    )
+
+
 def build_parser():
     """Build the ``lintle`` argument parser."""
     parser = argparse.ArgumentParser(
@@ -286,13 +329,14 @@ def build_parser():
     subparsers = parser.add_subparsers(
         dest="command",
         required=True,
-        metavar="{clean,diff,explain,report}",
+        metavar="{clean,diff,explain,report,verify}",
         title="commands",
     )
     _add_clean_subparser(subparsers)
     _add_diff_subparser(subparsers)
     _add_explain_subparser(subparsers)
     _add_report_subparser(subparsers)
+    _add_verify_subparser(subparsers)
     return parser
 
 
@@ -439,6 +483,13 @@ def main(argv=None):
     # Shares none of the `clean` surface, so dispatch it before that logic.
     if args.command == "report":
         return summary.run(args.out_dir, args.report)
+
+    # `verify` is a read-only post-run auditor of a clean run's cleaned output
+    # (plus the source tree for the byte-diff). It writes only <out-dir>/verify
+    # and shares none of the `clean` surface, so dispatch it before that logic.
+    if args.command == "verify":
+        source = None if args.no_source_diff else args.source
+        return verify.run_verify(args.out_dir, source)
 
     # `args.path` is None when the user passed nothing — fall back to the
     # default source dir, and remember it so we can give a tailored error if
