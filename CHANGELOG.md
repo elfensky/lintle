@@ -17,6 +17,15 @@ All notable changes to this project are documented in this file. The format is b
   exit 1 on any hard suspect. Constant-memory: the group-by-satellite pass uses
   an external merge sort that spills to disk. The clean/validate/repair path is
   barred from importing `lintle.verify` (or `sgp4`) by an import-graph test.
+- Interactive wizard: running `lintle` with no subcommand on a TTY opens a rich
+  menu to configure paths and start a clean / verify / report. The chosen source
+  and output directories are remembered in a project-local `./.lintle.json`
+  (`lintle.config`, stdlib JSON), so `lintle clean` / `verify` / `report` run
+  without repeating paths — precedence is always explicit CLI arg > stored
+  config > built-in default, and stored paths are re-checked (and re-prompted)
+  when they no longer exist. Off a TTY (scripts, CI, pipes) a bare `lintle`
+  keeps the old behaviour: it prints help and exits 2, never blocking on a
+  prompt.
 
 ## [0.6.0] - 2026-07-04
 
