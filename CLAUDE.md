@@ -17,8 +17,8 @@ are the current truth.
 
 ## Tech Stack
 
-Python 3.14 · uv · lean runtime (**`rich`** + **`humanize`**) · `sgp4` (dev-only
-test oracle) · `pytest` · `pytest-cov` · `pytest-xdist` · `hypothesis` · `ruff`
+Python 3.14 · uv · lean runtime (**`rich`** + **`humanize`**) · `sgp4` (test oracle;
+`lintle verify` physics engine) · `pytest` · `pytest-cov` · `pytest-xdist` · `hypothesis` · `ruff`
 
 **Runtime dependencies** are governed by a *relaxed* policy (revised 2026-05-31): a popular,
 actively-maintained library that genuinely reduces the code we'd otherwise own should be
@@ -26,7 +26,9 @@ adopted where it makes sense. The old four-MUST gate and its "aim is a veto" cla
 retired — those four (popular · maintained · reduces-our-burden · sensible shape) are now
 *favourable signals*, not necessary conditions. The **only vetoes are the hard correctness
 invariants**: one validator definition (Critical Rule #4), constant-memory streaming (#3),
-`sgp4`-never-at-runtime, byte-deterministic *unstyled* structured/stdout output (#1/#2 —
+`sgp4`-never-in-the-clean-path (the clean/validate/repair modules never import `sgp4` or
+`lintle.verify` — enforced by an import-graph test; see below), byte-deterministic *unstyled*
+structured/stdout output (#1/#2 —
 `report.*`, NDJSON, sidecar, `--report json`, checkpoint, `cleaned/*`), and the atomic-durable
 commit + advisory-flock out-dir lock. The canonical rule and the considered/deferred table live in
 [`ARCHITECTURE.md` §7](ARCHITECTURE.md#7-runtime-dependency-policy); the original rationale is
@@ -34,8 +36,18 @@ archived under `docs/superpowers/archive/specs/2026-05-28-runtime-dependency-pol
 **Current runtime deps: `rich>=15,<16`** (terminal rendering for `clean`) and
 **`humanize>=4,<5`** (human-readable durations + sizes in the human display; confined to
 `summary.py` and `cli_progress.py` — never structured output). A 2026-06-07 relaxed-bar
-re-audit re-confirmed all other candidates as rejected or deferred. `sgp4` and `pytest` are
-dev-only; `sgp4` is a test oracle and must never be imported at runtime.
+re-audit re-confirmed all other candidates as rejected or deferred. `pytest` is dev-only.
+**`sgp4` is a physics engine, not a validity authority.** The clean/validate/repair path
+(`pipeline`, `repair`, `tle`, and `cli`'s clean path) must never import `sgp4` or
+`lintle.verify` — enforced by an import-graph test. Two rules require the wall, and size is not
+one of them: (#4) "perfect" is defined once in `tle.py`, and `sgp4` is permissive enough to
+become a divergent second definition of validity if the clean path could consult it; and `sgp4`
+measures physical *position*, not record validity — an orthogonal concern kept in separate code.
+`sgp4` is the sole province of `lintle verify`, which uses it only for consistency/residual
+metrics; validity there always routes through `tle.validate_record`. It is being promoted from
+dev-only test oracle to a **verify-scoped runtime dependency**: the packaging move lands with the
+`verify` physics pass (Increment 2), while the wall that keeps it out of the clean path is
+already enforced.
 
 ## Critical Rules — principles that must not be violated
 
