@@ -38,6 +38,13 @@ def reissued_l2() -> str:
     return fix(L2[:63] + "99999")
 
 
+def reissued_refined_l1() -> str:
+    """L1 as a real re-issue: a bumped element-set (cols 65-68 -> 9999) AND a
+    refined B* — space-track's successive orbit solution at the same epoch. A
+    different element-set AND orbit: a benign re-issue, not a contradiction (#158)."""
+    return fix(L1[:53] + " 20000-3" + L1[61:64] + "9999")
+
+
 def nddot_signed(sign: str) -> str:
     """L1 with its 2nd-derivative field (cols 45-52) written as ``sign`` + a zero
     mantissa: ``' 00000-0'`` and ``'+00000-0'`` encode the SAME value (0).
@@ -141,25 +148,25 @@ class TestCatalogExtraction:
 class TestConflicts:
     def test_exact_duplicate_is_not_a_conflict(self):
         stream = [rec(idx=0), rec(idx=1)]  # identical bytes, same (catalog, epoch)
-        assert list(checks.find_conflicts(iter(stream))) == []
+        assert checks.find_conflicts(iter(stream)) == ([], 0)
 
     def test_different_orbital_elements_conflict(self):
+        # same element-set (default L1), different orbit -> a hard clash
         stream = [rec(idx=0), rec(line2=mutated_l2(), idx=1)]  # inclination differs
-        out = list(checks.find_conflicts(iter(stream)))
-        assert len(out) == 1
-        assert out[0].rule is VrfyRule.EPOCH_CONFLICT
+        out, n = checks.find_conflicts(iter(stream))
+        assert len(out) == 1 and out[0].rule is VrfyRule.EPOCH_CONFLICT and n == 0
 
     def test_element_set_reissue_is_not_a_conflict(self):
         # same orbital state, only the element-set number (cols 65-68) differs
         r0, r1 = rec(idx=0), rec(line1=reissued_l1(), idx=1)
         assert r0.line1[:64] == r1.line1[:64] and r0.line1 != r1.line1
-        assert list(checks.find_conflicts(iter([r0, r1]))) == []
+        assert checks.find_conflicts(iter([r0, r1])) == ([], 0)
 
     def test_revolution_number_reissue_is_not_a_conflict(self):
         # same orbital state, only the revolution number (cols 64-68) differs
         r0, r1 = rec(idx=0), rec(line2=reissued_l2(), idx=1)
         assert r0.line2[:63] == r1.line2[:63] and r0.line2 != r1.line2
-        assert list(checks.find_conflicts(iter([r0, r1]))) == []
+        assert checks.find_conflicts(iter([r0, r1])) == ([], 0)
 
     def test_sign_encoding_reissue_is_not_a_conflict(self):
         # identical orbit; 2nd-deriv field ' 00000-0' vs '+00000-0' (same value).
@@ -168,14 +175,20 @@ class TestConflicts:
         r0 = rec(line1=nddot_signed(" "), idx=0)
         r1 = rec(line1=nddot_signed("+"), idx=1)
         assert r0.line1[:64] != r1.line1[:64]  # would false-positive under a byte mask
-        assert list(checks.find_conflicts(iter([r0, r1]))) == []
+        assert checks.find_conflicts(iter([r0, r1])) == ([], 0)
 
-    def test_different_drag_value_still_conflicts(self):
-        # a genuine B* difference IS a different orbital state -> still a conflict
+    def test_different_drag_value_same_elset_is_hard(self):
+        # same element-set, a genuine B* difference -> a hard clash (not re-issue)
         r0 = rec(line1=fix(L1[:53] + " 10000-3" + L1[61:]), idx=0)
         r1 = rec(line1=fix(L1[:53] + " 20000-3" + L1[61:]), idx=1)
-        out = list(checks.find_conflicts(iter([r0, r1])))
-        assert len(out) == 1 and out[0].rule is VrfyRule.EPOCH_CONFLICT
+        out, n = checks.find_conflicts(iter([r0, r1]))
+        assert len(out) == 1 and out[0].rule is VrfyRule.EPOCH_CONFLICT and n == 0
+
+    def test_refined_reissue_is_census_not_conflict(self):
+        # same (catalog, epoch), a NEW element-set AND a refined orbit -> a benign
+        # re-issue: counted, never a hard conflict (#158)
+        r0, r1 = rec(idx=0), rec(line1=reissued_refined_l1(), idx=1)
+        assert checks.find_conflicts(iter([r0, r1])) == ([], 1)
 
     def test_different_satellites_no_conflict(self):
         other1 = fix(L1[:2] + "00006" + L1[7:])  # different catalog
@@ -183,7 +196,7 @@ class TestConflicts:
             [rec(idx=0), rec(line1=other1, idx=1)],
             key=lambda r: (r.catalog, r.epoch_key),
         )
-        assert list(checks.find_conflicts(iter(stream))) == []
+        assert checks.find_conflicts(iter(stream)) == ([], 0)
 
 
 class TestSourceAligner:
@@ -282,11 +295,23 @@ class TestEndToEnd:
         assert any(r["rule"] == "VRFY-INTERIOR-MUT" for r in rows)
 
     def test_contradiction_fails(self, tmp_path):
-        # same satellite+epoch twice with different element bytes
+        # same satellite+epoch, SAME element-set, different orbit -> a hard clash
         out, _ = build_tree(tmp_path, [(L1, L2), (L1, mutated_l2())])
         assert run_verify(out, None) == 1
         rows = (tmp_path / "output" / "verify" / "suspects.jsonl").read_text()
         assert "VRFY-EPOCH-CONFLICT" in rows
+
+    def test_refined_reissue_is_census_pass(self, tmp_path):
+        # same satellite+epoch, a NEW element-set AND refined orbit -> a benign
+        # re-issue: verify PASSES and the record is counted in the census (#158)
+        out, _ = build_tree(tmp_path, [(L1, L2), (reissued_refined_l1(), L2)])
+        assert run_verify(out, None) == 0
+        suspects = (tmp_path / "output" / "verify" / "suspects.jsonl").read_text()
+        assert suspects == ""
+        summary = json.loads(
+            (tmp_path / "output" / "verify" / "summary.json").read_text()
+        )
+        assert summary["checked"]["epoch_reissues"] == 1
 
     def test_missing_cleaned_dir_is_operational_error(self, tmp_path):
         assert run_verify(str(tmp_path / "nope"), None) == 2
