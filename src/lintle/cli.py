@@ -15,6 +15,7 @@ from lintle import (
     SHARDS_DIRNAME,
     __version__,
     cli_progress,
+    dedup,
     diff,
     explain,
     fsutil,
@@ -319,6 +320,38 @@ def _add_verify_subparser(subparsers):
     )
 
 
+def _add_dedup_subparser(subparsers):
+    """Add the ``dedup`` subparser: collapse a clean run's re-issued records into
+    a single 'latest only' import list. Reads ``<out-dir>/cleaned`` (and a prior
+    ``verify`` run's ``suspects.jsonl`` if present); writes only
+    ``<out-dir>/dedup``. ``cleaned/`` is never modified."""
+    dedup_parser = subparsers.add_parser(
+        "dedup",
+        help="collapse re-issued records into a 'latest only' import list",
+        description=(
+            "Emit a de-duplicated, latest-re-issue-only import list from a clean "
+            "run's cleaned output: one card per (catalog, epoch), keeping the "
+            "highest element-set number. Benign re-issues collapse silently; a "
+            "genuine same-epoch orbit contradiction is kept-latest but flagged "
+            "(exit 1). When a verify run's suspects.jsonl exists, hard suspects "
+            "are excluded first. Writes <out-dir>/dedup/import.txt; cleaned/ is "
+            "never modified."
+        ),
+        epilog=_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    dedup_parser.add_argument(
+        "out_dir",
+        nargs="?",
+        default=None,
+        metavar="OUT-DIR",
+        help=(
+            "clean run output directory to de-duplicate "
+            f"(default: stored config, else {_DEFAULT_OUTPUT})"
+        ),
+    )
+
+
 def build_parser():
     """Build the ``lintle`` argument parser."""
     parser = argparse.ArgumentParser(
@@ -339,10 +372,11 @@ def build_parser():
     subparsers = parser.add_subparsers(
         dest="command",
         required=False,
-        metavar="{clean,diff,explain,report,verify}",
+        metavar="{clean,dedup,diff,explain,report,verify}",
         title="commands",
     )
     _add_clean_subparser(subparsers)
+    _add_dedup_subparser(subparsers)
     _add_diff_subparser(subparsers)
     _add_explain_subparser(subparsers)
     _add_report_subparser(subparsers)
@@ -473,7 +507,7 @@ def _apply_config_paths(args, argv, config):
         case "verify":
             args.out_dir = args.out_dir or config.get("output") or _DEFAULT_OUTPUT
             args.source = args.source or config.get("source") or _DEFAULT_SOURCE
-        case "report":
+        case "report" | "dedup":
             args.out_dir = args.out_dir or config.get("output") or _DEFAULT_OUTPUT
 
 
@@ -539,6 +573,11 @@ def main(argv=None):
     if args.command == "verify":
         source = None if args.no_source_diff else args.source
         return verify.run_verify(args.out_dir, source)
+
+    # `dedup` is a read-only consumer of cleaned/ (plus a prior verify run's
+    # suspects.jsonl); it writes only <out-dir>/dedup and never touches cleaned/.
+    if args.command == "dedup":
+        return dedup.run_dedup(args.out_dir)
 
     # `args.path` is None when the user passed nothing — fall back to the
     # default source dir, and remember it so we can give a tailored error if
