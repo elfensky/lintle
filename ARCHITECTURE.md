@@ -71,6 +71,7 @@ cli.py ──▶ pipeline.py ──▶ repair.py ──▶ tle.py
   ├──▶ summary.py       (aggregate-panel renderer + read-only `lintle report` over report.json; → term)
   ├──▶ term.py          (stderr+stdout rich Consoles + error/warning/note/prompt + is_interactive/prompt_yes_no)
   ├──▶ verify/          (read-only `lintle verify` auditor — own package; → tle, term; never in the clean path)
+  ├──▶ dedup.py ──▶ verify/  (read-only `lintle dedup` — latest-re-issue import list; → verify.{checks,grouping,records}, term)
   └──▶ wizard.py ──▶ config.py   (no-subcommand TTY menu; cli↔wizard edge lazy on both sides)
 
 verify/   (lintle verify — the sgp4-free Increment-1 core; cli ──▶ verify, never the reverse)
@@ -108,6 +109,7 @@ config.py    stdlib-JSON leaf — ./.lintle.json load/save (no internal deps)
 | `cli.py` | argparse, globbing, and top-level `clean` orchestration: delegates preflight to `run_planning`, dispatch to `worker_pool`, signal/shutdown to `process_control`, the quality-gate exit policy to `thresholds`, run finalization to `output_artifacts`, and the aggregate panel / `report` render to `summary`; owns the resulting process exit code. |
 | `cli_progress.py` | Rich presentation leaf for `clean`: the live `ProgressDisplay`, the pre-run `render_roster`, and the `status` spinner. Consumes `pipeline`'s typed progress messages. Imports `humanize` for human-readable roster sizes (`naturalsize(gnu=True)`). |
 | `verify/` | The `lintle verify` post-run auditor (own package): `epoch` (epoch-key parsing), `records` (the `CleanedRecord` dataclass + cleaned-tree readers), `grouping` (the spill-to-disk `ExternalSorter` for the constant-memory contradiction pass), `checks` (`revalidate` / `find_conflicts` / the `SourceAligner` byte-diff), `report` (`VrfyRule`, `Suspect`, the `suspects.jsonl` + `summary.{json,md}` writers, `exit_code`), and `__init__.run_verify` (orchestration). A pure *consumer* of `tle` (its sole validity authority) and `term`; the physics increment is the only planned `sgp4` importer. |
+| `dedup.py` | The `lintle dedup` pass: reads `cleaned/` (never mutating it), excludes hard suspects from a prior `verify` run's `suspects.jsonl`, groups by `(catalog, epoch)` through `verify`'s `ExternalSorter`, and writes `<out-dir>/dedup/{import.txt,notes.jsonl,summary.json}` — one card per group, the latest re-issue kept, benign re-issues collapsed and genuine orbit contradictions kept-latest-but-flagged. Reuses `verify.checks.orbital_state`/`element_set` (one definition of "same orbit" / "latest"). Constant memory; deterministic bytes. |
 | `config.py` | Optional `./.lintle.json` project config: stdlib-JSON `load`/`save` of the two remembered keys (`source`, `output`). Never an authority over an explicit CLI arg. No internal deps. |
 | `wizard.py` | The interactive rich menu shown when `lintle` runs with no subcommand on a TTY (configure / clean / verify / report / quit). A thin front-end that builds an argv and calls `cli.main`, reimplementing no orchestration; imports `config` + `term`. |
 
@@ -120,10 +122,13 @@ the reverse), so the structured writers and the renderers stay acyclic.
 output-naming constants — and `cli ──▶ verify`, never the reverse. The clean/validate/repair
 path (`pipeline`, `repair`, `tle`, `cli`'s clean path) never imports `lintle.verify` or
 `sgp4`, so the auditor can never become a second validity definition; an import-graph test
-enforces the wall (see §7). The `cli ↔ wizard` cycle — `cli` launches the menu, the menu
-re-enters `cli.main` — is broken by a lazy import on *both* sides (`cli` imports `wizard` only
-inside the no-subcommand TTY branch; `wizard` imports `cli` only inside its dispatch), so
-`wizard ──▶ config`/`term` are the only module-load-time edges.
+enforces the wall (see §7). `dedup.py` is a second read-only consumer of the same package —
+`cli ──▶ dedup ──▶ verify.{checks, grouping, records}` (+ `term`), one-way, and equally barred
+from the clean path — so it reuses `verify`'s one definition of "same orbit" / "latest re-issue"
+rather than spawning a divergent second one. The `cli ↔ wizard` cycle — `cli` launches the menu,
+the menu re-enters `cli.main` — is broken by a lazy import on *both* sides (`cli` imports
+`wizard` only inside the no-subcommand TTY branch; `wizard` imports `cli` only inside its
+dispatch), so `wizard ──▶ config`/`term` are the only module-load-time edges.
 
 **Output-naming constants.** `CLEANED_SUFFIX`, `BROKEN_SUFFIX`, `FINDINGS_SUFFIX`,
 `CLEANED_DIRNAME`, `BROKEN_DIRNAME`, and `SHARDS_DIRNAME` live in `lintle/__init__.py` —

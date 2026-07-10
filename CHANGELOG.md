@@ -8,6 +8,20 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Added
 
+- `lintle dedup` — emit a de-duplicated "latest re-issue only" import list from a
+  clean run's cleaned output. Space-track republishes the same orbit at the same
+  epoch with only a bumped element-set (or revolution) number; the faithful
+  `cleaned/` archive keeps every copy, so `dedup` writes a separate
+  `<out-dir>/dedup/import.txt` with one card per `(catalog, epoch)`, keeping the
+  latest re-issue (highest element-set number). Benign re-issues — identical
+  parsed orbital state — collapse silently; a genuine same-epoch orbit
+  contradiction is kept-latest **and** flagged in `notes.jsonl` (exit 1), never
+  resolved in silence. When a `verify` run's `suspects.jsonl` is present, hard
+  suspects are excluded from the import list first. `cleaned/` is never modified;
+  constant memory (records stream through the same external sort as `verify`,
+  one `(catalog, epoch)` group held at a time); byte-deterministic output. Shares
+  `verify`'s `orbital_state` / `element_set` so both agree on "same orbit" and
+  "which is latest".
 - `lintle verify` — post-run correctness auditing of a clean run's output
   (Increment 1, `sgp4`-free): re-validates every cleaned record against the one
   validator, flags any `(catalog, epoch, element-set)` contradiction — two

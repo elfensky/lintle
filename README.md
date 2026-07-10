@@ -61,6 +61,9 @@ uv run lintle clean [path]
 # Audit a clean run's output for corruption and contradictions
 uv run lintle verify [out-dir] --source [src-dir]
 
+# Emit a de-duplicated "latest re-issue only" import list
+uv run lintle dedup [out-dir]
+
 # Re-render a prior clean run's aggregate summary from its report.json
 uv run lintle report [out-dir]
 
@@ -149,6 +152,31 @@ The suspects report is written under `<out-dir>/verify/` (`suspects.jsonl` +
 `summary.{json,md}`). Exit codes: **`0`** clean, **`1`** at least one hard suspect
 (a re-validation failure, an element-set contradiction, or an interior mutation), **`2`**
 operational error (no cleaned output to audit).
+
+### A "latest only" import list — `lintle dedup`
+
+The `cleaned/` archive faithfully keeps every published record — including the near-identical
+re-issues space-track emits for the *same* satellite at the *same* epoch (same orbit, just a
+bumped element-set or revolution number). A consumer that wants "the orbit for satellite X at
+time T" then has to pick one. `lintle dedup` produces that pick as a **separate** artifact —
+`cleaned/` is never touched:
+
+- one card per `(catalog, epoch)`, keeping the **latest re-issue** (highest element-set number);
+- benign re-issues (identical orbital state) collapse silently;
+- a **genuine** contradiction (same satellite + epoch, a *different* orbit) is kept-latest
+  **and flagged** — never resolved in silence;
+- if a `verify` run's `suspects.jsonl` exists, **hard suspects are excluded** from the list first.
+
+```bash
+# De-duplicate the default run -> data/output/dedup/import.txt
+uv run lintle dedup data/output
+```
+
+Writes `<out-dir>/dedup/`: `import.txt` (the ingest list, sorted by `(catalog, epoch)`),
+`notes.jsonl` (one entry per collapsed group — kept vs dropped), and `summary.json` (counts).
+This realises the output tiering **`source/` → `cleaned/` (immutable archive) → `import.txt`
+(verified + deduped, ready to ingest)**. Exit codes: **`0`** clean, **`1`** a genuine
+contradiction was arbitrated (review `notes.jsonl`), **`2`** no cleaned output.
 
 ### Interactive wizard & remembered paths — `.lintle.json`
 
