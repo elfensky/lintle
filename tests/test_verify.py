@@ -4,7 +4,7 @@ import inspect
 import json
 
 from lintle import cli, pipeline, repair, tle
-from lintle.verify import checks, epoch, grouping, report, run_verify
+from lintle.verify import checks, epoch, grouping, records, report, run_verify
 from lintle.verify.records import CleanedRecord
 from lintle.verify.report import Suspect, VrfyRule
 
@@ -122,6 +122,20 @@ class TestRevalidate:
         s = checks.revalidate(bad)
         assert s is not None and s.rule is VrfyRule.REVALIDATE_FAIL
         assert s.severity == "hard"
+
+
+class TestCatalogExtraction:
+    def test_space_padded_catalog_recovered(self):
+        # space-track writes low catalog numbers space-padded, not zero-padded:
+        # cols 3-7 '  836' is catalog 836 and validates (the charset allows
+        # spaces), but tle.extract_norad_id's strict 5-digit contract returns
+        # None -> the -1 sentinel manufactures epoch conflicts (#157).
+        l1 = fix(L1[:2] + "  836" + L1[7:])
+        cat, key = records._catalog_and_key(l1)
+        assert cat == 836 and key != -1.0
+
+    def test_unparseable_line1_stays_sentinel(self):
+        assert records._catalog_and_key("garbage not a tle") == (-1, -1.0)
 
 
 class TestConflicts:

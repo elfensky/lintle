@@ -8,7 +8,7 @@ import dataclasses
 from collections.abc import Iterator
 from pathlib import Path
 
-from lintle import CLEANED_DIRNAME, CLEANED_SUFFIX, tle
+from lintle import CLEANED_DIRNAME, CLEANED_SUFFIX
 from lintle.verify import epoch
 
 
@@ -26,11 +26,23 @@ class CleanedRecord:
     index: int
 
 
+def catalog_of(line1: str) -> int | None:
+    """The integer NORAD catalog from line-1 cols 3-7, tolerant of the
+    space-padded form space-track uses for low numbers (``'  836'`` -> 836) that
+    ``tle.extract_norad_id`` — a strict 5-digit contract for the clean path's
+    broken-id output — reports as ``None``. Alpha-5 letter-prefixed ids (catalog
+    >= 100000, absent from this 2004-2020 corpus) stay ``None``."""
+    if len(line1) < 7 or not line1.startswith("1 "):
+        return None
+    field = line1[2:7].strip()
+    return int(field) if field.isdigit() else None
+
+
 def _catalog_and_key(line1: str) -> tuple[int, float]:
     """Best-effort (catalog, epoch_key); (-1, -1.0) if line 1 is unparseable.
     Never raises — a broken cleaned line is a finding, not a crash."""
     try:
-        catalog = tle.extract_norad_id(line1)
+        catalog = catalog_of(line1)
         key = epoch.epoch_key(line1)
     except ValueError, IndexError:
         return -1, -1.0
