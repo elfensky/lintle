@@ -59,14 +59,17 @@ def run_verify(out_dir: str, source_dir: str | None) -> int:
             if aligner is not None:
                 aligner.close()
 
-    # Contradiction pass over the fully sorted stream (goal 3b).
-    suspects.extend(checks.find_conflicts(sorter.sorted_records()))
+    # Contradiction pass over the fully sorted stream (goal 3b): same-epoch
+    # re-issues are counted (a census); only a same-element-set clash is hard.
+    conflicts, epoch_reissues = checks.find_conflicts(sorter.sorted_records())
+    suspects.extend(conflicts)
 
     checked = {
         "files": len(stems),
         "records": n_records,
         "source_diff": "skipped" if source_dir is None else "on",
         "missing_source_files": missing_source,
+        "epoch_reissues": epoch_reissues,
     }
     vdir = write_reports(out_dir, suspects, checked=checked)
 

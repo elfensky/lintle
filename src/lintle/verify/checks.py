@@ -82,33 +82,66 @@ def _orbital_state(line1: str, line2: str) -> tuple:
         return (line1[:_L1_ORBITAL], line2[:_L2_ORBITAL])
 
 
-def find_conflicts(sorted_records: Iterator[CleanedRecord]) -> Iterator[Suspect]:
-    """Over a stream sorted by ``(catalog, epoch_key)``, flag any group that
-    holds more than one distinct **orbital state** for the same satellite and
-    epoch — a flat contradiction (at least one is wrong). State is compared as
-    parsed numeric values (see :func:`_orbital_state`), so administrative
-    re-issue churn and cosmetic encoding differences are not conflicts. Constant
-    memory: only the current group's distinct orbital states are held."""
+def _element_set(line1: str) -> int | None:
+    """The element-set number (line-1 cols 65-68) as an int, tolerant of space
+    padding; ``None`` if unparseable. Each re-issue increments it, so it tells a
+    benign re-issue (a new number) from an integrity clash (one number, two
+    orbits)."""
+    try:
+        return int(line1[64:68])
+    except ValueError:
+        return None
+
+
+def find_conflicts(
+    sorted_records: Iterator[CleanedRecord],
+) -> tuple[list[Suspect], int]:
+    """Over a stream sorted by ``(catalog, epoch_key)``, classify records that
+    share a ``(catalog, epoch)`` but carry a different orbital state, keyed on the
+    element-set number:
+
+    - **different element-set → a benign re-issue.** Space-track republishes
+      successive *refined* solutions per epoch, each a new element set; the
+      faithful archive keeps them all and ``dedup`` keeps the latest. These are
+      *counted* into a census, never a per-record finding — at ~0.16% of a 232 M
+      corpus that would bury the real soft findings (#147/#158).
+    - **same element-set, different orbit → a hard ``VRFY-EPOCH-CONFLICT``** — a
+      genuine integrity clash, since one element-set names exactly one orbit.
+
+    Returns ``(hard_conflicts, reissue_count)``. Constant memory: only the current
+    group's element-set→orbital-state map is held; hard conflicts (≈0 on real
+    data) are collected, re-issues merely counted."""
+    conflicts: list[Suspect] = []
+    reissues = 0
     group_key: tuple[int, float] | None = None
-    seen: set[tuple] = set()
+    by_elset: dict[int | None, tuple] = {}
+    states: set[tuple] = set()
     for rec in sorted_records:
         key = (rec.catalog, rec.epoch_key)
         if key != group_key:
             group_key = key
-            seen = set()
+            by_elset = {}
+            states = set()
         state = _orbital_state(rec.line1, rec.line2)
-        if state not in seen:
-            if seen:  # a different orbital state already exists for (catalog, epoch)
-                yield Suspect(
+        elset = _element_set(rec.line1)
+        if by_elset.get(elset, state) != state:
+            # this element-set already appeared with a different orbit — a clash
+            conflicts.append(
+                Suspect(
                     VrfyRule.EPOCH_CONFLICT,
                     rec.catalog,
                     rec.epoch_key,
                     rec.src_file,
                     rec.index,
-                    f"catalog {rec.catalog} shares epoch {rec.epoch_key} with "
-                    "different orbital elements",
+                    f"catalog {rec.catalog} shares epoch {rec.epoch_key} and "
+                    f"element-set {elset} with a different orbital state",
                 )
-            seen.add(state)
+            )
+        elif states and state not in states:
+            reissues += 1  # a new orbit under a new element-set — a re-issue
+        by_elset.setdefault(elset, state)
+        states.add(state)
+    return conflicts, reissues
 
 
 def sanctioned_reduce(src_line: str) -> str:
