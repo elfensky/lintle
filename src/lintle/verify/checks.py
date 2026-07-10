@@ -161,7 +161,12 @@ class SourceAligner:
             line = self._fh.readline()
             if not line:
                 break
-            self._buf.append(line.rstrip("\n"))
+            stripped = line.rstrip("\n")
+            # Skip blank source lines: never part of a TLE record (clean's
+            # pairing skips them too), and an interposed blank would break the
+            # adjacent line-1/line-2 pair match below -> false INTERIOR_MUT (#155).
+            if stripped.strip():
+                self._buf.append(stripped)
 
     def check(self, rec: CleanedRecord) -> Suspect | None:
         """Locate ``rec``'s source origin and classify it: clean match (None),

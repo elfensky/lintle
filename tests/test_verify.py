@@ -219,6 +219,17 @@ class TestSourceAligner:
         assert aligner.check(rec()) is None
         aligner.close()
 
+    def test_blank_line_between_pair_is_clean_match(self, tmp_path):
+        # tle2019 source has stray blank lines between line 1 and line 2, both
+        # missing their checksum (#155). clean skips the blank, pairs them, and
+        # reconstructs the checksums; the aligner must skip the blank too, else
+        # the interposed line breaks the adjacent-pair match -> false INTERIOR_MUT.
+        src = tmp_path / "s.txt"
+        src.write_text(f"{L1[:68]}\n\n{L2[:68]}\n", encoding="ascii")
+        aligner = checks.SourceAligner(str(src))
+        assert aligner.check(rec()) is None
+        aligner.close()
+
 
 class TestReport:
     def test_suspects_jsonl_is_deterministic(self):
