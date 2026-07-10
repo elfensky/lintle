@@ -61,11 +61,12 @@ def _decimal_exp(field: str) -> float:
     return sign * int(field[1:6]) * 10.0 ** (int(field[6:8]) - 5)
 
 
-def _orbital_state(line1: str, line2: str) -> tuple:
+def orbital_state(line1: str, line2: str) -> tuple:
     """The physical orbit as parsed numeric values — encoding-independent, admin
     fields excluded. Falls back to the raw masked bytes if any field cannot be
     parsed, so an unparseable oddity can never silently collapse two genuinely
-    different orbits into one."""
+    different orbits into one. Shared with ``dedup`` so both agree, byte-for-byte,
+    on when two records carry 'the same orbit'."""
     try:
         return (
             float(line1[33:43]),  # 1st-derivative mean motion (ndot)
@@ -82,11 +83,11 @@ def _orbital_state(line1: str, line2: str) -> tuple:
         return (line1[:_L1_ORBITAL], line2[:_L2_ORBITAL])
 
 
-def _element_set(line1: str) -> int | None:
+def element_set(line1: str) -> int | None:
     """The element-set number (line-1 cols 65-68) as an int, tolerant of space
     padding; ``None`` if unparseable. Each re-issue increments it, so it tells a
     benign re-issue (a new number) from an integrity clash (one number, two
-    orbits)."""
+    orbits), and gives ``dedup`` its 'keep the latest' key."""
     try:
         return int(line1[64:68])
     except ValueError:
@@ -122,8 +123,8 @@ def find_conflicts(
             group_key = key
             by_elset = {}
             states = set()
-        state = _orbital_state(rec.line1, rec.line2)
-        elset = _element_set(rec.line1)
+        state = orbital_state(rec.line1, rec.line2)
+        elset = element_set(rec.line1)
         if by_elset.get(elset, state) != state:
             # this element-set already appeared with a different orbit — a clash
             conflicts.append(
