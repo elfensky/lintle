@@ -122,6 +122,7 @@ src/lintle/
 ├── term.py        # stderr+stdout Consoles + error/warning/note/prompt + is_interactive/prompt_yes_no (rich)
 ├── diff.py        # read-only: per-rule delta between two runs' report.jsonl (lintle diff)
 ├── explain.py     # read-only: renders rule/fix documentation (lintle explain)
+├── dedup.py       # `lintle dedup` — latest-re-issue-only import list from cleaned/ (reuses verify's sort)
 ├── config.py      # optional ./.lintle.json remembering source/output dirs (stdlib JSON)
 ├── wizard.py      # interactive rich menu shown when `lintle` runs with no subcommand
 ├── tle.py         # the validator — column layout, checksum, semantic ranges, pairing
