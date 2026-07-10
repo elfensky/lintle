@@ -38,6 +38,14 @@ def reissued_l2() -> str:
     return fix(L2[:63] + "99999")
 
 
+def nddot_signed(sign: str) -> str:
+    """L1 with its 2nd-derivative field (cols 45-52) written as ``sign`` + a zero
+    mantissa: ``' 00000-0'`` and ``'+00000-0'`` encode the SAME value (0).
+    Space-track emits both; the differing byte sits inside cols 1-64, so a
+    raw-byte mask reads them as a contradiction — the real-corpus FP in #154."""
+    return fix(L1[:44] + sign + "00000-0" + L1[52:])
+
+
 def rec(line1=L1, line2=L2, src="tle01", idx=0) -> CleanedRecord:
     return CleanedRecord(
         tle.extract_norad_id(line1), epoch.epoch_key(line1), line1, line2, src, idx
@@ -138,6 +146,22 @@ class TestConflicts:
         r0, r1 = rec(idx=0), rec(line2=reissued_l2(), idx=1)
         assert r0.line2[:63] == r1.line2[:63] and r0.line2 != r1.line2
         assert list(checks.find_conflicts(iter([r0, r1]))) == []
+
+    def test_sign_encoding_reissue_is_not_a_conflict(self):
+        # identical orbit; 2nd-deriv field ' 00000-0' vs '+00000-0' (same value).
+        # The differing byte is inside cols 1-64, so a byte mask false-positives
+        # (real-corpus #154: ~3.2M such re-issues flagged as contradictions).
+        r0 = rec(line1=nddot_signed(" "), idx=0)
+        r1 = rec(line1=nddot_signed("+"), idx=1)
+        assert r0.line1[:64] != r1.line1[:64]  # would false-positive under a byte mask
+        assert list(checks.find_conflicts(iter([r0, r1]))) == []
+
+    def test_different_drag_value_still_conflicts(self):
+        # a genuine B* difference IS a different orbital state -> still a conflict
+        r0 = rec(line1=fix(L1[:53] + " 10000-3" + L1[61:]), idx=0)
+        r1 = rec(line1=fix(L1[:53] + " 20000-3" + L1[61:]), idx=1)
+        out = list(checks.find_conflicts(iter([r0, r1])))
+        assert len(out) == 1 and out[0].rule is VrfyRule.EPOCH_CONFLICT
 
     def test_different_satellites_no_conflict(self):
         other1 = fix(L1[:2] + "00006" + L1[7:])  # different catalog
