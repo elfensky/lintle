@@ -10,13 +10,19 @@ All notable changes to this project are documented in this file. The format is b
 
 - `lintle verify` — post-run correctness auditing of a clean run's output
   (Increment 1, `sgp4`-free): re-validates every cleaned record against the one
-  validator, flags any `(catalog, epoch)` contradiction, and — when the source
-  tree is available — confirms every cleaned line is a *sanctioned* edit of a
-  real source line (no interior mutation) via a bounded-window source
-  alignment. Writes a deterministic suspects report under `<out-dir>/verify`;
-  exit 1 on any hard suspect. Constant-memory: the group-by-satellite pass uses
-  an external merge sort that spills to disk. The clean/validate/repair path is
-  barred from importing `lintle.verify` (or `sgp4`) by an import-graph test.
+  validator, flags any `(catalog, epoch, element-set)` contradiction — two
+  records that share a satellite, epoch, *and* element-set number yet carry a
+  different orbital state — and, when the source tree is available, confirms
+  every cleaned line is a *sanctioned* edit of a real source line (no interior
+  mutation) via a bounded-window source alignment. The contradiction check
+  compares parsed orbital *values*, not raw bytes, so the many valid ASCII
+  encodings space-track emits for one number never false-positive; benign
+  same-epoch re-issues (a new element-set number) are counted in a summary
+  census rather than flagged. Writes a deterministic suspects report under
+  `<out-dir>/verify`; exit 1 on any hard suspect. Constant-memory: the
+  group-by-satellite pass uses an external merge sort that spills to disk. The
+  clean/validate/repair path is barred from importing `lintle.verify` (or
+  `sgp4`) by an import-graph test.
 - Interactive wizard: running `lintle` with no subcommand on a TTY opens a rich
   menu to configure paths and start a clean / verify / report. The chosen source
   and output directories are remembered in a project-local `./.lintle.json`
