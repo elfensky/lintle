@@ -33,9 +33,10 @@ structured/stdout output (#1/#2 —
 commit + advisory-flock out-dir lock. The canonical rule and the considered/deferred table live in
 [`ARCHITECTURE.md` §7](ARCHITECTURE.md#7-runtime-dependency-policy); the original rationale is
 archived under `docs/superpowers/archive/specs/2026-05-28-runtime-dependency-policy-design.md`.
-**Current runtime deps: `rich>=15,<16`** (terminal rendering for `clean`) and
+**Current runtime deps: `rich>=15,<16`** (terminal rendering for `clean`),
 **`humanize>=4,<5`** (human-readable durations + sizes in the human display; confined to
-`summary.py` and `cli_progress.py` — never structured output). A 2026-06-07 relaxed-bar
+`summary.py` and `cli_progress.py` — never structured output), and **`sgp4>=2.25,<3`**
+(the physics engine for `lintle verify --orbit`; imported only by `verify/orbit.py`). A 2026-06-07 relaxed-bar
 re-audit re-confirmed all other candidates as rejected or deferred. `pytest` is dev-only.
 **`sgp4` is a physics engine, not a validity authority.** The clean/validate/repair path
 (`pipeline`, `repair`, `tle`, and `cli`'s clean path) must never import `sgp4` or
@@ -44,10 +45,10 @@ one of them: (#4) "perfect" is defined once in `tle.py`, and `sgp4` is permissiv
 become a divergent second definition of validity if the clean path could consult it; and `sgp4`
 measures physical *position*, not record validity — an orthogonal concern kept in separate code.
 `sgp4` is the sole province of `lintle verify`, which uses it only for consistency/residual
-metrics; validity there always routes through `tle.validate_record`. It is being promoted from
-dev-only test oracle to a **verify-scoped runtime dependency**: the packaging move lands with the
-`verify` physics pass (Increment 2), while the wall that keeps it out of the clean path is
-already enforced.
+metrics; validity there always routes through `tle.validate_record`. It was promoted from a
+dev-only test oracle to a **verify-scoped runtime dependency** with the `verify --orbit` physics
+pass (Increment 2) — imported only by `verify/orbit.py`, lazily, and only when `--orbit` runs;
+the wall that keeps it out of the clean path stays enforced.
 
 ## Critical Rules — principles that must not be violated
 

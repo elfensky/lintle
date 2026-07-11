@@ -6,6 +6,24 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Added
+
+- `lintle verify --orbit` — the opt-in sampled `sgp4` orbit-consistency pass
+  (Increment 2, goal 2). For each sampled satellite's epoch-sorted track it
+  propagates every cleaned TLE forward to its neighbour's epoch with `sgp4` and
+  flags position-residual outliers over a robust per-satellite threshold
+  (`max(100 km, median + 10·MAD)`). An outlier is **soft/inconclusive**
+  (`VRFY-ORBIT-OUTLIER`) — a real manoeuvre is indistinguishable from a
+  corruption over a single pair, so it never fails the run; only `sgp4` rejecting
+  an element set as physically unphysical is hard (`VRFY-ORBIT-ERROR`, ~never on
+  cleaned data). Residuals are rounded to a 0.1 km quantum before thresholding so
+  the suspect set and exit code are byte-reproducible across platforms (locked by
+  a golden fixture). Sampling is by satellite, deterministic, default
+  `--sample 3000` / `--all`. Constant memory (streams through the same external
+  sort as the contradiction pass, one track at a time). Promotes `sgp4` from a
+  dev-only test oracle to a verify-scoped runtime dependency; the
+  clean/validate/repair path stays walled off from it (import-graph test).
+
 ## [0.7.0] - 2026-07-11
 
 ### Added
