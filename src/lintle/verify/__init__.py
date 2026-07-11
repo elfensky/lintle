@@ -15,7 +15,7 @@ from pathlib import Path
 
 from lintle import term
 from lintle.verify import checks, grouping, records
-from lintle.verify.report import exit_code, write_reports
+from lintle.verify.report import SuspectSink
 
 
 def run_verify(
@@ -39,7 +39,7 @@ def run_verify(
         )
         return 2
 
-    suspects = []
+    sink = SuspectSink()  # external-sorts suspects to disk (#156): flat peak memory
     sorter = grouping.ExternalSorter()
     population: set[int] = set()  # distinct catalogs, for the orbit sample
     n_records = 0
@@ -58,7 +58,7 @@ def run_verify(
                 n_records += 1
                 bad = checks.revalidate(rec)
                 if bad is not None:
-                    suspects.append(bad)
+                    sink.add(bad)
                     continue  # keys untrustworthy — don't sort or byte-diff it
                 sorter.add(rec)
                 if orbit and rec.catalog != -1:
@@ -66,7 +66,7 @@ def run_verify(
                 if aligner is not None:
                     mutated = aligner.check(rec)
                     if mutated is not None:
-                        suspects.append(mutated)
+                        sink.add(mutated)
         finally:
             if aligner is not None:
                 aligner.close()
@@ -74,7 +74,7 @@ def run_verify(
     # Contradiction pass over the fully sorted stream (goal 3b): same-epoch
     # re-issues are counted (a census); only a same-element-set clash is hard.
     conflicts, epoch_reissues = checks.find_conflicts(sorter.sorted_records())
-    suspects.extend(conflicts)
+    sink.add_all(conflicts)
 
     checked = {
         "files": len(stems),
@@ -88,17 +88,16 @@ def run_verify(
         # Lazy import keeps the default (non-orbit) verify path sgp4-free.
         from lintle.verify import orbit as orbit_pass
 
-        orbit_suspects, orbit_census = orbit_pass.run_orbit_pass(
-            out_dir, stems, population, sample=sample, all_sats=all_sats
+        orbit_census = orbit_pass.run_orbit_pass(
+            out_dir, stems, population, sink, sample=sample, all_sats=all_sats
         )
-        suspects.extend(orbit_suspects)
         checked.update(orbit_census)
 
-    vdir = write_reports(out_dir, suspects, checked=checked)
+    vdir = sink.write(out_dir, checked=checked)
 
-    code = exit_code(suspects)
-    hard = sum(1 for s in suspects if s.severity == "hard")
-    soft = len(suspects) - hard
+    code = sink.exit_code
+    hard = sink.hard
+    soft = sink.total - sink.hard
     verdict = f"{hard} hard, {soft} soft suspect(s) across {n_records} records"
     if code:
         term.error(f"verify: FAIL — {verdict}\n  see {vdir / 'summary.md'!s}")
