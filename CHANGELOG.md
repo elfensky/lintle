@@ -24,6 +24,16 @@ All notable changes to this project are documented in this file. The format is b
   dev-only test oracle to a verify-scoped runtime dependency; the
   clean/validate/repair path stays walled off from it (import-graph test).
 
+### Changed
+
+- `verify` now streams its suspects to disk through an external merge-sort
+  (`SuspectSink`) instead of accumulating them in a list, so peak memory is one
+  chunk regardless of how many suspects are found — the last part of the verify
+  path whose footprint scaled with the finding count (issue #156). A run's
+  `suspects.jsonl` / `summary.{json,md}` bytes are unchanged: the serialization is
+  shared with the list renderers and the k-way merge reproduces their exact
+  stable sort order (locked by a byte-equivalence test).
+
 ## [0.7.0] - 2026-07-11
 
 ### Added
