@@ -6,10 +6,12 @@ copy by design. ``dedup`` reads that archive (never mutating it) and writes a
 single ingest-ready ``import.txt`` under ``<out-dir>/dedup``: one card per
 ``(catalog, epoch)``, keeping the latest re-issue (highest element-set number).
 
-Benign re-issues — same parsed orbital state — collapse silently. A *genuine*
-contradiction (same satellite and epoch, a different orbit) is never resolved in
-silence: the latest is still written, but the group is flagged in ``notes.jsonl``
-and the run exits non-zero so a human reviews it. When a ``verify`` run's
+Re-issues — a new element-set at the same epoch, whether an identical or a refined
+orbit — collapse to the latest (verify's #158 rule: a new element-set is a benign
+successive solution, not a contradiction). A *genuine* contradiction — one
+element-set naming two different orbits — is never resolved in silence: the latest
+is still written, but the group is flagged in ``notes.jsonl`` and the run exits
+non-zero so a human reviews it. When a ``verify`` run's
 ``suspects.jsonl`` is present, every hard suspect is excluded from the import list
 first. Constant memory: records stream through ``verify``'s external sort and only
 one ``(catalog, epoch)`` group is held at a time. Output bytes are deterministic.
@@ -36,8 +38,8 @@ SCHEMA_VERSION = "1"
 @dataclasses.dataclass(slots=True, frozen=True)
 class Group:
     """One collapsed ``(catalog, epoch)`` group: the ``kept`` card (latest
-    re-issue), the ``dropped`` duplicates, and whether the group held more than
-    one distinct orbital state (a genuine contradiction, kept-but-flagged)."""
+    re-issue), the ``dropped`` duplicates, and whether the group holds a genuine
+    same-element-set clash (one element-set, two orbits — kept-but-flagged)."""
 
     kept: CleanedRecord
     dropped: list[CleanedRecord]
@@ -53,16 +55,16 @@ def _elset_or_min(line1: str) -> int:
 
 def _collapse(group: list[CleanedRecord]) -> Group:
     """Keep the highest element-set (ties broken by source position for a
-    deterministic pick); the rest are dropped. ``conflict`` iff the group carries
-    more than one distinct parsed orbital state — same object and instant, yet a
-    different orbit. On a wrap (9999 -> 0001) the orbit is identical, so keeping
-    the numerically-highest is still safe."""
+    deterministic pick); the rest are dropped. ``conflict`` iff the group holds a
+    genuine same-epoch clash — one element-set naming two orbits — using verify's
+    shared #158 predicate, so a *different* element-set with a refined orbit stays
+    a benign re-issue rather than a false contradiction (#164). On a wrap
+    (9999 -> 0001) the orbit is identical, so keeping the highest is still safe."""
     kept = max(group, key=lambda r: (_elset_or_min(r.line1), r.src_file, r.index))
     dropped = sorted(
         (r for r in group if r is not kept), key=lambda r: (r.src_file, r.index)
     )
-    states = {checks.orbital_state(r.line1, r.line2) for r in group}
-    return Group(kept, dropped, len(states) > 1)
+    return Group(kept, dropped, checks.has_epoch_clash(group))
 
 
 def _groups(sorted_records: Iterator[CleanedRecord]) -> Iterator[Group]:

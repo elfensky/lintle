@@ -81,7 +81,8 @@ def rec(line1=L1, line2=L2, src="tle01", idx=0) -> CleanedRecord:
 
 class TestCollapse:
     """The pure per-group collapse: kept = highest element-set, dropped = rest,
-    conflict = more than one distinct orbital state."""
+    conflict = one element-set naming more than one orbital state (verify's #158
+    rule — a new element-set with a different orbit is a benign re-issue, #164)."""
 
     def test_singleton_keeps_the_record_no_conflict(self):
         g = dedup._collapse([rec()])
@@ -99,12 +100,22 @@ class TestCollapse:
         g = dedup._collapse([base, bumped])
         assert g.conflict is False and len(g.dropped) == 1
 
-    def test_different_orbit_is_a_conflict(self):
-        base = rec(line1=with_elset(L1, 100), idx=0)
+    def test_same_elset_different_orbit_is_a_conflict(self):
+        # one element-set naming two orbits -> a genuine same-epoch clash (#158)
+        base = rec(line1=with_elset(L1, 200), line2=L2, idx=0)
         other = rec(line1=with_elset(L1, 200), line2=mutated_l2(), idx=1)
         g = dedup._collapse([base, other])
         assert g.conflict is True
-        assert g.kept is other  # latest kept even in a conflict
+        assert g.kept is other  # element-set tie -> latest source position kept
+
+    def test_refined_reissue_different_orbit_is_benign(self):
+        # a NEW element-set with a refined orbit is a benign re-issue, not a clash
+        # (#164: dedup must not flag what verify's #158 counts as a census re-issue)
+        base = rec(line1=with_elset(L1, 100), line2=L2, idx=0)
+        refined = rec(line1=with_elset(L1, 200), line2=mutated_l2(), idx=1)
+        g = dedup._collapse([base, refined])
+        assert g.conflict is False
+        assert g.kept is refined  # highest element-set still wins
 
 
 class TestEndToEnd:
@@ -138,7 +149,8 @@ class TestEndToEnd:
 
     def test_genuine_conflict_kept_latest_and_flagged(self, tmp_path):
         out = tmp_path / "output"
-        pairs = [(with_elset(L1, 100), L2), (with_elset(L1, 200), mutated_l2())]
+        # SAME element-set, two orbits -> a real contradiction (#158)
+        pairs = [(with_elset(L1, 200), L2), (with_elset(L1, 200), mutated_l2())]
         out_dir = build_tree(tmp_path, pairs)
         # a real contradiction -> exit 1 (review), but still emit a kept record
         assert dedup.run_dedup(out_dir) == 1
@@ -146,6 +158,18 @@ class TestEndToEnd:
         notes = read_notes(out)
         assert len(notes) == 1 and notes[0]["conflict"] is True
         assert read_summary(out)["conflicts_flagged"] == 1
+
+    def test_refined_reissue_collapses_end_to_end(self, tmp_path):
+        # #164: a new element-set carrying a refined orbit collapses benignly
+        # (exit 0), never flagged as a contradiction — matches verify's census.
+        out = tmp_path / "output"
+        pairs = [(with_elset(L1, 100), L2), (with_elset(L1, 200), mutated_l2())]
+        out_dir = build_tree(tmp_path, pairs)
+        assert dedup.run_dedup(out_dir) == 0
+        assert read_import(out) == f"{with_elset(L1, 200)}\n{mutated_l2()}\n"
+        notes = read_notes(out)
+        assert len(notes) == 1 and notes[0]["conflict"] is False
+        assert read_summary(out)["conflicts_flagged"] == 0
 
     def test_hard_suspects_excluded(self, tmp_path):
         out = tmp_path / "output"

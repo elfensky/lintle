@@ -34,6 +34,17 @@ All notable changes to this project are documented in this file. The format is b
   shared with the list renderers and the k-way merge reproduces their exact
   stable sort order (locked by a byte-equivalence test).
 
+### Fixed
+
+- `dedup` no longer flags a *refined re-issue* (a new element-set carrying a
+  different orbit at the same epoch) as a "genuine contradiction". It now shares
+  `verify`'s #158 predicate — a contradiction is one element-set naming more than
+  one orbit — so the two passes agree on what a same-epoch clash is (issue #164).
+  Previously `dedup` used a broader group-level "more than one distinct orbital
+  state" test: on the full corpus that reported 364,149 contradictions (exit 1)
+  where `verify` found 5. Benign re-issues still collapse to the latest; only a
+  true same-element-set clash is flagged and exits non-zero.
+
 ## [0.7.0] - 2026-07-11
 
 ### Added
