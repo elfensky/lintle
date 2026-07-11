@@ -29,6 +29,7 @@ classifiers = [
 dependencies = [
     "humanize>=4,<5",
     "rich>=15,<16",
+    "sgp4>=2.25,<3",
 ]
 
 [project.urls]
@@ -47,7 +48,6 @@ dev = [
     "pytest-cov>=7.1,<8",
     "pytest-xdist>=3,<4",
     "ruff>=0.15,<0.16",
-    "sgp4>=2.25,<3",
 ]
 
 [build-system]

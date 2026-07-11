@@ -28,10 +28,17 @@ class VrfyRule(StrEnum):
     EPOCH_CONFLICT = "VRFY-EPOCH-CONFLICT"  # same (catalog, epoch), different bytes
     INTERIOR_MUT = "VRFY-INTERIOR-MUT"  # cleaned differs from source off the edges
     ORIGIN_MISSING = "VRFY-ORIGIN-MISSING"  # no source origin found in the window
+    ORBIT_ERROR = "VRFY-ORBIT-ERROR"  # sgp4 rejects the element set as unphysical
+    ORBIT_OUTLIER = "VRFY-ORBIT-OUTLIER"  # residual outlier vs neighbours (soft)
 
 
 _HARD = frozenset(
-    {VrfyRule.REVALIDATE_FAIL, VrfyRule.EPOCH_CONFLICT, VrfyRule.INTERIOR_MUT}
+    {
+        VrfyRule.REVALIDATE_FAIL,
+        VrfyRule.EPOCH_CONFLICT,
+        VrfyRule.INTERIOR_MUT,
+        VrfyRule.ORBIT_ERROR,
+    }
 )
 
 
