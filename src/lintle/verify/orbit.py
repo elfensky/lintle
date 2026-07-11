@@ -27,7 +27,7 @@ from sgp4.api import Satrec
 
 from lintle.verify import grouping, records
 from lintle.verify.records import CleanedRecord
-from lintle.verify.report import Suspect, VrfyRule
+from lintle.verify.report import Suspect, SuspectSink, VrfyRule
 
 GAP_LIMIT_DAYS = 3.0  # skip pairs wider than this: sgp4 residual grows with the gap
 RESIDUAL_FLOOR_KM = 100.0  # a lone residual under this is never an outlier
@@ -132,16 +132,18 @@ def run_orbit_pass(
     out_dir: str,
     stems: list[str],
     population: set[int],
+    sink: SuspectSink,
     *,
     sample: int | None,
     all_sats: bool,
-) -> tuple[list[Suspect], dict]:
+) -> dict:
     """The sampled orbit-consistency pass. Streams the sampled satellites' cleaned
     records through the external sort, then per epoch-sorted track flags hard
-    ``sgp4`` element errors and soft residual outliers. Returns ``(suspects,
-    census)``. Constant memory w.r.t. the corpus (one satellite's track at a time).
-    ponytail: re-reads ``cleaned/`` to gather the sample — a single-pass sampling
-    optimisation is a follow-up (issue #144)."""
+    ``sgp4`` element errors and soft residual outliers into ``sink`` (which spills
+    to disk, so a corpus's worth of outliers never accumulates in RAM — #156).
+    Returns the census. Constant memory w.r.t. the corpus (one satellite's track
+    at a time). ponytail: re-reads ``cleaned/`` to gather the sample — a
+    single-pass sampling optimisation is a follow-up (issue #144)."""
     sampled = sample_catalogs(population, sample, all_sats)
     sorter = grouping.ExternalSorter()
     for stem in stems:
@@ -149,7 +151,6 @@ def run_orbit_pass(
             if rec.catalog in sampled:
                 sorter.add(rec)
 
-    suspects: list[Suspect] = []
     n_pairs = n_tracks = 0
     track: list[CleanedRecord] = []
     current: int | None = None
@@ -157,7 +158,7 @@ def run_orbit_pass(
         if rec.catalog != current:
             if track:
                 found, pairs = _track_suspects(track)
-                suspects.extend(found)
+                sink.add_all(found)
                 n_pairs += pairs
                 n_tracks += 1
             current = rec.catalog
@@ -165,14 +166,13 @@ def run_orbit_pass(
         track.append(rec)
     if track:
         found, pairs = _track_suspects(track)
-        suspects.extend(found)
+        sink.add_all(found)
         n_pairs += pairs
         n_tracks += 1
 
-    census = {
+    return {
         "orbit_population": len(population),
         "orbit_sampled": len(sampled),
         "orbit_satellites_checked": n_tracks,
         "orbit_pairs_measured": n_pairs,
     }
-    return suspects, census
