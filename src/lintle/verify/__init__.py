@@ -3,8 +3,9 @@
 Runs the exhaustive, sgp4-free checks (Increment 1): every cleaned record still
 validates (goal 3), no ``(catalog, epoch)`` contradictions (goal 3), and — when
 the original source is available — every cleaned line is a *sanctioned* edit of a
-real source line, never an interior mutation (goal 1). Physics-based orbit
-consistency (goal 2) is a later increment; this module never imports ``sgp4``.
+real source line, never an interior mutation (goal 1). The opt-in ``--orbit`` pass
+(Increment 2, goal 2) adds sampled ``sgp4`` orbit-consistency, lazily imported
+from ``orbit.py`` so the default checks stay ``sgp4``-free.
 
 The verifier is a pure *consumer*: it reads ``<out-dir>/cleaned`` and the source
 tree, and writes only under ``<out-dir>/verify``. It reuses ``tle.py`` for every
@@ -17,11 +18,19 @@ from lintle.verify import checks, grouping, records
 from lintle.verify.report import exit_code, write_reports
 
 
-def run_verify(out_dir: str, source_dir: str | None) -> int:
+def run_verify(
+    out_dir: str,
+    source_dir: str | None,
+    *,
+    orbit: bool = False,
+    sample: int | None = None,
+    all_sats: bool = False,
+) -> int:
     """Verify a clean run's ``<out-dir>`` output. ``source_dir`` enables the
-    goal-1 byte-diff (skipped, with a note, when ``None``). Returns the process
-    exit code: 0 clean, 1 hard suspects found, 2 operational error (no cleaned
-    output)."""
+    goal-1 byte-diff (skipped, with a note, when ``None``). ``orbit`` runs the
+    opt-in sampled sgp4 orbit-consistency pass (goal 2) over ``sample`` satellites
+    (``all_sats`` for the full sweep). Returns the process exit code: 0 clean, 1
+    hard suspects found, 2 operational error (no cleaned output)."""
     stems = records.cleaned_stems(out_dir)
     if not stems:
         term.error(
@@ -32,6 +41,7 @@ def run_verify(out_dir: str, source_dir: str | None) -> int:
 
     suspects = []
     sorter = grouping.ExternalSorter()
+    population: set[int] = set()  # distinct catalogs, for the orbit sample
     n_records = 0
     missing_source = 0
 
@@ -51,6 +61,8 @@ def run_verify(out_dir: str, source_dir: str | None) -> int:
                     suspects.append(bad)
                     continue  # keys untrustworthy — don't sort or byte-diff it
                 sorter.add(rec)
+                if orbit and rec.catalog != -1:
+                    population.add(rec.catalog)
                 if aligner is not None:
                     mutated = aligner.check(rec)
                     if mutated is not None:
@@ -71,6 +83,17 @@ def run_verify(out_dir: str, source_dir: str | None) -> int:
         "missing_source_files": missing_source,
         "epoch_reissues": epoch_reissues,
     }
+
+    if orbit:
+        # Lazy import keeps the default (non-orbit) verify path sgp4-free.
+        from lintle.verify import orbit as orbit_pass
+
+        orbit_suspects, orbit_census = orbit_pass.run_orbit_pass(
+            out_dir, stems, population, sample=sample, all_sats=all_sats
+        )
+        suspects.extend(orbit_suspects)
+        checked.update(orbit_census)
+
     vdir = write_reports(out_dir, suspects, checked=checked)
 
     code = exit_code(suspects)
