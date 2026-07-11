@@ -41,8 +41,10 @@ wrong, not merely suboptimal.
    once. A 3.2 GB file must never be loaded whole, and no per-file structure grows with record
    count.
 4. **One validator definition.** "Perfect" is defined once, in `tle.py`. There is never a
-   second, divergent validation path — which is precisely why `sgp4` is a dev-only test oracle
-   and must never be imported at runtime.
+   second, divergent validation path — which is precisely why `sgp4` (a *permissive* parser) is
+   walled out of the clean/validate/repair path. `sgp4` is a physics engine used only by `lintle
+   verify` to measure orbit *consistency*, never a validity authority; an import-graph test
+   enforces the wall.
 
 ---
 
@@ -67,10 +69,19 @@ cli.py ──▶ pipeline.py ──▶ repair.py ──▶ tle.py
   ├──▶ diff.py          (read-only consumer of report.jsonl)
   ├──▶ explain.py ──▶ explain_examples.py
   ├──▶ summary.py       (aggregate-panel renderer + read-only `lintle report` over report.json; → term)
-  └──▶ term.py          (stderr+stdout rich Consoles + error/warning/note/prompt + is_interactive/prompt_yes_no)
+  ├──▶ term.py          (stderr+stdout rich Consoles + error/warning/note/prompt + is_interactive/prompt_yes_no)
+  ├──▶ verify/          (read-only `lintle verify` auditor — own package; → tle, term; never in the clean path)
+  ├──▶ dedup.py ──▶ verify/  (read-only `lintle dedup` — latest-re-issue import list; → verify.{checks,grouping,records}, term)
+  └──▶ wizard.py ──▶ config.py   (no-subcommand TTY menu; cli↔wizard edge lazy on both sides)
+
+verify/   (lintle verify — the sgp4-free Increment-1 core; cli ──▶ verify, never the reverse)
+  __init__.py (run_verify) ──▶ checks.py ──▶ tle.py
+                          ├──▶ grouping.py ──▶ records.py ──▶ epoch.py
+                          └──▶ report.py          (checks ──▶ records, report; records ──▶ __init__ naming constants; __init__ ──▶ term)
 
 fsutil.py    stdlib-only I/O leaf — durable_replace + out_dir_lock
 diagnostics.py, categories.py, explain_examples.py    pure-data leaves (no I/O)
+config.py    stdlib-JSON leaf — ./.lintle.json load/save (no internal deps)
 ```
 
 | Module | Owns |
@@ -97,9 +108,27 @@ diagnostics.py, categories.py, explain_examples.py    pure-data leaves (no I/O)
 | `term.py` | Two shared `rich` Consoles — `stderr_console` for status/errors, `stdout_console` for the `report` result view — the `error:` / `warning:` / `note` / `prompt` emitters, and the `is_interactive` / `prompt_yes_no` stdin helpers. |
 | `cli.py` | argparse, globbing, and top-level `clean` orchestration: delegates preflight to `run_planning`, dispatch to `worker_pool`, signal/shutdown to `process_control`, the quality-gate exit policy to `thresholds`, run finalization to `output_artifacts`, and the aggregate panel / `report` render to `summary`; owns the resulting process exit code. |
 | `cli_progress.py` | Rich presentation leaf for `clean`: the live `ProgressDisplay`, the pre-run `render_roster`, and the `status` spinner. Consumes `pipeline`'s typed progress messages. Imports `humanize` for human-readable roster sizes (`naturalsize(gnu=True)`). |
+| `verify/` | The `lintle verify` post-run auditor (own package): `epoch` (epoch-key parsing), `records` (the `CleanedRecord` dataclass + cleaned-tree readers), `grouping` (the spill-to-disk `ExternalSorter` for the constant-memory contradiction pass), `checks` (`revalidate` / `find_conflicts` / the `SourceAligner` byte-diff), `report` (`VrfyRule`, `Suspect`, the `suspects.jsonl` + `summary.{json,md}` writers, `exit_code`), and `__init__.run_verify` (orchestration). A pure *consumer* of `tle` (its sole validity authority) and `term`; the physics increment is the only planned `sgp4` importer. |
+| `dedup.py` | The `lintle dedup` pass: reads `cleaned/` (never mutating it), excludes hard suspects from a prior `verify` run's `suspects.jsonl`, groups by `(catalog, epoch)` through `verify`'s `ExternalSorter`, and writes `<out-dir>/dedup/{import.txt,notes.jsonl,summary.json}` — one card per group, the latest re-issue kept, benign re-issues collapsed and genuine orbit contradictions kept-latest-but-flagged. Reuses `verify.checks.orbital_state`/`element_set` (one definition of "same orbit" / "latest"). Constant memory; deterministic bytes. |
+| `config.py` | Optional `./.lintle.json` project config: stdlib-JSON `load`/`save` of the two remembered keys (`source`, `output`). Never an authority over an explicit CLI arg. No internal deps. |
+| `wizard.py` | The interactive rich menu shown when `lintle` runs with no subcommand on a TTY (configure / clean / verify / report / quit). A thin front-end that builds an argv and calls `cli.main`, reimplementing no orchestration; imports `config` + `term`. |
 
 `tle.py` and the data leaves carry no I/O. `report_writers.py` depends on `report.py` (never
 the reverse), so the structured writers and the renderers stay acyclic.
+
+**`verify/` and the wizard stay acyclic too.** The `verify/` package flows one way —
+`__init__ ──▶ {checks, grouping, records, report}`, `checks ──▶ tle` + `records` + `report`,
+`grouping ──▶ records ──▶ epoch`, with `records` reaching back only to `__init__`'s
+output-naming constants — and `cli ──▶ verify`, never the reverse. The clean/validate/repair
+path (`pipeline`, `repair`, `tle`, `cli`'s clean path) never imports `lintle.verify` or
+`sgp4`, so the auditor can never become a second validity definition; an import-graph test
+enforces the wall (see §7). `dedup.py` is a second read-only consumer of the same package —
+`cli ──▶ dedup ──▶ verify.{checks, grouping, records}` (+ `term`), one-way, and equally barred
+from the clean path — so it reuses `verify`'s one definition of "same orbit" / "latest re-issue"
+rather than spawning a divergent second one. The `cli ↔ wizard` cycle — `cli` launches the menu,
+the menu re-enters `cli.main` — is broken by a lazy import on *both* sides (`cli` imports
+`wizard` only inside the no-subcommand TTY branch; `wizard` imports `cli` only inside its
+dispatch), so `wizard ──▶ config`/`term` are the only module-load-time edges.
 
 **Output-naming constants.** `CLEANED_SUFFIX`, `BROKEN_SUFFIX`, `FINDINGS_SUFFIX`,
 `CLEANED_DIRNAME`, `BROKEN_DIRNAME`, and `SHARDS_DIRNAME` live in `lintle/__init__.py` —
@@ -605,8 +634,10 @@ The runtime is lean by policy, not dogma. The current runtime dependencies are *
 durations and sizes in the human display — `precisedelta` for the panel duration, `naturalsize`
 for the roster sizes). `humanize` is confined to the human stderr/stdout display and never
 touches structured or byte-deterministic output (`report.*`, the `.broken.txt` sidecar, the
-checkpoint, `cleaned/*`, the `--report json` envelope, `broken-noradids.ndjson`). `sgp4` and
-`pytest` are dev-only; `sgp4` is a test oracle and must never be imported at runtime.
+checkpoint, `cleaned/*`, the `--report json` envelope, `broken-noradids.ndjson`). `pytest` is
+dev-only. `sgp4` is the test oracle **and** the physics engine for `lintle verify`; it is never
+imported by the clean/validate/repair path (the hard invariant below), and is being promoted
+from dev-only to a verify-scoped runtime dependency with the `verify` physics pass.
 
 **The bar is relaxed.** A third-party runtime dependency may be added when it advances the aim
 of a stable, maintainable, easy-to-understand app — i.e. when it is **popular, actively
@@ -624,9 +655,11 @@ necessary conditions and none is a veto:
 **Hard correctness invariants (the only vetoes — immovable however popular a library is).** A
 dependency is rejected if it would:
 
-- form a **second validation path** (principle #4 — why `sgp4` is dev-only);
+- form a **second validation path** (principle #4 — why `sgp4` is walled out of the clean path);
 - **load a file whole** or make any per-file structure grow with record count (principle #3);
-- import **`sgp4` or another orbital parser at runtime**;
+- import **`sgp4` or another orbital parser into the clean/validate/repair path** — `sgp4` is
+  permitted only inside `lintle verify`, as a consistency *measurer*, never a validity authority;
+  the clean path is barred from importing it or `lintle.verify` by an import-graph test;
 - make any **structured/machine-readable output or stdout-pipeable data non-byte-deterministic
   or styled** — `report.md`, `report.json`, `report.jsonl`, `broken-noradids.ndjson`, the
   `.broken.txt` sidecar, the `--report json` envelope, the `.clean-state.json` checkpoint, and
@@ -656,7 +689,7 @@ judgement under the relaxed bar that can be revisited.
 
 | Tool | Disposition | Reason |
 |---|---|---|
-| TLE/orbital libs (`sgp4`, `Skyfield`, `tletools`, `astropy`) | Reject (hard invariant) | A parser/validator would be a second validation path (#4); `sgp4` is fine as a dev-only test oracle. |
+| TLE/orbital libs (`sgp4`, `Skyfield`, `tletools`, `astropy`) | Reject in the clean path (hard invariant) | A parser/validator in the clean path would be a second validation path (#4). `sgp4` is permitted only inside `lintle verify` (consistency metrics, never validity) and as the test oracle; other orbital libs stay out. |
 | `pydantic` | Reject (hard invariant) | Second coercion/validation path (#4); would drift byte-deterministic outputs (#1/#2); `pydantic-core` native at scale. |
 | `orjson` / `ujson` / `msgspec` | Reject (hard invariant) | Changes on-disk bytes (`sort_keys`, separators, `ensure_ascii=False`, LF) the diff contract + resume round-trip assert. |
 | `tabulate` | Reject (hard invariant) | `report.md` is asserted byte-for-byte; padding rules rewrite every byte. |
@@ -677,7 +710,8 @@ judgement under the relaxed bar that can be revisited.
 | **`humanize`** | **Adopted (2026-06-07)** | Human-display durations (`precisedelta`) and roster sizes (`naturalsize(gnu=True)`); pure-Python, zero transitive deps; confined to `summary.py` and `cli_progress.py` — stderr/stdout panel only, never structured output. A 2026-06-07 re-audit re-confirmed all other candidates as rejected or deferred for the reasons already tabled. |
 | `zstandard` | Defer (trigger-gated) | Only on a *measured* output-size / transfer bottleneck; until then stdlib `gzip`. |
 
-Dev-only (exempt; record purpose if nontrivial): `sgp4` (test oracle), `pytest`, `pytest-cov`,
+Dev-only (exempt; record purpose if nontrivial): `sgp4` (test oracle; being promoted to a
+verify-scoped runtime dependency with the `verify` physics pass), `pytest`, `pytest-cov`,
 `ruff`, `hypothesis` (property-based validator/repair tests), `pytest-xdist` (parallel suite —
 default run is `pytest -n auto`).
 

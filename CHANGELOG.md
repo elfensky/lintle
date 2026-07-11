@@ -6,6 +6,49 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-07-11
+
+### Added
+
+- `lintle dedup` — emit a de-duplicated "latest re-issue only" import list from a
+  clean run's cleaned output. Space-track republishes the same orbit at the same
+  epoch with only a bumped element-set (or revolution) number; the faithful
+  `cleaned/` archive keeps every copy, so `dedup` writes a separate
+  `<out-dir>/dedup/import.txt` with one card per `(catalog, epoch)`, keeping the
+  latest re-issue (highest element-set number). Benign re-issues — identical
+  parsed orbital state — collapse silently; a genuine same-epoch orbit
+  contradiction is kept-latest **and** flagged in `notes.jsonl` (exit 1), never
+  resolved in silence. When a `verify` run's `suspects.jsonl` is present, hard
+  suspects are excluded from the import list first. `cleaned/` is never modified;
+  constant memory (records stream through the same external sort as `verify`,
+  one `(catalog, epoch)` group held at a time); byte-deterministic output. Shares
+  `verify`'s `orbital_state` / `element_set` so both agree on "same orbit" and
+  "which is latest".
+- `lintle verify` — post-run correctness auditing of a clean run's output
+  (Increment 1, `sgp4`-free): re-validates every cleaned record against the one
+  validator, flags any `(catalog, epoch, element-set)` contradiction — two
+  records that share a satellite, epoch, *and* element-set number yet carry a
+  different orbital state — and, when the source tree is available, confirms
+  every cleaned line is a *sanctioned* edit of a real source line (no interior
+  mutation) via a bounded-window source alignment. The contradiction check
+  compares parsed orbital *values*, not raw bytes, so the many valid ASCII
+  encodings space-track emits for one number never false-positive; benign
+  same-epoch re-issues (a new element-set number) are counted in a summary
+  census rather than flagged. Writes a deterministic suspects report under
+  `<out-dir>/verify`; exit 1 on any hard suspect. Constant-memory: the
+  group-by-satellite pass uses an external merge sort that spills to disk. The
+  clean/validate/repair path is barred from importing `lintle.verify` (or
+  `sgp4`) by an import-graph test.
+- Interactive wizard: running `lintle` with no subcommand on a TTY opens a rich
+  menu to configure paths and start a clean / verify / report. The chosen source
+  and output directories are remembered in a project-local `./.lintle.json`
+  (`lintle.config`, stdlib JSON), so `lintle clean` / `verify` / `report` run
+  without repeating paths — precedence is always explicit CLI arg > stored
+  config > built-in default, and stored paths are re-checked (and re-prompted)
+  when they no longer exist. Off a TTY (scripts, CI, pipes) a bare `lintle`
+  keeps the old behaviour: it prints help and exits 2, never blocking on a
+  prompt.
+
 ## [0.6.0] - 2026-07-04
 
 ### Added

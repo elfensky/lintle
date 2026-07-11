@@ -15,6 +15,10 @@
 # baseline lie). See tests/test_pipeline_throughput.py for the write/read flow.
 /tests/.throughput_baseline.json
 
+# Per-project wizard config: remembered source/output dirs (config.py / wizard.py).
+# User-local paths, not shared — must never be committed.
+/.lintle.json
+
 # macOS
 .DS_Store
 

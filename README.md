@@ -58,6 +58,12 @@ The console script is `lintle` (`python -m lintle …` is equivalent):
 # Produce cleaned output + quarantine sidecars
 uv run lintle clean [path]
 
+# Audit a clean run's output for corruption and contradictions
+uv run lintle verify [out-dir] --source [src-dir]
+
+# Emit a de-duplicated "latest re-issue only" import list
+uv run lintle dedup [out-dir]
+
 # Re-render a prior clean run's aggregate summary from its report.json
 uv run lintle report [out-dir]
 
@@ -114,6 +120,73 @@ Repairable defects (including the near-universal trailing `\`) do **not** raise 
 code above 0 — almost every raw file contains them. `--max-quarantined` preserves the
 meaningful `2` (operational error) and `130` (Ctrl-C) signals that a `lintle … || true`
 pipe would swallow.
+
+### Auditing a clean run — `lintle verify`
+
+`clean` promises byte-faithful, always-valid output; `verify` is the independent second
+opinion that checks the promise held. It reads a finished run's `<out-dir>/cleaned/` (never
+mutating it) and runs three sgp4-free checks:
+
+- **re-validate** — every cleaned record must still pass the one validator (`tle.py`);
+- **contradiction** — no two records may share a `(catalog, epoch)` *and* an element-set
+  number yet carry a different orbital state (benign same-epoch re-issues, which carry a new
+  element-set number, are counted in a census, not flagged);
+- **source byte-diff** — with `--source`, every cleaned line must be a *sanctioned* edge
+  edit of a real source line; any interior-column change is corruption.
+
+```bash
+# Audit the default run against its source
+uv run lintle verify data/output --source data/source
+
+# Structural checks only (re-validate + contradiction), no source needed
+uv run lintle verify data/output --no-source-diff
+```
+
+| Option | Default | Meaning |
+|--------|---------|---------|
+| `out-dir` | stored config, else `data/output` | The finished clean run to audit (reads `<out-dir>/cleaned/`). |
+| `--source DIR` | stored config, else `data/source` | Original source tree for the byte-diff (goal 1). |
+| `--no-source-diff` | off | Skip the byte-diff; re-validate and check contradictions only. |
+
+The suspects report is written under `<out-dir>/verify/` (`suspects.jsonl` +
+`summary.{json,md}`). Exit codes: **`0`** clean, **`1`** at least one hard suspect
+(a re-validation failure, an element-set contradiction, or an interior mutation), **`2`**
+operational error (no cleaned output to audit).
+
+### A "latest only" import list — `lintle dedup`
+
+The `cleaned/` archive faithfully keeps every published record — including the near-identical
+re-issues space-track emits for the *same* satellite at the *same* epoch (same orbit, just a
+bumped element-set or revolution number). A consumer that wants "the orbit for satellite X at
+time T" then has to pick one. `lintle dedup` produces that pick as a **separate** artifact —
+`cleaned/` is never touched:
+
+- one card per `(catalog, epoch)`, keeping the **latest re-issue** (highest element-set number);
+- benign re-issues (identical orbital state) collapse silently;
+- a **genuine** contradiction (same satellite + epoch, a *different* orbit) is kept-latest
+  **and flagged** — never resolved in silence;
+- if a `verify` run's `suspects.jsonl` exists, **hard suspects are excluded** from the list first.
+
+```bash
+# De-duplicate the default run -> data/output/dedup/import.txt
+uv run lintle dedup data/output
+```
+
+Writes `<out-dir>/dedup/`: `import.txt` (the ingest list, sorted by `(catalog, epoch)`),
+`notes.jsonl` (one entry per collapsed group — kept vs dropped), and `summary.json` (counts).
+This realises the output tiering **`source/` → `cleaned/` (immutable archive) → `import.txt`
+(verified + deduped, ready to ingest)**. Exit codes: **`0`** clean, **`1`** a genuine
+contradiction was arbitrated (review `notes.jsonl`), **`2`** no cleaned output.
+
+### Interactive wizard & remembered paths — `.lintle.json`
+
+Run `lintle` with **no subcommand** on a terminal and it opens a small menu — configure,
+clean, verify, report, quit — instead of printing help. The source and output directories you
+pick are remembered in a project-local **`./.lintle.json`** so the everyday commands run
+without repeating paths. Precedence is always **explicit CLI arg → stored config →
+built-in default**, and a stored path that has since vanished is re-prompted. Off a TTY
+(scripts, CI, pipes) a bare `lintle` keeps the old behaviour — prints help and exits `2` — so
+nothing that pipes `lintle` ever blocks on a prompt.
 
 ## Correctness guarantees & limits
 
