@@ -6,6 +6,8 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-07-15
+
 ### Added
 
 - `lintle verify --orbit` — the opt-in sampled `sgp4` orbit-consistency pass
