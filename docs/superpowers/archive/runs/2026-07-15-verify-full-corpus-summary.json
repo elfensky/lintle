@@ -1,0 +1,16 @@
+{
+  "checked": {
+    "epoch_reissues": 369700,
+    "files": 29,
+    "missing_source_files": 0,
+    "records": 232281894,
+    "source_diff": "on"
+  },
+  "counts": {
+    "VRFY-EPOCH-CONFLICT": 5
+  },
+  "exit_code": 1,
+  "hard": 5,
+  "schema_version": "1",
+  "soft": 0
+}
