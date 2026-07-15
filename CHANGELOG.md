@@ -6,6 +6,47 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-07-15
+
+### Added
+
+- `lintle verify --orbit` — the opt-in sampled `sgp4` orbit-consistency pass
+  (Increment 2, goal 2). For each sampled satellite's epoch-sorted track it
+  propagates every cleaned TLE forward to its neighbour's epoch with `sgp4` and
+  flags position-residual outliers over a robust per-satellite threshold
+  (`max(100 km, median + 10·MAD)`). An outlier is **soft/inconclusive**
+  (`VRFY-ORBIT-OUTLIER`) — a real manoeuvre is indistinguishable from a
+  corruption over a single pair, so it never fails the run; only `sgp4` rejecting
+  an element set as physically unphysical is hard (`VRFY-ORBIT-ERROR`, ~never on
+  cleaned data). Residuals are rounded to a 0.1 km quantum before thresholding so
+  the suspect set and exit code are byte-reproducible across platforms (locked by
+  a golden fixture). Sampling is by satellite, deterministic, default
+  `--sample 3000` / `--all`. Constant memory (streams through the same external
+  sort as the contradiction pass, one track at a time). Promotes `sgp4` from a
+  dev-only test oracle to a verify-scoped runtime dependency; the
+  clean/validate/repair path stays walled off from it (import-graph test).
+
+### Changed
+
+- `verify` now streams its suspects to disk through an external merge-sort
+  (`SuspectSink`) instead of accumulating them in a list, so peak memory is one
+  chunk regardless of how many suspects are found — the last part of the verify
+  path whose footprint scaled with the finding count (issue #156). A run's
+  `suspects.jsonl` / `summary.{json,md}` bytes are unchanged: the serialization is
+  shared with the list renderers and the k-way merge reproduces their exact
+  stable sort order (locked by a byte-equivalence test).
+
+### Fixed
+
+- `dedup` no longer flags a *refined re-issue* (a new element-set carrying a
+  different orbit at the same epoch) as a "genuine contradiction". It now shares
+  `verify`'s #158 predicate — a contradiction is one element-set naming more than
+  one orbit — so the two passes agree on what a same-epoch clash is (issue #164).
+  Previously `dedup` used a broader group-level "more than one distinct orbital
+  state" test: on the full corpus that reported 364,149 contradictions (exit 1)
+  where `verify` found 5. Benign re-issues still collapse to the latest; only a
+  true same-element-set clash is flagged and exits non-zero.
+
 ## [0.7.0] - 2026-07-11
 
 ### Added

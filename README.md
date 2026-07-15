@@ -134,12 +134,21 @@ mutating it) and runs three sgp4-free checks:
 - **source byte-diff** — with `--source`, every cleaned line must be a *sanctioned* edge
   edit of a real source line; any interior-column change is corruption.
 
+It can also run an opt-in **`--orbit`** physics pass (goal 2): for a sample of satellites it
+propagates each cleaned TLE forward to its neighbour's epoch with `sgp4` and flags
+position-residual outliers across the track. An outlier is **inconclusive** (soft) — a real
+manoeuvre and a corruption look alike from one pair — so it never fails the run; only `sgp4`
+rejecting an element set as physically impossible is hard (and ~never happens on cleaned data).
+
 ```bash
 # Audit the default run against its source
 uv run lintle verify data/output --source data/source
 
 # Structural checks only (re-validate + contradiction), no source needed
 uv run lintle verify data/output --no-source-diff
+
+# Add the sampled sgp4 orbit-consistency pass (3000 satellites by default)
+uv run lintle verify data/output --orbit --all
 ```
 
 | Option | Default | Meaning |
@@ -147,11 +156,15 @@ uv run lintle verify data/output --no-source-diff
 | `out-dir` | stored config, else `data/output` | The finished clean run to audit (reads `<out-dir>/cleaned/`). |
 | `--source DIR` | stored config, else `data/source` | Original source tree for the byte-diff (goal 1). |
 | `--no-source-diff` | off | Skip the byte-diff; re-validate and check contradictions only. |
+| `--orbit` | off | Run the sampled `sgp4` orbit-consistency pass (goal 2). |
+| `--sample N` | `3000` | (`--orbit`) satellites to sample; ignored with `--all`. |
+| `--all` | off | (`--orbit`) check every satellite, not a sample. |
 
 The suspects report is written under `<out-dir>/verify/` (`suspects.jsonl` +
 `summary.{json,md}`). Exit codes: **`0`** clean, **`1`** at least one hard suspect
-(a re-validation failure, an element-set contradiction, or an interior mutation), **`2`**
-operational error (no cleaned output to audit).
+(a re-validation failure, an element-set contradiction, an interior mutation, or an
+`sgp4`-unphysical element set), **`2`** operational error (no cleaned output to audit).
+Orbit-residual outliers are soft (inconclusive) and never raise the exit code.
 
 ### A "latest only" import list — `lintle dedup`
 

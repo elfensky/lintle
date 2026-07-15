@@ -199,6 +199,24 @@ class TestConflicts:
         assert checks.find_conflicts(iter(stream)) == ([], 0)
 
 
+class TestHasEpochClash:
+    """The group-level #158 predicate shared with ``dedup`` — it must agree with
+    ``find_conflicts`` on what a same-epoch clash is (one definition, #164)."""
+
+    def test_same_elset_different_orbit_clashes(self):
+        # same element-set (default L1), different orbit -> a genuine clash
+        assert checks.has_epoch_clash([rec(idx=0), rec(line2=mutated_l2(), idx=1)])
+
+    def test_refined_reissue_is_not_a_clash(self):
+        # a NEW element-set AND a refined orbit -> benign re-issue, not a clash
+        assert not checks.has_epoch_clash(
+            [rec(idx=0), rec(line1=reissued_refined_l1(), idx=1)]
+        )
+
+    def test_identical_records_no_clash(self):
+        assert not checks.has_epoch_clash([rec(idx=0), rec(idx=1)])
+
+
 class TestSourceAligner:
     def test_clean_padded_match(self, tmp_path):
         src = tmp_path / "s.txt"

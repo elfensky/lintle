@@ -318,6 +318,27 @@ def _add_verify_subparser(subparsers):
             "check contradictions"
         ),
     )
+    verify_parser.add_argument(
+        "--orbit",
+        action="store_true",
+        help=(
+            "run the sampled sgp4 orbit-consistency pass (goal 2): flag "
+            "position-residual outliers across each satellite's track"
+        ),
+    )
+    verify_parser.add_argument(
+        "--sample",
+        type=int,
+        default=3000,
+        metavar="N",
+        help="(--orbit) satellites to sample (default: 3000; ignored with --all)",
+    )
+    verify_parser.add_argument(
+        "--all",
+        dest="all_sats",
+        action="store_true",
+        help="(--orbit) check every satellite, not a sample",
+    )
 
 
 def _add_dedup_subparser(subparsers):
@@ -572,7 +593,13 @@ def main(argv=None):
     # and shares none of the `clean` surface, so dispatch it before that logic.
     if args.command == "verify":
         source = None if args.no_source_diff else args.source
-        return verify.run_verify(args.out_dir, source)
+        return verify.run_verify(
+            args.out_dir,
+            source,
+            orbit=args.orbit,
+            sample=args.sample,
+            all_sats=args.all_sats,
+        )
 
     # `dedup` is a read-only consumer of cleaned/ (plus a prior verify run's
     # suspects.jsonl); it writes only <out-dir>/dedup and never touches cleaned/.

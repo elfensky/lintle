@@ -9,7 +9,11 @@ serialize as compact ASCII JSON, so two runs over the same output produce
 identical bytes."""
 
 import dataclasses
+import heapq
 import json
+import tempfile
+from collections import Counter
+from collections.abc import Iterable
 from enum import StrEnum
 from pathlib import Path
 
@@ -28,10 +32,17 @@ class VrfyRule(StrEnum):
     EPOCH_CONFLICT = "VRFY-EPOCH-CONFLICT"  # same (catalog, epoch), different bytes
     INTERIOR_MUT = "VRFY-INTERIOR-MUT"  # cleaned differs from source off the edges
     ORIGIN_MISSING = "VRFY-ORIGIN-MISSING"  # no source origin found in the window
+    ORBIT_ERROR = "VRFY-ORBIT-ERROR"  # sgp4 rejects the element set as unphysical
+    ORBIT_OUTLIER = "VRFY-ORBIT-OUTLIER"  # residual outlier vs neighbours (soft)
 
 
 _HARD = frozenset(
-    {VrfyRule.REVALIDATE_FAIL, VrfyRule.EPOCH_CONFLICT, VrfyRule.INTERIOR_MUT}
+    {
+        VrfyRule.REVALIDATE_FAIL,
+        VrfyRule.EPOCH_CONFLICT,
+        VrfyRule.INTERIOR_MUT,
+        VrfyRule.ORBIT_ERROR,
+    }
 )
 
 
@@ -77,75 +88,170 @@ def _suspect_dict(s: Suspect) -> dict[str, object]:
     }
 
 
+def _suspect_line(s: Suspect) -> str:
+    """One suspect as a compact ASCII JSON object (no newline). The single
+    serialization used by both the list renderer and the streaming sink, so their
+    bytes cannot drift. ``ensure_ascii`` escapes any tab/newline in ``detail``, so
+    the result is always a single tab-free ASCII line — safe to spill tab-framed."""
+    return json.dumps(_suspect_dict(s), ensure_ascii=True, separators=(",", ":"))
+
+
 def render_suspects_jsonl(suspects: list[Suspect]) -> bytes:
     """The ``suspects.jsonl`` body: one compact ASCII JSON object per suspect,
     LF-terminated, sorted by the stable key — byte-identical across runs."""
-    lines = [
-        json.dumps(_suspect_dict(s), ensure_ascii=True, separators=(",", ":"))
-        for s in sorted(suspects, key=_sort_key)
-    ]
+    lines = [_suspect_line(s) for s in sorted(suspects, key=_sort_key)]
     return ("\n".join(lines) + ("\n" if lines else "")).encode("ascii")
 
 
-def _tally(suspects: list[Suspect]) -> dict[str, int]:
-    counts: dict[str, int] = {}
-    for s in sorted(suspects, key=_sort_key):
-        counts[s.rule.value] = counts.get(s.rule.value, 0) + 1
+def _tally(suspects: list[Suspect]) -> Counter[str]:
+    counts: Counter[str] = Counter()
+    counts.update(s.rule.value for s in suspects)
     return counts
 
 
-def render_summary_json(suspects: list[Suspect], *, checked: dict[str, int]) -> bytes:
-    """Machine-readable roll-up: schema version, per-rule counts, hard/soft
-    totals, and the caller-supplied ``checked`` census (records/files/etc.)."""
-    hard = sum(1 for s in suspects if s.severity == "hard")
+def _summary_json_bytes(
+    counts: dict[str, int], hard: int, total: int, *, checked: dict[str, int]
+) -> bytes:
+    """The ``summary.json`` bytes from a per-rule tally and the hard/total counts —
+    ``sort_keys=True`` makes it independent of ``counts`` insertion order, so the
+    list path and the sink's running ``Counter`` render identically."""
     envelope = {
         "schema_version": SCHEMA_VERSION,
         "checked": dict(sorted(checked.items())),
-        "counts": _tally(suspects),
+        "counts": dict(counts),
         "hard": hard,
-        "soft": len(suspects) - hard,
-        "exit_code": exit_code(suspects),
+        "soft": total - hard,
+        "exit_code": 1 if hard else 0,
     }
     return (
         json.dumps(envelope, ensure_ascii=True, indent=2, sort_keys=True) + "\n"
     ).encode("ascii")
 
 
-def render_summary_md(suspects: list[Suspect], *, checked: dict[str, int]) -> str:
-    """A short human summary — the census, then a per-rule table, then the
-    verdict line."""
-    hard = sum(1 for s in suspects if s.severity == "hard")
-    out = ["# lintle verify\n"]
-    out.append("## Checked\n")
+def _summary_md_str(
+    counts: dict[str, int], hard: int, total: int, *, checked: dict[str, int]
+) -> str:
+    """The ``summary.md`` text from a tally + counts. Rules are emitted in
+    ``sorted`` order so the sink's Counter and the list path's tally agree."""
+    out = ["# lintle verify\n", "## Checked\n"]
     for k, v in sorted(checked.items()):
         out.append(f"- {k}: {v}")
     out.append("\n## Findings\n")
-    counts = _tally(suspects)
     if counts:
         out.append("| Rule | Count | Severity |")
         out.append("| --- | --- | --- |")
-        for rule, n in counts.items():
+        for rule, n in sorted(counts.items()):
             sev = "hard" if VrfyRule(rule) in _HARD else "soft"
             out.append(f"| {rule} | {n} | {sev} |")
     else:
         out.append("No suspects — all checks passed.")
     verdict = "FAIL" if hard else "PASS"
-    out.append(f"\n**Verdict: {verdict}** ({hard} hard, {len(suspects) - hard} soft)\n")
+    out.append(f"\n**Verdict: {verdict}** ({hard} hard, {total - hard} soft)\n")
     return "\n".join(out)
 
 
-def write_reports(
-    out_dir: str, suspects: list[Suspect], *, checked: dict[str, int]
-) -> Path:
-    """Write ``<out-dir>/verify/{suspects.jsonl,summary.json,summary.md}`` and
-    return the verify directory. Deterministic bytes; overwrites in place."""
-    vdir = Path(out_dir) / VERIFY_DIRNAME
-    vdir.mkdir(parents=True, exist_ok=True)
-    (vdir / SUSPECTS_NAME).write_bytes(render_suspects_jsonl(suspects))
-    (vdir / SUMMARY_JSON).write_bytes(render_summary_json(suspects, checked=checked))
-    # summary.md is the human-readable file (em-dashes, etc.) — UTF-8, not the
-    # ASCII-deterministic structured pair above.
-    (vdir / SUMMARY_MD).write_text(
-        render_summary_md(suspects, checked=checked), encoding="utf-8"
-    )
-    return vdir
+def render_summary_json(suspects: list[Suspect], *, checked: dict[str, int]) -> bytes:
+    """Machine-readable roll-up: schema version, per-rule counts, hard/soft
+    totals, and the caller-supplied ``checked`` census (records/files/etc.)."""
+    hard = sum(1 for s in suspects if s.severity == "hard")
+    return _summary_json_bytes(_tally(suspects), hard, len(suspects), checked=checked)
+
+
+def render_summary_md(suspects: list[Suspect], *, checked: dict[str, int]) -> str:
+    """A short human summary — the census, then a per-rule table, then the
+    verdict line."""
+    hard = sum(1 for s in suspects if s.severity == "hard")
+    return _summary_md_str(_tally(suspects), hard, len(suspects), checked=checked)
+
+
+def _encode_spill(s: Suspect) -> str:
+    """A suspect as a tab-framed spill row: the five sort-key columns (so a run
+    decodes back to its sort key without re-parsing JSON) then the verbatim
+    ``_suspect_line`` — which carries no raw tab, so the framing round-trips."""
+    rule, catalog, epoch_key, src_file, index = _sort_key(s)
+    prefix = f"{rule}\t{catalog}\t{epoch_key!r}\t{src_file}\t{index}"
+    return f"{prefix}\t{_suspect_line(s)}\n"
+
+
+def _decode_spill(row: str) -> tuple[tuple[str, int, float, str, int], str]:
+    """Inverse of :func:`_encode_spill`: ``(sort_key, suspect_json_line)``."""
+    rule, catalog, epoch_key, src_file, index, line = row.rstrip("\n").split("\t", 5)
+    return (rule, int(catalog), float(epoch_key), src_file, int(index)), line
+
+
+class SuspectSink:
+    """Constant-memory accumulator for verify suspects: an external merge-sort
+    (each full chunk sorted and spilled to a temp file) plus a running tally.
+    ``add`` suspects during the checks, then ``write`` k-way-merges the runs into
+    a globally-sorted ``suspects.jsonl`` and renders ``summary.{json,md}`` from
+    the tally — byte-identical to the list-based renderers, but peak memory is one
+    chunk, not the whole suspect set (issue #156). Mirrors the external sorter in
+    ``grouping``."""
+
+    def __init__(self, chunk_size: int = 200_000) -> None:
+        self._chunk_size = chunk_size
+        self._buf: list[Suspect] = []
+        self._runs: list[Path] = []
+        self._tmpdir = tempfile.TemporaryDirectory(prefix="lintle-verify-suspects-")
+        self.counts: Counter[str] = Counter()
+        self.hard = 0
+        self.total = 0
+
+    def add(self, s: Suspect) -> None:
+        self._buf.append(s)
+        self.counts[s.rule.value] += 1
+        if s.severity == "hard":
+            self.hard += 1
+        self.total += 1
+        if len(self._buf) >= self._chunk_size:
+            self._spill()
+
+    def add_all(self, suspects: Iterable[Suspect]) -> None:
+        for s in suspects:
+            self.add(s)
+
+    @property
+    def exit_code(self) -> int:
+        return 1 if self.hard else 0
+
+    def _spill(self) -> None:
+        self._buf.sort(key=_sort_key)
+        path = Path(self._tmpdir.name) / f"run-{len(self._runs):06d}.tsv"
+        with path.open("w", encoding="ascii") as fh:
+            fh.writelines(_encode_spill(s) for s in self._buf)
+        self._runs.append(path)
+        self._buf = []
+
+    def write(self, out_dir: str, *, checked: dict[str, int]) -> Path:
+        """Write ``<out-dir>/verify/{suspects.jsonl,summary.json,summary.md}`` and
+        return the verify directory. Consumes the sink (drains the temp runs);
+        deterministic bytes, overwrites in place."""
+        vdir = Path(out_dir) / VERIFY_DIRNAME
+        vdir.mkdir(parents=True, exist_ok=True)
+        handles = [p.open(encoding="ascii") for p in self._runs]
+        try:
+            runs = [(_decode_spill(row) for row in fh) for fh in handles]
+            self._buf.sort(key=_sort_key)
+            tail = ((_sort_key(s), _suspect_line(s)) for s in self._buf)
+            # heapq.merge breaks key ties by iterable order (earlier run first,
+            # then the tail) and preserves each run's own order — exactly the
+            # stable add-order that sorted(key=_sort_key) gives the list path.
+            merged = heapq.merge(*runs, tail, key=lambda item: item[0])
+            with (vdir / SUSPECTS_NAME).open("wb") as out:
+                for _, line in merged:
+                    out.write(line.encode("ascii"))
+                    out.write(b"\n")
+        finally:
+            for fh in handles:
+                fh.close()
+            self._tmpdir.cleanup()
+        (vdir / SUMMARY_JSON).write_bytes(
+            _summary_json_bytes(self.counts, self.hard, self.total, checked=checked)
+        )
+        # summary.md is the human-readable file (em-dashes, etc.) — UTF-8, not the
+        # ASCII-deterministic structured pair above.
+        (vdir / SUMMARY_MD).write_text(
+            _summary_md_str(self.counts, self.hard, self.total, checked=checked),
+            encoding="utf-8",
+        )
+        return vdir

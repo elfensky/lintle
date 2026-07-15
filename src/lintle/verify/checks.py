@@ -9,7 +9,7 @@
   re-implements the sanctioned transform independently (it never calls
   ``repair.py``) so a repair bug can't hide behind its own output."""
 
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 
 from lintle import tle
 from lintle.verify.records import CleanedRecord
@@ -143,6 +143,22 @@ def find_conflicts(
         by_elset.setdefault(elset, state)
         states.add(state)
     return conflicts, reissues
+
+
+def has_epoch_clash(records: Iterable[CleanedRecord]) -> bool:
+    """True iff some element-set among these same-``(catalog, epoch)`` records names
+    more than one orbital state — the #158 definition of a genuine contradiction,
+    shared with :func:`find_conflicts` so ``verify`` and ``dedup`` agree on what a
+    same-epoch clash is. A *different* element-set with a different orbit is a
+    benign refined re-issue (space-track's successive solution), not a clash — the
+    distinction :func:`find_conflicts` draws per record, expressed here as one
+    boolean over a materialised group (bounded: a handful of re-issues)."""
+    by_elset: dict[int | None, tuple] = {}
+    for r in records:
+        state = orbital_state(r.line1, r.line2)
+        if by_elset.setdefault(element_set(r.line1), state) != state:
+            return True
+    return False
 
 
 def sanctioned_reduce(src_line: str) -> str:

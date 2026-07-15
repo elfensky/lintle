@@ -74,10 +74,11 @@ cli.py ──▶ pipeline.py ──▶ repair.py ──▶ tle.py
   ├──▶ dedup.py ──▶ verify/  (read-only `lintle dedup` — latest-re-issue import list; → verify.{checks,grouping,records}, term)
   └──▶ wizard.py ──▶ config.py   (no-subcommand TTY menu; cli↔wizard edge lazy on both sides)
 
-verify/   (lintle verify — the sgp4-free Increment-1 core; cli ──▶ verify, never the reverse)
+verify/   (lintle verify — Increment-1 core + opt-in --orbit physics pass; cli ──▶ verify, never the reverse)
   __init__.py (run_verify) ──▶ checks.py ──▶ tle.py
                           ├──▶ grouping.py ──▶ records.py ──▶ epoch.py
-                          └──▶ report.py          (checks ──▶ records, report; records ──▶ __init__ naming constants; __init__ ──▶ term)
+                          ├──▶ report.py          (checks ──▶ records, report; records ──▶ __init__ naming constants; __init__ ──▶ term)
+                          └──▶ orbit.py ──▶ sgp4   (Increment 2; lazy-imported only under --orbit)
 
 fsutil.py    stdlib-only I/O leaf — durable_replace + out_dir_lock
 diagnostics.py, categories.py, explain_examples.py    pure-data leaves (no I/O)
@@ -108,8 +109,8 @@ config.py    stdlib-JSON leaf — ./.lintle.json load/save (no internal deps)
 | `term.py` | Two shared `rich` Consoles — `stderr_console` for status/errors, `stdout_console` for the `report` result view — the `error:` / `warning:` / `note` / `prompt` emitters, and the `is_interactive` / `prompt_yes_no` stdin helpers. |
 | `cli.py` | argparse, globbing, and top-level `clean` orchestration: delegates preflight to `run_planning`, dispatch to `worker_pool`, signal/shutdown to `process_control`, the quality-gate exit policy to `thresholds`, run finalization to `output_artifacts`, and the aggregate panel / `report` render to `summary`; owns the resulting process exit code. |
 | `cli_progress.py` | Rich presentation leaf for `clean`: the live `ProgressDisplay`, the pre-run `render_roster`, and the `status` spinner. Consumes `pipeline`'s typed progress messages. Imports `humanize` for human-readable roster sizes (`naturalsize(gnu=True)`). |
-| `verify/` | The `lintle verify` post-run auditor (own package): `epoch` (epoch-key parsing), `records` (the `CleanedRecord` dataclass + cleaned-tree readers), `grouping` (the spill-to-disk `ExternalSorter` for the constant-memory contradiction pass), `checks` (`revalidate` / `find_conflicts` / the `SourceAligner` byte-diff), `report` (`VrfyRule`, `Suspect`, the `suspects.jsonl` + `summary.{json,md}` writers, `exit_code`), and `__init__.run_verify` (orchestration). A pure *consumer* of `tle` (its sole validity authority) and `term`; the physics increment is the only planned `sgp4` importer. |
-| `dedup.py` | The `lintle dedup` pass: reads `cleaned/` (never mutating it), excludes hard suspects from a prior `verify` run's `suspects.jsonl`, groups by `(catalog, epoch)` through `verify`'s `ExternalSorter`, and writes `<out-dir>/dedup/{import.txt,notes.jsonl,summary.json}` — one card per group, the latest re-issue kept, benign re-issues collapsed and genuine orbit contradictions kept-latest-but-flagged. Reuses `verify.checks.orbital_state`/`element_set` (one definition of "same orbit" / "latest"). Constant memory; deterministic bytes. |
+| `verify/` | The `lintle verify` post-run auditor (own package): `epoch` (epoch-key parsing), `records` (the `CleanedRecord` dataclass + cleaned-tree readers), `grouping` (the spill-to-disk `ExternalSorter` for the constant-memory contradiction pass), `checks` (`revalidate` / `find_conflicts` / the `SourceAligner` byte-diff), `report` (`VrfyRule`, `Suspect`, `exit_code`, and the `SuspectSink` — an external merge-sort that streams suspects to disk and renders `suspects.jsonl` + `summary.{json,md}` at flat peak memory, byte-identical to its list renderers; #156), `__init__.run_verify` (orchestration), and `orbit` (Increment 2 — the opt-in sampled `sgp4` orbit-consistency pass: adjacent-pair position residuals, soft `VRFY-ORBIT-OUTLIER` outliers, deterministic 0.1 km quantum). A pure *consumer* of `tle` (its sole validity authority) and `term`; `orbit` is the package's **only** `sgp4` importer, lazily imported by `run_verify` only under `--orbit` so the default path stays `sgp4`-free. |
+| `dedup.py` | The `lintle dedup` pass: reads `cleaned/` (never mutating it), excludes hard suspects from a prior `verify` run's `suspects.jsonl`, groups by `(catalog, epoch)` through `verify`'s `ExternalSorter`, and writes `<out-dir>/dedup/{import.txt,notes.jsonl,summary.json}` — one card per group, the latest re-issue kept, benign re-issues (including refined orbits under a new element-set) collapsed and genuine same-element-set contradictions kept-latest-but-flagged. Reuses `verify.checks.orbital_state`/`element_set` and the shared `has_epoch_clash` #158 predicate (one definition of "same orbit" / "latest" / "same-epoch clash" — #164). Constant memory; deterministic bytes. |
 | `config.py` | Optional `./.lintle.json` project config: stdlib-JSON `load`/`save` of the two remembered keys (`source`, `output`). Never an authority over an explicit CLI arg. No internal deps. |
 | `wizard.py` | The interactive rich menu shown when `lintle` runs with no subcommand on a TTY (configure / clean / verify / report / quit). A thin front-end that builds an argv and calls `cli.main`, reimplementing no orchestration; imports `config` + `term`. |
 
@@ -630,14 +631,16 @@ always safe to use.
 ## 7. Runtime-dependency policy
 
 The runtime is lean by policy, not dogma. The current runtime dependencies are **`rich>=15,<16`**
-(terminal rendering for the `clean` progress UI) and **`humanize>=4,<5`** (human-readable
+(terminal rendering for the `clean` progress UI), **`humanize>=4,<5`** (human-readable
 durations and sizes in the human display — `precisedelta` for the panel duration, `naturalsize`
-for the roster sizes). `humanize` is confined to the human stderr/stdout display and never
+for the roster sizes), and **`sgp4>=2.25,<3`** (the physics engine for `lintle verify --orbit`).
+`humanize` is confined to the human stderr/stdout display and never
 touches structured or byte-deterministic output (`report.*`, the `.broken.txt` sidecar, the
 checkpoint, `cleaned/*`, the `--report json` envelope, `broken-noradids.ndjson`). `pytest` is
 dev-only. `sgp4` is the test oracle **and** the physics engine for `lintle verify`; it is never
-imported by the clean/validate/repair path (the hard invariant below), and is being promoted
-from dev-only to a verify-scoped runtime dependency with the `verify` physics pass.
+imported by the clean/validate/repair path (the hard invariant below). It was promoted from a
+dev-only test oracle to a verify-scoped runtime dependency with the `verify --orbit` physics
+pass (Increment 2) — imported only by `verify/orbit.py`, lazily, and only when `--orbit` runs.
 
 **The bar is relaxed.** A third-party runtime dependency may be added when it advances the aim
 of a stable, maintainable, easy-to-understand app — i.e. when it is **popular, actively
@@ -710,10 +713,10 @@ judgement under the relaxed bar that can be revisited.
 | **`humanize`** | **Adopted (2026-06-07)** | Human-display durations (`precisedelta`) and roster sizes (`naturalsize(gnu=True)`); pure-Python, zero transitive deps; confined to `summary.py` and `cli_progress.py` — stderr/stdout panel only, never structured output. A 2026-06-07 re-audit re-confirmed all other candidates as rejected or deferred for the reasons already tabled. |
 | `zstandard` | Defer (trigger-gated) | Only on a *measured* output-size / transfer bottleneck; until then stdlib `gzip`. |
 
-Dev-only (exempt; record purpose if nontrivial): `sgp4` (test oracle; being promoted to a
-verify-scoped runtime dependency with the `verify` physics pass), `pytest`, `pytest-cov`,
+Dev-only (exempt; record purpose if nontrivial): `pytest`, `pytest-cov`,
 `ruff`, `hypothesis` (property-based validator/repair tests), `pytest-xdist` (parallel suite —
-default run is `pytest -n auto`).
+default run is `pytest -n auto`). (`sgp4` is now a verify-scoped **runtime** dependency — see
+the §7 intro — though it still doubles as the `test_oracle.py` acceptance cross-check.)
 
 ---
 
