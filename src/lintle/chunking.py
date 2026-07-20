@@ -92,6 +92,16 @@ class ChunkedWriter:
             with contextlib.suppress(OSError):
                 Path(self._tmp).unlink()
 
+    def discard_all(self):
+        """Abandon the whole set: drop the in-progress temp AND unlink every
+        chunk this writer already committed. Restores per-file atomicity when a
+        write must be thrown away mid-stream (a failed input file must leave no
+        cleaned output, matching the pre-chunking single-file behaviour)."""
+        self._discard()
+        for path in ChunkedReader(self._dir, self._stem, self._suffix).chunk_paths():
+            with contextlib.suppress(OSError):
+                path.unlink()
+
     def write(self, payload: bytes):
         """Write one unit's raw bytes, rolling to a new chunk first if the
         current one has reached ``units_per_chunk`` (the roll happens *before*
@@ -103,6 +113,15 @@ class ChunkedWriter:
             self._open_next()
         self._handle.write(payload)
         self._count += 1
+
+    def write_raw(self, payload: bytes):
+        """Write raw preamble bytes to the first chunk *without* counting a unit
+        — for a file header that must live in ``.00001`` but is not a record, so
+        the roll boundary still falls every ``units_per_chunk`` records. Opens
+        ``.00001`` if nothing is open yet; intended for use before any units."""
+        if self._handle is None:
+            self._open_next()
+        self._handle.write(payload)
 
     def write_record(self, line1: bytes, line2: bytes):
         """Write one 2-line TLE record (two ``\\n``-terminated lines), counting 1

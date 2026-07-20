@@ -106,6 +106,43 @@ class TestChunkedWriterAtomicCommit:
         assert not any(p.name.endswith(".partial") for p in tmp_path.iterdir())
 
 
+class TestChunkedWriterWriteRaw:
+    """write_raw() writes preamble bytes (a file header) into the first chunk
+    without counting a unit, so the header lives in .00001 and the roll boundary
+    still falls every units_per_chunk records."""
+
+    def test_write_raw_preamble_not_counted_as_unit(self, tmp_path):
+        with ChunkedWriter(tmp_path, "b", ".broken.txt", units_per_chunk=2) as w:
+            w.write_raw(b"# header\n")
+            for i in range(4):
+                w.write_line(f"e{i}")
+        # header in .00001; 4 entries at N=2 -> .00001(header,e0,e1), .00002(e2,e3)
+        assert _names(tmp_path) == ["b.00001.broken.txt", "b.00002.broken.txt"]
+        assert (tmp_path / "b.00001.broken.txt").read_bytes() == b"# header\ne0\ne1\n"
+        assert (tmp_path / "b.00002.broken.txt").read_bytes() == b"e2\ne3\n"
+
+    def test_write_raw_only_gives_header_only_first_chunk(self, tmp_path):
+        with ChunkedWriter(tmp_path, "b", ".broken.txt", units_per_chunk=2) as w:
+            w.write_raw(b"# header\n")
+        assert _names(tmp_path) == ["b.00001.broken.txt"]
+        assert (tmp_path / "b.00001.broken.txt").read_bytes() == b"# header\n"
+
+
+class TestChunkedWriterDiscardAll:
+    """discard_all() abandons the whole set — the in-progress temp AND every
+    already-committed chunk — restoring per-file atomicity when a write must be
+    thrown away mid-stream (e.g. a pipeline failure processing one input file)."""
+
+    def test_discard_all_removes_committed_and_in_progress(self, tmp_path):
+        w = ChunkedWriter(tmp_path, "tle", ".cleaned.txt", units_per_chunk=1)
+        w.__enter__()
+        w.write_record(b"1 a", b"2 a")  # opens .00001
+        w.write_record(b"1 b", b"2 b")  # rolls/commits .00001, opens .00002
+        w.discard_all()
+        assert _names(tmp_path) == []
+        assert not any(p.name.endswith(".partial") for p in tmp_path.iterdir())
+
+
 class TestChunkedWriterOverflow:
     """Rolling past index 99 999 is a hard error, not a silent .100000 wrap."""
 
