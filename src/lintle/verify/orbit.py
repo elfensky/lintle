@@ -29,7 +29,9 @@ from lintle.verify import grouping, records
 from lintle.verify.records import CleanedRecord
 from lintle.verify.report import Suspect, SuspectSink, VrfyRule
 
-GAP_LIMIT_DAYS = 3.0  # skip pairs wider than this: sgp4 residual grows with the gap
+GEO_MEAN_MOTION_MAX = 1.5  # ponytail: rev/day below this = geosync/GEO regime
+GAP_LIMIT_LEO_MEO_DAYS = 3.0  # LEO/MEO/Molniya: sgp4 residual grows fast over a gap
+GAP_LIMIT_GEO_DAYS = 7.0  # GEO/geosync: re-issued less often, so tolerate a wider gap
 RESIDUAL_FLOOR_KM = 100.0  # a lone residual under this is never an outlier
 RESIDUAL_QUANTUM_KM = 0.1  # rounding quantum = the cross-platform determinism guardband
 MIN_EPOCHS_FOR_MAD = 10  # below this, trust only the flat floor, not a per-sat spread
@@ -40,6 +42,17 @@ DEFAULT_SAMPLE = 3000
 # sgp4 init errors that mean "these mean elements are not a physical orbit" -> hard.
 # Error 6 (decayed) is a real end-of-life state, not corruption, so it is excluded.
 _HARD_SGP4_ERRORS = frozenset({1, 2, 3, 4, 5})
+
+
+def _gap_limit(mean_motion_rev_per_day: float) -> float:
+    """The #4 regime-aware propagation-gap gate (days): GEO/geosync (< 1.5 rev/day)
+    is re-issued less often, so it tolerates a 7-day gap; everything else (LEO ~11-16,
+    MEO ~2, Molniya ~2) keeps the tighter 3-day gate where the ``sgp4`` residual is
+    still measurable. A boundary object that flips class merely swaps one soft gap
+    gate for the other — never a verdict — so the split is safe."""
+    if mean_motion_rev_per_day < GEO_MEAN_MOTION_MAX:
+        return GAP_LIMIT_GEO_DAYS
+    return GAP_LIMIT_LEO_MEO_DAYS
 
 
 def _pair_residual(sat_a: Satrec, sat_b: Satrec) -> float | None:
@@ -124,7 +137,11 @@ def _track_suspects(track: list[CleanedRecord]) -> tuple[list[Suspect], int]:
             dt = (sat.jdsatepoch + sat.jdsatepochF) - (
                 prev_sat.jdsatepoch + prev_sat.jdsatepochF
             )
-            if 0 < dt <= GAP_LIMIT_DAYS:
+            # Classify the regime on the propagation source (prev_sat, always
+            # error==0 here). no_kozai is radians/min; rev/day = no_kozai*1440/(2π)
+            # — the parens matter: no_kozai*1440/2*math.pi would be off by π².
+            rev_per_day = prev_sat.no_kozai * 1440 / (2 * math.pi)
+            if 0 < dt <= _gap_limit(rev_per_day):
                 resid = _pair_residual(prev_sat, sat)
         pairs.append(resid)
         prev = (sat, rec)
