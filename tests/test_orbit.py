@@ -44,6 +44,31 @@ TRACK = [
 # Golden residuals for the clean track (km, 0.1 km quantum) — locks determinism.
 GOLDEN_RESIDUALS = [8.4, 0.9, 0.6, 0.3, 0.4]
 
+# A GEO-regime satellite (~1.0027 rev/day) at two epochs 5 days apart: under the
+# flat 3-day gate this pair was skipped; #4's regime-aware gate gives GEO 7 days.
+GEO_5DAY = [
+    (
+        "1 26900U 01037A   06001.50000000  .00000000  00000+0  00000+0 0  9998",
+        "2 26900 000.0500 095.0000 0001000 000.0000 000.0000 01.00270000 00009",
+    ),
+    (
+        "1 26900U 01037A   06006.50000000  .00000000  00000+0  00000+0 0  9993",
+        "2 26900 000.0500 095.0000 0001000 000.0000 000.0000 01.00270000 00009",
+    ),
+]
+# The same LEO satellite (~10.84 rev/day) at two epochs 5 days apart: still skipped
+# — LEO keeps the 3-day gate.
+LEO_5DAY = [
+    (
+        "1 00005U 58002B   06001.00000000 +.00000180 +00000-0 +24599-3 0 00315",
+        "2 00005 034.2551 283.3714 1848015 007.2019 355.1657 10.83831997632014",
+    ),
+    (
+        "1 00005U 58002B   06006.00000000 +.00000180 +00000-0 +24599-3 0 00310",
+        "2 00005 034.2551 283.3714 1848015 007.2019 355.1657 10.83831997632014",
+    ),
+]
+
 
 def fix(line: str) -> str:
     return line[:68] + str(tle.compute_checksum(line))
@@ -135,6 +160,34 @@ class TestLocalThreshold:
         spike = 260.0
         assert spike > glob + orbit.RESIDUAL_QUANTUM_KM  # global alone flags it
         assert spike <= max(glob, loc) + orbit.RESIDUAL_QUANTUM_KM  # local suppresses
+
+
+class TestGapLimit:
+    """The #4 regime-aware gap gate: GEO/geosync (< 1.5 rev/day) tolerates a 7-day
+    propagation gap; everything else (LEO/MEO/Molniya) only 3 days."""
+
+    def test_geo_regime_gets_seven_days(self):
+        assert orbit._gap_limit(1.0) == 7.0
+
+    def test_leo_regime_gets_three_days(self):
+        assert orbit._gap_limit(11.0) == 3.0
+
+    def test_boundary_is_leo(self):
+        # exactly GEO_MEAN_MOTION_MAX (1.5) -> `n < 1.5` is False -> 3-day gate
+        assert orbit._gap_limit(1.5) == 3.0
+        assert orbit._gap_limit(1.4999) == 7.0
+
+
+class TestRegimeGapGate:
+    def test_geo_pair_at_five_day_gap_is_measured(self):
+        recs = [rec(a, b, idx=i) for i, (a, b) in enumerate(GEO_5DAY)]
+        _, pairs = orbit._track_suspects(recs)
+        assert pairs == 1  # GEO 7-day gate admits the 5-day gap (was skipped)
+
+    def test_leo_pair_at_five_day_gap_is_skipped(self):
+        recs = [rec(a, b, idx=i) for i, (a, b) in enumerate(LEO_5DAY)]
+        _, pairs = orbit._track_suspects(recs)
+        assert pairs == 0  # LEO keeps the 3-day gate
 
 
 class TestSample:
