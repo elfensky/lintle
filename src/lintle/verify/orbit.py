@@ -34,6 +34,8 @@ RESIDUAL_FLOOR_KM = 100.0  # a lone residual under this is never an outlier
 RESIDUAL_QUANTUM_KM = 0.1  # rounding quantum = the cross-platform determinism guardband
 MIN_EPOCHS_FOR_MAD = 10  # below this, trust only the flat floor, not a per-sat spread
 MAD_K = 10.0  # robust bound: median + 10·MAD
+LOCAL_K = 20.0  # ponytail: local-median multiplier — a spike must exceed 20× local
+LOCAL_HALF = 5  # ponytail: half-width of the time-local window (±5 → up to 11 pairs)
 DEFAULT_SAMPLE = 3000
 # sgp4 init errors that mean "these mean elements are not a physical orbit" -> hard.
 # Error 6 (decayed) is a real end-of-life state, not corruption, so it is excluded.
@@ -63,14 +65,41 @@ def _threshold(residuals: list[float]) -> float:
     return round(max(RESIDUAL_FLOOR_KM, med + MAD_K * mad), 1)
 
 
+def _local_threshold(pairs: list[float | None], i: int) -> float:
+    """The #5 per-pair local-median bar: ``round(LOCAL_K · median(window), 0.1)``,
+    where ``window`` is the residuals at positions ``[i-LOCAL_HALF, i+LOCAL_HALF]``
+    restricted to the *contiguous run of non-``None`` pairs* around ``i`` — a hole
+    (a skipped/ungated/error pair) bounds the window, so a spike is measured against
+    what is *locally* typical in time, never residuals pulled across a gap. Inactive
+    (``0.0``, so the outer ``max`` ignores it) below ``MIN_EPOCHS_FOR_MAD`` window
+    points. Rounded to the quantum for the same "clear the bar by a full quantum"
+    determinism contract the global term keeps. ``pairs[i]`` is assumed non-``None``."""
+    window = [pairs[i]]
+    j = i - 1
+    while j >= i - LOCAL_HALF and j >= 0 and pairs[j] is not None:
+        window.append(pairs[j])
+        j -= 1
+    j = i + 1
+    while j <= i + LOCAL_HALF and j < len(pairs) and pairs[j] is not None:
+        window.append(pairs[j])
+        j += 1
+    if len(window) < MIN_EPOCHS_FOR_MAD:
+        return 0.0
+    return round(LOCAL_K * statistics.median(window), 1)
+
+
 def _track_suspects(track: list[CleanedRecord]) -> tuple[list[Suspect], int]:
     """Suspects for one satellite's epoch-sorted track: per-record hard ``sgp4``
     element errors, plus adjacent-pair residual outliers over the robust threshold
-    (soft/inconclusive). Returns ``(suspects, pairs_measured)``. Holds one track
-    and its residual list — bounded by a single satellite's epoch count, never the
-    corpus."""
+    (soft/inconclusive). The threshold is the per-pair ``max(global, local)`` (#5):
+    the global ``median + MAD`` bar OR the windowed ``20·local median``. Returns
+    ``(suspects, pairs_measured)``. Holds the track's position-aligned residual
+    array — bounded by a single satellite's epoch count, never the corpus."""
     suspects: list[Suspect] = []
-    measured: list[tuple[float, CleanedRecord]] = []
+    # Position-aligned residuals: pairs[i] is the residual of track[i-1] -> track[i]
+    # (index = the second record's position), or None when that pair is unmeasurable
+    # (endpoint / out of gate / sgp4 chain break). Holes make #5's window time-local.
+    pairs: list[float | None] = []
     prev: tuple[Satrec, CleanedRecord] | None = None
     for rec in track:
         sat = Satrec.twoline2rv(rec.line1, rec.line2)
@@ -87,7 +116,9 @@ def _track_suspects(track: list[CleanedRecord]) -> tuple[list[Suspect], int]:
                     )
                 )
             prev = None  # unphysical or decayed: breaks the propagation chain
+            pairs.append(None)
             continue
+        resid: float | None = None
         if prev is not None:
             prev_sat, _ = prev
             dt = (sat.jdsatepoch + sat.jdsatepochF) - (
@@ -95,12 +126,16 @@ def _track_suspects(track: list[CleanedRecord]) -> tuple[list[Suspect], int]:
             )
             if 0 < dt <= GAP_LIMIT_DAYS:
                 resid = _pair_residual(prev_sat, sat)
-                if resid is not None:
-                    measured.append((resid, rec))
+        pairs.append(resid)
         prev = (sat, rec)
-    threshold = _threshold([r for r, _ in measured])
-    for resid, rec in measured:
-        if resid > threshold + RESIDUAL_QUANTUM_KM:  # one-quantum guardband
+    measured = [r for r in pairs if r is not None]
+    threshold = _threshold(measured)
+    for i, resid in enumerate(pairs):
+        if resid is None:
+            continue
+        bar = max(threshold, _local_threshold(pairs, i))
+        if resid > bar + RESIDUAL_QUANTUM_KM:  # one-quantum guardband
+            rec = track[i]
             suspects.append(
                 Suspect(
                     VrfyRule.ORBIT_OUTLIER,
@@ -109,7 +144,7 @@ def _track_suspects(track: list[CleanedRecord]) -> tuple[list[Suspect], int]:
                     rec.src_file,
                     rec.index,
                     f"orbit residual {resid} km vs its neighbour exceeds the "
-                    f"{threshold} km threshold (inconclusive)",
+                    f"{bar} km threshold (inconclusive)",
                 )
             )
     return suspects, len(measured)
