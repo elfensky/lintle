@@ -75,7 +75,10 @@ def run_verify(
 
     # Contradiction pass over the fully sorted stream (goal 3b): same-epoch
     # re-issues are counted (a census); only a same-element-set clash is hard.
-    conflicts, epoch_reissues = checks.find_conflicts(sorter.sorted_records())
+    # Under --orbit, also collect the dup-epoch catalogs for the #2 sample stratum.
+    conflicts, epoch_reissues, dup_epoch_catalogs = checks.find_conflicts(
+        sorter.sorted_records(), orbit=orbit
+    )
     sink.add_all(conflicts)
 
     checked = {
@@ -98,6 +101,7 @@ def run_verify(
             sample=sample,
             all_sats=all_sats,
             sensitivity=orbit_pass._TIERS[sensitivity],
+            oversample=dup_epoch_catalogs,
         )
         checked.update(orbit_census)
 

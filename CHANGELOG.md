@@ -8,6 +8,16 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Added
 
+- `lintle verify --orbit` now **stratifies its satellite sample** toward dup-epoch
+  catalogs (#163/#2) — those carrying more than one record at the same
+  `(catalog, epoch)`, the cases most likely to hide an orbit inconsistency. The
+  contradiction pass (`find_conflicts`) collects them (orbit-gated, so the default
+  sgp4-free path pays nothing) and `sample_catalogs` keeps them all, spreading the
+  rest of the budget evenly; when the priority stratum overflows the budget it is
+  itself evenly spaced across the id range rather than truncated to the lowest ids.
+  Deterministic (sorted sets, integer arithmetic, no RNG); an empty priority set
+  reproduces the previous evenly-spaced sample byte-for-byte.
+
 - `lintle verify --orbit --sensitivity {sensitive,strict}` (#163/#3): a two-tier
   dial on the orbit-outlier threshold. `sensitive` (the default) keeps today's
   behaviour (100 km floor, 10·MAD); `strict` raises both (200 km, 20·MAD) to surface

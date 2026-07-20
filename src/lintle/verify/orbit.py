@@ -253,16 +253,31 @@ def _track_suspects(
 
 
 def sample_catalogs(
-    population: set[int], sample: int | None, all_sats: bool
+    population: set[int],
+    sample: int | None,
+    all_sats: bool,
+    oversample: frozenset[int] | set[int] = frozenset(),
 ) -> set[int]:
     """Deterministic satellite sample: all of them when ``all_sats`` or the
     population already fits, else an evenly-spaced slice of the sorted catalog ids
-    (spread across the id range, byte-reproducible — no RNG)."""
+    (spread across the id range, byte-reproducible — no RNG). ``oversample`` (#2) is
+    a priority stratum (dup-epoch catalogs); the ``oversample ∩ population``
+    intersection is load-bearing — it keeps the ``-1`` unparseable sentinel (which
+    ``find_conflicts`` does not filter) out of the ``-1``-free ``population``. When
+    the priority stratum overflows the budget it is evenly spaced *within* itself
+    (not truncated to the lowest ids); otherwise all of it is kept and the remaining
+    budget is filled with the evenly-spaced slice of the rest. Empty ``oversample``
+    reproduces the legacy slice byte-for-byte."""
     if all_sats or sample is None or len(population) <= sample:
         return set(population)
-    cats = sorted(population)
-    n = len(cats)
-    return {cats[(i * n) // sample] for i in range(sample)}
+    prio = sorted(oversample & population)
+    if len(prio) > sample:
+        p = len(prio)
+        return {prio[(i * p) // sample] for i in range(sample)}
+    rest = sorted(population - set(prio))
+    fill = sample - len(prio)
+    m = len(rest)
+    return set(prio) | {rest[(i * m) // fill] for i in range(fill)}
 
 
 def run_orbit_pass(
@@ -274,16 +289,18 @@ def run_orbit_pass(
     sample: int | None,
     all_sats: bool,
     sensitivity: Sensitivity = SENSITIVE,
+    oversample: frozenset[int] | set[int] = frozenset(),
 ) -> dict:
     """The sampled orbit-consistency pass. Streams the sampled satellites' cleaned
     records through the external sort, then per epoch-sorted track flags hard
     ``sgp4`` element errors and soft residual outliers into ``sink`` (which spills
     to disk, so a corpus's worth of outliers never accumulates in RAM — #156).
-    ``sensitivity`` (#3) scales the global threshold. Returns the census. Constant
-    memory w.r.t. the corpus (one satellite's track at a time). ponytail: re-reads
+    ``sensitivity`` (#3) scales the global threshold; ``oversample`` (#2) is the
+    dup-epoch priority stratum for the sample. Returns the census. Constant memory
+    w.r.t. the corpus (one satellite's track at a time). ponytail: re-reads
     ``cleaned/`` to gather the sample — a single-pass sampling optimisation is a
     follow-up (issue #144)."""
-    sampled = sample_catalogs(population, sample, all_sats)
+    sampled = sample_catalogs(population, sample, all_sats, oversample)
     sorter = grouping.ExternalSorter()
     for stem in stems:
         for rec in records.iter_file(out_dir, stem):
