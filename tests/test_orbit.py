@@ -334,6 +334,43 @@ class TestLeaveOneOut:
         assert "isolated" not in suspects[0].detail
 
 
+class TestSensitivity:
+    """#3 --sensitivity dial: two tiers scale the global floor + MAD-k. Default
+    `sensitive` (100 km, 10·MAD) is today's behaviour; `strict` (200 km, 20·MAD)
+    surfaces fewer, higher-confidence outliers."""
+
+    def test_strict_raises_the_flat_floor(self):
+        # < 10 residuals -> flat floor; strict lifts it from 100 to 200
+        assert orbit._threshold([1.0, 2.0, 3.0], orbit.SENSITIVE) == 100.0
+        assert orbit._threshold([1.0, 2.0, 3.0], orbit.STRICT) == 200.0
+
+    def test_strict_doubles_mad_k(self):
+        # 11 values 10..110: median 60, MAD 30 -> sensitive 60+10*30, strict 60+20*30
+        vals = [float(x) for x in range(10, 111, 10)]
+        assert orbit._threshold(vals, orbit.SENSITIVE) == 360.0
+        assert orbit._threshold(vals, orbit.STRICT) == 660.0
+
+    def test_residual_between_floors_flagged_only_under_sensitive(self):
+        # a ~153 km residual sits over the sensitive floor (100) but under strict (200)
+        recs = [
+            rec(*TRACK[4], idx=0),
+            rec(TRACK[5][0], bump_ma(TRACK[5][1], 0.85), idx=1),
+        ]
+        sens, _ = orbit._track_suspects(recs, orbit.SENSITIVE)
+        strict, _ = orbit._track_suspects(recs, orbit.STRICT)
+        assert len(sens) == 1 and sens[0].rule is VrfyRule.ORBIT_OUTLIER
+        assert strict == []
+
+    def test_default_tier_is_sensitive(self):
+        # the no-arg default must reproduce sensitive exactly (golden byte-identical)
+        recs = [
+            rec(*TRACK[4], idx=0),
+            rec(TRACK[5][0], bump_ma(TRACK[5][1], 0.85), idx=1),
+        ]
+        default = orbit._track_suspects(recs)
+        assert default == orbit._track_suspects(recs, orbit.SENSITIVE)
+
+
 class TestEndToEnd:
     def test_clean_track_passes_with_census(self, tmp_path):
         out = build_tree(tmp_path, TRACK)
@@ -366,3 +403,10 @@ class TestCLI:
     def test_orbit_flag_dispatches(self, tmp_path):
         out = build_tree(tmp_path, TRACK)
         assert cli.main(["verify", out, "--orbit", "--no-source-diff"]) == 0
+
+    def test_sensitivity_flag_dispatches(self, tmp_path):
+        out = build_tree(tmp_path, TRACK)
+        code = cli.main(
+            ["verify", out, "--orbit", "--no-source-diff", "--sensitivity", "strict"]
+        )
+        assert code == 0
