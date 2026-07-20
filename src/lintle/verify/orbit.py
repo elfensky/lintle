@@ -101,19 +101,26 @@ def _local_threshold(pairs: list[float | None], i: int) -> float:
     return round(LOCAL_K * statistics.median(window), 1)
 
 
+def _rev_per_day(sat: Satrec) -> float:
+    """A ``Satrec``'s mean motion in rev/day from ``no_kozai`` (radians/min). The
+    parens are load-bearing: ``no_kozai * 1440 / (2 * math.pi)``, never
+    ``no_kozai * 1440 / 2 * math.pi`` (left-to-right, off by π²)."""
+    return sat.no_kozai * 1440 / (2 * math.pi)
+
+
 def _track_suspects(track: list[CleanedRecord]) -> tuple[list[Suspect], int]:
     """Suspects for one satellite's epoch-sorted track: per-record hard ``sgp4``
-    element errors, plus adjacent-pair residual outliers over the robust threshold
-    (soft/inconclusive). The threshold is the per-pair ``max(global, local)`` (#5):
-    the global ``median + MAD`` bar OR the windowed ``20·local median``. Returns
-    ``(suspects, pairs_measured)``. Holds the track's position-aligned residual
-    array — bounded by a single satellite's epoch count, never the corpus."""
+    element errors, plus adjacent-pair residual outliers over the per-pair
+    ``max(global, local)`` threshold (#5), soft/inconclusive. A lone interior spike
+    is isolated to its culprit by leave-one-out (#1) instead of double-flagging the
+    innocent successor. Returns ``(suspects, pairs_measured)``. Holds the track's
+    ``Satrec`` list and position-aligned residual array — bounded by a single
+    satellite's epoch count, never the corpus."""
     suspects: list[Suspect] = []
-    # Position-aligned residuals: pairs[i] is the residual of track[i-1] -> track[i]
-    # (index = the second record's position), or None when that pair is unmeasurable
-    # (endpoint / out of gate / sgp4 chain break). Holes make #5's window time-local.
-    pairs: list[float | None] = []
-    prev: tuple[Satrec, CleanedRecord] | None = None
+    # Retain each record's Satrec (None on sgp4 init error, which still breaks the
+    # chain and hard-convicts codes 1-5) so the #1 leave-one-out probe can
+    # re-propagate a record's neighbours skipping it.
+    sats: list[tuple[Satrec | None, CleanedRecord]] = []
     for rec in track:
         sat = Satrec.twoline2rv(rec.line1, rec.line2)
         if sat.error:
@@ -128,42 +135,102 @@ def _track_suspects(track: list[CleanedRecord]) -> tuple[list[Suspect], int]:
                         f"sgp4 rejects these elements (error {sat.error})",
                     )
                 )
-            prev = None  # unphysical or decayed: breaks the propagation chain
-            pairs.append(None)
+            sats.append((None, rec))  # unphysical or decayed: breaks the chain
+        else:
+            sats.append((sat, rec))
+
+    # Position-aligned residuals: pairs[i] = residual of sats[i-1] -> sats[i] (index
+    # = the second record's position), or None when unmeasurable (either endpoint
+    # None, out of gate, or the propagation errored). Holes keep #5's window
+    # time-local AND stop #1's neighbour math conflating non-adjacent pairs.
+    pairs: list[float | None] = [None] * len(sats)
+    for i in range(1, len(sats)):
+        prev_sat, _ = sats[i - 1]
+        sat, _ = sats[i]
+        if prev_sat is None or sat is None:
             continue
-        resid: float | None = None
-        if prev is not None:
-            prev_sat, _ = prev
-            dt = (sat.jdsatepoch + sat.jdsatepochF) - (
-                prev_sat.jdsatepoch + prev_sat.jdsatepochF
-            )
-            # Classify the regime on the propagation source (prev_sat, always
-            # error==0 here). no_kozai is radians/min; rev/day = no_kozai*1440/(2π)
-            # — the parens matter: no_kozai*1440/2*math.pi would be off by π².
-            rev_per_day = prev_sat.no_kozai * 1440 / (2 * math.pi)
-            if 0 < dt <= _gap_limit(rev_per_day):
-                resid = _pair_residual(prev_sat, sat)
-        pairs.append(resid)
-        prev = (sat, rec)
+        dt = (sat.jdsatepoch + sat.jdsatepochF) - (
+            prev_sat.jdsatepoch + prev_sat.jdsatepochF
+        )
+        # Full gate — the 0 < lower bound is load-bearing: a dt == 0 same-epoch
+        # re-issue would inject a ~0 residual and shift every pair's threshold.
+        if 0 < dt <= _gap_limit(_rev_per_day(prev_sat)):
+            pairs[i] = _pair_residual(prev_sat, sat)
+
     measured = [r for r in pairs if r is not None]
     threshold = _threshold(measured)
-    for i, resid in enumerate(pairs):
-        if resid is None:
+
+    def hot(i: int) -> bool:
+        r = pairs[i]
+        return (
+            r is not None
+            and r > max(threshold, _local_threshold(pairs, i)) + RESIDUAL_QUANTUM_KM
+        )
+
+    def outlier(i: int, detail: str) -> Suspect:
+        rec = sats[i][1]
+        return Suspect(
+            VrfyRule.ORBIT_OUTLIER,
+            rec.catalog,
+            rec.epoch_key,
+            rec.src_file,
+            rec.index,
+            detail,
+        )
+
+    # #1 leave-one-out isolation: a lone interior spike makes its incoming pair
+    # (pairs[i]) AND its outgoing pair (pairs[i+1]) hot. If propagating the culprit's
+    # neighbours *around* it reconciles them, flag the culprit alone. Iterate
+    # left-to-right; a consumed pair is re-emitted nowhere, so overlapping candidates
+    # resolve deterministically.
+    consumed = [False] * len(pairs)
+    for i in range(len(sats)):
+        inc, out = i, i + 1  # incoming pair (i-1->i) and outgoing pair (i->i+1)
+        if out >= len(pairs) or consumed[inc]:
+            continue
+        if pairs[inc] is None or pairs[out] is None or not (hot(inc) and hot(out)):
+            continue
+        prev_sat, _ = sats[i - 1]
+        next_sat, _ = sats[i + 1]
+        if prev_sat is None or next_sat is None:
+            continue
+        # The probe skips record i, so its gap is up to twice a cadence step -> gate
+        # on 2*_gap_limit (classify off sats[i-1]); judge "not hot" against the GLOBAL
+        # threshold only (the probe has no pair position, so no #5 window applies).
+        dt = (next_sat.jdsatepoch + next_sat.jdsatepochF) - (
+            prev_sat.jdsatepoch + prev_sat.jdsatepochF
+        )
+        if not 0 < dt <= 2 * _gap_limit(_rev_per_day(prev_sat)):
+            continue  # probe over the doubled gate: isolation genuinely un-measurable
+        probe = _pair_residual(prev_sat, next_sat)
+        if probe is None or probe > threshold + RESIDUAL_QUANTUM_KM:
+            continue  # un-measurable or leave-one-out still hot: fall back to per-pair
+        bar = max(threshold, _local_threshold(pairs, inc))
+        suspects.append(
+            outlier(
+                inc,
+                f"orbit residual {pairs[inc]} km vs its neighbour exceeds the "
+                f"{bar} km threshold (isolated by leave-one-out: neighbours agree "
+                "without it)",
+            )
+        )
+        consumed[inc] = consumed[out] = True
+
+    # Remaining (unconsumed) hot pairs: one soft outlier attributed to the pair's
+    # second record, exactly as before isolation — the manoeuvre step, the ambiguous
+    # both-hot cases, and endpoint corruption all land here.
+    for i in range(len(pairs)):
+        if consumed[i] or not hot(i):
             continue
         bar = max(threshold, _local_threshold(pairs, i))
-        if resid > bar + RESIDUAL_QUANTUM_KM:  # one-quantum guardband
-            rec = track[i]
-            suspects.append(
-                Suspect(
-                    VrfyRule.ORBIT_OUTLIER,
-                    rec.catalog,
-                    rec.epoch_key,
-                    rec.src_file,
-                    rec.index,
-                    f"orbit residual {resid} km vs its neighbour exceeds the "
-                    f"{bar} km threshold (inconclusive)",
-                )
+        suspects.append(
+            outlier(
+                i,
+                f"orbit residual {pairs[i]} km vs its neighbour exceeds the "
+                f"{bar} km threshold (inconclusive)",
             )
+        )
+
     return suspects, len(measured)
 
 

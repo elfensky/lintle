@@ -8,6 +8,18 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Added
 
+- `lintle verify --orbit` now applies **leave-one-out culprit isolation** (#163/#1):
+  a lone corrupt interior record used to flag *two* pairs — the corrupt record and
+  its innocent successor. When both a record's incoming and outgoing pairs are hot
+  and re-propagating its neighbours *around* it (a leave-one-out probe) reconciles
+  them, the finding is now attributed to the culprit alone with an `(isolated by
+  leave-one-out …)` note. The probe is gated on twice the regime gap limit (it skips
+  a record, so its gap is doubled) and judged against the global threshold only.
+  Ambiguous cases — a genuine manoeuvre step, two adjacent corrupt records, a probe
+  over the doubled gate, or an endpoint corruption — fall back to the previous
+  per-pair attribution. Everything stays soft (`VRFY-ORBIT-OUTLIER`); isolation
+  improves *attribution*, never certainty.
+
 - `lintle verify --orbit` gap gate is now **regime-aware** (#163/#4): instead of a
   flat 3-day propagation-gap limit, GEO/geosync tracks (mean motion < 1.5 rev/day,
   re-issued less often) tolerate a 7-day gap while LEO/MEO/Molniya keep the tighter
