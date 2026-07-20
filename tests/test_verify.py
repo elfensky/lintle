@@ -148,25 +148,25 @@ class TestCatalogExtraction:
 class TestConflicts:
     def test_exact_duplicate_is_not_a_conflict(self):
         stream = [rec(idx=0), rec(idx=1)]  # identical bytes, same (catalog, epoch)
-        assert checks.find_conflicts(iter(stream)) == ([], 0)
+        assert checks.find_conflicts(iter(stream)) == ([], 0, set())
 
     def test_different_orbital_elements_conflict(self):
         # same element-set (default L1), different orbit -> a hard clash
         stream = [rec(idx=0), rec(line2=mutated_l2(), idx=1)]  # inclination differs
-        out, n = checks.find_conflicts(iter(stream))
+        out, n, _ = checks.find_conflicts(iter(stream))
         assert len(out) == 1 and out[0].rule is VrfyRule.EPOCH_CONFLICT and n == 0
 
     def test_element_set_reissue_is_not_a_conflict(self):
         # same orbital state, only the element-set number (cols 65-68) differs
         r0, r1 = rec(idx=0), rec(line1=reissued_l1(), idx=1)
         assert r0.line1[:64] == r1.line1[:64] and r0.line1 != r1.line1
-        assert checks.find_conflicts(iter([r0, r1])) == ([], 0)
+        assert checks.find_conflicts(iter([r0, r1])) == ([], 0, set())
 
     def test_revolution_number_reissue_is_not_a_conflict(self):
         # same orbital state, only the revolution number (cols 64-68) differs
         r0, r1 = rec(idx=0), rec(line2=reissued_l2(), idx=1)
         assert r0.line2[:63] == r1.line2[:63] and r0.line2 != r1.line2
-        assert checks.find_conflicts(iter([r0, r1])) == ([], 0)
+        assert checks.find_conflicts(iter([r0, r1])) == ([], 0, set())
 
     def test_sign_encoding_reissue_is_not_a_conflict(self):
         # identical orbit; 2nd-deriv field ' 00000-0' vs '+00000-0' (same value).
@@ -175,20 +175,20 @@ class TestConflicts:
         r0 = rec(line1=nddot_signed(" "), idx=0)
         r1 = rec(line1=nddot_signed("+"), idx=1)
         assert r0.line1[:64] != r1.line1[:64]  # would false-positive under a byte mask
-        assert checks.find_conflicts(iter([r0, r1])) == ([], 0)
+        assert checks.find_conflicts(iter([r0, r1])) == ([], 0, set())
 
     def test_different_drag_value_same_elset_is_hard(self):
         # same element-set, a genuine B* difference -> a hard clash (not re-issue)
         r0 = rec(line1=fix(L1[:53] + " 10000-3" + L1[61:]), idx=0)
         r1 = rec(line1=fix(L1[:53] + " 20000-3" + L1[61:]), idx=1)
-        out, n = checks.find_conflicts(iter([r0, r1]))
+        out, n, _ = checks.find_conflicts(iter([r0, r1]))
         assert len(out) == 1 and out[0].rule is VrfyRule.EPOCH_CONFLICT and n == 0
 
     def test_refined_reissue_is_census_not_conflict(self):
         # same (catalog, epoch), a NEW element-set AND a refined orbit -> a benign
         # re-issue: counted, never a hard conflict (#158)
         r0, r1 = rec(idx=0), rec(line1=reissued_refined_l1(), idx=1)
-        assert checks.find_conflicts(iter([r0, r1])) == ([], 1)
+        assert checks.find_conflicts(iter([r0, r1])) == ([], 1, set())
 
     def test_different_satellites_no_conflict(self):
         other1 = fix(L1[:2] + "00006" + L1[7:])  # different catalog
@@ -196,7 +196,32 @@ class TestConflicts:
             [rec(idx=0), rec(line1=other1, idx=1)],
             key=lambda r: (r.catalog, r.epoch_key),
         )
-        assert checks.find_conflicts(iter(stream)) == ([], 0)
+        assert checks.find_conflicts(iter(stream)) == ([], 0, set())
+
+    def test_returns_three_tuple_with_empty_set_by_default(self):
+        # the #2 dup-epoch set is the third element; empty and off unless orbit=True
+        result = checks.find_conflicts(iter([rec(idx=0), rec(idx=1)]))
+        assert len(result) == 3 and result[2] == set()
+
+    def test_dup_epoch_catalogs_collected_only_under_orbit(self):
+        # two records share (catalog 5, epoch) -> a dup-epoch group; the catalog is
+        # collected only when the orbit pass will consume it.
+        stream = [rec(idx=0), rec(idx=1)]
+        assert checks.find_conflicts(iter(stream))[2] == set()
+        assert checks.find_conflicts(iter(stream), orbit=True)[2] == {5}
+
+    def test_singleton_epoch_group_is_not_dup(self):
+        # a lone record per (catalog, epoch) is never a dup-epoch group
+        stream = [rec(idx=0)]
+        assert checks.find_conflicts(iter(stream), orbit=True)[2] == set()
+
+    def test_admin_only_reissue_is_still_dup_epoch(self):
+        # an exact-orbit re-issue (only the element-set differs) is not a conflict
+        # and not counted as a re-issue, but it IS a dup-epoch group (#2 keys on the
+        # group boundary, independent of the state-difference branch).
+        r0, r1 = rec(idx=0), rec(line1=reissued_l1(), idx=1)
+        conflicts, reissues, dup = checks.find_conflicts(iter([r0, r1]), orbit=True)
+        assert conflicts == [] and reissues == 0 and dup == {5}
 
 
 class TestHasEpochClash:

@@ -222,6 +222,40 @@ class TestSample:
         assert orbit.sample_catalogs(set(range(1, 11)), 3, False) == {1, 4, 7}
 
 
+class TestOversample:
+    """#2 stratified oversampling: dup-epoch catalogs get sampling priority. The
+    empty-oversample path must reproduce the legacy slice byte-for-byte."""
+
+    def test_empty_oversample_matches_legacy(self):
+        # the 4-arg default reproduces the plain evenly-spaced slice exactly
+        pop = set(range(1, 11))
+        assert orbit.sample_catalogs(pop, 3, False) == {1, 4, 7}
+        assert orbit.sample_catalogs(pop, 3, False, oversample=frozenset()) == {1, 4, 7}
+
+    def test_priority_catalog_included_outside_plain_slice(self):
+        # id 999 is a dup-epoch catalog the plain slice of 1..10,999 would miss
+        pop = set(range(1, 11)) | {999}
+        assert 999 not in orbit.sample_catalogs(pop, 3, False)
+        got = orbit.sample_catalogs(pop, 3, False, oversample={999})
+        assert 999 in got and len(got) == 3
+
+    def test_overflow_stratum_is_evenly_spaced_not_truncated(self):
+        # more priority ids than the budget -> spread across the id range, not the
+        # lowest `sample` ids, so a high id survives.
+        prio = set(range(1, 21))
+        got = orbit.sample_catalogs(prio, 3, False, oversample=prio)
+        assert len(got) == 3 and got <= prio
+        assert got != {1, 2, 3}  # not lowest-`sample` truncation
+        assert max(got) > 3  # a high id the truncated block would drop survives
+
+    def test_minus_one_sentinel_never_sampled(self):
+        # population excludes -1; the oversample ∩ population intersection keeps the
+        # unparseable-catalog sentinel out even though find_conflicts doesn't filter it.
+        pop = set(range(1, 11))
+        got = orbit.sample_catalogs(pop, 3, False, oversample={-1, 5})
+        assert -1 not in got and 5 in got and len(got) == 3
+
+
 class TestTrackVerdict:
     def test_mean_anomaly_outlier_flagged_soft(self):
         recs = track_records()
