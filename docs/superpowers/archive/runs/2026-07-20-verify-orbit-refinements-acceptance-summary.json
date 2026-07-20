@@ -1,0 +1,21 @@
+{
+  "checked": {
+    "epoch_reissues": 369700,
+    "files": 29,
+    "missing_source_files": 0,
+    "orbit_pairs_measured": 12867314,
+    "orbit_population": 65300,
+    "orbit_sampled": 3000,
+    "orbit_satellites_checked": 3000,
+    "records": 232281894,
+    "source_diff": "skipped"
+  },
+  "counts": {
+    "VRFY-EPOCH-CONFLICT": 5,
+    "VRFY-ORBIT-OUTLIER": 41348
+  },
+  "exit_code": 1,
+  "hard": 5,
+  "schema_version": "1",
+  "soft": 41348
+}
