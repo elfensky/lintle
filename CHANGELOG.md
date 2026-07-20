@@ -8,6 +8,13 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Added
 
+- `lintle verify --orbit --sensitivity {sensitive,strict}` (#163/#3): a two-tier
+  dial on the orbit-outlier threshold. `sensitive` (the default) keeps today's
+  behaviour (100 km floor, 10·MAD); `strict` raises both (200 km, 20·MAD) to surface
+  fewer, higher-confidence outliers. The tiers are a fixed table (no RNG), scale only
+  the global floor + MAD terms (the local-median multiplier and the min-epochs gate
+  stay fixed), and the default is byte-identical to the previous release.
+
 - `lintle verify --orbit` now applies **leave-one-out culprit isolation** (#163/#1):
   a lone corrupt interior record used to flag *two* pairs — the corrupt record and
   its innocent successor. When both a record's incoming and outgoing pairs are hot

@@ -20,6 +20,7 @@ This module is the sole ``sgp4`` importer in the package; the clean/validate/rep
 path stays walled off from it (import-graph test). Sampling unit is the satellite
 (continuity needs a contiguous track); the sample is deterministic."""
 
+import dataclasses
 import math
 import statistics
 
@@ -32,13 +33,26 @@ from lintle.verify.report import Suspect, SuspectSink, VrfyRule
 GEO_MEAN_MOTION_MAX = 1.5  # ponytail: rev/day below this = geosync/GEO regime
 GAP_LIMIT_LEO_MEO_DAYS = 3.0  # LEO/MEO/Molniya: sgp4 residual grows fast over a gap
 GAP_LIMIT_GEO_DAYS = 7.0  # GEO/geosync: re-issued less often, so tolerate a wider gap
-RESIDUAL_FLOOR_KM = 100.0  # a lone residual under this is never an outlier
 RESIDUAL_QUANTUM_KM = 0.1  # rounding quantum = the cross-platform determinism guardband
 MIN_EPOCHS_FOR_MAD = 10  # below this, trust only the flat floor, not a per-sat spread
-MAD_K = 10.0  # robust bound: median + 10·MAD
 LOCAL_K = 20.0  # ponytail: local-median multiplier — a spike must exceed 20× local
 LOCAL_HALF = 5  # ponytail: half-width of the time-local window (±5 → up to 11 pairs)
 DEFAULT_SAMPLE = 3000
+
+
+@dataclasses.dataclass(slots=True, frozen=True)
+class Sensitivity:
+    """The #3 --sensitivity tier: the two knobs on the *global* outlier threshold —
+    the flat floor and the MAD multiplier. ``LOCAL_K`` (#5) and ``MIN_EPOCHS_FOR_MAD``
+    stay fixed module constants; the dial scales only the floor + MAD terms."""
+
+    floor_km: float
+    mad_k: float
+
+
+SENSITIVE = Sensitivity(floor_km=100.0, mad_k=10.0)  # today's default
+STRICT = Sensitivity(floor_km=200.0, mad_k=20.0)  # fewer, higher-confidence outliers
+_TIERS = {"sensitive": SENSITIVE, "strict": STRICT}
 # sgp4 init errors that mean "these mean elements are not a physical orbit" -> hard.
 # Error 6 (decayed) is a real end-of-life state, not corruption, so it is excluded.
 _HARD_SGP4_ERRORS = frozenset({1, 2, 3, 4, 5})
@@ -67,15 +81,16 @@ def _pair_residual(sat_a: Satrec, sat_b: Satrec) -> float | None:
     return round(math.dist(r_a, r_b), 1)
 
 
-def _threshold(residuals: list[float]) -> float:
-    """Robust per-satellite outlier threshold: a flat 100 km floor until there are
-    enough epochs (< 10) to trust a per-sat spread, then ``max(floor, median +
-    10·MAD)``. Rounded to the 0.1 km quantum so the verdict is deterministic."""
+def _threshold(residuals: list[float], sensitivity: Sensitivity = SENSITIVE) -> float:
+    """Robust per-satellite outlier threshold: a flat floor until there are enough
+    epochs (< 10) to trust a per-sat spread, then ``max(floor, median + k·MAD)``.
+    The floor and ``k`` come from the #3 sensitivity tier (default ``SENSITIVE`` =
+    100 km, 10·MAD). Rounded to the 0.1 km quantum so the verdict is deterministic."""
     if len(residuals) < MIN_EPOCHS_FOR_MAD:
-        return RESIDUAL_FLOOR_KM
+        return sensitivity.floor_km
     med = statistics.median(residuals)
     mad = statistics.median([abs(r - med) for r in residuals])
-    return round(max(RESIDUAL_FLOOR_KM, med + MAD_K * mad), 1)
+    return round(max(sensitivity.floor_km, med + sensitivity.mad_k * mad), 1)
 
 
 def _local_threshold(pairs: list[float | None], i: int) -> float:
@@ -108,12 +123,15 @@ def _rev_per_day(sat: Satrec) -> float:
     return sat.no_kozai * 1440 / (2 * math.pi)
 
 
-def _track_suspects(track: list[CleanedRecord]) -> tuple[list[Suspect], int]:
+def _track_suspects(
+    track: list[CleanedRecord], sensitivity: Sensitivity = SENSITIVE
+) -> tuple[list[Suspect], int]:
     """Suspects for one satellite's epoch-sorted track: per-record hard ``sgp4``
     element errors, plus adjacent-pair residual outliers over the per-pair
-    ``max(global, local)`` threshold (#5), soft/inconclusive. A lone interior spike
-    is isolated to its culprit by leave-one-out (#1) instead of double-flagging the
-    innocent successor. Returns ``(suspects, pairs_measured)``. Holds the track's
+    ``max(global, local)`` threshold (#5), soft/inconclusive. ``sensitivity`` (#3)
+    scales the global floor + MAD terms (default ``SENSITIVE``). A lone interior
+    spike is isolated to its culprit by leave-one-out (#1) instead of double-flagging
+    the innocent successor. Returns ``(suspects, pairs_measured)``. Holds the track's
     ``Satrec`` list and position-aligned residual array — bounded by a single
     satellite's epoch count, never the corpus."""
     suspects: list[Suspect] = []
@@ -158,7 +176,7 @@ def _track_suspects(track: list[CleanedRecord]) -> tuple[list[Suspect], int]:
             pairs[i] = _pair_residual(prev_sat, sat)
 
     measured = [r for r in pairs if r is not None]
-    threshold = _threshold(measured)
+    threshold = _threshold(measured, sensitivity)
 
     def hot(i: int) -> bool:
         r = pairs[i]
@@ -255,14 +273,16 @@ def run_orbit_pass(
     *,
     sample: int | None,
     all_sats: bool,
+    sensitivity: Sensitivity = SENSITIVE,
 ) -> dict:
     """The sampled orbit-consistency pass. Streams the sampled satellites' cleaned
     records through the external sort, then per epoch-sorted track flags hard
     ``sgp4`` element errors and soft residual outliers into ``sink`` (which spills
     to disk, so a corpus's worth of outliers never accumulates in RAM — #156).
-    Returns the census. Constant memory w.r.t. the corpus (one satellite's track
-    at a time). ponytail: re-reads ``cleaned/`` to gather the sample — a
-    single-pass sampling optimisation is a follow-up (issue #144)."""
+    ``sensitivity`` (#3) scales the global threshold. Returns the census. Constant
+    memory w.r.t. the corpus (one satellite's track at a time). ponytail: re-reads
+    ``cleaned/`` to gather the sample — a single-pass sampling optimisation is a
+    follow-up (issue #144)."""
     sampled = sample_catalogs(population, sample, all_sats)
     sorter = grouping.ExternalSorter()
     for stem in stems:
@@ -276,7 +296,7 @@ def run_orbit_pass(
     for rec in sorter.sorted_records():
         if rec.catalog != current:
             if track:
-                found, pairs = _track_suspects(track)
+                found, pairs = _track_suspects(track, sensitivity)
                 sink.add_all(found)
                 n_pairs += pairs
                 n_tracks += 1
@@ -284,7 +304,7 @@ def run_orbit_pass(
             track = []
         track.append(rec)
     if track:
-        found, pairs = _track_suspects(track)
+        found, pairs = _track_suspects(track, sensitivity)
         sink.add_all(found)
         n_pairs += pairs
         n_tracks += 1
