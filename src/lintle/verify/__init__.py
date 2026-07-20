@@ -25,11 +25,13 @@ def run_verify(
     orbit: bool = False,
     sample: int | None = None,
     all_sats: bool = False,
+    sensitivity: str = "sensitive",
 ) -> int:
     """Verify a clean run's ``<out-dir>`` output. ``source_dir`` enables the
     goal-1 byte-diff (skipped, with a note, when ``None``). ``orbit`` runs the
     opt-in sampled sgp4 orbit-consistency pass (goal 2) over ``sample`` satellites
-    (``all_sats`` for the full sweep). Returns the process exit code: 0 clean, 1
+    (``all_sats`` for the full sweep); ``sensitivity`` (``sensitive``/``strict``,
+    #3) scales its outlier threshold. Returns the process exit code: 0 clean, 1
     hard suspects found, 2 operational error (no cleaned output)."""
     stems = records.cleaned_stems(out_dir)
     if not stems:
@@ -89,7 +91,13 @@ def run_verify(
         from lintle.verify import orbit as orbit_pass
 
         orbit_census = orbit_pass.run_orbit_pass(
-            out_dir, stems, population, sink, sample=sample, all_sats=all_sats
+            out_dir,
+            stems,
+            population,
+            sink,
+            sample=sample,
+            all_sats=all_sats,
+            sensitivity=orbit_pass._TIERS[sensitivity],
         )
         checked.update(orbit_census)
 
