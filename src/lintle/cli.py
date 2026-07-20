@@ -339,6 +339,15 @@ def _add_verify_subparser(subparsers):
         action="store_true",
         help="(--orbit) check every satellite, not a sample",
     )
+    verify_parser.add_argument(
+        "--sensitivity",
+        choices=("sensitive", "strict"),
+        default="sensitive",
+        help=(
+            "(--orbit) outlier threshold tier: 'sensitive' (default; 100 km floor, "
+            "10·MAD) or 'strict' (200 km, 20·MAD) for fewer, higher-confidence hits"
+        ),
+    )
 
 
 def _add_dedup_subparser(subparsers):
@@ -599,6 +608,7 @@ def main(argv=None):
             orbit=args.orbit,
             sample=args.sample,
             all_sats=args.all_sats,
+            sensitivity=args.sensitivity,
         )
 
     # `dedup` is a read-only consumer of cleaned/ (plus a prior verify run's

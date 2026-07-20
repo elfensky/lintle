@@ -6,6 +6,57 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-07-20
+
+### Added
+
+- `lintle verify --orbit` now **stratifies its satellite sample** toward dup-epoch
+  catalogs (#163/#2) — those carrying more than one record at the same
+  `(catalog, epoch)`, the cases most likely to hide an orbit inconsistency. The
+  contradiction pass (`find_conflicts`) collects them (orbit-gated, so the default
+  sgp4-free path pays nothing) and `sample_catalogs` keeps them all, spreading the
+  rest of the budget evenly; when the priority stratum overflows the budget it is
+  itself evenly spaced across the id range rather than truncated to the lowest ids.
+  Deterministic (sorted sets, integer arithmetic, no RNG); an empty priority set
+  reproduces the previous evenly-spaced sample byte-for-byte.
+
+- `lintle verify --orbit --sensitivity {sensitive,strict}` (#163/#3): a two-tier
+  dial on the orbit-outlier threshold. `sensitive` (the default) keeps today's
+  behaviour (100 km floor, 10·MAD); `strict` raises both (200 km, 20·MAD) to surface
+  fewer, higher-confidence outliers. The tiers are a fixed table (no RNG), scale only
+  the global floor + MAD terms (the local-median multiplier and the min-epochs gate
+  stay fixed), and the default is byte-identical to the previous release.
+
+- `lintle verify --orbit` now applies **leave-one-out culprit isolation** (#163/#1):
+  a lone corrupt interior record used to flag *two* pairs — the corrupt record and
+  its innocent successor. When both a record's incoming and outgoing pairs are hot
+  and re-propagating its neighbours *around* it (a leave-one-out probe) reconciles
+  them, the finding is now attributed to the culprit alone with an `(isolated by
+  leave-one-out …)` note. The probe is gated on twice the regime gap limit (it skips
+  a record, so its gap is doubled) and judged against the global threshold only.
+  Ambiguous cases — a genuine manoeuvre step, two adjacent corrupt records, a probe
+  over the doubled gate, or an endpoint corruption — fall back to the previous
+  per-pair attribution. Everything stays soft (`VRFY-ORBIT-OUTLIER`); isolation
+  improves *attribution*, never certainty.
+
+- `lintle verify --orbit` gap gate is now **regime-aware** (#163/#4): instead of a
+  flat 3-day propagation-gap limit, GEO/geosync tracks (mean motion < 1.5 rev/day,
+  re-issued less often) tolerate a 7-day gap while LEO/MEO/Molniya keep the tighter
+  3-day gate. This recovers most GEO adjacent pairs a flat 3-day gate discarded. The
+  regime is classified from the propagation source record's `sgp4` mean motion; a
+  boundary object that flips class only swaps one *soft* gap gate for the other,
+  never a verdict.
+
+- `lintle verify --orbit` now applies a windowed **local-median** term to the
+  outlier threshold (#163/#5): each pair's bar is `max(global, 20 · median of a
+  time-local window)`, so a genuinely local spike must exceed 20× what is *locally*
+  typical rather than being drowned in — or masked by — the whole-track median. The
+  window spans the contiguous run of chain-adjacent, in-gate pairs around a pair (a
+  skipped gap bounds it, keeping the median time-local) and is inactive below 10
+  window points. The term only ever *raises* a bar (via `max`), so it removes false
+  positives on uniformly-elevated segments (e.g. high-drag phases) and never adds a
+  suspect; residuals and both threshold terms round to the 0.1 km quantum.
+
 ## [0.8.0] - 2026-07-15
 
 ### Added
