@@ -96,7 +96,8 @@ def element_set(line1: str) -> int | None:
 
 def find_conflicts(
     sorted_records: Iterator[CleanedRecord],
-) -> tuple[list[Suspect], int]:
+    orbit: bool = False,
+) -> tuple[list[Suspect], int, set[int]]:
     """Over a stream sorted by ``(catalog, epoch_key)``, classify records that
     share a ``(catalog, epoch)`` but carry a different orbital state, keyed on the
     element-set number:
@@ -109,11 +110,20 @@ def find_conflicts(
     - **same element-set, different orbit → a hard ``VRFY-EPOCH-CONFLICT``** — a
       genuine integrity clash, since one element-set names exactly one orbit.
 
-    Returns ``(hard_conflicts, reissue_count)``. Constant memory: only the current
-    group's element-set→orbital-state map is held; hard conflicts (≈0 on real
-    data) are collected, re-issues merely counted."""
+    When ``orbit`` is set, also collects the catalog of every ``(catalog, epoch)``
+    group carrying **≥ 2 records** into ``dup_epoch_catalogs`` — the #2 stratified
+    oversampling stratum. This keys purely on the group boundary (any dup-epoch
+    group, including exact-duplicate and admin-only re-issues), independent of the
+    re-issue/clash branch; it is gated behind ``orbit`` so the default sgp4-free
+    path never pays for a set the orbit pass alone consumes.
+
+    Returns ``(hard_conflicts, reissue_count, dup_epoch_catalogs)``. Constant memory
+    over the stream: only the current group's element-set→orbital-state map is held;
+    ``dup_epoch_catalogs`` is O(distinct dup-epoch catalogs), the same catalog-scale
+    budget as the sample sets, not corpus-record-scale."""
     conflicts: list[Suspect] = []
     reissues = 0
+    dup_epoch_catalogs: set[int] = set()
     group_key: tuple[int, float] | None = None
     by_elset: dict[int | None, tuple] = {}
     states: set[tuple] = set()
@@ -123,6 +133,10 @@ def find_conflicts(
             group_key = key
             by_elset = {}
             states = set()
+        elif orbit:
+            # a second (or later) record in this (catalog, epoch) group -> a
+            # dup-epoch group; collect its catalog for the oversampling stratum.
+            dup_epoch_catalogs.add(rec.catalog)
         state = orbital_state(rec.line1, rec.line2)
         elset = element_set(rec.line1)
         if by_elset.get(elset, state) != state:
@@ -142,7 +156,7 @@ def find_conflicts(
             reissues += 1  # a new orbit under a new element-set — a re-issue
         by_elset.setdefault(elset, state)
         states.add(state)
-    return conflicts, reissues
+    return conflicts, reissues, dup_epoch_catalogs
 
 
 def has_epoch_clash(records: Iterable[CleanedRecord]) -> bool:
