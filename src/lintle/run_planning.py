@@ -14,6 +14,7 @@ from lintle import (
     resume,
     term,
 )
+from lintle.chunking import CHUNK_RECORDS_DEFAULT
 
 # Marker written into the out-dir on the first fresh run.  Its presence (or the
 # presence of a checkpoint / stale-checkpoint archive) is the ownership signal
@@ -59,6 +60,7 @@ class CleanConfig:
     resume: bool
     no_resume: bool
     jobs: int | None
+    chunk_records: int = CHUNK_RECORDS_DEFAULT
 
     @classmethod
     def from_args(cls, args) -> CleanConfig:
@@ -71,6 +73,7 @@ class CleanConfig:
             resume=args.resume,
             no_resume=args.no_resume,
             jobs=args.jobs,
+            chunk_records=getattr(args, "chunk_records", CHUNK_RECORDS_DEFAULT),
         )
 
 
