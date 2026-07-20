@@ -8,6 +8,14 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Added
 
+- `lintle verify --orbit` gap gate is now **regime-aware** (#163/#4): instead of a
+  flat 3-day propagation-gap limit, GEO/geosync tracks (mean motion < 1.5 rev/day,
+  re-issued less often) tolerate a 7-day gap while LEO/MEO/Molniya keep the tighter
+  3-day gate. This recovers most GEO adjacent pairs a flat 3-day gate discarded. The
+  regime is classified from the propagation source record's `sgp4` mean motion; a
+  boundary object that flips class only swaps one *soft* gap gate for the other,
+  never a verdict.
+
 - `lintle verify --orbit` now applies a windowed **local-median** term to the
   outlier threshold (#163/#5): each pair's bar is `max(global, 20 · median of a
   time-local window)`, so a genuinely local spike must exceed 20× what is *locally*
