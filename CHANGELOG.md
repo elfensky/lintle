@@ -6,6 +6,18 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Added
+
+- `lintle verify --orbit` now applies a windowed **local-median** term to the
+  outlier threshold (#163/#5): each pair's bar is `max(global, 20 · median of a
+  time-local window)`, so a genuinely local spike must exceed 20× what is *locally*
+  typical rather than being drowned in — or masked by — the whole-track median. The
+  window spans the contiguous run of chain-adjacent, in-gate pairs around a pair (a
+  skipped gap bounds it, keeping the median time-local) and is inactive below 10
+  window points. The term only ever *raises* a bar (via `max`), so it removes false
+  positives on uniformly-elevated segments (e.g. high-drag phases) and never adds a
+  suspect; residuals and both threshold terms round to the 0.1 km quantum.
+
 ## [0.8.0] - 2026-07-15
 
 ### Added
