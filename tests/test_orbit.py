@@ -92,6 +92,27 @@ def diverged_last() -> tuple[str, str]:
     return l1, fix(l2[:43] + "352.6637" + l2[51:])
 
 
+def bump_ma(l2: str, deg: float) -> str:
+    """Line 2 with its mean anomaly (cols 44-51) bumped by ``deg`` degrees and
+    re-checksummed — a valid record whose orbit no longer follows its neighbours."""
+    ma = (float(l2[43:51]) + deg) % 360
+    return fix(l2[:43] + f"{ma:08.4f}" + l2[51:])
+
+
+def at_day(l1: str, day: float) -> str:
+    """Line 1 with its epoch rewritten to 2006 day-of-year ``day`` (cols 19-32) and
+    re-checksummed — lets a test set the cadence around a synthetic culprit."""
+    return fix(l1[:20] + f"{day:012.8f}" + l1[32:])
+
+
+# A GEO-regime record (~1.0027 rev/day) @ 2006 day 3, catalog 00005 — used as an
+# interior culprit whose 7-day gate makes the leave-one-out probe gap over-wide.
+GEO_CULPRIT = (
+    fix("1 00005U 58002B   06003.00000000  .00000000  00000+0  00000+0 0  999"),
+    fix("2 00005 000.0500 095.0000 0001000 000.0000 000.0000 01.00270000 0000"),
+)
+
+
 def build_tree(tmp_path, pairs, stem="tle01"):
     out = tmp_path / "output"
     (out / "cleaned").mkdir(parents=True, exist_ok=True)
@@ -227,6 +248,90 @@ class TestTrackVerdict:
         recs = [rec(*TRACK[0], idx=0), rec(*TRACK[-1], idx=1)]
         suspects, pairs = orbit._track_suspects(recs)
         assert pairs == 0 and suspects == []
+
+
+class TestLeaveOneOut:
+    """#1 leave-one-out culprit isolation: a lone interior spike is attributed to
+    the culprit alone (no double-flag onto the innocent successor); every ambiguous
+    case falls back to per-pair attribution. All findings stay soft."""
+
+    def test_interior_spike_isolates_the_culprit(self):
+        # record 2 corrupted, both neighbours clean: incoming and outgoing pairs
+        # both hot, but leave-2-out (record 1 -> record 3) reconciles -> one
+        # isolated suspect on the culprit, none on its successor.
+        recs = track_records()
+        recs[2] = rec(TRACK[2][0], bump_ma(TRACK[2][1], 10), idx=2)
+        suspects, _ = orbit._track_suspects(recs)
+        assert len(suspects) == 1
+        s = suspects[0]
+        assert s.rule is VrfyRule.ORBIT_OUTLIER and s.severity == "soft"
+        assert s.index == 2  # the culprit, not the successor (3)
+        assert "isolated" in s.detail
+
+    def test_wide_probe_falls_back_to_per_pair(self):
+        # an uneven cadence around a regime-shifted culprit makes the doubled probe
+        # gap (7 d) exceed 2*_gap_limit(LEO)=6 d: isolation is un-measurable, so
+        # both hot pairs still emit per-pair rather than being silently dropped.
+        l1, l2 = TRACK[1]
+        recs = [
+            rec(at_day(l1, 1.0), l2, idx=0),  # LEO
+            rec(*GEO_CULPRIT, idx=1),  # GEO-regime culprit @ day 3
+            rec(at_day(l1, 8.0), l2, idx=2),  # LEO, 5 days after the culprit
+        ]
+        suspects, _ = orbit._track_suspects(recs)
+        assert len(suspects) == 2
+        assert all(s.rule is VrfyRule.ORBIT_OUTLIER for s in suspects)
+        assert all("isolated" not in s.detail for s in suspects)
+
+    def test_manoeuvre_step_is_a_single_suspect(self):
+        # a real manoeuvre: the orbit shifts at record 3 and the tail follows it,
+        # so only the transition pair is hot -> one per-pair suspect, no isolation.
+        recs = track_records()
+        for i in (3, 4, 5):
+            recs[i] = rec(TRACK[i][0], bump_ma(TRACK[i][1], 10), idx=i)
+        suspects, _ = orbit._track_suspects(recs)
+        assert len(suspects) == 1
+        assert suspects[0].index == 3
+        assert "isolated" not in suspects[0].detail
+
+    def test_both_hot_but_loo_still_hot_is_two_suspects(self):
+        # record 1 spiked and record 2 shifted to a different orbit: removing record
+        # 1 does NOT reconcile records 0 and 2 (leave-one-out still hot) -> ambiguous
+        # -> both pairs emit per-pair, no isolation.
+        l1, l2 = TRACK[1]
+        recs = [
+            rec(at_day(l1, 1.0), l2, idx=0),
+            rec(at_day(l1, 2.0), bump_ma(l2, 10), idx=1),
+            rec(at_day(l1, 3.0), bump_ma(l2, 30), idx=2),
+        ]
+        suspects, _ = orbit._track_suspects(recs)
+        assert len(suspects) == 2
+        assert all("isolated" not in s.detail for s in suspects)
+
+    def test_hole_between_hot_pairs_is_not_conflated(self):
+        # two hot pairs separated by a None hole (a 5-day out-of-gate gap): the hole
+        # is record 2's incoming pair, so records 1 and 3 are never treated as one
+        # record's incoming/outgoing -> no isolation, two per-pair suspects.
+        l1, l2 = TRACK[1]
+        recs = [
+            rec(at_day(l1, 1.0), l2, idx=0),
+            rec(at_day(l1, 2.0), bump_ma(l2, 15), idx=1),  # pairs[1] hot
+            rec(at_day(l1, 7.0), l2, idx=2),  # gap 5 d -> pairs[2] is None
+            rec(at_day(l1, 8.0), bump_ma(l2, 15), idx=3),  # pairs[3] hot
+        ]
+        suspects, _ = orbit._track_suspects(recs)
+        assert len(suspects) == 2
+        assert {s.index for s in suspects} == {1, 3}
+        assert all("isolated" not in s.detail for s in suspects)
+
+    def test_endpoint_corruption_is_per_pair(self):
+        # the first record is corrupt: it has only one neighbour, so isolation
+        # (which needs an incoming AND an outgoing hot pair) cannot apply.
+        recs = track_records()
+        recs[0] = rec(TRACK[0][0], bump_ma(TRACK[0][1], 10), idx=0)
+        suspects, _ = orbit._track_suspects(recs)
+        assert len(suspects) == 1
+        assert "isolated" not in suspects[0].detail
 
 
 class TestEndToEnd:
