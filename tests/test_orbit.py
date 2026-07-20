@@ -100,6 +100,43 @@ class TestThreshold:
         assert orbit._threshold(vals) == 360.0
 
 
+class TestLocalThreshold:
+    """The #5 windowed local-median term: per-pair bar = round(20 * median of a
+    time-local window, 0.1 km), inactive below MIN_EPOCHS_FOR_MAD window points."""
+
+    def test_inactive_below_min_epochs(self):
+        # fewer than MIN_EPOCHS_FOR_MAD window points -> no local term (0.0)
+        assert orbit._local_threshold([50.0] * 9, 4) == 0.0
+
+    def test_active_window_is_twenty_times_local_median(self):
+        # a uniformly-elevated segment (>= 10 points): 20 * local median = 1000
+        assert orbit._local_threshold([50.0] * 11, 5) == 1000.0
+
+    def test_window_rounds_to_quantum(self):
+        # even-count window -> median averages two 0.1-quantised values to a 0.05
+        # multiple; 20 * 5.05 = 101.00000000000001 must round to the 0.1 km quantum
+        assert orbit._local_threshold([5.0] * 5 + [5.1] * 5, 5) == 101.0
+
+    def test_window_is_time_local_not_index_local(self):
+        # a None hole (a skipped/ungated pair) bounds the window: the elevated
+        # post-hole segment must not pull the small pre-hole residuals into its
+        # "local" median. Around index 8 only the 6 post-hole points are in the
+        # run (< 10) -> inactive, not a full 11-point index window.
+        pairs = [5.0] * 5 + [None] + [500.0] * 6
+        assert orbit._local_threshold(pairs, 8) == 0.0
+
+    def test_local_term_suppresses_globally_flagged_pair(self):
+        # an elevated plateau: a residual that clears the GLOBAL bar is held below
+        # the LOCAL bar, so max(global, local) removes it (monotone: local only
+        # raises, never adds a suspect).
+        seg = [200.0] * 11
+        glob = orbit._threshold(seg)  # median 200, MAD 0 -> 200
+        loc = orbit._local_threshold(seg, 5)  # 20 * 200 = 4000
+        spike = 260.0
+        assert spike > glob + orbit.RESIDUAL_QUANTUM_KM  # global alone flags it
+        assert spike <= max(glob, loc) + orbit.RESIDUAL_QUANTUM_KM  # local suppresses
+
+
 class TestSample:
     def test_all_sats_returns_population(self):
         assert orbit.sample_catalogs({1, 2, 3}, 2, True) == {1, 2, 3}
