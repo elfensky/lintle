@@ -33,9 +33,40 @@ from lintle import (
 from lintle import (
     config as user_config,
 )
+from lintle.chunking import CHUNK_RECORDS_DEFAULT
 
 _DEFAULT_SOURCE = "data/source"
 _DEFAULT_OUTPUT = "data/output"
+
+
+def _chunk_records_type(value):
+    """argparse type for ``--chunk-records``: a non-negative int (0 = never roll,
+    a single ``.00001`` chunk). Rejects negatives so a typo fails loudly."""
+    try:
+        n = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not an integer: {value!r}") from None
+    if n < 0:
+        raise argparse.ArgumentTypeError("must be >= 0 (0 = never roll)")
+    return n
+
+
+def _add_chunk_records_arg(parser):
+    """Add the shared ``--chunk-records N`` flag (clean/dedup/verify) that sizes
+    the fixed-count output chunks. ``0`` writes a single ``.00001`` chunk."""
+    parser.add_argument(
+        "--chunk-records",
+        type=_chunk_records_type,
+        default=CHUNK_RECORDS_DEFAULT,
+        metavar="N",
+        help=(
+            "records per output chunk file (default: "
+            f"{CHUNK_RECORDS_DEFAULT:,}); every record/line stream is split into "
+            "<stem>.NNNNN.<suffix> chunks of this size. 0 = never roll (a single "
+            ".00001 chunk)"
+        ),
+    )
+
 
 _EPILOG = """\
 Examples:
@@ -175,6 +206,7 @@ def _add_clean_subparser(subparsers):
             "checksum, so by default such lines are quarantined"
         ),
     )
+    _add_chunk_records_arg(sub)
     resume_group = sub.add_mutually_exclusive_group()
     resume_group.add_argument(
         "--resume",

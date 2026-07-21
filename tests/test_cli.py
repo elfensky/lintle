@@ -151,8 +151,8 @@ class TestMain:
         rc = cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
 
         assert rc == 0
-        assert (out / "cleaned" / "tle2099.cleaned.txt").exists()
-        assert (out / "broken" / "tle2099.broken.txt").exists()
+        assert (out / "cleaned" / "tle2099.00001.cleaned.txt").exists()
+        assert (out / "broken" / "tle2099.00001.broken.txt").exists()
         # A clean run writes a Markdown run report to the out-dir root.
         report_md = (out / "report.md").read_text()
         assert "# lintle clean run report" in report_md
@@ -1066,7 +1066,7 @@ class TestReconstructChecksumFlag:
         # The record is quarantined (not reconstructed), so the default
         # quality gate (0 quarantines) fails and nothing is written clean.
         assert rc == 1
-        assert (out / "cleaned" / "tle2099.cleaned.txt").read_text() == ""
+        assert (out / "cleaned" / "tle2099.00001.cleaned.txt").read_text() == ""
 
     def test_flag_recovers_checksumless_record(self, tmp_path, line1, line2):
         src = self._checksumless_src(tmp_path, line1, line2)
@@ -1083,5 +1083,5 @@ class TestReconstructChecksumFlag:
             ]
         )
         assert rc == 0
-        cleaned = (out / "cleaned" / "tle2099.cleaned.txt").read_text()
+        cleaned = (out / "cleaned" / "tle2099.00001.cleaned.txt").read_text()
         assert cleaned == line1 + "\n" + line2 + "\n"
