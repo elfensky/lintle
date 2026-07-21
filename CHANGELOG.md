@@ -6,6 +6,8 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-07-21
+
 ### Changed
 
 - **BREAKING (output layout): one directory per pipeline step.** All of `lintle
