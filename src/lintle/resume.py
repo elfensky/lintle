@@ -26,6 +26,7 @@ from lintle import (
     FINDINGS_SUFFIX,
     SHARDS_DIRNAME,
     __version__,
+    chunking,
     fsutil,
     stem,
 )
@@ -75,24 +76,27 @@ def run_started_stamp():
 
 
 def output_sizes(out_dir, stats):
-    """Map each output basename this file produced to its on-disk size, captured
-    at completion for the resume integrity check (spec §3.6). Clean mode always
-    writes both a cleaned file and a broken sidecar (even when no records are
-    quarantined, ``pipeline`` unconditionally finalizes the sidecar to a
-    header-only file), so both are recorded unconditionally. The findings shard
-    in ``.shards/`` is also recorded so a missing-or-truncated shard detected on
-    resume forces reprocessing — regenerating the shard and keeping ``report.jsonl``
-    complete (issue #117). Suffix/dirname constants are imported from
-    ``lintle.__init__`` — the single naming-convention authority."""
+    """Map each output *chunk* basename this file produced to its on-disk size,
+    captured at completion for the resume integrity check (spec §3.6). The cleaned
+    and broken streams are chunk sets (``<stem>.NNNNN.<suffix>``); every chunk is
+    enumerated and recorded by its own basename, so the check validates the whole
+    set — a truncated or missing chunk on resume forces reprocessing. Clean mode
+    always writes at least one cleaned chunk and one broken-sidecar chunk (a
+    header-only ``.00001`` when nothing is quarantined), so a non-validate run
+    always records both sets. The findings shard in ``.shards/`` stays a single
+    intermediate file and is recorded by name (issue #117). Suffix/dirname
+    constants come from ``lintle.__init__`` — the single naming authority."""
     sizes = {}
     out = Path(out_dir)
     file_stem = stem(stats.src_name)
-    cleaned = file_stem + CLEANED_SUFFIX
-    with contextlib.suppress(OSError):
-        sizes[cleaned] = (out / CLEANED_DIRNAME / cleaned).stat().st_size
-    broken = file_stem + BROKEN_SUFFIX
-    with contextlib.suppress(OSError):
-        sizes[broken] = (out / BROKEN_DIRNAME / broken).stat().st_size
+    for sub, suffix in (
+        (CLEANED_DIRNAME, CLEANED_SUFFIX),
+        (BROKEN_DIRNAME, BROKEN_SUFFIX),
+    ):
+        reader = chunking.ChunkedReader(out / sub, file_stem, suffix)
+        for chunk in reader.chunk_paths():
+            with contextlib.suppress(OSError):
+                sizes[chunk.name] = chunk.stat().st_size
     shard = file_stem + FINDINGS_SUFFIX
     with contextlib.suppress(OSError):
         sizes[shard] = (out / SHARDS_DIRNAME / shard).stat().st_size

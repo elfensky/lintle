@@ -180,9 +180,15 @@ def resolve_clean_plan(config: CleanConfig, files, file_sizes):
     # reconstruct_checksum changes which records are accepted vs quarantined,
     # so a resume with a flipped flag must re-run (STALE), not fold mismatched
     # outputs together (issue #82).
+    # chunk_records is part of run identity: it sets the chunk boundaries, so a
+    # resume with a different value would mix chunk sizes within one logical run
+    # (completed stems at the old size, redone stems at the new). A mismatch
+    # classifies the checkpoint STALE → the run restarts fresh rather than
+    # producing a set whose concatenation a fresh run would not reproduce.
     run_identity = {
         "max_quarantined": config.max_quarantined,
         "reconstruct_checksum": config.reconstruct_checksum,
+        "chunk_records": config.chunk_records,
     }
 
     classification = resume.classify_checkpoint(config.out_dir, inputs, run_identity)

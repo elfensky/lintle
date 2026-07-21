@@ -5,6 +5,7 @@ import os
 import pytest
 
 from lintle import cli, pipeline, report, resume, run_planning
+from lintle.chunking import CHUNK_RECORDS_DEFAULT
 
 
 def _strip_generated(path):
@@ -26,9 +27,14 @@ def _simulate_interrupted_clean(
     end-of-run concat), plus a checkpoint that lists them complete with every
     input fingerprinted. Mirrors the real interrupted state without needing to
     actually kill a parallel run. ``run_identity`` defaults to the shape used
-    by ``main()`` (``{"max_quarantined": "0", "reconstruct_checksum": False}``)."""
+    by ``main()`` (``{"max_quarantined": "0", "reconstruct_checksum": False,
+    "chunk_records": CHUNK_RECORDS_DEFAULT}``)."""
     if run_identity is None:
-        run_identity = {"max_quarantined": "0", "reconstruct_checksum": False}
+        run_identity = {
+            "max_quarantined": "0",
+            "reconstruct_checksum": False,
+            "chunk_records": CHUNK_RECORDS_DEFAULT,
+        }
     os.makedirs(out_dir, exist_ok=True)
     inputs = {p: resume.input_fingerprint(p) for p in src_paths}
     completed = {}
