@@ -39,3 +39,4 @@ dist/
 .desloppify
 .claude
 .worktrees
+.claude-octopus
