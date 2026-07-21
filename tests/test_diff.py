@@ -35,7 +35,7 @@ def _write_run(run_dir, entries, *, file="tle.txt"):
     serialized through the real producer renderer.
     """
     run_dir.mkdir(parents=True, exist_ok=True)
-    path = run_dir / "report.jsonl"
+    path = run_dir / "report.00001.jsonl"
     with path.open("w", encoding="utf-8") as fh:
         for entry in entries:
             payload = report_writers.entry_to_jsonl_dict(
@@ -49,7 +49,7 @@ def _write_run_files(run_dir, file_rules):
     """Write a report.jsonl with one finding per ``(filename, RuleID)`` pair,
     so a single run can span multiple files."""
     run_dir.mkdir(parents=True, exist_ok=True)
-    path = run_dir / "report.jsonl"
+    path = run_dir / "report.00001.jsonl"
     with path.open("w", encoding="utf-8") as fh:
         for filename, rule in file_rules:
             entry = _entry(rule)
@@ -96,7 +96,7 @@ class TestDiffReader:
     def test_blank_lines_are_skipped(self, tmp_path):
         run = _write_run(tmp_path / "run", [_entry(RuleID.BAD_PREFIX)])
         # Append a blank line — a stray trailing newline must not break parsing.
-        (run / "report.jsonl").open("a", encoding="utf-8").write("\n")
+        (run / "report.00001.jsonl").open("a", encoding="utf-8").write("\n")
         assert _rule_ids(str(run)) == ["TLE-PAIR-002"]
 
     def test_missing_report_jsonl_raises_difference_error(self, tmp_path):
@@ -112,7 +112,7 @@ class TestDiffReader:
             _entry(RuleID.CHECKSUM_MISMATCH), file="tle.txt", norad_id=25544
         )
         payload["schema_version"] = "2"  # forge a future envelope
-        (run / "report.jsonl").write_text(json.dumps(payload) + "\n")
+        (run / "report.00001.jsonl").write_text(json.dumps(payload) + "\n")
         with pytest.raises(diff.DiffError, match="schema_version"):
             list(diff.iter_findings(str(run)))
 
@@ -125,7 +125,7 @@ class TestDiffReader:
             _entry(RuleID.CHECKSUM_MISMATCH), file="tle.txt", norad_id=25544
         )
         del payload["schema_version"]
-        (run / "report.jsonl").write_text(json.dumps(payload) + "\n")
+        (run / "report.00001.jsonl").write_text(json.dumps(payload) + "\n")
         with pytest.raises(diff.DiffError, match="schema_version"):
             list(diff.iter_findings(str(run)))
 
@@ -138,14 +138,14 @@ class TestDiffReader:
             _entry(RuleID.CHECKSUM_MISMATCH), file="tle.txt", norad_id=25544
         )
         del payload["rule_id"]
-        (run / "report.jsonl").write_text(json.dumps(payload) + "\n")
+        (run / "report.00001.jsonl").write_text(json.dumps(payload) + "\n")
         with pytest.raises(diff.DiffError, match="rule_id"):
             list(diff.iter_findings(str(run)))
 
     def test_malformed_json_line_raises(self, tmp_path):
         run = tmp_path / "run"
         run.mkdir()
-        (run / "report.jsonl").write_text("{not valid json\n")
+        (run / "report.00001.jsonl").write_text("{not valid json\n")
         with pytest.raises(diff.DiffError):
             list(diff.iter_findings(str(run)))
 
@@ -158,7 +158,7 @@ class TestDiffReader:
             _entry(RuleID.CHECKSUM_MISMATCH), file="tle.txt", norad_id=25544
         )
         payload["schema_version"] = 1  # int, not "1"
-        (run / "report.jsonl").write_text(json.dumps(payload) + "\n")
+        (run / "report.00001.jsonl").write_text(json.dumps(payload) + "\n")
         with pytest.raises(diff.DiffError, match="schema_version"):
             list(diff.iter_findings(str(run)))
 
@@ -167,7 +167,7 @@ class TestDiffReader:
         # a crash — open() raises IsADirectoryError, which must surface as DiffError.
         run = tmp_path / "run"
         run.mkdir()
-        (run / "report.jsonl").mkdir()
+        (run / "report.00001.jsonl").mkdir()
         with pytest.raises(diff.DiffError):
             list(diff.iter_findings(str(run)))
 
@@ -176,7 +176,7 @@ class TestDiffReader:
         # DiffError, not an unhandled UnicodeDecodeError traceback.
         run = tmp_path / "run"
         run.mkdir()
-        (run / "report.jsonl").write_bytes(b"\xff\xfe not utf-8\n")
+        (run / "report.00001.jsonl").write_bytes(b"\xff\xfe not utf-8\n")
         with pytest.raises(diff.DiffError):
             list(diff.iter_findings(str(run)))
 
@@ -189,7 +189,7 @@ class TestDiffReader:
         # whole file up front would raise on the FIRST next() — failing the
         # first assertion below.
         run = _write_run(tmp_path / "run", [_entry(RuleID.CHECKSUM_MISMATCH)])
-        with (run / "report.jsonl").open("a", encoding="utf-8") as fh:
+        with (run / "report.00001.jsonl").open("a", encoding="utf-8") as fh:
             fh.write("{not valid json\n")
         gen = diff.iter_findings(str(run))
         first_file, first_rule = next(gen)
@@ -397,7 +397,7 @@ class TestDiffCli:
             _entry(RuleID.CHECKSUM_MISMATCH), file="tle.txt", norad_id=25544
         )
         payload["schema_version"] = "99"
-        (run_b / "report.jsonl").write_text(json.dumps(payload) + "\n")
+        (run_b / "report.00001.jsonl").write_text(json.dumps(payload) + "\n")
         code = cli.main(["diff", str(run_a), str(run_b)])
         err = capsys.readouterr().err
         assert code == 2
@@ -429,7 +429,7 @@ class TestFindingFileValidation:
 
     def _write_jsonl(self, run_dir, payload):
         run_dir.mkdir(parents=True, exist_ok=True)
-        (run_dir / "report.jsonl").write_text(
+        (run_dir / "report.00001.jsonl").write_text(
             __import__("json").dumps(payload) + "\n", encoding="utf-8"
         )
 
@@ -480,7 +480,7 @@ class TestFindingFileValidation:
             _entry(RuleID.CHECKSUM_MISMATCH), file="tle.txt", norad_id=25544
         )
         del payload["file"]
-        (run_b / "report.jsonl").write_text(
+        (run_b / "report.00001.jsonl").write_text(
             __import__("json").dumps(payload) + "\n", encoding="utf-8"
         )
         code = cli.main(["diff", str(run_a), str(run_b)])
@@ -532,7 +532,7 @@ class TestAggregateByFile:
         payload = report_writers.entry_to_jsonl_dict(
             entry, file="a.txt", norad_id=entry.norad_id
         )
-        (run / "report.jsonl").write_text(json.dumps(payload) + "\n")
+        (run / "report.00001.jsonl").write_text(json.dumps(payload) + "\n")
         by_file = diff.aggregate_by_file(str(run))
         assert by_file["a.txt"] == collections.Counter({"TLE-CHK-001": 1})
 

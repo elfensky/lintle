@@ -237,16 +237,22 @@ A `clean` run lays `--out-dir` out like this:
 
 ```
 <out-dir>/
-├── cleaned/                tleYYYY.cleaned.txt   — one per input file
-├── broken/                 tleYYYY.broken.txt    — one per input file
+├── cleaned/                tleYYYY.00001.cleaned.txt, .00002… — chunk set per input file
+├── broken/                 tleYYYY.00001.broken.txt, .00002…  — chunk set per input file
 ├── broken-noradids.ndjson  — corpus-wide list of quarantined NORAD IDs
-├── report.jsonl            — corpus-wide structured findings stream
+├── report.00001.jsonl, …   — corpus-wide structured findings stream, chunked
 └── report.md               — corpus-wide run report
 ```
 
-- **`cleaned/tleYYYY.cleaned.txt`** — standard 2-line TLE text, every record verified valid
+Every record/line output stream is split into a `<stem>.NNNNN.<suffix>` **chunk set** of
+`--chunk-records` records each (default 1,000,000 ≈ 140 MB, so no single output file is ever
+huge), tunable via `--chunk-records N` on `clean`/`dedup`/`verify` (`0` = a single `.00001`
+chunk). `cat <stem>.*.<suffix>` reproduces the pre-chunking single file byte-for-byte. Aggregate
+summaries (`report.md`, `report.json`, `broken-noradids.ndjson`, `*/summary.*`) stay single files.
+
+- **`cleaned/tleYYYY.NNNNN.cleaned.txt`** — standard 2-line TLE text, every record verified valid
   and ready for downstream ingestion.
-- **`broken/tleYYYY.broken.txt`** — the quarantine sidecar: source line number(s), a
+- **`broken/tleYYYY.NNNNN.broken.txt`** — the quarantine sidecar: source line number(s), a
   human-readable reason, and the offending line(s) copied **byte-faithfully**, with a header
   formatted to paste into a space-track defect report.
 - **`broken-noradids.ndjson`** — one `{"noradId":N}` per line, the deduplicated, sorted set

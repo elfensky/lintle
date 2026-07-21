@@ -3,9 +3,16 @@
 from pathlib import Path
 
 from lintle import cli_progress, report, report_writers, term
+from lintle.chunking import CHUNK_RECORDS_DEFAULT
 
 
-def write_clean_artifacts(out_dir, all_stats, envelope, failed_files=None):
+def write_clean_artifacts(
+    out_dir,
+    all_stats,
+    envelope,
+    failed_files=None,
+    chunk_records=CHUNK_RECORDS_DEFAULT,
+):
     """Write the corpus-wide artifacts for a completed ``clean`` run: the
     Markdown ``report.md``, the machine ``report.json`` (the byte-identical twin
     of the ``--report json`` stdout envelope), the ``broken-noradids.ndjson``,
@@ -25,7 +32,7 @@ def write_clean_artifacts(out_dir, all_stats, envelope, failed_files=None):
             str(out / "broken-noradids.ndjson"), all_stats
         )
         missing = report_writers.concat_findings_shards(
-            out_dir, str(out / "report.jsonl"), all_stats
+            out_dir, str(out / "report.jsonl"), all_stats, chunk_records
         )
     # Warn about any shard that was missing but had quarantined records — the
     # gap is surfaced here (stderr ephemera) rather than inside concat_findings_shards

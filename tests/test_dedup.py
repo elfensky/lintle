@@ -5,6 +5,7 @@ list. Cleaned output is immutable; dedup only reads it and writes under
 import json
 
 from lintle import cli, dedup, tle
+from lintle.chunking import ChunkedReader
 from lintle.verify import epoch
 from lintle.verify.records import CleanedRecord
 
@@ -43,7 +44,7 @@ def other_catalog(n: int) -> str:
 
 def build_tree(tmp_path, cleaned_pairs, *, suspects=None, stem="tle01"):
     """Write a minimal clean-run output tree (cleaned/ + optional verify/
-    suspects.jsonl); return the out-dir as a string."""
+    suspects.00001.jsonl chunk); return the out-dir as a string."""
     out = tmp_path / "output"
     (out / "cleaned").mkdir(parents=True, exist_ok=True)
     (out / "cleaned" / f"{stem}.00001.cleaned.txt").write_text(
@@ -51,23 +52,31 @@ def build_tree(tmp_path, cleaned_pairs, *, suspects=None, stem="tle01"):
     )
     if suspects is not None:
         (out / "verify").mkdir(parents=True, exist_ok=True)
-        (out / "verify" / "suspects.jsonl").write_text(
+        (out / "verify" / "suspects.00001.jsonl").write_text(
             "".join(json.dumps(s) + "\n" for s in suspects), encoding="ascii"
         )
     return str(out)
 
 
 def read_import(out) -> str:
-    return (out / "dedup" / "import.txt").read_text(encoding="ascii")
+    reader = ChunkedReader(out / "dedup", "import", ".txt")
+    return "".join(f"{line.decode('ascii')}\n" for line in reader.iter_lines())
 
 
 def read_notes(out) -> list[dict]:
-    text = (out / "dedup" / "notes.jsonl").read_text(encoding="ascii")
-    return [json.loads(line) for line in text.splitlines()]
+    reader = ChunkedReader(out / "dedup", "notes", ".jsonl")
+    return [json.loads(line) for line in reader.iter_lines() if line]
 
 
 def read_summary(out) -> dict:
     return json.loads((out / "dedup" / "summary.json").read_text(encoding="ascii"))
+
+
+def read_chunk_bytes(out, stem, suffix) -> bytes:
+    """Concatenate a chunk set's committed chunk files in index order — the
+    byte-deterministic equivalent of the pre-chunking single file's bytes."""
+    reader = ChunkedReader(out / "dedup", stem, suffix)
+    return b"".join(path.read_bytes() for path in reader.chunk_paths())
 
 
 def rec(line1=L1, line2=L2, src="tle01", idx=0) -> CleanedRecord:
@@ -129,7 +138,7 @@ class TestEndToEnd:
         body = read_import(out)
         # sorted by catalog: 00005 before 00009
         assert body == f"{L1}\n{L2}\n{other_catalog(9)}\n{L2}\n"
-        assert not (out / "dedup" / "notes.jsonl").exists() or read_notes(out) == []
+        assert read_notes(out) == []
 
     def test_benign_reissue_collapses_end_to_end(self, tmp_path):
         out = tmp_path / "output"
@@ -235,11 +244,11 @@ class TestEndToEnd:
         ]
         out_dir = build_tree(tmp_path, pairs)
         dedup.run_dedup(out_dir)
-        imp1 = (out / "dedup" / "import.txt").read_bytes()
-        notes1 = (out / "dedup" / "notes.jsonl").read_bytes()
+        imp1 = read_chunk_bytes(out, "import", ".txt")
+        notes1 = read_chunk_bytes(out, "notes", ".jsonl")
         dedup.run_dedup(out_dir)
-        assert (out / "dedup" / "import.txt").read_bytes() == imp1
-        assert (out / "dedup" / "notes.jsonl").read_bytes() == notes1
+        assert read_chunk_bytes(out, "import", ".txt") == imp1
+        assert read_chunk_bytes(out, "notes", ".jsonl") == notes1
 
     def test_missing_cleaned_dir_is_operational_error(self, tmp_path):
         assert dedup.run_dedup(str(tmp_path / "nope")) == 2

@@ -421,7 +421,7 @@ class TestEndToEnd:
         pairs = TRACK[:-1] + [diverged_last()]
         out = build_tree(tmp_path, pairs)
         assert run_verify(out, None, orbit=True) == 0  # inconclusive never blocks
-        rows = (tmp_path / "output" / "verify" / "suspects.jsonl").read_text()
+        rows = (tmp_path / "output" / "verify" / "suspects.00001.jsonl").read_text()
         assert "VRFY-ORBIT-OUTLIER" in rows
 
     def test_orbit_off_by_default(self, tmp_path):

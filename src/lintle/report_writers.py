@@ -3,7 +3,6 @@ findings shards, the corpus ``broken-noradids.ndjson``, and shard concat."""
 
 import contextlib
 import json
-import shutil
 from pathlib import Path
 
 from lintle import (
@@ -440,20 +439,26 @@ def shard_path(out_dir: str, src_name: str) -> Path:
 
 
 def concat_findings_shards(
-    out_dir: str, dest_path: str, all_stats: list[FileStats]
+    out_dir: str,
+    dest_path: str,
+    all_stats: list[FileStats],
+    chunk_records: int = CHUNK_RECORDS_DEFAULT,
 ) -> list[str]:
-    """Concatenate per-file findings shards into the corpus ``report.jsonl``.
+    """Concatenate per-file findings shards into the corpus chunked
+    ``report.NNNNN.jsonl`` set.
 
     Per-worker shards live in ``<out_dir>/.shards/<stem>.findings.jsonl``,
     written by each worker's ``QuarantineSink`` (issue #9). We walk
     ``all_stats`` (already sorted by ``src_name`` in ``cli.py`` before this
     call) so the concatenated order is alphabetical by source filename —
-    deterministic and matching ``report.md``'s per-file table. The
-    destination is written via tmp + :func:`fsutil.durable_replace` for
-    atomicity and power-loss durability (issue #58). Always creates the
-    destination even when every shard is empty or missing, matching
-    ``broken-noradids.ndjson``'s "artifact always present after successful
-    clean" contract. Spec §4.6.
+    deterministic and matching ``report.md``'s per-file table. A single
+    :class:`chunking.ChunkedWriter` spans the whole ``all_stats`` loop — the
+    1M-line chunk boundary does not align with per-stem shard boundaries, so one
+    chunk may hold the tail of one shard and the head of the next; each shard is
+    read line by line (a finding = one unit) so no record is split across a
+    chunk. Each chunk is committed atomically (issue #58). Always creates at
+    least the ``.00001`` chunk even when every shard is empty or missing,
+    matching the "artifact always present after a successful clean" contract.
 
     Returns the list of source filenames (``stats.src_name``) whose shard was
     missing but had a non-zero ``quarantined_count`` — a gap the caller should
@@ -466,9 +471,11 @@ def concat_findings_shards(
     successful run, so an interrupted or failed run keeps its shards and a
     later ``--resume`` can re-read them to rebuild a complete ``report.jsonl``.
     """
-    tmp_path = dest_path + ".partial"
+    dest = Path(dest_path)
     missing_nonempty: list[str] = []
-    with open(tmp_path, "wb") as out:
+    with chunking.ChunkedWriter(
+        str(dest.parent), dest.stem, dest.suffix, chunk_records
+    ) as out:
         for stats in all_stats:
             shard = shard_path(out_dir, stats.src_name)
             if not shard.exists():
@@ -480,6 +487,6 @@ def concat_findings_shards(
                     missing_nonempty.append(stats.src_name)
                 continue
             with open(shard, "rb") as src:
-                shutil.copyfileobj(src, out, length=65536)
-    fsutil.durable_replace(tmp_path, dest_path)
+                for line in src:
+                    out.write(line)  # one JSONL finding = one chunk unit
     return missing_nonempty

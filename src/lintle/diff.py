@@ -23,11 +23,13 @@ import dataclasses
 import json
 from pathlib import Path
 
-from lintle import term
+from lintle import chunking, term
 from lintle.diagnostics import RULES, RuleID
 
 _SCHEMA_VERSION = "1"
 _FINDINGS_NAME = "report.jsonl"
+_FINDINGS_STEM = "report"
+_FINDINGS_SUFFIX = ".jsonl"
 
 
 class DiffError(Exception):
@@ -37,25 +39,32 @@ class DiffError(Exception):
 
 
 def iter_findings(run_dir):
-    """Yield ``(file, rule_id)`` for every finding in ``<run_dir>/report.jsonl``,
-    one per line, in file order. The core reader: a generator that never holds
-    more than a single line in memory. Raises :class:`DiffError` on a missing
-    file, a malformed JSON line, a ``schema_version`` other than ``"1"``, or a
-    line lacking ``rule_id`` — the diff refuses to count what it cannot
-    interpret."""
-    path = Path(run_dir) / _FINDINGS_NAME
-    try:
-        with open(path, encoding="utf-8") as handle:
-            for lineno, raw in enumerate(handle, 1):
-                line = raw.strip()
-                if line:
-                    yield _finding_from_line(path, lineno, line)
-    except (OSError, UnicodeDecodeError) as exc:
-        # OSError: missing file, permission denied, a directory in place of the
-        # file. UnicodeDecodeError (a ValueError, not an OSError): foreign bytes
-        # in an always-UTF-8 artifact. Both mean "this isn't a lintle findings
-        # file" — surface a clean DiffError rather than a raw traceback.
-        raise DiffError(f"cannot read {path}: {exc}") from exc
+    """Yield ``(file, rule_id)`` for every finding in ``<run_dir>``'s chunked
+    ``report.NNNNN.jsonl`` set, one per line, across the whole set in index order.
+    The core reader: a generator that never holds more than a single line in
+    memory. Raises :class:`DiffError` when the set is absent, on a malformed JSON
+    line, a ``schema_version`` other than ``"1"``, or a line lacking ``rule_id``
+    — the diff refuses to count what it cannot interpret."""
+    reader = chunking.ChunkedReader(Path(run_dir), _FINDINGS_STEM, _FINDINGS_SUFFIX)
+    paths = reader.chunk_paths()
+    if not paths:
+        raise DiffError(
+            f"cannot read {Path(run_dir) / _FINDINGS_NAME}: no report.jsonl chunk "
+            "set found — is this a lintle run directory?"
+        )
+    for path in paths:
+        try:
+            with open(path, encoding="utf-8") as handle:
+                for lineno, raw in enumerate(handle, 1):
+                    line = raw.strip()
+                    if line:
+                        yield _finding_from_line(path, lineno, line)
+        except (OSError, UnicodeDecodeError) as exc:
+            # OSError: permission denied, a directory in place of the file.
+            # UnicodeDecodeError (a ValueError, not an OSError): foreign bytes in
+            # an always-UTF-8 artifact. Both mean "this isn't a lintle findings
+            # file" — surface a clean DiffError rather than a raw traceback.
+            raise DiffError(f"cannot read {path}: {exc}") from exc
 
 
 def _finding_from_line(path, lineno, line):
