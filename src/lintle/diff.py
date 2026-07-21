@@ -23,7 +23,7 @@ import dataclasses
 import json
 from pathlib import Path
 
-from lintle import chunking, term
+from lintle import DATA_DIRNAME, REPORT_DIRNAME, chunking, term
 from lintle.diagnostics import RULES, RuleID
 
 _SCHEMA_VERSION = "1"
@@ -45,11 +45,12 @@ def iter_findings(run_dir):
     memory. Raises :class:`DiffError` when the set is absent, on a malformed JSON
     line, a ``schema_version`` other than ``"1"``, or a line lacking ``rule_id``
     — the diff refuses to count what it cannot interpret."""
-    reader = chunking.ChunkedReader(Path(run_dir), _FINDINGS_STEM, _FINDINGS_SUFFIX)
+    rdir = Path(run_dir) / DATA_DIRNAME / REPORT_DIRNAME
+    reader = chunking.ChunkedReader(rdir, _FINDINGS_STEM, _FINDINGS_SUFFIX)
     paths = reader.chunk_paths()
     if not paths:
         raise DiffError(
-            f"cannot read {Path(run_dir) / _FINDINGS_NAME}: no report.jsonl chunk "
+            f"cannot read {rdir / _FINDINGS_NAME}: no report.jsonl chunk "
             "set found — is this a lintle run directory?"
         )
     for path in paths:

@@ -9,6 +9,7 @@ from lintle import (
     BROKEN_DIRNAME,
     CLEANED_DIRNAME,
     CLEANED_SUFFIX,
+    DATA_DIRNAME,
     FINDINGS_SUFFIX,
     SHARDS_DIRNAME,
     resume,
@@ -374,8 +375,8 @@ class TestVerifyCompletedOutputs:
 
     def test_intact_outputs_are_trusted(self, tmp_path):
         out = tmp_path
-        (out / "cleaned").mkdir()
-        (out / "cleaned" / "tle2099.cleaned.txt").write_bytes(b"x" * 100)
+        (out / DATA_DIRNAME / "cleaned").mkdir(parents=True)
+        (out / DATA_DIRNAME / "cleaned" / "tle2099.cleaned.txt").write_bytes(b"x" * 100)
         assert (
             resume.verify_completed_outputs(
                 self._completed("tle2099.txt", 100), str(out)
@@ -390,8 +391,8 @@ class TestVerifyCompletedOutputs:
 
     def test_truncated_output_flags_reprocess(self, tmp_path):
         out = tmp_path
-        (out / "cleaned").mkdir()
-        (out / "cleaned" / "tle2099.cleaned.txt").write_bytes(b"x" * 7)
+        (out / DATA_DIRNAME / "cleaned").mkdir(parents=True)
+        (out / DATA_DIRNAME / "cleaned" / "tle2099.cleaned.txt").write_bytes(b"x" * 7)
         assert resume.verify_completed_outputs(
             self._completed("tle2099.txt", 100), str(out)
         ) == ["tle2099.txt"]
@@ -402,8 +403,8 @@ class TestVerifyCompletedOutputs:
         # ``.cleaned.txt`` is still located if it exists. (Old suffix-routing
         # would look in broken/, miss it, and falsely flag a reprocess.)
         out = tmp_path
-        (out / "cleaned").mkdir()
-        (out / "cleaned" / "weird.name").write_bytes(b"x" * 50)
+        (out / DATA_DIRNAME / "cleaned").mkdir(parents=True)
+        (out / DATA_DIRNAME / "cleaned" / "weird.name").write_bytes(b"x" * 50)
         completed = {"in.txt": {"summary": {}, "outputs": {"weird.name": 50}}}
         assert resume.verify_completed_outputs(completed, str(out)) == []
 
@@ -558,9 +559,13 @@ class TestOutputSizes:
     def test_records_each_cleaned_chunk(self, tmp_path):
         st = self._make_stats("tle2099.txt")
         self._write(
-            tmp_path / CLEANED_DIRNAME / "tle2099.00001.cleaned.txt", b"x" * 200
+            tmp_path / DATA_DIRNAME / CLEANED_DIRNAME / "tle2099.00001.cleaned.txt",
+            b"x" * 200,
         )
-        self._write(tmp_path / CLEANED_DIRNAME / "tle2099.00002.cleaned.txt", b"y" * 50)
+        self._write(
+            tmp_path / DATA_DIRNAME / CLEANED_DIRNAME / "tle2099.00002.cleaned.txt",
+            b"y" * 50,
+        )
         sizes = resume.output_sizes(str(tmp_path), st)
         assert sizes["tle2099.00001.cleaned.txt"] == 200
         assert sizes["tle2099.00002.cleaned.txt"] == 50
@@ -570,7 +575,8 @@ class TestOutputSizes:
         # quarantined), so its chunk set must always be recorded.
         st = self._make_stats("tle2099.txt", quarantined_count=0)
         self._write(
-            tmp_path / BROKEN_DIRNAME / "tle2099.00001.broken.txt", b"# header\n"
+            tmp_path / DATA_DIRNAME / BROKEN_DIRNAME / "tle2099.00001.broken.txt",
+            b"# header\n",
         )
         sizes = resume.output_sizes(str(tmp_path), st)
         assert "tle2099.00001.broken.txt" in sizes
@@ -610,8 +616,10 @@ class TestVerifyCompletedOutputsWithShard:
         }
 
     def test_intact_shard_not_flagged(self, tmp_path):
-        (tmp_path / CLEANED_DIRNAME).mkdir()
-        (tmp_path / CLEANED_DIRNAME / "tle2099.cleaned.txt").write_bytes(b"x" * 100)
+        (tmp_path / DATA_DIRNAME / CLEANED_DIRNAME).mkdir(parents=True)
+        (tmp_path / DATA_DIRNAME / CLEANED_DIRNAME / "tle2099.cleaned.txt").write_bytes(
+            b"x" * 100
+        )
         (tmp_path / SHARDS_DIRNAME).mkdir()
         (tmp_path / SHARDS_DIRNAME / "tle2099.findings.jsonl").write_bytes(b"y" * 50)
         assert (
@@ -623,16 +631,20 @@ class TestVerifyCompletedOutputsWithShard:
 
     def test_missing_shard_flags_reprocess(self, tmp_path):
         # Shard deleted out-of-band → file should be reprocessed.
-        (tmp_path / CLEANED_DIRNAME).mkdir()
-        (tmp_path / CLEANED_DIRNAME / "tle2099.cleaned.txt").write_bytes(b"x" * 100)
+        (tmp_path / DATA_DIRNAME / CLEANED_DIRNAME).mkdir(parents=True)
+        (tmp_path / DATA_DIRNAME / CLEANED_DIRNAME / "tle2099.cleaned.txt").write_bytes(
+            b"x" * 100
+        )
         # No shard directory / shard file created.
         assert resume.verify_completed_outputs(
             self._completed_with_shard("tle2099.txt", 100, 50), str(tmp_path)
         ) == ["tle2099.txt"]
 
     def test_truncated_shard_flags_reprocess(self, tmp_path):
-        (tmp_path / CLEANED_DIRNAME).mkdir()
-        (tmp_path / CLEANED_DIRNAME / "tle2099.cleaned.txt").write_bytes(b"x" * 100)
+        (tmp_path / DATA_DIRNAME / CLEANED_DIRNAME).mkdir(parents=True)
+        (tmp_path / DATA_DIRNAME / CLEANED_DIRNAME / "tle2099.cleaned.txt").write_bytes(
+            b"x" * 100
+        )
         (tmp_path / SHARDS_DIRNAME).mkdir()
         # Write only 10 bytes, but checkpoint says 50.
         (tmp_path / SHARDS_DIRNAME / "tle2099.findings.jsonl").write_bytes(b"y" * 10)
@@ -668,7 +680,9 @@ class TestCompletedEntryRoundTrip:
         # from_stats must produce an entry with a summary dict and an outputs
         # dict; the summary must include at least src_name.
         st = FileStats(src_name="tle2099.txt")
-        self._write_output(tmp_path, CLEANED_DIRNAME, "tle2099.00001.cleaned.txt")
+        self._write_output(
+            tmp_path, f"{DATA_DIRNAME}/{CLEANED_DIRNAME}", "tle2099.00001.cleaned.txt"
+        )
         entry = resume.CompletedEntry.from_stats(str(tmp_path), st)
         assert isinstance(entry.summary, dict)
         assert isinstance(entry.outputs, dict)
@@ -681,7 +695,12 @@ class TestCompletedEntryRoundTrip:
         # when all named output files are on disk at the recorded size.
         st = FileStats(src_name="tle2099.txt")
         data = b"y" * 80
-        self._write_output(tmp_path, CLEANED_DIRNAME, "tle2099.00001.cleaned.txt", data)
+        self._write_output(
+            tmp_path,
+            f"{DATA_DIRNAME}/{CLEANED_DIRNAME}",
+            "tle2099.00001.cleaned.txt",
+            data,
+        )
         entry = resume.CompletedEntry.from_stats(str(tmp_path), st)
         completed = {"tle2099.txt": entry.as_dict()}
         assert resume.verify_completed_outputs(completed, str(tmp_path)) == []
@@ -691,10 +710,17 @@ class TestCompletedEntryRoundTrip:
         # round-trip must flag it for reprocessing.
         st = FileStats(src_name="tle2099.txt")
         data = b"z" * 60
-        self._write_output(tmp_path, CLEANED_DIRNAME, "tle2099.00001.cleaned.txt", data)
+        self._write_output(
+            tmp_path,
+            f"{DATA_DIRNAME}/{CLEANED_DIRNAME}",
+            "tle2099.00001.cleaned.txt",
+            data,
+        )
         entry = resume.CompletedEntry.from_stats(str(tmp_path), st)
         # Remove the output chunk to simulate a post-completion corruption.
-        (tmp_path / CLEANED_DIRNAME / "tle2099.00001.cleaned.txt").unlink()
+        (
+            tmp_path / DATA_DIRNAME / CLEANED_DIRNAME / "tle2099.00001.cleaned.txt"
+        ).unlink()
         completed = {"tle2099.txt": entry.as_dict()}
         assert resume.verify_completed_outputs(completed, str(tmp_path)) == [
             "tle2099.txt"

@@ -30,12 +30,20 @@ def _entry(primary_rule, related_rules=(), *, norad_id=25544):
     )
 
 
+def _report_path(run_dir):
+    """Return the report.00001.jsonl chunk path under ``run_dir``, creating
+    the ``data/report/`` directories that hold it (the moved output layout —
+    ``<run>/data/report/report.NNNNN.jsonl``)."""
+    path = run_dir / "data" / "report" / "report.00001.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def _write_run(run_dir, entries, *, file="tle.txt"):
     """Write a report.jsonl into ``run_dir`` from a list of QuarantineEntry,
     serialized through the real producer renderer.
     """
-    run_dir.mkdir(parents=True, exist_ok=True)
-    path = run_dir / "report.00001.jsonl"
+    path = _report_path(run_dir)
     with path.open("w", encoding="utf-8") as fh:
         for entry in entries:
             payload = report_writers.entry_to_jsonl_dict(
@@ -48,8 +56,7 @@ def _write_run(run_dir, entries, *, file="tle.txt"):
 def _write_run_files(run_dir, file_rules):
     """Write a report.jsonl with one finding per ``(filename, RuleID)`` pair,
     so a single run can span multiple files."""
-    run_dir.mkdir(parents=True, exist_ok=True)
-    path = run_dir / "report.00001.jsonl"
+    path = _report_path(run_dir)
     with path.open("w", encoding="utf-8") as fh:
         for filename, rule in file_rules:
             entry = _entry(rule)
@@ -96,7 +103,7 @@ class TestDiffReader:
     def test_blank_lines_are_skipped(self, tmp_path):
         run = _write_run(tmp_path / "run", [_entry(RuleID.BAD_PREFIX)])
         # Append a blank line — a stray trailing newline must not break parsing.
-        (run / "report.00001.jsonl").open("a", encoding="utf-8").write("\n")
+        _report_path(run).open("a", encoding="utf-8").write("\n")
         assert _rule_ids(str(run)) == ["TLE-PAIR-002"]
 
     def test_missing_report_jsonl_raises_difference_error(self, tmp_path):
@@ -107,12 +114,11 @@ class TestDiffReader:
 
     def test_schema_version_mismatch_raises(self, tmp_path):
         run = tmp_path / "run"
-        run.mkdir()
         payload = report_writers.entry_to_jsonl_dict(
             _entry(RuleID.CHECKSUM_MISMATCH), file="tle.txt", norad_id=25544
         )
         payload["schema_version"] = "2"  # forge a future envelope
-        (run / "report.00001.jsonl").write_text(json.dumps(payload) + "\n")
+        _report_path(run).write_text(json.dumps(payload) + "\n")
         with pytest.raises(diff.DiffError, match="schema_version"):
             list(diff.iter_findings(str(run)))
 
@@ -120,12 +126,11 @@ class TestDiffReader:
         # A line with no schema_version at all is as untrustworthy as a wrong
         # one — it must not be silently treated as v1.
         run = tmp_path / "run"
-        run.mkdir()
         payload = report_writers.entry_to_jsonl_dict(
             _entry(RuleID.CHECKSUM_MISMATCH), file="tle.txt", norad_id=25544
         )
         del payload["schema_version"]
-        (run / "report.00001.jsonl").write_text(json.dumps(payload) + "\n")
+        _report_path(run).write_text(json.dumps(payload) + "\n")
         with pytest.raises(diff.DiffError, match="schema_version"):
             list(diff.iter_findings(str(run)))
 
@@ -133,19 +138,17 @@ class TestDiffReader:
         # A schema-valid envelope that somehow lacks a primary rule_id cannot
         # be aggregated; fail loudly rather than count a phantom None.
         run = tmp_path / "run"
-        run.mkdir()
         payload = report_writers.entry_to_jsonl_dict(
             _entry(RuleID.CHECKSUM_MISMATCH), file="tle.txt", norad_id=25544
         )
         del payload["rule_id"]
-        (run / "report.00001.jsonl").write_text(json.dumps(payload) + "\n")
+        _report_path(run).write_text(json.dumps(payload) + "\n")
         with pytest.raises(diff.DiffError, match="rule_id"):
             list(diff.iter_findings(str(run)))
 
     def test_malformed_json_line_raises(self, tmp_path):
         run = tmp_path / "run"
-        run.mkdir()
-        (run / "report.00001.jsonl").write_text("{not valid json\n")
+        _report_path(run).write_text("{not valid json\n")
         with pytest.raises(diff.DiffError):
             list(diff.iter_findings(str(run)))
 
@@ -153,12 +156,11 @@ class TestDiffReader:
         # The producer always writes the string "1"; an integer 1 is a foreign
         # envelope and must not be accepted by loose equality.
         run = tmp_path / "run"
-        run.mkdir()
         payload = report_writers.entry_to_jsonl_dict(
             _entry(RuleID.CHECKSUM_MISMATCH), file="tle.txt", norad_id=25544
         )
         payload["schema_version"] = 1  # int, not "1"
-        (run / "report.00001.jsonl").write_text(json.dumps(payload) + "\n")
+        _report_path(run).write_text(json.dumps(payload) + "\n")
         with pytest.raises(diff.DiffError, match="schema_version"):
             list(diff.iter_findings(str(run)))
 
@@ -166,8 +168,7 @@ class TestDiffReader:
         # A directory where report.jsonl should be is an operational error, not
         # a crash — open() raises IsADirectoryError, which must surface as DiffError.
         run = tmp_path / "run"
-        run.mkdir()
-        (run / "report.00001.jsonl").mkdir()
+        _report_path(run).mkdir()
         with pytest.raises(diff.DiffError):
             list(diff.iter_findings(str(run)))
 
@@ -175,8 +176,7 @@ class TestDiffReader:
         # report.jsonl is always UTF-8; foreign bytes must produce a clean
         # DiffError, not an unhandled UnicodeDecodeError traceback.
         run = tmp_path / "run"
-        run.mkdir()
-        (run / "report.00001.jsonl").write_bytes(b"\xff\xfe not utf-8\n")
+        _report_path(run).write_bytes(b"\xff\xfe not utf-8\n")
         with pytest.raises(diff.DiffError):
             list(diff.iter_findings(str(run)))
 
@@ -189,7 +189,7 @@ class TestDiffReader:
         # whole file up front would raise on the FIRST next() — failing the
         # first assertion below.
         run = _write_run(tmp_path / "run", [_entry(RuleID.CHECKSUM_MISMATCH)])
-        with (run / "report.00001.jsonl").open("a", encoding="utf-8") as fh:
+        with _report_path(run).open("a", encoding="utf-8") as fh:
             fh.write("{not valid json\n")
         gen = diff.iter_findings(str(run))
         first_file, first_rule = next(gen)
@@ -392,12 +392,11 @@ class TestDiffCli:
     def test_schema_mismatch_exits_two(self, tmp_path, capsys):
         run_a = _write_run(tmp_path / "a", [_entry(RuleID.CHECKSUM_MISMATCH)])
         run_b = tmp_path / "b"
-        run_b.mkdir()
         payload = report_writers.entry_to_jsonl_dict(
             _entry(RuleID.CHECKSUM_MISMATCH), file="tle.txt", norad_id=25544
         )
         payload["schema_version"] = "99"
-        (run_b / "report.00001.jsonl").write_text(json.dumps(payload) + "\n")
+        _report_path(run_b).write_text(json.dumps(payload) + "\n")
         code = cli.main(["diff", str(run_a), str(run_b)])
         err = capsys.readouterr().err
         assert code == 2
@@ -428,8 +427,7 @@ class TestFindingFileValidation:
     DiffError (not let None through to sorting, which triggers TypeError)."""
 
     def _write_jsonl(self, run_dir, payload):
-        run_dir.mkdir(parents=True, exist_ok=True)
-        (run_dir / "report.00001.jsonl").write_text(
+        _report_path(run_dir).write_text(
             __import__("json").dumps(payload) + "\n", encoding="utf-8"
         )
 
@@ -475,12 +473,11 @@ class TestFindingFileValidation:
 
         run_a = _write_run(tmp_path / "a", [_entry(RuleID.CHECKSUM_MISMATCH)])
         run_b = tmp_path / "b"
-        run_b.mkdir()
         payload = report_writers.entry_to_jsonl_dict(
             _entry(RuleID.CHECKSUM_MISMATCH), file="tle.txt", norad_id=25544
         )
         del payload["file"]
-        (run_b / "report.00001.jsonl").write_text(
+        _report_path(run_b).write_text(
             __import__("json").dumps(payload) + "\n", encoding="utf-8"
         )
         code = cli.main(["diff", str(run_a), str(run_b)])
@@ -528,11 +525,10 @@ class TestAggregateByFile:
     def test_related_not_counted_per_file(self, tmp_path):
         entry = _entry(RuleID.CHECKSUM_MISMATCH, related_rules=(RuleID.LINE_LENGTH,))
         run = tmp_path / "run"
-        run.mkdir()
         payload = report_writers.entry_to_jsonl_dict(
             entry, file="a.txt", norad_id=entry.norad_id
         )
-        (run / "report.00001.jsonl").write_text(json.dumps(payload) + "\n")
+        _report_path(run).write_text(json.dumps(payload) + "\n")
         by_file = diff.aggregate_by_file(str(run))
         assert by_file["a.txt"] == collections.Counter({"TLE-CHK-001": 1})
 

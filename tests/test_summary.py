@@ -4,7 +4,14 @@ import io
 
 from rich.console import Console
 
-from lintle import report, summary
+from lintle import DATA_DIRNAME, REPORT_DIRNAME, report, summary
+
+
+def _report_json_path(tmp_path):
+    """The path summary.run reads: ``<out_dir>/data/report/report.json``."""
+    d = tmp_path / DATA_DIRNAME / REPORT_DIRNAME
+    d.mkdir(parents=True, exist_ok=True)
+    return d / "report.json"
 
 
 def _console(width, *, terminal):
@@ -111,7 +118,7 @@ class TestRun:
     def _write(self, tmp_path):
         from lintle import report
 
-        report.write_run_json(str(tmp_path / "report.json"), _demo_envelope())
+        report.write_run_json(str(_report_json_path(tmp_path)), _demo_envelope())
 
     def test_text_renders_to_stdout(self, tmp_path, capsys):
         self._write(tmp_path)
@@ -122,7 +129,7 @@ class TestRun:
 
     def test_json_emits_bytes_verbatim(self, tmp_path, capsys):
         self._write(tmp_path)
-        raw = (tmp_path / "report.json").read_text(encoding="utf-8")
+        raw = _report_json_path(tmp_path).read_text(encoding="utf-8")
         rc = summary.run(str(tmp_path), "json")
         assert rc == 0
         assert capsys.readouterr().out == raw
@@ -133,7 +140,7 @@ class TestRun:
         assert "no run found" in capsys.readouterr().err
 
     def test_bad_schema_is_exit_2(self, tmp_path, capsys):
-        (tmp_path / "report.json").write_text(
+        _report_json_path(tmp_path).write_text(
             '{"schema_version": "99"}', encoding="utf-8"
         )
         rc = summary.run(str(tmp_path), "text")
@@ -144,7 +151,7 @@ class TestRun:
         # A schema-2 report.json (missing failed_files / failed_count) must
         # fail the schema_version check in summary.run with a clear message —
         # the intended behaviour after the "2" -> "3" bump.
-        (tmp_path / "report.json").write_text(
+        _report_json_path(tmp_path).write_text(
             '{"schema_version": "2", "run": {"timestamp": "x",'
             ' "elapsed_seconds": 1.0}}',
             encoding="utf-8",
@@ -156,7 +163,7 @@ class TestRun:
         assert "expected" in err
 
     def test_invalid_json_is_exit_2(self, tmp_path, capsys):
-        (tmp_path / "report.json").write_text("{not json", encoding="utf-8")
+        _report_json_path(tmp_path).write_text("{not json", encoding="utf-8")
         rc = summary.run(str(tmp_path), "text")
         assert rc == 2
         assert "invalid report.json" in capsys.readouterr().err
@@ -164,7 +171,7 @@ class TestRun:
     def test_invalid_utf8_report_json_is_exit_2(self, tmp_path, capsys):
         # Issue #92: UnicodeDecodeError from report.json must be caught, not
         # propagated — `lintle report` must return 2 with a clear message.
-        (tmp_path / "report.json").write_bytes(b"\xff\xfe")
+        _report_json_path(tmp_path).write_bytes(b"\xff\xfe")
         rc = summary.run(str(tmp_path), "text")
         assert rc == 2
         err = capsys.readouterr().err
@@ -174,7 +181,7 @@ class TestRun:
         # Well-formed JSON that is not an object (null / array / scalar) must
         # exit 2 with a clear message, not crash with an AttributeError.
         for doc in ("null", "[]", "42", '"hi"'):
-            (tmp_path / "report.json").write_text(doc, encoding="utf-8")
+            _report_json_path(tmp_path).write_text(doc, encoding="utf-8")
             rc = summary.run(str(tmp_path), "text")
             assert rc == 2
             assert "not a JSON object" in capsys.readouterr().err
@@ -191,7 +198,7 @@ class TestEnvelopeValidation:
     """
 
     def _write_raw(self, tmp_path, doc):
-        (tmp_path / "report.json").write_text(doc, encoding="utf-8")
+        _report_json_path(tmp_path).write_text(doc, encoding="utf-8")
 
     def test_missing_summary_key_is_exit_2(self, tmp_path, capsys):
         self._write_raw(

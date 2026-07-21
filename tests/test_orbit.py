@@ -115,8 +115,8 @@ GEO_CULPRIT = (
 
 def build_tree(tmp_path, pairs, stem="tle01"):
     out = tmp_path / "output"
-    (out / "cleaned").mkdir(parents=True, exist_ok=True)
-    (out / "cleaned" / f"{stem}.00001.cleaned.txt").write_text(
+    (out / "data" / "cleaned").mkdir(parents=True, exist_ok=True)
+    (out / "data" / "cleaned" / f"{stem}.00001.cleaned.txt").write_text(
         "".join(f"{a}\n{b}\n" for a, b in pairs), encoding="ascii"
     )
     return str(out)
