@@ -5,6 +5,7 @@ import os
 import pytest
 
 from lintle import cli, pipeline, report, resume, run_planning
+from lintle.chunking import CHUNK_RECORDS_DEFAULT
 
 
 def _strip_generated(path):
@@ -26,9 +27,14 @@ def _simulate_interrupted_clean(
     end-of-run concat), plus a checkpoint that lists them complete with every
     input fingerprinted. Mirrors the real interrupted state without needing to
     actually kill a parallel run. ``run_identity`` defaults to the shape used
-    by ``main()`` (``{"max_quarantined": "0", "reconstruct_checksum": False}``)."""
+    by ``main()`` (``{"max_quarantined": "0", "reconstruct_checksum": False,
+    "chunk_records": CHUNK_RECORDS_DEFAULT}``)."""
     if run_identity is None:
-        run_identity = {"max_quarantined": "0", "reconstruct_checksum": False}
+        run_identity = {
+            "max_quarantined": "0",
+            "reconstruct_checksum": False,
+            "chunk_records": CHUNK_RECORDS_DEFAULT,
+        }
     os.makedirs(out_dir, exist_ok=True)
     inputs = {p: resume.input_fingerprint(p) for p in src_paths}
     completed = {}
@@ -138,7 +144,7 @@ class TestResume:
 
         out_partial = tmp_path / "partial"
         _simulate_interrupted_clean(paths, str(out_partial), completed_count=1)
-        first_cleaned = out_partial / "cleaned" / "tle2098.cleaned.txt"
+        first_cleaned = out_partial / "cleaned" / "tle2098.00001.cleaned.txt"
         mtime_before = first_cleaned.stat().st_mtime_ns
 
         rc_resume = cli.main(
@@ -154,14 +160,16 @@ class TestResume:
         )
 
         assert rc_resume == rc_full
-        # report.jsonl and broken-noradids are timing-free — the golden anchors.
-        assert (out_partial / "report.jsonl").read_bytes() == (
-            out_full / "report.jsonl"
+        # report.00001.jsonl and broken-noradids are timing-free — the golden
+        # anchors. Small test corpora never exceed the default chunk boundary
+        # (spec 2026-07-21-output-chunking-design), so exactly one chunk exists.
+        assert (out_partial / "report.00001.jsonl").read_bytes() == (
+            out_full / "report.00001.jsonl"
         ).read_bytes()
         assert (out_partial / "broken-noradids.ndjson").read_bytes() == (
             out_full / "broken-noradids.ndjson"
         ).read_bytes()
-        for name in ("tle2098.cleaned.txt", "tle2099.cleaned.txt"):
+        for name in ("tle2098.00001.cleaned.txt", "tle2099.00001.cleaned.txt"):
             assert (out_partial / "cleaned" / name).read_bytes() == (
                 out_full / "cleaned" / name
             ).read_bytes()
@@ -201,8 +209,8 @@ class TestResume:
         )
         assert rc == 1  # quarantines present
         assert not (out / resume.CHECKPOINT_NAME).exists()
-        assert (out / "cleaned" / "tle2098.cleaned.txt").exists()
-        assert (out / "cleaned" / "tle2099.cleaned.txt").exists()
+        assert (out / "cleaned" / "tle2098.00001.cleaned.txt").exists()
+        assert (out / "cleaned" / "tle2099.00001.cleaned.txt").exists()
 
     def test_resume_refuses_when_input_changed(self, tmp_path, line1, line2, capsys):
         # --resume (explicit force-resume) with a stale checkpoint (input changed)
@@ -260,6 +268,36 @@ class TestResume:
         assert rc == 2
         assert "run configuration changed" in err.lower()
         # A refused resume leaves the checkpoint intact for an explicit restart.
+        assert (out_partial / resume.CHECKPOINT_NAME).exists()
+
+    def test_resume_refuses_when_chunk_records_changed(
+        self, tmp_path, line1, line2, capsys
+    ):
+        # Debate golden test: the interrupted run used the default chunk size;
+        # resuming with a different --chunk-records would mix chunk sizes within
+        # one logical run (completed stems at the old size, redone stems at the
+        # new), so run identity no longer matches the checkpoint → STALE → refuse.
+        src = self._two_file_src(tmp_path, line1, line2)
+        paths = cli.discover_paths(str(src))
+        out_partial = tmp_path / "partial"
+        _simulate_interrupted_clean(paths, str(out_partial), completed_count=1)
+
+        rc = cli.main(
+            [
+                "clean",
+                str(src),
+                "--out-dir",
+                str(out_partial),
+                "--resume",
+                "--jobs",
+                "1",
+                "--chunk-records",
+                "500000",
+            ]
+        )
+        err = capsys.readouterr().err
+        assert rc == 2
+        assert "run configuration changed" in err.lower()
         assert (out_partial / resume.CHECKPOINT_NAME).exists()
 
     def test_interrupt_preserves_checkpoint_and_shards(
@@ -380,7 +418,7 @@ class TestResumeWiring:
         # was NOT reprocessed.
         first_name = os.path.basename(paths[0])
         first_stem = os.path.splitext(first_name)[0]
-        first_cleaned = out_partial / "cleaned" / f"{first_stem}.cleaned.txt"
+        first_cleaned = out_partial / "cleaned" / f"{first_stem}.00001.cleaned.txt"
         mtime_before = first_cleaned.stat().st_mtime_ns
 
         # No --resume flag — auto-resume is the default in non-interactive mode.
@@ -391,9 +429,9 @@ class TestResumeWiring:
         assert rc_auto == rc_full
         # The already-completed file was skipped, not reprocessed.
         assert first_cleaned.stat().st_mtime_ns == mtime_before
-        # report.jsonl output matches the full run.
-        assert (out_partial / "report.jsonl").read_bytes() == (
-            out_full / "report.jsonl"
+        # report.00001.jsonl output matches the full run.
+        assert (out_partial / "report.00001.jsonl").read_bytes() == (
+            out_full / "report.00001.jsonl"
         ).read_bytes()
         # A successful auto-resume tears down the checkpoint and shards.
         assert not (out_partial / resume.CHECKPOINT_NAME).exists()
@@ -415,15 +453,17 @@ class TestFreshRunOrphanScrub:
 
         rc1 = cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
         assert rc1 == 0
-        assert (out / "cleaned" / "tle2000.cleaned.txt").exists()
-        assert (out / "cleaned" / "tle2001.cleaned.txt").exists()
+        assert (out / "cleaned" / "tle2000.00001.cleaned.txt").exists()
+        assert (out / "cleaned" / "tle2001.00001.cleaned.txt").exists()
         # A completed run deletes the checkpoint.
         assert not (out / resume.CHECKPOINT_NAME).exists()
 
         # Step 2 — remove tle2001.txt from the input set; its cleaned output is
         # now an orphan in the out-dir.
         (src / "tle2001.txt").unlink()
-        assert (out / "cleaned" / "tle2001.cleaned.txt").exists()  # orphan present
+        assert (
+            out / "cleaned" / "tle2001.00001.cleaned.txt"
+        ).exists()  # orphan present
 
         # Step 3 — fresh run (--no-resume) on the now-one-file dir.
         rc2 = cli.main(
@@ -432,11 +472,11 @@ class TestFreshRunOrphanScrub:
         assert rc2 == 0
 
         # The output for the surviving input must exist.
-        assert (out / "cleaned" / "tle2000.cleaned.txt").exists()
+        assert (out / "cleaned" / "tle2000.00001.cleaned.txt").exists()
 
         # The orphan from the prior run must be gone — spec §3.4 guarantees
         # the fresh run scrubs the whole cleaned/ tree before processing.
-        assert not (out / "cleaned" / "tle2001.cleaned.txt").exists()
+        assert not (out / "cleaned" / "tle2001.00001.cleaned.txt").exists()
 
 
 class TestStaleCheckpointNonInteractive:
@@ -669,7 +709,7 @@ class TestScrubOwnershipGate:
         rc = cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
         # Old output must be scrubbed; a clean 1-file run succeeds.
         assert rc == 0
-        assert (out / "cleaned" / "tle2000.cleaned.txt").exists()
+        assert (out / "cleaned" / "tle2000.00001.cleaned.txt").exists()
         assert not (out / "cleaned" / "old_output.txt").exists()
 
     def test_proceeds_with_checkpoint_signal(self, tmp_path, line1, line2):

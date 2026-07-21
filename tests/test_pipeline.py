@@ -159,9 +159,9 @@ class TestProcessFile:
         assert stats.input_lines_seen == 4
         assert stats.clean_count == 2
         assert stats.quarantined_count == 0
-        cleaned = (out / "cleaned" / "tle2099.cleaned.txt").read_text()
+        cleaned = (out / "cleaned" / "tle2099.00001.cleaned.txt").read_text()
         assert cleaned == line1 + "\n" + line2 + "\n" + line1 + "\n" + line2 + "\n"
-        assert (out / "broken" / "tle2099.broken.txt").exists()
+        assert (out / "broken" / "tle2099.00001.broken.txt").exists()
 
     def test_leading_whitespace_record_pairs_and_repairs(self, tmp_path, line1, line2):
         # A record whose lines carry leading whitespace must pair and repair
@@ -178,7 +178,7 @@ class TestProcessFile:
         assert stats.clean_count == 1
         assert stats.quarantined_count == 0
         assert stats.fix_counts.get(FixClass.LEADING_TRIM) == 2
-        cleaned = (out / "cleaned" / "tle2099.cleaned.txt").read_text()
+        cleaned = (out / "cleaned" / "tle2099.00001.cleaned.txt").read_text()
         assert cleaned == line1 + "\n" + line2 + "\n"
 
     def test_orphan_does_not_count_as_paired_record(self, tmp_path, line1, line2):
@@ -227,8 +227,38 @@ class TestProcessFile:
 
         assert stats.quarantined_count == 1
         assert stats.quarantine_counts.get(RuleID.CHECKSUM_MISMATCH) == 1
-        broken_bytes = (out / "broken" / "tle2099.broken.txt").read_bytes()
+        broken_bytes = (out / "broken" / "tle2099.00001.broken.txt").read_bytes()
         assert b"TLE-CHK-001" in broken_bytes
+
+    def test_zero_cleaned_with_broken_still_writes_empty_cleaned_chunk(
+        self, tmp_path, line1, line2
+    ):
+        # Debate golden test: a stem with 0 cleaned records but some broken ones
+        # still gets exactly one empty cleaned/.00001.cleaned.txt chunk (a stream
+        # is always a non-empty set on disk), and the concatenation of the cleaned
+        # set is byte-empty (concat-identity for an empty stream). The content is
+        # carried entirely by the broken set.
+        from lintle import chunking
+
+        src = tmp_path / "tle2099.txt"
+        bad_line1 = line1[:68] + "9"  # 69 chars, wrong checksum → quarantined
+        src.write_bytes((bad_line1 + "\n" + line2 + "\n").encode("ascii"))
+        out = tmp_path / "out"
+
+        stats = pipeline.process_file(str(src), str(out), "clean")
+
+        assert stats.clean_count == 0
+        assert stats.quarantined_count == 1
+        cleaned_chunk = out / "cleaned" / "tle2099.00001.cleaned.txt"
+        assert cleaned_chunk.is_file()
+        assert cleaned_chunk.read_bytes() == b""
+        # Concat-identity: joining the cleaned chunk set reproduces the (empty)
+        # single-file bytes.
+        reader = chunking.ChunkedReader(out / "cleaned", "tle2099", ".cleaned.txt")
+        joined = b"".join(p.read_bytes() for p in reader.chunk_paths())
+        assert joined == b""
+        # The broken set carries the quarantined record.
+        assert (out / "broken" / "tle2099.00001.broken.txt").read_bytes() != b""
 
     def test_validate_mode_writes_nothing(self, tmp_path, line1, line2):
         src = tmp_path / "tle2099.txt"
@@ -319,7 +349,7 @@ class TestProcessFile:
         pipeline.process_file(str(src), str(out), "clean")
         assert not list(out.rglob("*.partial"))  # temp file was renamed away
         # The published cleaned file is world-readable, not owner-only (0600).
-        cleaned = out / "cleaned" / "tle2099.cleaned.txt"
+        cleaned = out / "cleaned" / "tle2099.00001.cleaned.txt"
         assert cleaned.stat().st_mode & 0o044  # group/other read bits set
 
     def test_failed_run_does_not_leak_temp_file(self, tmp_path):
@@ -470,10 +500,9 @@ class TestStreamingQuarantines:
             len(stats.quarantine_sample.buckets[RuleID.BAD_PREFIX])
             == report.PER_RULE_EXEMPLAR_BOUND
         )
-        # The on-disk catalog header and trailing entry both reflect every
-        # quarantined record — none were dropped due to the in-memory cap.
-        broken = (out / "broken" / "tle2099.broken.txt").read_bytes()
-        assert f"# {n} quarantined of {n} entries".encode("ascii") in broken
+        # The on-disk catalog's trailing entry reflects every quarantined
+        # record — none were dropped due to the in-memory cap.
+        broken = (out / "broken" / "tle2099.00001.broken.txt").read_bytes()
         last = f"junk {n - 1:08d}".encode("ascii")
         assert last in broken
 

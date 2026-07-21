@@ -1,6 +1,7 @@
 """Tests for the streaming ``SuspectSink`` (#156): peak memory independent of the
 suspect count, byte-identical to the list-based writer it replaces."""
 
+from lintle.chunking import ChunkedReader
 from lintle.verify import report
 from lintle.verify.report import Suspect, SuspectSink, VrfyRule
 
@@ -26,11 +27,18 @@ SUSPECTS = [
 ]
 
 
+def _read_suspects(vdir) -> bytes:
+    """Concatenate the ``suspects.NNNNN.jsonl`` chunk set in index order — the
+    byte-deterministic equivalent of the pre-chunking single file's bytes."""
+    reader = ChunkedReader(vdir, "suspects", ".jsonl")
+    return b"".join(path.read_bytes() for path in reader.chunk_paths())
+
+
 def _drain(sink: SuspectSink, out_dir) -> tuple[bytes, bytes, str]:
     sink.write(str(out_dir), checked=CHECKED)
     vdir = out_dir / "verify"
     return (
-        (vdir / "suspects.jsonl").read_bytes(),
+        _read_suspects(vdir),
         (vdir / "summary.json").read_bytes(),
         (vdir / "summary.md").read_text(encoding="utf-8"),
     )
@@ -81,5 +89,5 @@ class TestConstantMemory:
             assert len(sink._buf) <= 10
         assert len(sink._runs) == 10  # spilled every full chunk -> constant memory
         sink.write(str(tmp_path), checked=CHECKED)
-        lines = (tmp_path / "verify" / "suspects.jsonl").read_bytes().splitlines()
+        lines = _read_suspects(tmp_path / "verify").splitlines()
         assert len(lines) == 100  # nothing lost across the spill/merge

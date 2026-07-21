@@ -3,10 +3,18 @@ findings shards, the corpus ``broken-noradids.ndjson``, and shard concat."""
 
 import contextlib
 import json
-import shutil
 from pathlib import Path
 
-from lintle import FINDINGS_SUFFIX, SHARDS_DIRNAME, __version__, fsutil, stem
+from lintle import (
+    BROKEN_SUFFIX,
+    FINDINGS_SUFFIX,
+    SHARDS_DIRNAME,
+    __version__,
+    chunking,
+    fsutil,
+    stem,
+)
+from lintle.chunking import CHUNK_RECORDS_DEFAULT
 from lintle.diagnostics import Diagnostic
 from lintle.report import (
     PER_RULE_EXEMPLAR_BOUND,
@@ -89,77 +97,77 @@ def _render_entry(index: int, entry: QuarantineEntry) -> bytes:
     return b"".join(chunks)
 
 
-def _render_header(src_name: str, quarantined: int, entries: int) -> bytes:
-    """Render the three-line ASCII header of a ``.broken.txt`` sidecar.
+def _render_header(src_name: str) -> bytes:
+    """Render the two-line ASCII header of a ``.broken.txt`` sidecar.
 
-    ``entries`` is ``paired_records + orphan_entries`` — the count of things
-    that became findings or clean output, which is the meaningful denominator
-    for ``quarantined``.
+    The header carries only source + provenance, so it is fully known at open
+    time and can lead the first chunk of the chunked ``<stem>.NNNNN.broken.txt``
+    set (the per-file ``N quarantined of M entries`` counts moved out — they are
+    already carried by ``report.json``/``report.md`` — because a count known only
+    at end-of-stream cannot lead a chunk that commits as soon as it fills).
     """
     timestamp = utc_stamp()
     return (
         f"# {stem(src_name)}.broken.txt - quarantined records\n"
-        f"# source: {src_name} | generated: {timestamp} | lintle {__version__}\n"
-        f"# {quarantined} quarantined of {entries} entries\n\n"
+        f"# source: {src_name} | generated: {timestamp} | lintle {__version__}\n\n"
     ).encode("ascii", errors="replace")
 
 
 class BrokenFileWriter:
-    """Streaming writer for the ``.broken.txt`` quarantine sidecar.
+    """Streaming writer for the chunked ``.broken.txt`` quarantine sidecar.
 
-    Constant memory: each entry is rendered and flushed to a body temp file
-    as ``write_entry`` is called. On ``finalize`` the body is stitched onto
-    the now-known header (entry count + corpus total) and atomically renamed
-    to the final path. Use as a context manager so an interrupted run never
-    leaves a half-written sidecar behind.
+    Writes the header into the first chunk, then streams each rendered entry as
+    one unit through a :class:`chunking.ChunkedWriter`, rolling to
+    ``<stem>.NNNNN.broken.txt`` every ``units_per_chunk`` entries. Constant
+    memory; each chunk is atomically-durably committed the instant it fills.
+    ``directory`` is the ``broken/`` output dir; the filename set is derived from
+    ``stem(src_name)``. Use as a context manager so an interrupted run abandons
+    the whole set (:meth:`chunking.ChunkedWriter.discard_all`) rather than
+    leaving a partial one. Concatenating the set in index order reproduces the
+    old single-file bytes (minus the moved count line).
     """
 
-    def __init__(self, path: str, src_name: str) -> None:
-        self.path = path
+    def __init__(
+        self,
+        directory: str,
+        src_name: str,
+        units_per_chunk: int = CHUNK_RECORDS_DEFAULT,
+    ) -> None:
+        self.directory = directory
         self.src_name = src_name
-        self._body_path = path + ".body.partial"
-        self._final_partial = path + ".partial"
-        self._handle = None
+        self._units = units_per_chunk
+        self._writer = None
         self._entry_count = 0
         self._completed = False
 
     def __enter__(self):
-        self._handle = open(self._body_path, "wb")
+        self._writer = chunking.ChunkedWriter(
+            self.directory, stem(self.src_name), BROKEN_SUFFIX, self._units
+        )
+        self._writer.__enter__()
+        self._writer.write_raw(_render_header(self.src_name))
         return self
 
     def write_entry(self, entry: QuarantineEntry) -> None:
-        """Append one ``QuarantineEntry`` to the sidecar body, byte-faithfully."""
+        """Append one ``QuarantineEntry`` to the sidecar, byte-faithfully, as one
+        chunk unit."""
         self._entry_count += 1
-        self._handle.write(_render_entry(self._entry_count, entry))
+        self._writer.write(_render_entry(self._entry_count, entry))
 
-    def finalize(self, *, entries: int) -> None:
-        """Stitch header + body into the final path; atomic-rename in place.
-
-        ``entries`` is the denominator shown in the header — pass
-        ``paired_records + orphan_entries`` from the source file's stats.
-        Keyword-only to match :meth:`QuarantineSink.finalize`, so the three
-        streaming writers share one ``finalize`` calling convention.
+    def finalize(self, *, entries: int | None = None) -> None:
+        """Commit the final chunk. ``entries`` is accepted for calling-convention
+        parity with :meth:`QuarantineSink.finalize` but no longer used — the
+        chunked header carries no counts.
         """
-        if self._handle is not None and not self._handle.closed:
-            self._handle.close()
-        header = _render_header(self.src_name, self._entry_count, entries)
-        with open(self._final_partial, "wb") as out, open(self._body_path, "rb") as src:
-            out.write(header)
-            shutil.copyfileobj(src, out, length=65536)
-        with contextlib.suppress(OSError):
-            Path(self._body_path).unlink()
-        fsutil.durable_replace(self._final_partial, self.path)
+        if self._writer is not None:
+            self._writer.close()
         self._completed = True
 
     def __exit__(self, exc_type, exc, tb):
-        # Always close the body handle; on any non-finalized exit, discard
-        # the partials so an interrupted run leaves no debris.
-        if self._handle is not None and not self._handle.closed:
-            self._handle.close()
-        if not self._completed:
-            for partial in (self._body_path, self._final_partial):
-                with contextlib.suppress(OSError):
-                    Path(partial).unlink()
+        # On any non-finalized exit, abandon the whole chunk set so an
+        # interrupted run leaves no partial sidecar behind.
+        if self._writer is not None and not self._completed:
+            self._writer.discard_all()
         return False
 
 
@@ -249,6 +257,7 @@ class QuarantineSink:
         broken_path: str | None = None,
         src_name: str | None = None,
         jsonl_path: str | None = None,
+        chunk_records: int = CHUNK_RECORDS_DEFAULT,
     ) -> None:
         self._cap = cap
         self._buckets = {}
@@ -264,7 +273,11 @@ class QuarantineSink:
         if broken_path is not None:
             if src_name is None:
                 raise ValueError("src_name is required when broken_path is set")
-            self._writer = BrokenFileWriter(broken_path, src_name)
+            # broken_path is the conventional single-file path; the chunked writer
+            # derives its <stem>.NNNNN.broken.txt set from the parent dir + stem.
+            self._writer = BrokenFileWriter(
+                str(Path(broken_path).parent), src_name, chunk_records
+            )
         if jsonl_path is not None:
             if src_name is None:
                 raise ValueError("src_name is required when jsonl_path is set")
@@ -348,18 +361,24 @@ class QuarantineSink:
         return self._sample
 
 
-def write_broken_file(path: str, src_name: str, stats: FileStats) -> None:
-    """Write the ``.broken.txt`` sidecar from a populated ``FileStats``.
+def write_broken_file(
+    directory: str,
+    src_name: str,
+    stats: FileStats,
+    units_per_chunk: int = CHUNK_RECORDS_DEFAULT,
+) -> None:
+    """Write the chunked ``.broken.txt`` sidecar set into ``directory`` from a
+    populated ``FileStats``.
 
     Thin wrapper that flattens ``stats.quarantine_sample.buckets`` (a per-rule
     immutable mapping built by :class:`QuarantineSink`) and sorts by
     ``source_lines[0]`` so the rendered sidecar matches production
-    encounter order. Suitable for tests and small-corpus paths where the
-    sampled set fits in memory; production cleaning streams entries
-    through :class:`QuarantineSink` (and its owned :class:`BrokenFileWriter`)
-    directly so memory stays bounded.
+    encounter order. Produces ``<stem>.NNNNN.broken.txt`` under ``directory``.
+    Suitable for tests and small-corpus paths where the sampled set fits in
+    memory; production cleaning streams entries through :class:`QuarantineSink`
+    (and its owned :class:`BrokenFileWriter`) directly so memory stays bounded.
     """
-    with BrokenFileWriter(path, src_name) as writer:
+    with BrokenFileWriter(directory, src_name, units_per_chunk) as writer:
         flattened = [
             entry
             for bucket in stats.quarantine_sample.buckets.values()
@@ -420,20 +439,26 @@ def shard_path(out_dir: str, src_name: str) -> Path:
 
 
 def concat_findings_shards(
-    out_dir: str, dest_path: str, all_stats: list[FileStats]
+    out_dir: str,
+    dest_path: str,
+    all_stats: list[FileStats],
+    chunk_records: int = CHUNK_RECORDS_DEFAULT,
 ) -> list[str]:
-    """Concatenate per-file findings shards into the corpus ``report.jsonl``.
+    """Concatenate per-file findings shards into the corpus chunked
+    ``report.NNNNN.jsonl`` set.
 
     Per-worker shards live in ``<out_dir>/.shards/<stem>.findings.jsonl``,
     written by each worker's ``QuarantineSink`` (issue #9). We walk
     ``all_stats`` (already sorted by ``src_name`` in ``cli.py`` before this
     call) so the concatenated order is alphabetical by source filename —
-    deterministic and matching ``report.md``'s per-file table. The
-    destination is written via tmp + :func:`fsutil.durable_replace` for
-    atomicity and power-loss durability (issue #58). Always creates the
-    destination even when every shard is empty or missing, matching
-    ``broken-noradids.ndjson``'s "artifact always present after successful
-    clean" contract. Spec §4.6.
+    deterministic and matching ``report.md``'s per-file table. A single
+    :class:`chunking.ChunkedWriter` spans the whole ``all_stats`` loop — the
+    1M-line chunk boundary does not align with per-stem shard boundaries, so one
+    chunk may hold the tail of one shard and the head of the next; each shard is
+    read line by line (a finding = one unit) so no record is split across a
+    chunk. Each chunk is committed atomically (issue #58). Always creates at
+    least the ``.00001`` chunk even when every shard is empty or missing,
+    matching the "artifact always present after a successful clean" contract.
 
     Returns the list of source filenames (``stats.src_name``) whose shard was
     missing but had a non-zero ``quarantined_count`` — a gap the caller should
@@ -446,9 +471,11 @@ def concat_findings_shards(
     successful run, so an interrupted or failed run keeps its shards and a
     later ``--resume`` can re-read them to rebuild a complete ``report.jsonl``.
     """
-    tmp_path = dest_path + ".partial"
+    dest = Path(dest_path)
     missing_nonempty: list[str] = []
-    with open(tmp_path, "wb") as out:
+    with chunking.ChunkedWriter(
+        str(dest.parent), dest.stem, dest.suffix, chunk_records
+    ) as out:
         for stats in all_stats:
             shard = shard_path(out_dir, stats.src_name)
             if not shard.exists():
@@ -460,6 +487,6 @@ def concat_findings_shards(
                     missing_nonempty.append(stats.src_name)
                 continue
             with open(shard, "rb") as src:
-                shutil.copyfileobj(src, out, length=65536)
-    fsutil.durable_replace(tmp_path, dest_path)
+                for line in src:
+                    out.write(line)  # one JSONL finding = one chunk unit
     return missing_nonempty

@@ -33,9 +33,40 @@ from lintle import (
 from lintle import (
     config as user_config,
 )
+from lintle.chunking import CHUNK_RECORDS_DEFAULT
 
 _DEFAULT_SOURCE = "data/source"
 _DEFAULT_OUTPUT = "data/output"
+
+
+def _chunk_records_type(value):
+    """argparse type for ``--chunk-records``: a non-negative int (0 = never roll,
+    a single ``.00001`` chunk). Rejects negatives so a typo fails loudly."""
+    try:
+        n = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not an integer: {value!r}") from None
+    if n < 0:
+        raise argparse.ArgumentTypeError("must be >= 0 (0 = never roll)")
+    return n
+
+
+def _add_chunk_records_arg(parser):
+    """Add the shared ``--chunk-records N`` flag (clean/dedup/verify) that sizes
+    the fixed-count output chunks. ``0`` writes a single ``.00001`` chunk."""
+    parser.add_argument(
+        "--chunk-records",
+        type=_chunk_records_type,
+        default=CHUNK_RECORDS_DEFAULT,
+        metavar="N",
+        help=(
+            "records per output chunk file (default: "
+            f"{CHUNK_RECORDS_DEFAULT:,}); every record/line stream is split into "
+            "<stem>.NNNNN.<suffix> chunks of this size. 0 = never roll (a single "
+            ".00001 chunk)"
+        ),
+    )
+
 
 _EPILOG = """\
 Examples:
@@ -175,6 +206,7 @@ def _add_clean_subparser(subparsers):
             "checksum, so by default such lines are quarantined"
         ),
     )
+    _add_chunk_records_arg(sub)
     resume_group = sub.add_mutually_exclusive_group()
     resume_group.add_argument(
         "--resume",
@@ -348,6 +380,7 @@ def _add_verify_subparser(subparsers):
             "10·MAD) or 'strict' (200 km, 20·MAD) for fewer, higher-confidence hits"
         ),
     )
+    _add_chunk_records_arg(verify_parser)
 
 
 def _add_dedup_subparser(subparsers):
@@ -380,6 +413,7 @@ def _add_dedup_subparser(subparsers):
             f"(default: stored config, else {_DEFAULT_OUTPUT})"
         ),
     )
+    _add_chunk_records_arg(dedup_parser)
 
 
 def build_parser():
@@ -483,7 +517,11 @@ def _finalize_run(
     # no-op off a TTY, and after the progress block exits, so no Live nesting.
     if all_stats:
         output_artifacts.write_clean_artifacts(
-            args.out_dir, all_stats, envelope, failed_files=failed_files
+            args.out_dir,
+            all_stats,
+            envelope,
+            failed_files=failed_files,
+            chunk_records=args.chunk_records,
         )
 
     if args.report == "json":
@@ -609,12 +647,13 @@ def main(argv=None):
             sample=args.sample,
             all_sats=args.all_sats,
             sensitivity=args.sensitivity,
+            chunk_records=args.chunk_records,
         )
 
     # `dedup` is a read-only consumer of cleaned/ (plus a prior verify run's
     # suspects.jsonl); it writes only <out-dir>/dedup and never touches cleaned/.
     if args.command == "dedup":
-        return dedup.run_dedup(args.out_dir)
+        return dedup.run_dedup(args.out_dir, args.chunk_records)
 
     # `args.path` is None when the user passed nothing — fall back to the
     # default source dir, and remember it so we can give a tailored error if

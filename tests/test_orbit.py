@@ -116,7 +116,7 @@ GEO_CULPRIT = (
 def build_tree(tmp_path, pairs, stem="tle01"):
     out = tmp_path / "output"
     (out / "cleaned").mkdir(parents=True, exist_ok=True)
-    (out / "cleaned" / f"{stem}.cleaned.txt").write_text(
+    (out / "cleaned" / f"{stem}.00001.cleaned.txt").write_text(
         "".join(f"{a}\n{b}\n" for a, b in pairs), encoding="ascii"
     )
     return str(out)
@@ -421,7 +421,7 @@ class TestEndToEnd:
         pairs = TRACK[:-1] + [diverged_last()]
         out = build_tree(tmp_path, pairs)
         assert run_verify(out, None, orbit=True) == 0  # inconclusive never blocks
-        rows = (tmp_path / "output" / "verify" / "suspects.jsonl").read_text()
+        rows = (tmp_path / "output" / "verify" / "suspects.00001.jsonl").read_text()
         assert "VRFY-ORBIT-OUTLIER" in rows
 
     def test_orbit_off_by_default(self, tmp_path):

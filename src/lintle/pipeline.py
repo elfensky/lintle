@@ -1,6 +1,5 @@
 """Streaming I/O: read a file, pair lines into records, route them."""
 
-import contextlib
 import dataclasses
 import time
 from pathlib import Path
@@ -12,13 +11,14 @@ from lintle import (
     CLEANED_DIRNAME,
     CLEANED_SUFFIX,
     SHARDS_DIRNAME,
-    fsutil,
+    chunking,
     repair,
     report,
     report_writers,
     stem,
     tle,
 )
+from lintle.chunking import CHUNK_RECORDS_DEFAULT
 from lintle.diagnostics import Diagnostic, RuleID, diagnostic
 
 
@@ -287,6 +287,7 @@ def process_file(
     progress_every=25_000,
     *,
     reconstruct_checksum=False,
+    chunk_records=CHUNK_RECORDS_DEFAULT,
 ):
     """Process one source file and return its ``report.FileStats``.
 
@@ -335,6 +336,7 @@ def process_file(
             progress_queue,
             progress_every,
             reconstruct_checksum,
+            chunk_records,
         )
     finally:
         # ``finally`` always runs before the return value reaches the
@@ -348,18 +350,23 @@ def process_file(
             progress_queue.put(FileEnded(src_name))
 
 
-def _record_acceptance(stats, cleaned_handle, result):
-    """Tally and optionally write one accepted repaired record."""
+def _record_acceptance(stats, cleaned_writer, result):
+    """Tally and optionally write one accepted repaired record.
+
+    The record is written as one chunk unit (:meth:`ChunkedWriter.write_record`),
+    so the 2-line record is never split across a chunk boundary and stays
+    byte-identical to the pre-chunking single-write output (ASCII, LF-terminated).
+    """
     stats.clean_count += 1
     for fix in result.fixes:
         stats.fix_counts[fix] = stats.fix_counts.get(fix, 0) + 1
-    if cleaned_handle is not None:
-        # Single write keeps the two-line record together in one syscall,
-        # halving write calls on the hot accept path (byte-identical output).
-        cleaned_handle.write(result.line1 + "\n" + result.line2 + "\n")
+    if cleaned_writer is not None:
+        cleaned_writer.write_record(
+            result.line1.encode("ascii"), result.line2.encode("ascii")
+        )
 
 
-def _route_candidate(candidate, stats, sink, cleaned_handle, reconstruct_checksum):
+def _route_candidate(candidate, stats, sink, cleaned_writer, reconstruct_checksum):
     """Route one paired record or orphan into accepted/quarantined accounting."""
     if isinstance(candidate, Orphan):
         stats.orphan_entries += 1
@@ -399,7 +406,7 @@ def _route_candidate(candidate, stats, sink, cleaned_handle, reconstruct_checksu
         return
 
     if isinstance(result, repair.Accepted):
-        _record_acceptance(stats, cleaned_handle, result)
+        _record_acceptance(stats, cleaned_writer, result)
     else:
         _record_quarantine(
             stats,
@@ -440,7 +447,14 @@ def _clean_output_paths(out_dir, src_name):
 
 
 def _run(
-    src_path, out_dir, mode, stats, progress_queue, progress_every, reconstruct_checksum
+    src_path,
+    out_dir,
+    mode,
+    stats,
+    progress_queue,
+    progress_every,
+    reconstruct_checksum,
+    chunk_records=CHUNK_RECORDS_DEFAULT,
 ):
     """Process one file once start/end progress events are accounted for —
     body of :func:`process_file`. Kept separate so the wrapper above can
@@ -448,7 +462,6 @@ def _run(
     indentation.
     """
     src_name = stats.src_name
-    cleaned_tmp = None
     cleaned_path = None
     broken_path = None
     jsonl_path = None
@@ -457,11 +470,6 @@ def _run(
         cleaned_path = paths.cleaned
         broken_path = paths.broken
         jsonl_path = paths.jsonl
-        # Deterministic temp name (not tempfile.mkstemp): a killed run leaves
-        # at most one .partial per file, which the next run truncates — no
-        # random-name debris accumulates. open() also honours the umask
-        # (typically 0644), whereas mkstemp would force owner-only 0600.
-        cleaned_tmp = cleaned_path + ".partial"
 
     # The sink owns the BrokenFileWriter lifecycle in clean mode and the
     # bounded in-memory sample in both modes. Issue #19: cap-enforcement
@@ -470,32 +478,38 @@ def _run(
     # optional JsonlFindingsWriter, which streams structured findings to
     # the per-file shard alongside the .broken.txt byte-faithful catalog.
     sink = report_writers.QuarantineSink(
-        broken_path=broken_path, src_name=src_name, jsonl_path=jsonl_path
+        broken_path=broken_path,
+        src_name=src_name,
+        jsonl_path=jsonl_path,
+        chunk_records=chunk_records,
     )
 
     completed = False
     progress = _ProgressBatcher(progress_queue, progress_every, stats.src_name)
     with sink:
-        # Issue #104: cleaned_handle is opened INSIDE the `with sink:` block
+        # Issue #104: the cleaned writer is created INSIDE the `with sink:` block
         # so that a sink.__enter__ failure (e.g. the jsonl writer's open fails)
-        # can never leave the .partial behind — if __enter__ raises, this code
-        # is never reached and no handle exists to leak. The inner finally below
-        # closes and unlinks the handle on every error path just as before.
-        cleaned_handle = None
+        # can never leave a chunk temp behind. The inner finally below abandons
+        # the whole chunk set on every error path (per-file atomicity).
+        cleaned_writer = None
         try:
             if mode == "clean":
-                # SIM115: the handle is long-lived across the record loop and
-                # is closed in the `finally` below — a `with` block does not
-                # fit here.
-                cleaned_handle = open(  # noqa: SIM115
-                    cleaned_tmp, "w", encoding="ascii", newline="\n"
+                # ChunkedWriter rolls cleaned output into
+                # cleaned/<stem>.NNNNN.cleaned.txt every chunk_records records,
+                # committing each chunk atomically as it fills. It owns its own
+                # temp + durable_replace lifecycle, so no cleaned_tmp here.
+                cleaned_writer = chunking.ChunkedWriter(
+                    str(Path(cleaned_path).parent),
+                    stem(src_name),
+                    CLEANED_SUFFIX,
+                    chunk_records,
                 )
             # Input size for the v1 envelope (issue #20). Captured inside
             # the ``with sink:`` try-block so a missing-source ``OSError``
             # routes through the same cleanup paths as one raised by
-            # ``iter_records`` itself — the cleaned-temp file is unlinked
+            # ``iter_records`` itself — the cleaned chunk set is abandoned
             # by the inner finally and the sink's ``__exit__`` discards
-            # the ``.broken.txt`` partials. The parent's ``finally`` still
+            # the ``.broken.txt`` set. The parent's ``finally`` still
             # emits the lifecycle ``end`` event.
             stats.bytes = Path(src_path).stat().st_size
             for candidate in iter_records(src_path, stats):
@@ -506,7 +520,7 @@ def _run(
                 # exact newline widths — so the deltas sum to st_size exactly.
                 progress.item_seen(stats)
                 _route_candidate(
-                    candidate, stats, sink, cleaned_handle, reconstruct_checksum
+                    candidate, stats, sink, cleaned_writer, reconstruct_checksum
                 )
             # Push the trailing partial batch so the caller's tally is exact.
             # ``byte_delta`` can be non-zero with zero records when the file
@@ -515,22 +529,19 @@ def _run(
             progress.flush(stats)
             completed = True
         finally:
-            if cleaned_handle is not None:
-                cleaned_handle.close()
-            # On any failure, discard the partial temp file — never publish a
-            # half-written .cleaned.txt and never leak the .tmp behind. The
-            # sink's own __exit__ (fires below when `with sink:` ends)
-            # handles the .broken.txt partials.
-            if cleaned_tmp is not None and not completed:
-                with contextlib.suppress(OSError):
-                    Path(cleaned_tmp).unlink()
+            # On any failure, abandon the whole cleaned chunk set — never
+            # publish a partial .cleaned.txt set and never leak a chunk temp.
+            # The sink's own __exit__ (fires below when `with sink:` ends)
+            # handles the .broken.txt set.
+            if cleaned_writer is not None and not completed:
+                cleaned_writer.discard_all()
 
         # Still inside `with sink:` — finalize must happen BEFORE __exit__
         # fires, otherwise the writer's exit handler sees _completed=False
-        # and deletes the body partial before finalize can stitch it. Two
+        # and abandons the set before finalize can commit it. Two
         # adversarial-review voices caught this bug in the original spec.
         if completed and mode == "clean":
-            fsutil.durable_replace(cleaned_tmp, cleaned_path)
+            cleaned_writer.close()
         stats.quarantine_sample = sink.finalize(
             entries=stats.paired_records + stats.orphan_entries
         )

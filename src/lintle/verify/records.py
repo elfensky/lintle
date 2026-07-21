@@ -5,11 +5,20 @@ stem, and ordinal — the handle every verify pass needs. Streaming only: a 3.2 
 input's cleaned twin is never held whole."""
 
 import dataclasses
+import re
 from collections.abc import Iterator
 from pathlib import Path
 
-from lintle import CLEANED_DIRNAME, CLEANED_SUFFIX
+from lintle import CLEANED_DIRNAME, CLEANED_SUFFIX, chunking
 from lintle.verify import epoch
+
+# Distinct-stem parse for the chunked layout: <stem>.NNNNN.cleaned.txt. A
+# right-anchored regex on the 5-digit index + literal suffix (not a fixed-length
+# tail slice) is unambiguous even for a stem that itself ends in .NNNNN and skips
+# any stray non-matching file.
+_CLEANED_STEM_RE = re.compile(
+    r"^(?P<stem>.+)\.\d{5}" + re.escape(CLEANED_SUFFIX) + r"$"
+)
 
 
 @dataclasses.dataclass(slots=True, frozen=True)
@@ -50,30 +59,37 @@ def _catalog_and_key(line1: str) -> tuple[int, float]:
 
 
 def cleaned_stems(out_dir: str) -> list[str]:
-    """Sorted stems of the cleaned files under ``<out-dir>/cleaned`` (``tle2019``
-    for ``tle2019.cleaned.txt``); ``[]`` if the directory is absent."""
+    """Sorted distinct stems of the cleaned chunk sets under ``<out-dir>/cleaned``
+    (``tle2019`` for the ``tle2019.NNNNN.cleaned.txt`` set); ``[]`` if the
+    directory is absent. Each stem's chunks collapse to one entry."""
     cleaned_dir = Path(out_dir) / CLEANED_DIRNAME
     if not cleaned_dir.is_dir():
         return []
-    return sorted(
-        p.name[: -len(CLEANED_SUFFIX)]
-        for p in cleaned_dir.glob("*" + CLEANED_SUFFIX)
-        if p.is_file()
-    )
+    stems = set()
+    for p in cleaned_dir.glob("*" + CLEANED_SUFFIX):
+        if not p.is_file():
+            continue
+        m = _CLEANED_STEM_RE.match(p.name)
+        if m is not None:
+            stems.add(m.group("stem"))
+    return sorted(stems)
 
 
 def iter_file(out_dir: str, file_stem: str) -> Iterator[CleanedRecord]:
-    """Yield the cleaned records of one file, in on-disk (source) order."""
-    path = Path(out_dir) / CLEANED_DIRNAME / (file_stem + CLEANED_SUFFIX)
-    with path.open(encoding="ascii", errors="replace") as fh:
-        index = 0
-        while True:
-            line1 = fh.readline()
-            line2 = fh.readline()
-            if not line2:
-                break  # clean odd trailing half-line: no pair to check
-            line1 = line1.rstrip("\n")
-            line2 = line2.rstrip("\n")
-            catalog, key = _catalog_and_key(line1)
-            yield CleanedRecord(catalog, key, line1, line2, file_stem, index)
-            index += 1
+    """Yield the cleaned records of one file's chunk set, in on-disk (source)
+    order across the whole set as one logical stream. Streams one chunk at a
+    time (constant memory)."""
+    reader = chunking.ChunkedReader(
+        Path(out_dir) / CLEANED_DIRNAME, file_stem, CLEANED_SUFFIX
+    )
+    lines = reader.iter_lines()
+    index = 0
+    for raw1 in lines:
+        raw2 = next(lines, None)
+        if raw2 is None:
+            break  # odd trailing half-line: no pair to check
+        line1 = raw1.decode("ascii", errors="replace")
+        line2 = raw2.decode("ascii", errors="replace")
+        catalog, key = _catalog_and_key(line1)
+        yield CleanedRecord(catalog, key, line1, line2, file_stem, index)
+        index += 1  # noqa: SIM113 — two lines consumed per record, not one-per-item

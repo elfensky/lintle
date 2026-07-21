@@ -52,6 +52,7 @@ def run_workers(config: run_planning.CleanConfig, files, plan, jobs, console, si
                     config.command,
                     progress_queue,
                     reconstruct_checksum=config.reconstruct_checksum,
+                    chunk_records=config.chunk_records,
                 ): path
                 for path in plan.files_to_process
             }

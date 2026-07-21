@@ -5,6 +5,7 @@ import collections
 import json
 import os
 import random
+from pathlib import Path
 
 import pytest
 
@@ -239,16 +240,11 @@ class TestWriteBrokenFile:
                 ]
             },
         )
-        out = tmp_path / "tle2099.broken.txt"
+        report_writers.write_broken_file(str(tmp_path), "tle2099.txt", stats)
 
-        report_writers.write_broken_file(str(out), "tle2099.txt", stats)
-
+        out = tmp_path / "tle2099.00001.broken.txt"
         text = out.read_bytes()
         assert b"# source: tle2099.txt" in text
-        # Denominator is paired_records + orphan_entries — what the file's
-        # quarantine count is measured against. With 0 orphans here, that
-        # equals paired_records (5).
-        assert b"1 quarantined of 5 entries" in text
         assert b"source line 42" in text
         assert b"rule: TLE-PAIR-002" in text  # BAD_PREFIX
         assert b"1 garbage" in text
@@ -272,10 +268,9 @@ class TestWriteBrokenFile:
                 ]
             },
         )
-        out = tmp_path / "out.broken.txt"
+        report_writers.write_broken_file(str(tmp_path), "tlé.txt", stats)
 
-        report_writers.write_broken_file(str(out), "tlé.txt", stats)
-
+        out = tmp_path / "tlé.00001.broken.txt"
         assert b"# source: tl?.txt" in out.read_bytes()
 
     def test_broken_file_is_byte_faithful(self, tmp_path):
@@ -294,10 +289,9 @@ class TestWriteBrokenFile:
                 ]
             },
         )
-        out = tmp_path / "x.broken.txt"
+        report_writers.write_broken_file(str(tmp_path), "x.txt", stats)
 
-        report_writers.write_broken_file(str(out), "x.txt", stats)
-
+        out = tmp_path / "x.00001.broken.txt"
         assert b"\xff\xfe" in out.read_bytes()
 
     def test_two_line_record_location(self, tmp_path):
@@ -322,10 +316,9 @@ class TestWriteBrokenFile:
                 ]
             },
         )
-        out = tmp_path / "x.broken.txt"
+        report_writers.write_broken_file(str(tmp_path), "x.txt", stats)
 
-        report_writers.write_broken_file(str(out), "x.txt", stats)
-
+        out = tmp_path / "x.00001.broken.txt"
         text = out.read_bytes()
         assert b"source lines 14820-14821" in text
         # New format surfaces structured fields:
@@ -363,8 +356,8 @@ class TestWriteBrokenFile:
                 ]
             },
         )
-        out = tmp_path / "x.broken.txt"
-        report_writers.write_broken_file(str(out), "x.txt", stats)
+        report_writers.write_broken_file(str(tmp_path), "x.txt", stats)
+        out = tmp_path / "x.00001.broken.txt"
         text = out.read_bytes()
         assert b"rule: TLE-CHK-001" in text
         assert b"    and: rule: TLE-COL-001" in text
@@ -394,8 +387,8 @@ class TestWriteBrokenFile:
             cap=5, entries_by_rule=buckets
         )
 
-        out = tmp_path / "x.broken.txt"
-        report_writers.write_broken_file(str(out), "x.txt", stats)
+        report_writers.write_broken_file(str(tmp_path), "x.txt", stats)
+        out = tmp_path / "x.00001.broken.txt"
 
         text = out.read_bytes()
         for s in (10, 20, 30, 40, 50, 60):
@@ -425,8 +418,8 @@ class TestWriteBrokenFile:
             cap=5, entries_by_rule=buckets
         )
 
-        out = tmp_path / "x.broken.txt"
-        report_writers.write_broken_file(str(out), "x.txt", stats)
+        report_writers.write_broken_file(str(tmp_path), "x.txt", stats)
+        out = tmp_path / "x.00001.broken.txt"
         text = out.read_text("ascii")
 
         # Order of appearance must follow source_lines, not dict insertion
@@ -543,6 +536,14 @@ class TestConcatFindingsShards:
         path.write_text(body, encoding="utf-8")
         return path
 
+    def _chunk(self, dest):
+        """Return the ``.00001`` chunk path for a ``dest`` passed to
+        ``concat_findings_shards`` — small test inputs (< 1M findings) always
+        produce exactly one chunk. Concatenating the chunk set in index order
+        is byte-identical to the pre-chunking single ``report.jsonl``."""
+        dest = Path(dest)
+        return dest.parent / f"{dest.stem}.00001{dest.suffix}"
+
     def test_concat_orders_alphabetically_by_src_name(self, tmp_path):
         shard_dir = tmp_path / ".shards"
         shard_dir.mkdir()
@@ -560,18 +561,20 @@ class TestConcatFindingsShards:
         ]
         dest = tmp_path / "report.jsonl"
         report_writers.concat_findings_shards(str(tmp_path), str(dest), all_stats)
-        lines = dest.read_text(encoding="utf-8").splitlines()
+        lines = self._chunk(dest).read_text(encoding="utf-8").splitlines()
         files = [json.loads(line)["file"] for line in lines]
         assert files == ["tle2004.txt", "tle2013.txt", "tle2022.txt"]
 
     def test_concat_creates_empty_file_when_no_shards(self, tmp_path):
-        # Empty .shards/ and empty all_stats -> empty report.jsonl
-        # (matches broken-noradids.ndjson's zero-quarantine contract).
+        # Empty .shards/ and empty all_stats -> empty .00001 chunk (matches
+        # broken-noradids.ndjson's zero-quarantine contract; the chunk set is
+        # always non-empty on disk even when the logical stream is empty).
         (tmp_path / ".shards").mkdir()
         dest = tmp_path / "report.jsonl"
         report_writers.concat_findings_shards(str(tmp_path), str(dest), [])
-        assert dest.exists()
-        assert dest.read_text(encoding="utf-8") == ""
+        chunk = self._chunk(dest)
+        assert chunk.exists()
+        assert chunk.read_text(encoding="utf-8") == ""
 
     def test_concat_handles_missing_shard_gracefully(self, tmp_path):
         # all_stats references a file with no shard (validate-mode worker
@@ -585,7 +588,7 @@ class TestConcatFindingsShards:
         ]
         dest = tmp_path / "report.jsonl"
         report_writers.concat_findings_shards(str(tmp_path), str(dest), all_stats)
-        lines = dest.read_text(encoding="utf-8").splitlines()
+        lines = self._chunk(dest).read_text(encoding="utf-8").splitlines()
         assert len(lines) == 1
         assert json.loads(lines[0])["file"] == "tle2022.txt"
 
@@ -606,7 +609,7 @@ class TestConcatFindingsShards:
         assert (shard_dir / "tle2022.findings.jsonl").exists()
 
     def test_concat_atomic_rename(self, tmp_path):
-        # The destination is written via .partial + os.replace, so no
+        # The destination chunk is written via .partial + os.replace, so no
         # .partial is left after success.
         shard_dir = tmp_path / ".shards"
         shard_dir.mkdir()
@@ -617,18 +620,28 @@ class TestConcatFindingsShards:
             str(dest),
             [report.FileStats(src_name="tle2022.txt")],
         )
-        assert dest.exists()
-        assert not (tmp_path / "report.jsonl.partial").exists()
+        chunk = self._chunk(dest)
+        assert chunk.exists()
+        assert not Path(str(chunk) + ".partial").exists()
 
-    def test_concat_failure_preserves_prior_report_jsonl(self, tmp_path, monkeypatch):
-        # If os.replace raises during concat, the destination from a
-        # prior run (if any) stays unchanged and the partial is left
-        # behind — next run's pre-run scrub purges. Spec §8.7.
+    def test_concat_failure_leaves_partial_and_scrubs_prior_chunk(
+        self, tmp_path, monkeypatch
+    ):
+        # Chunking's invariant 5 (spec 2026-07-21-output-chunking-design,
+        # also unit-tested directly in test_chunking.py) scrubs a stem's
+        # existing chunk set on first open, BEFORE any write is attempted —
+        # so a shorter re-run never orphans a longer prior run's high-index
+        # tail. That scrub is unconditional, so unlike the pre-chunking
+        # single-file writer, a rename failure no longer leaves the prior
+        # chunk untouched: the prior ``report.00001.jsonl`` is gone and only
+        # the new (uncommitted) ``.partial`` remains — "at most one
+        # discarded temp, never a torn file" (invariant 4).
         shard_dir = tmp_path / ".shards"
         shard_dir.mkdir()
         self._make_shard(shard_dir, "tle2022", ['{"file":"tle2022.txt"}'])
         dest = tmp_path / "report.jsonl"
-        dest.write_text("from-prior-run\n", encoding="utf-8")
+        chunk = self._chunk(dest)
+        chunk.write_text("from-prior-run\n", encoding="utf-8")
 
         def boom(*args, **kwargs):
             raise OSError("simulated concat rename failure")
@@ -640,8 +653,12 @@ class TestConcatFindingsShards:
                 str(dest),
                 [report.FileStats(src_name="tle2022.txt")],
             )
-        # Prior content is untouched.
-        assert dest.read_text(encoding="utf-8") == "from-prior-run\n"
+        # The prior chunk was scrubbed before the (failed) rewrite attempt.
+        assert not chunk.exists()
+        # The attempted content survives only in the discarded .partial temp
+        # — next run's pre-run scrub purges it (Spec §8.7).
+        partial = Path(str(chunk) + ".partial")
+        assert partial.read_text(encoding="utf-8") == '{"file":"tle2022.txt"}\n'
 
     # ------------------------------------------------------------------
     # Issue #117 — return value: missing-but-nonempty shards
@@ -874,9 +891,9 @@ class TestQuarantineSink:
             for entry in entries:
                 sink.add(entry)
             sink.finalize(entries=3)
-        body = path.read_bytes()
+        chunk = tmp_path / "x.00001.broken.txt"
+        body = chunk.read_bytes()
         assert b"# source: x.txt" in body
-        assert b"# 3 quarantined of 3 entries" in body
         for idx, entry in enumerate(entries, start=1):
             assert report_writers._render_entry(idx, entry) in body
 

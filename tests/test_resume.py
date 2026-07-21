@@ -7,7 +7,6 @@ import pytest
 import lintle
 from lintle import (
     BROKEN_DIRNAME,
-    BROKEN_SUFFIX,
     CLEANED_DIRNAME,
     CLEANED_SUFFIX,
     FINDINGS_SUFFIX,
@@ -544,8 +543,10 @@ class TestArchiveCheckpoint:
 
 
 class TestOutputSizes:
-    """output_sizes must record the broken sidecar unconditionally (issue #101a)
-    and the findings shard (issue #117 / #101b), regardless of quarantine count."""
+    """output_sizes records every cleaned/broken *chunk* (by chunk basename)
+    unconditionally (issue #101a) plus the findings shard (issue #117 / #101b),
+    regardless of quarantine count — so a resume integrity check covers the whole
+    chunk set, not a stale single-file name."""
 
     def _make_stats(self, src_name, quarantined_count=0):
         return FileStats(src_name=src_name, quarantined_count=quarantined_count)
@@ -554,26 +555,29 @@ class TestOutputSizes:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
 
-    def test_records_cleaned_file(self, tmp_path):
+    def test_records_each_cleaned_chunk(self, tmp_path):
         st = self._make_stats("tle2099.txt")
-        cleaned = tmp_path / CLEANED_DIRNAME / ("tle2099" + CLEANED_SUFFIX)
-        self._write(cleaned, b"x" * 200)
+        self._write(
+            tmp_path / CLEANED_DIRNAME / "tle2099.00001.cleaned.txt", b"x" * 200
+        )
+        self._write(tmp_path / CLEANED_DIRNAME / "tle2099.00002.cleaned.txt", b"y" * 50)
         sizes = resume.output_sizes(str(tmp_path), st)
-        assert "tle2099" + CLEANED_SUFFIX in sizes
-        assert sizes["tle2099" + CLEANED_SUFFIX] == 200
+        assert sizes["tle2099.00001.cleaned.txt"] == 200
+        assert sizes["tle2099.00002.cleaned.txt"] == 50
 
-    def test_records_broken_sidecar_even_with_zero_quarantines(self, tmp_path):
+    def test_records_broken_chunk_even_with_zero_quarantines(self, tmp_path):
         # Issue #101a: sidecar always written (header-only when nothing is
-        # quarantined), so it must always be recorded — not gated on quarantined_count.
+        # quarantined), so its chunk set must always be recorded.
         st = self._make_stats("tle2099.txt", quarantined_count=0)
-        broken = tmp_path / BROKEN_DIRNAME / ("tle2099" + BROKEN_SUFFIX)
-        self._write(broken, b"# header\n")
+        self._write(
+            tmp_path / BROKEN_DIRNAME / "tle2099.00001.broken.txt", b"# header\n"
+        )
         sizes = resume.output_sizes(str(tmp_path), st)
-        assert "tle2099" + BROKEN_SUFFIX in sizes
+        assert "tle2099.00001.broken.txt" in sizes
 
     def test_records_findings_shard(self, tmp_path):
-        # Issue #117: the shard must be recorded so a missing shard on resume
-        # triggers reprocessing rather than a silent gap in report.jsonl.
+        # Issue #117: the shard (still a single intermediate file) must be recorded
+        # so a missing shard on resume triggers reprocessing.
         st = self._make_stats("tle2099.txt")
         shard = tmp_path / SHARDS_DIRNAME / ("tle2099" + FINDINGS_SUFFIX)
         self._write(shard, b'{"outcome":"quarantined"}\n')
@@ -582,13 +586,11 @@ class TestOutputSizes:
         assert sizes["tle2099" + FINDINGS_SUFFIX] == len(b'{"outcome":"quarantined"}\n')
 
     def test_absent_outputs_not_recorded(self, tmp_path):
-        # When a file does not exist (e.g. validate mode) it is simply absent
-        # from the sizes dict — no KeyError, no OSError.
+        # When nothing exists (e.g. validate mode) the sizes dict is empty —
+        # no KeyError, no OSError.
         st = self._make_stats("tle2099.txt")
         sizes = resume.output_sizes(str(tmp_path), st)
-        assert "tle2099" + CLEANED_SUFFIX not in sizes
-        assert "tle2099" + BROKEN_SUFFIX not in sizes
-        assert "tle2099" + FINDINGS_SUFFIX not in sizes
+        assert sizes == {}
 
 
 class TestVerifyCompletedOutputsWithShard:
@@ -666,20 +668,20 @@ class TestCompletedEntryRoundTrip:
         # from_stats must produce an entry with a summary dict and an outputs
         # dict; the summary must include at least src_name.
         st = FileStats(src_name="tle2099.txt")
-        self._write_output(tmp_path, CLEANED_DIRNAME, "tle2099" + CLEANED_SUFFIX)
+        self._write_output(tmp_path, CLEANED_DIRNAME, "tle2099.00001.cleaned.txt")
         entry = resume.CompletedEntry.from_stats(str(tmp_path), st)
         assert isinstance(entry.summary, dict)
         assert isinstance(entry.outputs, dict)
         assert entry.summary.get("src_name") == "tle2099.txt"
-        # The cleaned file was present — it must be in outputs.
-        assert "tle2099" + CLEANED_SUFFIX in entry.outputs
+        # The cleaned chunk was present — it must be in outputs.
+        assert "tle2099.00001.cleaned.txt" in entry.outputs
 
     def test_round_trip_verify_passes_intact_outputs(self, tmp_path):
         # The dict produced by as_dict() must satisfy verify_completed_outputs
         # when all named output files are on disk at the recorded size.
         st = FileStats(src_name="tle2099.txt")
         data = b"y" * 80
-        self._write_output(tmp_path, CLEANED_DIRNAME, "tle2099" + CLEANED_SUFFIX, data)
+        self._write_output(tmp_path, CLEANED_DIRNAME, "tle2099.00001.cleaned.txt", data)
         entry = resume.CompletedEntry.from_stats(str(tmp_path), st)
         completed = {"tle2099.txt": entry.as_dict()}
         assert resume.verify_completed_outputs(completed, str(tmp_path)) == []
@@ -689,10 +691,10 @@ class TestCompletedEntryRoundTrip:
         # round-trip must flag it for reprocessing.
         st = FileStats(src_name="tle2099.txt")
         data = b"z" * 60
-        self._write_output(tmp_path, CLEANED_DIRNAME, "tle2099" + CLEANED_SUFFIX, data)
+        self._write_output(tmp_path, CLEANED_DIRNAME, "tle2099.00001.cleaned.txt", data)
         entry = resume.CompletedEntry.from_stats(str(tmp_path), st)
-        # Remove the output file to simulate a post-completion corruption.
-        (tmp_path / CLEANED_DIRNAME / ("tle2099" + CLEANED_SUFFIX)).unlink()
+        # Remove the output chunk to simulate a post-completion corruption.
+        (tmp_path / CLEANED_DIRNAME / "tle2099.00001.cleaned.txt").unlink()
         completed = {"tle2099.txt": entry.as_dict()}
         assert resume.verify_completed_outputs(completed, str(tmp_path)) == [
             "tle2099.txt"

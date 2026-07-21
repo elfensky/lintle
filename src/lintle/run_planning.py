@@ -14,6 +14,7 @@ from lintle import (
     resume,
     term,
 )
+from lintle.chunking import CHUNK_RECORDS_DEFAULT
 
 # Marker written into the out-dir on the first fresh run.  Its presence (or the
 # presence of a checkpoint / stale-checkpoint archive) is the ownership signal
@@ -59,6 +60,7 @@ class CleanConfig:
     resume: bool
     no_resume: bool
     jobs: int | None
+    chunk_records: int = CHUNK_RECORDS_DEFAULT
 
     @classmethod
     def from_args(cls, args) -> CleanConfig:
@@ -71,6 +73,7 @@ class CleanConfig:
             resume=args.resume,
             no_resume=args.no_resume,
             jobs=args.jobs,
+            chunk_records=getattr(args, "chunk_records", CHUNK_RECORDS_DEFAULT),
         )
 
 
@@ -164,6 +167,12 @@ def scrub_outputs(out_dir):
     for name in _REPORT_ARTIFACTS:
         with contextlib.suppress(OSError):
             (out / name).unlink()
+    # report.jsonl is a chunk set (report.NNNNN.jsonl) — glob the whole set so a
+    # prior run's chunks never linger (the concat writer also scrubs on open, but
+    # the fresh-run scrub must not leave orphans of its own; spec invariant 5).
+    for chunk in out.glob("report.*.jsonl"):
+        with contextlib.suppress(OSError):
+            chunk.unlink()
 
 
 def resolve_clean_plan(config: CleanConfig, files, file_sizes):
@@ -177,9 +186,15 @@ def resolve_clean_plan(config: CleanConfig, files, file_sizes):
     # reconstruct_checksum changes which records are accepted vs quarantined,
     # so a resume with a flipped flag must re-run (STALE), not fold mismatched
     # outputs together (issue #82).
+    # chunk_records is part of run identity: it sets the chunk boundaries, so a
+    # resume with a different value would mix chunk sizes within one logical run
+    # (completed stems at the old size, redone stems at the new). A mismatch
+    # classifies the checkpoint STALE → the run restarts fresh rather than
+    # producing a set whose concatenation a fresh run would not reproduce.
     run_identity = {
         "max_quarantined": config.max_quarantined,
         "reconstruct_checksum": config.reconstruct_checksum,
+        "chunk_records": config.chunk_records,
     }
 
     classification = resume.classify_checkpoint(config.out_dir, inputs, run_identity)

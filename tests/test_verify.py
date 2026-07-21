@@ -64,7 +64,7 @@ def build_tree(tmp_path, cleaned_pairs, source_lines=None, stem="tle01"):
     ``(out_dir, source_dir)`` as strings."""
     out = tmp_path / "output"
     (out / "cleaned").mkdir(parents=True, exist_ok=True)
-    (out / "cleaned" / f"{stem}.cleaned.txt").write_text(
+    (out / "cleaned" / f"{stem}.00001.cleaned.txt").write_text(
         "".join(f"{a}\n{b}\n" for a, b in cleaned_pairs), encoding="ascii"
     )
     src = tmp_path / "source"
@@ -323,7 +323,7 @@ class TestEndToEnd:
     def test_clean_tree_passes(self, tmp_path):
         out, src = build_tree(tmp_path, [(L1, L2)], source_lines=[L1, L2])
         assert run_verify(out, src) == 0
-        suspects = (tmp_path / "output" / "verify" / "suspects.jsonl").read_text()
+        suspects = (tmp_path / "output" / "verify" / "suspects.00001.jsonl").read_text()
         assert suspects == ""
 
     def test_interior_mutation_fails(self, tmp_path):
@@ -331,7 +331,7 @@ class TestEndToEnd:
         assert run_verify(out, src) == 1
         rows = [
             json.loads(line)
-            for line in (tmp_path / "output" / "verify" / "suspects.jsonl")
+            for line in (tmp_path / "output" / "verify" / "suspects.00001.jsonl")
             .read_text()
             .splitlines()
         ]
@@ -341,7 +341,7 @@ class TestEndToEnd:
         # same satellite+epoch, SAME element-set, different orbit -> a hard clash
         out, _ = build_tree(tmp_path, [(L1, L2), (L1, mutated_l2())])
         assert run_verify(out, None) == 1
-        rows = (tmp_path / "output" / "verify" / "suspects.jsonl").read_text()
+        rows = (tmp_path / "output" / "verify" / "suspects.00001.jsonl").read_text()
         assert "VRFY-EPOCH-CONFLICT" in rows
 
     def test_refined_reissue_is_census_pass(self, tmp_path):
@@ -349,7 +349,7 @@ class TestEndToEnd:
         # re-issue: verify PASSES and the record is counted in the census (#158)
         out, _ = build_tree(tmp_path, [(L1, L2), (reissued_refined_l1(), L2)])
         assert run_verify(out, None) == 0
-        suspects = (tmp_path / "output" / "verify" / "suspects.jsonl").read_text()
+        suspects = (tmp_path / "output" / "verify" / "suspects.00001.jsonl").read_text()
         assert suspects == ""
         summary = json.loads(
             (tmp_path / "output" / "verify" / "summary.json").read_text()
