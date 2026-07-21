@@ -46,7 +46,7 @@ def build_tree(tmp_path, cleaned_pairs, *, suspects=None, stem="tle01"):
     suspects.jsonl); return the out-dir as a string."""
     out = tmp_path / "output"
     (out / "cleaned").mkdir(parents=True, exist_ok=True)
-    (out / "cleaned" / f"{stem}.cleaned.txt").write_text(
+    (out / "cleaned" / f"{stem}.00001.cleaned.txt").write_text(
         "".join(f"{a}\n{b}\n" for a, b in cleaned_pairs), encoding="ascii"
     )
     if suspects is not None:
@@ -221,9 +221,9 @@ class TestEndToEnd:
         out = tmp_path / "output"
         pairs = [(with_elset(L1, 100), L2), (with_elset(L1, 200), L2)]
         out_dir = build_tree(tmp_path, pairs)
-        before = (out / "cleaned" / "tle01.cleaned.txt").read_bytes()
+        before = (out / "cleaned" / "tle01.00001.cleaned.txt").read_bytes()
         dedup.run_dedup(out_dir)
-        after = (out / "cleaned" / "tle01.cleaned.txt").read_bytes()
+        after = (out / "cleaned" / "tle01.00001.cleaned.txt").read_bytes()
         assert before == after
 
     def test_deterministic_bytes(self, tmp_path):

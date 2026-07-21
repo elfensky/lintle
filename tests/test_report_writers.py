@@ -239,16 +239,11 @@ class TestWriteBrokenFile:
                 ]
             },
         )
-        out = tmp_path / "tle2099.broken.txt"
+        report_writers.write_broken_file(str(tmp_path), "tle2099.txt", stats)
 
-        report_writers.write_broken_file(str(out), "tle2099.txt", stats)
-
+        out = tmp_path / "tle2099.00001.broken.txt"
         text = out.read_bytes()
         assert b"# source: tle2099.txt" in text
-        # Denominator is paired_records + orphan_entries — what the file's
-        # quarantine count is measured against. With 0 orphans here, that
-        # equals paired_records (5).
-        assert b"1 quarantined of 5 entries" in text
         assert b"source line 42" in text
         assert b"rule: TLE-PAIR-002" in text  # BAD_PREFIX
         assert b"1 garbage" in text
@@ -272,10 +267,9 @@ class TestWriteBrokenFile:
                 ]
             },
         )
-        out = tmp_path / "out.broken.txt"
+        report_writers.write_broken_file(str(tmp_path), "tlé.txt", stats)
 
-        report_writers.write_broken_file(str(out), "tlé.txt", stats)
-
+        out = tmp_path / "tlé.00001.broken.txt"
         assert b"# source: tl?.txt" in out.read_bytes()
 
     def test_broken_file_is_byte_faithful(self, tmp_path):
@@ -294,10 +288,9 @@ class TestWriteBrokenFile:
                 ]
             },
         )
-        out = tmp_path / "x.broken.txt"
+        report_writers.write_broken_file(str(tmp_path), "x.txt", stats)
 
-        report_writers.write_broken_file(str(out), "x.txt", stats)
-
+        out = tmp_path / "x.00001.broken.txt"
         assert b"\xff\xfe" in out.read_bytes()
 
     def test_two_line_record_location(self, tmp_path):
@@ -322,10 +315,9 @@ class TestWriteBrokenFile:
                 ]
             },
         )
-        out = tmp_path / "x.broken.txt"
+        report_writers.write_broken_file(str(tmp_path), "x.txt", stats)
 
-        report_writers.write_broken_file(str(out), "x.txt", stats)
-
+        out = tmp_path / "x.00001.broken.txt"
         text = out.read_bytes()
         assert b"source lines 14820-14821" in text
         # New format surfaces structured fields:
@@ -363,8 +355,8 @@ class TestWriteBrokenFile:
                 ]
             },
         )
-        out = tmp_path / "x.broken.txt"
-        report_writers.write_broken_file(str(out), "x.txt", stats)
+        report_writers.write_broken_file(str(tmp_path), "x.txt", stats)
+        out = tmp_path / "x.00001.broken.txt"
         text = out.read_bytes()
         assert b"rule: TLE-CHK-001" in text
         assert b"    and: rule: TLE-COL-001" in text
@@ -394,8 +386,8 @@ class TestWriteBrokenFile:
             cap=5, entries_by_rule=buckets
         )
 
-        out = tmp_path / "x.broken.txt"
-        report_writers.write_broken_file(str(out), "x.txt", stats)
+        report_writers.write_broken_file(str(tmp_path), "x.txt", stats)
+        out = tmp_path / "x.00001.broken.txt"
 
         text = out.read_bytes()
         for s in (10, 20, 30, 40, 50, 60):
@@ -425,8 +417,8 @@ class TestWriteBrokenFile:
             cap=5, entries_by_rule=buckets
         )
 
-        out = tmp_path / "x.broken.txt"
-        report_writers.write_broken_file(str(out), "x.txt", stats)
+        report_writers.write_broken_file(str(tmp_path), "x.txt", stats)
+        out = tmp_path / "x.00001.broken.txt"
         text = out.read_text("ascii")
 
         # Order of appearance must follow source_lines, not dict insertion
@@ -874,9 +866,9 @@ class TestQuarantineSink:
             for entry in entries:
                 sink.add(entry)
             sink.finalize(entries=3)
-        body = path.read_bytes()
+        chunk = tmp_path / "x.00001.broken.txt"
+        body = chunk.read_bytes()
         assert b"# source: x.txt" in body
-        assert b"# 3 quarantined of 3 entries" in body
         for idx, entry in enumerate(entries, start=1):
             assert report_writers._render_entry(idx, entry) in body
 

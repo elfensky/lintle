@@ -106,6 +106,35 @@ class TestChunkedWriterAtomicCommit:
         assert not any(p.name.endswith(".partial") for p in tmp_path.iterdir())
 
 
+class TestChunkedWriterScrubExisting:
+    """A writer scrubs its stem's pre-existing chunk set on first open, so a
+    re-run (or resume redo) producing FEWER chunks never orphans a prior run's
+    high-index tail (spec invariant 5). Deterministic input → the rewritten
+    prefix is byte-identical; only the longer prior tail is removed."""
+
+    def test_shorter_rerun_leaves_no_orphaned_high_index_chunk(self, tmp_path):
+        # First run: 5 records at N=1 -> .00001..00005
+        with ChunkedWriter(tmp_path, "tle", ".cleaned.txt", units_per_chunk=1) as w:
+            for i in range(5):
+                w.write_record(f"1 x{i}".encode(), f"2 x{i}".encode())
+        assert len(_names(tmp_path)) == 5
+        # Second (shorter) run: 2 records -> .00001..00002; .00003-.00005 must go
+        with ChunkedWriter(tmp_path, "tle", ".cleaned.txt", units_per_chunk=1) as w:
+            for i in range(2):
+                w.write_record(f"1 x{i}".encode(), f"2 x{i}".encode())
+        assert _names(tmp_path) == ["tle.00001.cleaned.txt", "tle.00002.cleaned.txt"]
+
+    def test_scrub_leaves_other_stems_alone(self, tmp_path):
+        with ChunkedWriter(tmp_path, "tleA", ".cleaned.txt", units_per_chunk=1) as w:
+            w.write_record(b"1 a", b"2 a")
+        with ChunkedWriter(tmp_path, "tleB", ".cleaned.txt", units_per_chunk=1) as w:
+            w.write_record(b"1 b", b"2 b")
+        # re-running tleB must not touch tleA's set
+        with ChunkedWriter(tmp_path, "tleB", ".cleaned.txt", units_per_chunk=1) as w:
+            w.write_record(b"1 b2", b"2 b2")
+        assert "tleA.00001.cleaned.txt" in _names(tmp_path)
+
+
 class TestChunkedWriterWriteRaw:
     """write_raw() writes preamble bytes (a file header) into the first chunk
     without counting a unit, so the header lives in .00001 and the roll boundary

@@ -44,11 +44,20 @@ class ChunkedWriter:
     exit commits the final chunk, an exception discards the in-progress temp while
     keeping the already-committed chunks."""
 
-    def __init__(self, directory, stem, suffix, units_per_chunk=CHUNK_RECORDS_DEFAULT):
+    def __init__(
+        self,
+        directory,
+        stem,
+        suffix,
+        units_per_chunk=CHUNK_RECORDS_DEFAULT,
+        *,
+        scrub_existing=True,
+    ):
         self._dir = Path(directory)
         self._stem = stem
         self._suffix = suffix
         self._limit = units_per_chunk or 0  # 0/None → never roll
+        self._scrub_existing = scrub_existing
         self._index = 0  # last opened chunk index
         self._count = 0  # units in the currently open chunk
         self._handle = None
@@ -62,6 +71,15 @@ class ChunkedWriter:
 
     def _open_next(self):
         """Open the next chunk's ``.partial`` temp for writing."""
+        if self._index == 0 and self._scrub_existing:
+            # First chunk: scrub any pre-existing set for this stem so a shorter
+            # re-run / resume redo never orphans a longer prior run's high-index
+            # tail (spec invariant 5). A fresh run's dir was already cleared, so
+            # this glob is a cheap no-op there.
+            existing = ChunkedReader(self._dir, self._stem, self._suffix)
+            for path in existing.chunk_paths():
+                with contextlib.suppress(OSError):
+                    path.unlink()
         if self._index >= MAX_CHUNK_INDEX:
             raise ValueError(
                 f"chunk index would exceed {MAX_CHUNK_INDEX} for stem {self._stem!r}; "

@@ -64,7 +64,7 @@ def build_tree(tmp_path, cleaned_pairs, source_lines=None, stem="tle01"):
     ``(out_dir, source_dir)`` as strings."""
     out = tmp_path / "output"
     (out / "cleaned").mkdir(parents=True, exist_ok=True)
-    (out / "cleaned" / f"{stem}.cleaned.txt").write_text(
+    (out / "cleaned" / f"{stem}.00001.cleaned.txt").write_text(
         "".join(f"{a}\n{b}\n" for a, b in cleaned_pairs), encoding="ascii"
     )
     src = tmp_path / "source"

@@ -138,7 +138,7 @@ class TestResume:
 
         out_partial = tmp_path / "partial"
         _simulate_interrupted_clean(paths, str(out_partial), completed_count=1)
-        first_cleaned = out_partial / "cleaned" / "tle2098.cleaned.txt"
+        first_cleaned = out_partial / "cleaned" / "tle2098.00001.cleaned.txt"
         mtime_before = first_cleaned.stat().st_mtime_ns
 
         rc_resume = cli.main(
@@ -161,7 +161,7 @@ class TestResume:
         assert (out_partial / "broken-noradids.ndjson").read_bytes() == (
             out_full / "broken-noradids.ndjson"
         ).read_bytes()
-        for name in ("tle2098.cleaned.txt", "tle2099.cleaned.txt"):
+        for name in ("tle2098.00001.cleaned.txt", "tle2099.00001.cleaned.txt"):
             assert (out_partial / "cleaned" / name).read_bytes() == (
                 out_full / "cleaned" / name
             ).read_bytes()
@@ -201,8 +201,8 @@ class TestResume:
         )
         assert rc == 1  # quarantines present
         assert not (out / resume.CHECKPOINT_NAME).exists()
-        assert (out / "cleaned" / "tle2098.cleaned.txt").exists()
-        assert (out / "cleaned" / "tle2099.cleaned.txt").exists()
+        assert (out / "cleaned" / "tle2098.00001.cleaned.txt").exists()
+        assert (out / "cleaned" / "tle2099.00001.cleaned.txt").exists()
 
     def test_resume_refuses_when_input_changed(self, tmp_path, line1, line2, capsys):
         # --resume (explicit force-resume) with a stale checkpoint (input changed)
@@ -380,7 +380,7 @@ class TestResumeWiring:
         # was NOT reprocessed.
         first_name = os.path.basename(paths[0])
         first_stem = os.path.splitext(first_name)[0]
-        first_cleaned = out_partial / "cleaned" / f"{first_stem}.cleaned.txt"
+        first_cleaned = out_partial / "cleaned" / f"{first_stem}.00001.cleaned.txt"
         mtime_before = first_cleaned.stat().st_mtime_ns
 
         # No --resume flag — auto-resume is the default in non-interactive mode.
@@ -415,15 +415,17 @@ class TestFreshRunOrphanScrub:
 
         rc1 = cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
         assert rc1 == 0
-        assert (out / "cleaned" / "tle2000.cleaned.txt").exists()
-        assert (out / "cleaned" / "tle2001.cleaned.txt").exists()
+        assert (out / "cleaned" / "tle2000.00001.cleaned.txt").exists()
+        assert (out / "cleaned" / "tle2001.00001.cleaned.txt").exists()
         # A completed run deletes the checkpoint.
         assert not (out / resume.CHECKPOINT_NAME).exists()
 
         # Step 2 — remove tle2001.txt from the input set; its cleaned output is
         # now an orphan in the out-dir.
         (src / "tle2001.txt").unlink()
-        assert (out / "cleaned" / "tle2001.cleaned.txt").exists()  # orphan present
+        assert (
+            out / "cleaned" / "tle2001.00001.cleaned.txt"
+        ).exists()  # orphan present
 
         # Step 3 — fresh run (--no-resume) on the now-one-file dir.
         rc2 = cli.main(
@@ -432,11 +434,11 @@ class TestFreshRunOrphanScrub:
         assert rc2 == 0
 
         # The output for the surviving input must exist.
-        assert (out / "cleaned" / "tle2000.cleaned.txt").exists()
+        assert (out / "cleaned" / "tle2000.00001.cleaned.txt").exists()
 
         # The orphan from the prior run must be gone — spec §3.4 guarantees
         # the fresh run scrubs the whole cleaned/ tree before processing.
-        assert not (out / "cleaned" / "tle2001.cleaned.txt").exists()
+        assert not (out / "cleaned" / "tle2001.00001.cleaned.txt").exists()
 
 
 class TestStaleCheckpointNonInteractive:
@@ -669,7 +671,7 @@ class TestScrubOwnershipGate:
         rc = cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
         # Old output must be scrubbed; a clean 1-file run succeeds.
         assert rc == 0
-        assert (out / "cleaned" / "tle2000.cleaned.txt").exists()
+        assert (out / "cleaned" / "tle2000.00001.cleaned.txt").exists()
         assert not (out / "cleaned" / "old_output.txt").exists()
 
     def test_proceeds_with_checkpoint_signal(self, tmp_path, line1, line2):
