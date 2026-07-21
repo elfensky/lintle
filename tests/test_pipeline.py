@@ -230,6 +230,36 @@ class TestProcessFile:
         broken_bytes = (out / "broken" / "tle2099.00001.broken.txt").read_bytes()
         assert b"TLE-CHK-001" in broken_bytes
 
+    def test_zero_cleaned_with_broken_still_writes_empty_cleaned_chunk(
+        self, tmp_path, line1, line2
+    ):
+        # Debate golden test: a stem with 0 cleaned records but some broken ones
+        # still gets exactly one empty cleaned/.00001.cleaned.txt chunk (a stream
+        # is always a non-empty set on disk), and the concatenation of the cleaned
+        # set is byte-empty (concat-identity for an empty stream). The content is
+        # carried entirely by the broken set.
+        from lintle import chunking
+
+        src = tmp_path / "tle2099.txt"
+        bad_line1 = line1[:68] + "9"  # 69 chars, wrong checksum → quarantined
+        src.write_bytes((bad_line1 + "\n" + line2 + "\n").encode("ascii"))
+        out = tmp_path / "out"
+
+        stats = pipeline.process_file(str(src), str(out), "clean")
+
+        assert stats.clean_count == 0
+        assert stats.quarantined_count == 1
+        cleaned_chunk = out / "cleaned" / "tle2099.00001.cleaned.txt"
+        assert cleaned_chunk.is_file()
+        assert cleaned_chunk.read_bytes() == b""
+        # Concat-identity: joining the cleaned chunk set reproduces the (empty)
+        # single-file bytes.
+        reader = chunking.ChunkedReader(out / "cleaned", "tle2099", ".cleaned.txt")
+        joined = b"".join(p.read_bytes() for p in reader.chunk_paths())
+        assert joined == b""
+        # The broken set carries the quarantined record.
+        assert (out / "broken" / "tle2099.00001.broken.txt").read_bytes() != b""
+
     def test_validate_mode_writes_nothing(self, tmp_path, line1, line2):
         src = tmp_path / "tle2099.txt"
         src.write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))

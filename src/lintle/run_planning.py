@@ -167,6 +167,12 @@ def scrub_outputs(out_dir):
     for name in _REPORT_ARTIFACTS:
         with contextlib.suppress(OSError):
             (out / name).unlink()
+    # report.jsonl is a chunk set (report.NNNNN.jsonl) — glob the whole set so a
+    # prior run's chunks never linger (the concat writer also scrubs on open, but
+    # the fresh-run scrub must not leave orphans of its own; spec invariant 5).
+    for chunk in out.glob("report.*.jsonl"):
+        with contextlib.suppress(OSError):
+            chunk.unlink()
 
 
 def resolve_clean_plan(config: CleanConfig, files, file_sizes):
