@@ -23,6 +23,7 @@ from lintle import (
     BROKEN_SUFFIX,
     CLEANED_DIRNAME,
     CLEANED_SUFFIX,
+    DATA_DIRNAME,
     FINDINGS_SUFFIX,
     SHARDS_DIRNAME,
     __version__,
@@ -88,12 +89,13 @@ def output_sizes(out_dir, stats):
     constants come from ``lintle.__init__`` — the single naming authority."""
     sizes = {}
     out = Path(out_dir)
+    data = out / DATA_DIRNAME
     file_stem = stem(stats.src_name)
     for sub, suffix in (
         (CLEANED_DIRNAME, CLEANED_SUFFIX),
         (BROKEN_DIRNAME, BROKEN_SUFFIX),
     ):
-        reader = chunking.ChunkedReader(out / sub, file_stem, suffix)
+        reader = chunking.ChunkedReader(data / sub, file_stem, suffix)
         for chunk in reader.chunk_paths():
             with contextlib.suppress(OSError):
                 sizes[chunk.name] = chunk.stat().st_size
@@ -284,7 +286,11 @@ def delete_checkpoint(out_dir):
 # dirname constants live in ``lintle.__init__`` — the single naming-convention
 # authority (pipeline._clean_output_paths, resume.output_sizes, cli.discover_paths,
 # and report_writers.concat_findings_shards all import from there).
-_OUTPUT_DIRS = (CLEANED_DIRNAME, BROKEN_DIRNAME, SHARDS_DIRNAME)
+_OUTPUT_DIRS = (
+    os.path.join(DATA_DIRNAME, CLEANED_DIRNAME),
+    os.path.join(DATA_DIRNAME, BROKEN_DIRNAME),
+    SHARDS_DIRNAME,
+)
 
 
 def _locate_output(out_dir, name):

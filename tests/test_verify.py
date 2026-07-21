@@ -3,7 +3,7 @@
 import inspect
 import json
 
-from lintle import cli, pipeline, repair, tle
+from lintle import DATA_DIRNAME, cli, pipeline, repair, tle
 from lintle.verify import checks, epoch, grouping, records, report, run_verify
 from lintle.verify.records import CleanedRecord
 from lintle.verify.report import Suspect, VrfyRule
@@ -63,8 +63,8 @@ def build_tree(tmp_path, cleaned_pairs, source_lines=None, stem="tle01"):
     """Write a minimal clean-run output tree (and optional source file); return
     ``(out_dir, source_dir)`` as strings."""
     out = tmp_path / "output"
-    (out / "cleaned").mkdir(parents=True, exist_ok=True)
-    (out / "cleaned" / f"{stem}.00001.cleaned.txt").write_text(
+    (out / DATA_DIRNAME / "cleaned").mkdir(parents=True, exist_ok=True)
+    (out / DATA_DIRNAME / "cleaned" / f"{stem}.00001.cleaned.txt").write_text(
         "".join(f"{a}\n{b}\n" for a, b in cleaned_pairs), encoding="ascii"
     )
     src = tmp_path / "source"
