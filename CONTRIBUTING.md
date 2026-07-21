@@ -250,11 +250,24 @@ Release flow:
    ```
    To see only the release commits on `main` (skipping the develop history
    reachable via second parents), use `git log --first-parent main`.
+
+   **The push to `main` auto-publishes to TestPyPI.** `publish.yml` fires on every
+   push to `main` (main only ever carries release commits, so this is per-release,
+   not per-merge) and uploads the built sdist + wheel to **TestPyPI** via
+   **Trusted Publishing (OIDC)** — no API tokens are stored or needed; GitHub's
+   signed OIDC identity is the credential. Watch the run under *Actions → Publish*
+   and confirm it's green before continuing.
 6. Create the GitHub release:
    ```bash
    gh release create vX.Y.Z --title "vX.Y.Z" --notes-from-tag --latest
    ```
-7. Trigger the `Publish` workflow.
+7. **Publish to production PyPI — a deliberate manual step.** A push to `main`
+   *never* touches prod PyPI; only an explicit run does. Once you've validated the
+   TestPyPI artifact (e.g. `pip install -i https://test.pypi.org/simple/ lintle==X.Y.Z`
+   and a smoke run), trigger the `Publish` workflow via **workflow_dispatch** with
+   `target: pypi` (Actions → Publish → *Run workflow*). It re-runs the full
+   verification, rebuilds, and uploads to PyPI over the same Trusted-Publishing
+   (OIDC) path. PyPI uploads are permanent, so this stays a human action.
 
 Nothing else needs to change — `lintle --version`, the `report.py` headers, and
 any downstream `from lintle import __version__` import all pick the new value up
