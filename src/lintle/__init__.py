@@ -15,8 +15,15 @@ except PackageNotFoundError:  # source checkout that was never installed
 CLEANED_SUFFIX = ".cleaned.txt"
 BROKEN_SUFFIX = ".broken.txt"
 FINDINGS_SUFFIX = ".findings.jsonl"
+# `lintle clean` groups all its output under <out-dir>/data/ (the cleaned TLE
+# corpus + broken sidecars + report), keeping the out-dir root to one dir per
+# pipeline step — data/ (clean), verify/, dedup/. cleaned/broken/report are
+# subdirs of data/; .shards/ and the checkpoint stay at the root as transient
+# machinery, not step output.
+DATA_DIRNAME = "data"
 CLEANED_DIRNAME = "cleaned"
 BROKEN_DIRNAME = "broken"
+REPORT_DIRNAME = "report"
 SHARDS_DIRNAME = ".shards"
 
 

@@ -9,7 +9,7 @@ import re
 from collections.abc import Iterator
 from pathlib import Path
 
-from lintle import CLEANED_DIRNAME, CLEANED_SUFFIX, chunking
+from lintle import CLEANED_DIRNAME, CLEANED_SUFFIX, DATA_DIRNAME, chunking
 from lintle.verify import epoch
 
 # Distinct-stem parse for the chunked layout: <stem>.NNNNN.cleaned.txt. A
@@ -59,10 +59,11 @@ def _catalog_and_key(line1: str) -> tuple[int, float]:
 
 
 def cleaned_stems(out_dir: str) -> list[str]:
-    """Sorted distinct stems of the cleaned chunk sets under ``<out-dir>/cleaned``
-    (``tle2019`` for the ``tle2019.NNNNN.cleaned.txt`` set); ``[]`` if the
-    directory is absent. Each stem's chunks collapse to one entry."""
-    cleaned_dir = Path(out_dir) / CLEANED_DIRNAME
+    """Sorted distinct stems of the cleaned chunk sets under
+    ``<out-dir>/data/cleaned`` (``tle2019`` for the ``tle2019.NNNNN.cleaned.txt``
+    set); ``[]`` if the directory is absent. Each stem's chunks collapse to one
+    entry."""
+    cleaned_dir = Path(out_dir) / DATA_DIRNAME / CLEANED_DIRNAME
     if not cleaned_dir.is_dir():
         return []
     stems = set()
@@ -80,7 +81,7 @@ def iter_file(out_dir: str, file_stem: str) -> Iterator[CleanedRecord]:
     order across the whole set as one logical stream. Streams one chunk at a
     time (constant memory)."""
     reader = chunking.ChunkedReader(
-        Path(out_dir) / CLEANED_DIRNAME, file_stem, CLEANED_SUFFIX
+        Path(out_dir) / DATA_DIRNAME / CLEANED_DIRNAME, file_stem, CLEANED_SUFFIX
     )
     lines = reader.iter_lines()
     index = 0

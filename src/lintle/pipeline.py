@@ -10,6 +10,7 @@ from lintle import (
     BROKEN_SUFFIX,
     CLEANED_DIRNAME,
     CLEANED_SUFFIX,
+    DATA_DIRNAME,
     SHARDS_DIRNAME,
     chunking,
     repair,
@@ -433,12 +434,12 @@ def _clean_output_paths(out_dir, src_name):
     internal staging the cli concatenates into ``report.jsonl`` at end of run
     and then removes (issue #9, spec §4.6). Suffix/dirname constants live in
     ``lintle.__init__`` — the single naming-convention authority."""
-    out = Path(out_dir)
-    cleaned_dir = out / CLEANED_DIRNAME
+    data = Path(out_dir) / DATA_DIRNAME
+    cleaned_dir = data / CLEANED_DIRNAME
     cleaned_dir.mkdir(parents=True, exist_ok=True)
-    broken_dir = out / BROKEN_DIRNAME
+    broken_dir = data / BROKEN_DIRNAME
     broken_dir.mkdir(parents=True, exist_ok=True)
-    (out / SHARDS_DIRNAME).mkdir(parents=True, exist_ok=True)
+    (Path(out_dir) / SHARDS_DIRNAME).mkdir(parents=True, exist_ok=True)
     return _CleanPaths(
         cleaned=str(cleaned_dir / (stem(src_name) + CLEANED_SUFFIX)),
         broken=str(broken_dir / (stem(src_name) + BROKEN_SUFFIX)),

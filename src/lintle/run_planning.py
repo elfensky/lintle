@@ -8,6 +8,8 @@ from pathlib import Path
 from lintle import (
     BROKEN_DIRNAME,
     CLEANED_DIRNAME,
+    DATA_DIRNAME,
+    REPORT_DIRNAME,
     SHARDS_DIRNAME,
     fsutil,
     report,
@@ -162,14 +164,18 @@ def scrub_outputs(out_dir):
     Idempotent — missing trees/files are ignored.  Does NOT check ownership;
     callers that need the ownership gate call :func:`_is_safe_to_scrub` first."""
     out = Path(out_dir)
-    for sub in (CLEANED_DIRNAME, BROKEN_DIRNAME, SHARDS_DIRNAME):
+    # Current layout: all of clean's output lives under data/ (cleaned/, broken/,
+    # report/); .shards/ is transient run state at the root.
+    shutil.rmtree(out / DATA_DIRNAME, ignore_errors=True)
+    shutil.rmtree(out / SHARDS_DIRNAME, ignore_errors=True)
+    # Legacy (≤ 0.10.0) wrote cleaned/, broken/, and the report artifacts at the
+    # out-dir root — clear any that linger so a fresh 0.10.1+ run over an old
+    # out-dir starts clean.
+    for sub in (CLEANED_DIRNAME, BROKEN_DIRNAME, REPORT_DIRNAME):
         shutil.rmtree(out / sub, ignore_errors=True)
     for name in _REPORT_ARTIFACTS:
         with contextlib.suppress(OSError):
             (out / name).unlink()
-    # report.jsonl is a chunk set (report.NNNNN.jsonl) — glob the whole set so a
-    # prior run's chunks never linger (the concat writer also scrubs on open, but
-    # the fresh-run scrub must not leave orphans of its own; spec invariant 5).
     for chunk in out.glob("report.*.jsonl"):
         with contextlib.suppress(OSError):
             chunk.unlink()

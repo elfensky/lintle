@@ -124,7 +124,7 @@ pipe would swallow.
 ### Auditing a clean run — `lintle verify`
 
 `clean` promises byte-faithful, always-valid output; `verify` is the independent second
-opinion that checks the promise held. It reads a finished run's `<out-dir>/cleaned/` (never
+opinion that checks the promise held. It reads a finished run's `<out-dir>/data/cleaned/` (never
 mutating it) and runs three sgp4-free checks:
 
 - **re-validate** — every cleaned record must still pass the one validator (`tle.py`);
@@ -153,7 +153,7 @@ uv run lintle verify data/output --orbit --all
 
 | Option | Default | Meaning |
 |--------|---------|---------|
-| `out-dir` | stored config, else `data/output` | The finished clean run to audit (reads `<out-dir>/cleaned/`). |
+| `out-dir` | stored config, else `data/output` | The finished clean run to audit (reads `<out-dir>/data/cleaned/`). |
 | `--source DIR` | stored config, else `data/source` | Original source tree for the byte-diff (goal 1). |
 | `--no-source-diff` | off | Skip the byte-diff; re-validate and check contradictions only. |
 | `--orbit` | off | Run the sampled `sgp4` orbit-consistency pass (goal 2). |
@@ -185,10 +185,10 @@ time T" then has to pick one. `lintle dedup` produces that pick as a **separate*
 uv run lintle dedup data/output
 ```
 
-Writes `<out-dir>/dedup/`: `import.txt` (the ingest list, sorted by `(catalog, epoch)`),
-`notes.jsonl` (one entry per collapsed group — kept vs dropped), and `summary.json` (counts).
-This realises the output tiering **`source/` → `cleaned/` (immutable archive) → `import.txt`
-(verified + deduped, ready to ingest)**. Exit codes: **`0`** clean, **`1`** a genuine
+Writes `<out-dir>/dedup/`: `import.NNNNN.txt` (the chunked ingest list, sorted by
+`(catalog, epoch)`), `notes.NNNNN.jsonl` (one entry per collapsed group — kept vs dropped), and
+`summary.json` (counts). This realises the output tiering **`source/` → `data/cleaned/`
+(immutable archive) → `dedup/import.txt` (verified + deduped, ready to ingest)**. Exit codes: **`0`** clean, **`1`** a genuine
 contradiction was arbitrated (review `notes.jsonl`), **`2`** no cleaned output.
 
 ### Interactive wizard & remembered paths — `.lintle.json`
@@ -237,14 +237,18 @@ A `clean` run lays `--out-dir` out like this:
 
 ```
 <out-dir>/
-├── cleaned/                tleYYYY.00001.cleaned.txt, .00002… — chunk set per input file
-├── broken/                 tleYYYY.00001.broken.txt, .00002…  — chunk set per input file
-├── broken-noradids.ndjson  — corpus-wide list of quarantined NORAD IDs
-├── report.00001.jsonl, …   — corpus-wide structured findings stream, chunked
-└── report.md               — corpus-wide run report
+├── README.md               — static explainer of this layout
+├── data/                   everything `lintle clean` writes
+│   ├── cleaned/            tleYYYY.00001.cleaned.txt, .00002… — chunk set per input file
+│   ├── broken/             tleYYYY.00001.broken.txt, .00002…  — chunk set per input file
+│   └── report/             report.md · report.json · report.00001.jsonl · broken-noradids.ndjson
+├── verify/                 `lintle verify` output (suspects.NNNNN.jsonl, summary.{json,md})
+└── dedup/                  `lintle dedup` output (import.NNNNN.txt, notes.NNNNN.jsonl, summary.json)
 ```
 
-Every record/line output stream is split into a `<stem>.NNNNN.<suffix>` **chunk set** of
+The out-dir root has one directory per pipeline step — `data/` (all of `clean`'s output),
+`verify/`, and `dedup/` — plus a self-describing `README.md`. Every record/line output stream is
+split into a `<stem>.NNNNN.<suffix>` **chunk set** of
 `--chunk-records` records each (default 1,000,000 ≈ 140 MB, so no single output file is ever
 huge), tunable via `--chunk-records N` on `clean`/`dedup`/`verify` (`0` = a single `.00001`
 chunk). `cat <stem>.*.<suffix>` reproduces the pre-chunking single file byte-for-byte. Aggregate

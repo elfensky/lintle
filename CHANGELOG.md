@@ -6,6 +6,25 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-07-21
+
+### Changed
+
+- **BREAKING (output layout): one directory per pipeline step.** All of `lintle
+  clean`'s output now lives under `<out-dir>/data/` — `data/cleaned/`,
+  `data/broken/`, and `data/report/` (holding `report.md`, `report.json`, the
+  chunked `report.NNNNN.jsonl` set, and `broken-noradids.ndjson`) — mirroring how
+  `verify/` and `dedup/` already namespace their output. The out-dir root is now
+  just `data/` · `verify/` · `dedup/` plus a self-describing `README.md`;
+  transient run state (`.shards/`, `.clean-state.json`) stays at the root.
+  `lintle report` and `lintle diff` read the new locations, and a fresh run scrubs
+  a prior ≤ 0.10.0 root layout.
+
+### Added
+
+- Each `clean` run writes a static **`README.md`** at the out-dir root explaining
+  the per-step layout, so the output is self-describing without external docs.
+
 ## [0.10.0] - 2026-07-21
 
 ### Changed

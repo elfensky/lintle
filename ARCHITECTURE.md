@@ -351,13 +351,32 @@ A successful `clean` run lays out `--out-dir`:
 
 ```
 <out-dir>/
-├── cleaned/                 tleYYYY.00001.cleaned.txt, .00002… — chunk set per input file
-├── broken/                  tleYYYY.00001.broken.txt, .00002…  — chunk set per input file
-├── report.md                — corpus-wide Markdown run report
-├── report.json              — the run envelope, byte-identical to `--report json` stdout
-├── report.00001.jsonl, …    — corpus-wide structured findings, chunked (one JSON object per line)
-└── broken-noradids.ndjson   — corpus-wide list of quarantined NORAD IDs
+├── README.md                — static explainer of this layout (written by clean)
+├── data/                    everything `lintle clean` produces
+│   ├── cleaned/             tleYYYY.00001.cleaned.txt, .00002… — chunk set per input file
+│   ├── broken/              tleYYYY.00001.broken.txt, .00002…  — chunk set per input file
+│   └── report/
+│       ├── report.md        — corpus-wide Markdown run report
+│       ├── report.json      — the run envelope, byte-identical to `--report json` stdout
+│       ├── report.00001.jsonl, … — corpus-wide structured findings, chunked
+│       └── broken-noradids.ndjson — corpus-wide list of quarantined NORAD IDs
+├── verify/                  `lintle verify` output (suspects.NNNNN.jsonl, summary.{json,md})
+└── dedup/                   `lintle dedup` output (import.NNNNN.txt, notes.NNNNN.jsonl, summary.json)
 ```
+
+**Per-step dirs (0.10.1).** The out-dir root holds one directory per pipeline step — `data/`
+(everything `clean` writes: the cleaned corpus, broken sidecars, and report), `verify/`, and
+`dedup/` — plus a self-describing `README.md`. Transient run state (`.shards/`, `.clean-state.json`,
+`.clean.lock`, `.lintle-output`) stays at the root as machinery, not step output.
+
+**Chunked output layout.** Every record/line output *stream* is split into an always-indexed
+`<stem>.NNNNN.<suffix>` chunk set of `--chunk-records` units each (default 1,000,000 ≈ 140 MB),
+so no single file is ever huge (the worst pre-chunking, `dedup/import.txt`, was 28.7 GB).
+Concatenating a set's chunks in index order (`cat <stem>.*.<suffix>`) is byte-identical to the
+old single file — the invariant that keeps Critical Rules #1/#2 intact. The six invariants
+(`chunking.py`): per-stream counting never global; always-index (no rename-on-roll); concat-identity;
+atomic commit per chunk; stale-chunk scrub on (re)run/resume; constant memory. Aggregate *summary*
+documents (`report.md`, `report.json`, `verify/summary.*`, `dedup/summary.json`,
 
 **Chunked output layout.** Every record/line output *stream* is split into an always-indexed
 `<stem>.NNNNN.<suffix>` chunk set of `--chunk-records` units each (default 1,000,000 ≈ 140 MB),
