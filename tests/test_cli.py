@@ -709,8 +709,12 @@ class TestPreflightOSErrors:
 
 
 class TestReportJsonl:
-    """Issue #9 spec §8.5: ``clean`` mode emits ``<out_dir>/report.jsonl``
-    after every successful run; validate mode does not.
+    """Issue #9 spec §8.5: ``clean`` mode emits the ``<out_dir>/report.NNNNN.jsonl``
+    findings chunk set after every successful run; validate mode does not. A
+    small test corpus never exceeds the default 1,000,000-records-per-chunk
+    boundary, so it always produces exactly one chunk, ``report.00001.jsonl``
+    (spec 2026-07-21-output-chunking-design); concatenating the set in index
+    order is byte-identical to the pre-chunking single ``report.jsonl``.
     """
 
     def test_clean_emits_report_jsonl(self, tmp_path, line1, line2, capsys):
@@ -725,7 +729,7 @@ class TestReportJsonl:
 
         cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
 
-        jsonl_path = out / "report.jsonl"
+        jsonl_path = out / "report.00001.jsonl"
         assert jsonl_path.exists()
         lines = jsonl_path.read_text(encoding="utf-8").splitlines()
         assert len(lines) == 1
@@ -738,8 +742,8 @@ class TestReportJsonl:
         assert not (out / ".shards").exists()
 
     def test_clean_jsonl_empty_when_zero_quarantines(self, tmp_path, line1, line2):
-        # An all-clean run still produces report.jsonl, just empty —
-        # matches broken-noradids.ndjson's contract that the artifact
+        # An all-clean run still produces the report.00001.jsonl chunk, just
+        # empty — matches broken-noradids.ndjson's contract that the artifact
         # is always present after a successful clean.
         src = tmp_path / "src"
         src.mkdir()
@@ -748,7 +752,7 @@ class TestReportJsonl:
 
         cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
 
-        jsonl_path = out / "report.jsonl"
+        jsonl_path = out / "report.00001.jsonl"
         assert jsonl_path.exists()
         assert jsonl_path.read_text(encoding="utf-8") == ""
 
@@ -762,7 +766,7 @@ class TestReportJsonl:
         out = tmp_path / "out"
 
         cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
-        assert (out / "report.jsonl").exists()
+        assert (out / "report.00001.jsonl").exists()
 
 
 class TestExplainCommand:

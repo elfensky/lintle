@@ -14,6 +14,7 @@ validity judgment and never re-defines what a valid TLE is."""
 from pathlib import Path
 
 from lintle import term
+from lintle.chunking import CHUNK_RECORDS_DEFAULT
 from lintle.verify import checks, grouping, records
 from lintle.verify.report import SuspectSink
 
@@ -26,6 +27,7 @@ def run_verify(
     sample: int | None = None,
     all_sats: bool = False,
     sensitivity: str = "sensitive",
+    chunk_records: int = CHUNK_RECORDS_DEFAULT,
 ) -> int:
     """Verify a clean run's ``<out-dir>`` output. ``source_dir`` enables the
     goal-1 byte-diff (skipped, with a note, when ``None``). ``orbit`` runs the
@@ -105,7 +107,7 @@ def run_verify(
         )
         checked.update(orbit_census)
 
-    vdir = sink.write(out_dir, checked=checked)
+    vdir = sink.write(out_dir, checked=checked, chunk_records=chunk_records)
 
     code = sink.exit_code
     hard = sink.hard

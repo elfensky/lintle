@@ -29,7 +29,9 @@ invariants**: one validator definition (Critical Rule #4), constant-memory strea
 `sgp4`-never-in-the-clean-path (the clean/validate/repair modules never import `sgp4` or
 `lintle.verify` — enforced by an import-graph test; see below), byte-deterministic *unstyled*
 structured/stdout output (#1/#2 —
-`report.*`, NDJSON, sidecar, `--report json`, checkpoint, `cleaned/*`), and the atomic-durable
+`report.*`, NDJSON, sidecar, `--report json`, checkpoint, `cleaned/*`; every record/line output
+stream is now a `<stem>.NNNNN.<suffix>` **chunk set** whose in-index-order concatenation is the
+byte-deterministic artifact — see `chunking.py`), and the atomic-durable
 commit + advisory-flock out-dir lock. The canonical rule and the considered/deferred table live in
 [`ARCHITECTURE.md` §7](ARCHITECTURE.md#7-runtime-dependency-policy); the original rationale is
 archived under `docs/superpowers/archive/specs/2026-05-28-runtime-dependency-policy-design.md`.

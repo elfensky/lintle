@@ -98,6 +98,7 @@ config.py    stdlib-JSON leaf — ./.lintle.json load/save (no internal deps)
 | `run_planning.py` | Clean-run preflight: disk-space policy, resume classification, fresh-run output scrubbing, and the resolved `RunPlan` (slots=True). Also owns `CleanConfig` (issue #121) — the typed `clean`-command configuration snapshot built once in `cli.main` and passed to both leaf functions instead of a raw argparse `Namespace`. Imports `fsutil`, `report`, `resume`, `term`. |
 | `worker_pool.py` | Process-pool dispatch, progress collection, per-file failure handling, checkpoint updates via `resume.CompletedEntry.from_stats` (issue #118), and interrupt shutdown. Now imports `run_planning` for the `CleanConfig` type (one-way, no cycle). |
 | `fsutil.py` | `durable_replace` (the one atomic+fsync commit path) and `out_dir_lock` (the advisory-flock out-dir lock). Stdlib only. |
+| `chunking.py` | Fixed-count output chunking: `ChunkedWriter` splits every record/line output stream into `<stem>.NNNNN.<suffix>` chunks of `--chunk-records` units (default 1,000,000), committing each chunk via `durable_replace` the instant it fills and scrubbing a stem's prior set on first open (invariant 5); `ChunkedReader` reassembles a stem's set in index order as one logical stream. Concatenating a set == the pre-chunking single file. Stdlib-only leaf; imports only `fsutil`; never `sgp4`. Depended on by `pipeline`, `report_writers`, `resume`, `verify/records`, `verify/report`, `dedup`, and `diff`. |
 | `diff.py` | Read-only: per-rule delta between two runs' `report.jsonl` (`lintle diff`). |
 | `explain.py` | Read-only: renders rule/fix documentation (`lintle explain`). |
 | `summary.py` | Responsive aggregate-panel renderer over the `build_run_envelope` dict (plain/medium/wide tiers + ASCII-bar fallback), keyed off the target Console; backs `clean`'s end-of-run stderr panel and the read-only `lintle report` (renders `<out-dir>/report.json`: text → panel on stdout, json → file bytes verbatim). Imports `humanize` for human-readable panel durations (`precisedelta`). Styled UI, not byte-bound. |
@@ -350,21 +351,32 @@ A successful `clean` run lays out `--out-dir`:
 
 ```
 <out-dir>/
-├── cleaned/                 tleYYYY.cleaned.txt    — one per input file
-├── broken/                  tleYYYY.broken.txt     — one per input file (sidecar)
+├── cleaned/                 tleYYYY.00001.cleaned.txt, .00002… — chunk set per input file
+├── broken/                  tleYYYY.00001.broken.txt, .00002…  — chunk set per input file
 ├── report.md                — corpus-wide Markdown run report
 ├── report.json              — the run envelope, byte-identical to `--report json` stdout
-├── report.jsonl             — corpus-wide structured findings (one JSON object per line)
+├── report.00001.jsonl, …    — corpus-wide structured findings, chunked (one JSON object per line)
 └── broken-noradids.ndjson   — corpus-wide list of quarantined NORAD IDs
 ```
 
+**Chunked output layout.** Every record/line output *stream* is split into an always-indexed
+`<stem>.NNNNN.<suffix>` chunk set of `--chunk-records` units each (default 1,000,000 ≈ 140 MB),
+so no single file is ever huge (the worst pre-chunking, `dedup/import.txt`, was 28.7 GB).
+Concatenating a set's chunks in index order (`cat <stem>.*.<suffix>`) is byte-identical to the
+old single file — the invariant that keeps Critical Rules #1/#2 intact. The six invariants
+(`chunking.py`): per-stream counting never global; always-index (no rename-on-roll); concat-identity;
+atomic commit per chunk; stale-chunk scrub on (re)run/resume; constant memory. Aggregate *summary*
+documents (`report.md`, `report.json`, `verify/summary.*`, `dedup/summary.json`,
+`broken-noradids.ndjson`) are not streams and stay single files.
+
 Transient run state lives alongside and is removed on success: `.shards/` (per-worker
-`report.jsonl` shards, concatenated then `rmtree`'d) and `.clean-state.json` (the resume
-checkpoint). On an interrupted or failed run, both survive so a later `--resume` can rebuild a
-complete `report.jsonl` from the shards. `report.md`, `report.json`, `report.jsonl`, and
-`broken-noradids.ndjson` are **always** written on a successful clean run — empty/zeroed when
-nothing was quarantined — so the consumer artifact set is stable. The persisted `report.json`
-is what the read-only `lintle report` command renders later.
+`report.jsonl` shards — kept whole intermediates, concatenated into the chunked `report.NNNNN.jsonl`
+set then `rmtree`'d) and `.clean-state.json` (the resume checkpoint, whose `outputs` map records
+every cleaned/broken *chunk* by name). On an interrupted or failed run, both survive so a later
+`--resume` can rebuild a complete `report.jsonl` set from the shards. `report.md`, `report.json`,
+the `report.*.jsonl` set, and `broken-noradids.ndjson` are **always** written on a successful
+clean run — empty/zeroed when nothing was quarantined — so the consumer artifact set is stable.
+The persisted `report.json` is what the read-only `lintle report` command renders later.
 
 - **`cleaned/tleYYYY.cleaned.txt`** — standard 2-line TLE text, every record verified valid: 69
   ASCII columns per line, `\n`-terminated, matching catalog numbers, valid checksums.

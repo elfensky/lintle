@@ -24,13 +24,17 @@ import json
 from collections.abc import Iterator
 from pathlib import Path
 
-from lintle import term
+from lintle import chunking, term
+from lintle.chunking import CHUNK_RECORDS_DEFAULT
 from lintle.verify import checks, grouping, records
 from lintle.verify.records import CleanedRecord
+from lintle.verify.report import SUSPECTS_STEM, SUSPECTS_SUFFIX
 
 DEDUP_DIRNAME = "dedup"
-IMPORT_NAME = "import.txt"
-NOTES_NAME = "notes.jsonl"
+IMPORT_SUFFIX = ".txt"
+IMPORT_STEM = "import"
+NOTES_SUFFIX = ".jsonl"
+NOTES_STEM = "notes"
 SUMMARY_NAME = "summary.json"
 SCHEMA_VERSION = "1"
 
@@ -88,22 +92,23 @@ def _groups(sorted_records: Iterator[CleanedRecord]) -> Iterator[Group]:
 
 def _load_hard_positions(out_dir: str) -> set[tuple[str, int]]:
     """The ``(src_file, index)`` of every hard suspect in a prior ``verify`` run's
-    ``suspects.jsonl`` — excluded from the import list. Empty set when no verify
-    run exists (dedup still collapses re-issues). ponytail: the set is bounded by
-    the hard-suspect count, which is the rare exception (~0 on healthy output),
-    not the norm."""
-    path = Path(out_dir) / "verify" / "suspects.jsonl"
-    if not path.is_file():
-        return set()
+    chunked ``suspects.NNNNN.jsonl`` set — excluded from the import list. Empty set
+    when no verify run exists (dedup still collapses re-issues). Reads the whole
+    chunk set via :class:`ChunkedReader`; reading a single fixed ``suspects.jsonl``
+    would silently miss the chunked output and drop every exclusion. ponytail: the
+    set is bounded by the hard-suspect count, the rare exception (~0 on healthy
+    output), not the norm."""
+    reader = chunking.ChunkedReader(
+        Path(out_dir) / "verify", SUSPECTS_STEM, SUSPECTS_SUFFIX
+    )
     hard: set[tuple[str, int]] = set()
-    with path.open(encoding="ascii") as fh:
-        for line in fh:
-            line = line.strip()
-            if not line:
-                continue
-            row = json.loads(line)
-            if row.get("severity") == "hard":
-                hard.add((row["src_file"], row["index"]))
+    for raw in reader.iter_lines():
+        line = raw.decode("ascii").strip()
+        if not line:
+            continue
+        row = json.loads(line)
+        if row.get("severity") == "hard":
+            hard.add((row["src_file"], row["index"]))
     return hard
 
 
@@ -131,11 +136,12 @@ def _note_bytes(g: Group) -> bytes:
     )
 
 
-def run_dedup(out_dir: str) -> int:
-    """De-duplicate a clean run's ``<out-dir>/cleaned`` into
-    ``<out-dir>/dedup/import.txt`` (+ ``notes.jsonl`` and ``summary.json``).
-    Returns the exit code: ``0`` clean, ``1`` genuine contradiction(s) arbitrated
-    (review the notes), ``2`` operational error (no cleaned output)."""
+def run_dedup(out_dir: str, chunk_records: int = CHUNK_RECORDS_DEFAULT) -> int:
+    """De-duplicate a clean run's ``<out-dir>/cleaned`` into the chunked
+    ``<out-dir>/dedup/import.NNNNN.txt`` set (+ ``notes.NNNNN.jsonl`` and
+    ``summary.json``). Returns the exit code: ``0`` clean, ``1`` genuine
+    contradiction(s) arbitrated (review the notes), ``2`` operational error
+    (no cleaned output)."""
     stems = records.cleaned_stems(out_dir)
     if not stems:
         term.error(
@@ -158,14 +164,19 @@ def run_dedup(out_dir: str) -> int:
     ddir = Path(out_dir) / DEDUP_DIRNAME
     ddir.mkdir(parents=True, exist_ok=True)
     n_written = n_dropped = n_collapsed = n_conflicts = 0
-    # Stream both outputs in sorted (catalog, epoch) order — constant memory even
-    # when import.txt is corpus-scale.
+    # Stream both outputs in sorted (catalog, epoch) order into fixed-count chunk
+    # sets — constant memory even when import is corpus-scale (28.7 GB). import is
+    # a 2-line-record stream; notes is one JSON line per collapsed group.
     with (
-        (ddir / IMPORT_NAME).open("w", encoding="ascii", newline="\n") as imp,
-        (ddir / NOTES_NAME).open("wb") as notes,
+        chunking.ChunkedWriter(
+            str(ddir), IMPORT_STEM, IMPORT_SUFFIX, chunk_records
+        ) as imp,
+        chunking.ChunkedWriter(
+            str(ddir), NOTES_STEM, NOTES_SUFFIX, chunk_records
+        ) as notes,
     ):
         for g in _groups(sorter.sorted_records()):
-            imp.write(f"{g.kept.line1}\n{g.kept.line2}\n")
+            imp.write_record(g.kept.line1.encode("ascii"), g.kept.line2.encode("ascii"))
             n_written += 1
             if g.dropped:
                 notes.write(_note_bytes(g))
@@ -195,8 +206,8 @@ def run_dedup(out_dir: str) -> int:
     if code:
         term.error(
             f"dedup: {n_conflicts} genuine contradiction(s) arbitrated — review "
-            f"{ddir / NOTES_NAME!s}\n  {verdict}"
+            f"{ddir / 'notes.*.jsonl'!s}\n  {verdict}"
         )
     else:
-        term.note(f"dedup: PASS — {verdict}\n  see {ddir / IMPORT_NAME!s}")
+        term.note(f"dedup: PASS — {verdict}\n  see {ddir / 'import.*.txt'!s}")
     return code

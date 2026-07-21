@@ -160,9 +160,11 @@ class TestResume:
         )
 
         assert rc_resume == rc_full
-        # report.jsonl and broken-noradids are timing-free — the golden anchors.
-        assert (out_partial / "report.jsonl").read_bytes() == (
-            out_full / "report.jsonl"
+        # report.00001.jsonl and broken-noradids are timing-free — the golden
+        # anchors. Small test corpora never exceed the default chunk boundary
+        # (spec 2026-07-21-output-chunking-design), so exactly one chunk exists.
+        assert (out_partial / "report.00001.jsonl").read_bytes() == (
+            out_full / "report.00001.jsonl"
         ).read_bytes()
         assert (out_partial / "broken-noradids.ndjson").read_bytes() == (
             out_full / "broken-noradids.ndjson"
@@ -397,9 +399,9 @@ class TestResumeWiring:
         assert rc_auto == rc_full
         # The already-completed file was skipped, not reprocessed.
         assert first_cleaned.stat().st_mtime_ns == mtime_before
-        # report.jsonl output matches the full run.
-        assert (out_partial / "report.jsonl").read_bytes() == (
-            out_full / "report.jsonl"
+        # report.00001.jsonl output matches the full run.
+        assert (out_partial / "report.00001.jsonl").read_bytes() == (
+            out_full / "report.00001.jsonl"
         ).read_bytes()
         # A successful auto-resume tears down the checkpoint and shards.
         assert not (out_partial / resume.CHECKPOINT_NAME).exists()

@@ -17,8 +17,13 @@ from collections.abc import Iterable
 from enum import StrEnum
 from pathlib import Path
 
+from lintle import chunking
+from lintle.chunking import CHUNK_RECORDS_DEFAULT
+
 VERIFY_DIRNAME = "verify"
 SUSPECTS_NAME = "suspects.jsonl"
+SUSPECTS_STEM = "suspects"
+SUSPECTS_SUFFIX = ".jsonl"
 SUMMARY_JSON = "summary.json"
 SUMMARY_MD = "summary.md"
 SCHEMA_VERSION = "1"
@@ -222,10 +227,17 @@ class SuspectSink:
         self._runs.append(path)
         self._buf = []
 
-    def write(self, out_dir: str, *, checked: dict[str, int]) -> Path:
-        """Write ``<out-dir>/verify/{suspects.jsonl,summary.json,summary.md}`` and
-        return the verify directory. Consumes the sink (drains the temp runs);
-        deterministic bytes, overwrites in place."""
+    def write(
+        self,
+        out_dir: str,
+        *,
+        checked: dict[str, int],
+        chunk_records: int = CHUNK_RECORDS_DEFAULT,
+    ) -> Path:
+        """Write ``<out-dir>/verify/{suspects.NNNNN.jsonl,summary.json,summary.md}``
+        and return the verify directory. Consumes the sink (drains the temp runs);
+        deterministic bytes, overwrites in place. The suspects stream is chunked
+        into a ``suspects.NNNNN.jsonl`` set."""
         vdir = Path(out_dir) / VERIFY_DIRNAME
         vdir.mkdir(parents=True, exist_ok=True)
         handles = [p.open(encoding="ascii") for p in self._runs]
@@ -237,10 +249,11 @@ class SuspectSink:
             # then the tail) and preserves each run's own order — exactly the
             # stable add-order that sorted(key=_sort_key) gives the list path.
             merged = heapq.merge(*runs, tail, key=lambda item: item[0])
-            with (vdir / SUSPECTS_NAME).open("wb") as out:
+            with chunking.ChunkedWriter(
+                str(vdir), SUSPECTS_STEM, SUSPECTS_SUFFIX, chunk_records
+            ) as out:
                 for _, line in merged:
-                    out.write(line.encode("ascii"))
-                    out.write(b"\n")
+                    out.write((line + "\n").encode("ascii"))
         finally:
             for fh in handles:
                 fh.close()

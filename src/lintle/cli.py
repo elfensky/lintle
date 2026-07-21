@@ -380,6 +380,7 @@ def _add_verify_subparser(subparsers):
             "10·MAD) or 'strict' (200 km, 20·MAD) for fewer, higher-confidence hits"
         ),
     )
+    _add_chunk_records_arg(verify_parser)
 
 
 def _add_dedup_subparser(subparsers):
@@ -412,6 +413,7 @@ def _add_dedup_subparser(subparsers):
             f"(default: stored config, else {_DEFAULT_OUTPUT})"
         ),
     )
+    _add_chunk_records_arg(dedup_parser)
 
 
 def build_parser():
@@ -515,7 +517,11 @@ def _finalize_run(
     # no-op off a TTY, and after the progress block exits, so no Live nesting.
     if all_stats:
         output_artifacts.write_clean_artifacts(
-            args.out_dir, all_stats, envelope, failed_files=failed_files
+            args.out_dir,
+            all_stats,
+            envelope,
+            failed_files=failed_files,
+            chunk_records=args.chunk_records,
         )
 
     if args.report == "json":
@@ -641,12 +647,13 @@ def main(argv=None):
             sample=args.sample,
             all_sats=args.all_sats,
             sensitivity=args.sensitivity,
+            chunk_records=args.chunk_records,
         )
 
     # `dedup` is a read-only consumer of cleaned/ (plus a prior verify run's
     # suspects.jsonl); it writes only <out-dir>/dedup and never touches cleaned/.
     if args.command == "dedup":
-        return dedup.run_dedup(args.out_dir)
+        return dedup.run_dedup(args.out_dir, args.chunk_records)
 
     # `args.path` is None when the user passed nothing — fall back to the
     # default source dir, and remember it so we can give a tailored error if
