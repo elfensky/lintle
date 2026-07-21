@@ -270,6 +270,36 @@ class TestResume:
         # A refused resume leaves the checkpoint intact for an explicit restart.
         assert (out_partial / resume.CHECKPOINT_NAME).exists()
 
+    def test_resume_refuses_when_chunk_records_changed(
+        self, tmp_path, line1, line2, capsys
+    ):
+        # Debate golden test: the interrupted run used the default chunk size;
+        # resuming with a different --chunk-records would mix chunk sizes within
+        # one logical run (completed stems at the old size, redone stems at the
+        # new), so run identity no longer matches the checkpoint → STALE → refuse.
+        src = self._two_file_src(tmp_path, line1, line2)
+        paths = cli.discover_paths(str(src))
+        out_partial = tmp_path / "partial"
+        _simulate_interrupted_clean(paths, str(out_partial), completed_count=1)
+
+        rc = cli.main(
+            [
+                "clean",
+                str(src),
+                "--out-dir",
+                str(out_partial),
+                "--resume",
+                "--jobs",
+                "1",
+                "--chunk-records",
+                "500000",
+            ]
+        )
+        err = capsys.readouterr().err
+        assert rc == 2
+        assert "run configuration changed" in err.lower()
+        assert (out_partial / resume.CHECKPOINT_NAME).exists()
+
     def test_interrupt_preserves_checkpoint_and_shards(
         self, tmp_path, line1, line2, monkeypatch
     ):
