@@ -6,6 +6,8 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-07-21
+
 ### Changed
 
 - **BREAKING (output layout): every record/line output stream is now split into
