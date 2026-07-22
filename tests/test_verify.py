@@ -297,6 +297,24 @@ class TestSourceAligner:
         assert aligner.check(rec()) is None  # second record's origin is past the gap
         aligner.close()
 
+    def test_quarantined_duplicate_is_not_interior_mutation(self, tmp_path):
+        # tle2020 carries each satellite twice at one epoch: a +signed 68-char
+        # missing-checksum copy clean QUARANTINES, then the real space-signed
+        # 69-char copy it keeps. Both share the aligner anchor (catalog + epoch
+        # cols). The dropped copy must not be reported as an interior mutation of
+        # the cleaned record whose true origin (a byte-match) lies further ahead.
+        # A same-anchor 68-char (invalid) shadow: keep cols [0:32] (the anchor)
+        # from L1, differ in the body, drop the checksum -> not a sanctioned match
+        # and not clean-able.
+        shadow1 = L1[:32] + " +.00000023 +00000-0 +28098-4 0 0001"  # 68 chars
+        shadow2 = L2[:68]
+        assert len(shadow1) == 68 and checks._anchor(shadow1) == checks._anchor(L1)
+        src = tmp_path / "s.txt"
+        src.write_text(f"{shadow1}\n{shadow2}\n{L1}\n{L2}\n", encoding="ascii")
+        aligner = checks.SourceAligner(str(src))
+        assert aligner.check(rec()) is None  # real origin found past the shadow
+        aligner.close()
+
     def test_blank_line_between_pair_is_clean_match(self, tmp_path):
         # tle2019 source has stray blank lines between line 1 and line 2, both
         # missing their checksum (#155). clean skips the blank, pairs them, and

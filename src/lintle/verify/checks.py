@@ -212,6 +212,20 @@ def _anchor(line1: str) -> tuple[int, str] | None:
     return (catalog, line1[18:32])
 
 
+def _is_quarantined_shadow(line1: str, line2: str) -> bool:
+    """True iff this source pair, after the sanctioned edge reduction, is NOT a
+    valid record — i.e. one clean would have QUARANTINED. Such a pair can share a
+    cleaned record's anchor (``(catalog, epoch-columns)``) yet is never that
+    record's origin (an origin is a valid, accepted record), so the aligner skips
+    it rather than reporting a false interior mutation. The real corpus needs
+    this: tle2020 carries each satellite twice at one epoch — a ``+``-signed
+    68-char *missing-checksum* copy clean drops, and the real space-signed 69-char
+    copy it keeps — and both share the anchor. A genuine interior mutation is
+    unaffected: its origin is a valid record, so this returns False and the
+    mutation is still flagged."""
+    return bool(tle.validate_record(sanctioned_reduce(line1), sanctioned_reduce(line2)))
+
+
 class SourceAligner:
     """Streams one source file alongside a cleaned file's records, matching each
     cleaned record to its source origin. Every cleaned record is a *sanctioned
@@ -263,7 +277,14 @@ class SourceAligner:
                     if rec_anchor is not None and _anchor(self._buf[i]) == rec_anchor:
                         anchor_at = i
             if anchor_at is not None:
+                shadow = _is_quarantined_shadow(
+                    self._buf[anchor_at], self._buf[anchor_at + 1]
+                )
                 del self._buf[: anchor_at + 2]
+                if shadow:
+                    # A dropped duplicate sharing rec's anchor, not its origin.
+                    # Consume it and keep scanning forward for the real origin.
+                    continue
                 return Suspect(
                     VrfyRule.INTERIOR_MUT,
                     rec.catalog,
