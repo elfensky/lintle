@@ -6,6 +6,23 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Fixed
+
+- **`verify --source` no longer desyncs on long quarantine runs.** The
+  `SourceAligner` used a fixed 4096-line resync window as a *search-distance*
+  cap: when more than ~4096 dropped (quarantined) source lines separated two
+  accepted records, it could not reach the later record's origin, so it
+  advanced one line at a time and falsely flagged every subsequent cleaned
+  record as `VRFY-ORIGIN-MISSING`. On the full corpus (e.g. `tle2020` cleaned
+  without `--reconstruct-checksum`, which quarantines runs of 20k–28k
+  consecutive 68-char missing-checksum records) this produced ~44M false
+  suspects and ran ~31h, single-core-bound. The window is now only a
+  memory bound on the read buffer; the forward scan slides it without limit —
+  a cleaned record is always a sanctioned edit of a real source pair, so its
+  origin exists ahead — crossing quarantine runs of any length in O(source
+  lines) total. Interior-mutation and re-issue detection are unchanged.
+  Regression test: `test_resyncs_across_long_quarantine_gap`.
+
 ## [0.10.1] - 2026-07-21
 
 ### Changed
