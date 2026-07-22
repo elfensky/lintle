@@ -6,6 +6,8 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+## [0.10.2] - 2026-07-22
+
 ### Fixed
 
 - **`verify --source` no longer false-flags quarantined duplicates as interior
