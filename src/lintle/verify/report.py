@@ -17,11 +17,10 @@ from collections.abc import Iterable
 from enum import StrEnum
 from pathlib import Path
 
-from lintle import chunking
+from lintle import chunking, fsutil
 from lintle.chunking import CHUNK_RECORDS_DEFAULT
 
 VERIFY_DIRNAME = "verify"
-SUSPECTS_NAME = "suspects.jsonl"
 SUSPECTS_STEM = "suspects"
 SUSPECTS_SUFFIX = ".jsonl"
 SUMMARY_JSON = "summary.json"
@@ -29,7 +28,7 @@ SUMMARY_MD = "summary.md"
 SCHEMA_VERSION = "1"
 
 
-class VrfyRule(StrEnum):
+class VerifyRule(StrEnum):
     """Stable wire tokens for verify findings. ``hard`` rules convict (exit 1);
     the ``soft`` rule is 'worth a look' telemetry that never blocks (exit 0)."""
 
@@ -43,10 +42,10 @@ class VrfyRule(StrEnum):
 
 _HARD = frozenset(
     {
-        VrfyRule.REVALIDATE_FAIL,
-        VrfyRule.EPOCH_CONFLICT,
-        VrfyRule.INTERIOR_MUT,
-        VrfyRule.ORBIT_ERROR,
+        VerifyRule.REVALIDATE_FAIL,
+        VerifyRule.EPOCH_CONFLICT,
+        VerifyRule.INTERIOR_MUT,
+        VerifyRule.ORBIT_ERROR,
     }
 )
 
@@ -58,7 +57,7 @@ class Suspect:
     ``src_file`` is the cleaned-file stem and ``index`` the record's ordinal
     within it — together the stable position address."""
 
-    rule: VrfyRule
+    rule: VerifyRule
     catalog: int
     epoch_key: float
     src_file: str
@@ -72,12 +71,6 @@ class Suspect:
 
 def _sort_key(s: Suspect) -> tuple[str, int, float, str, int]:
     return (s.rule.value, s.catalog, s.epoch_key, s.src_file, s.index)
-
-
-def exit_code(suspects: list[Suspect]) -> int:
-    """1 if any hard suspect was found, else 0. (Operational errors — a missing
-    cleaned tree, etc. — are exit 2, decided by the caller.)"""
-    return 1 if any(s.severity == "hard" for s in suspects) else 0
 
 
 def _suspect_dict(s: Suspect) -> dict[str, object]:
@@ -146,7 +139,7 @@ def _summary_md_str(
         out.append("| Rule | Count | Severity |")
         out.append("| --- | --- | --- |")
         for rule, n in sorted(counts.items()):
-            sev = "hard" if VrfyRule(rule) in _HARD else "soft"
+            sev = "hard" if VerifyRule(rule) in _HARD else "soft"
             out.append(f"| {rule} | {n} | {sev} |")
     else:
         out.append("No suspects — all checks passed.")
@@ -258,13 +251,18 @@ class SuspectSink:
             for fh in handles:
                 fh.close()
             self._tmpdir.cleanup()
-        (vdir / SUMMARY_JSON).write_bytes(
-            _summary_json_bytes(self.counts, self.hard, self.total, checked=checked)
+        # Both summaries commit through the one sanctioned durable path.
+        fsutil.durable_write_text(
+            str(vdir / SUMMARY_JSON),
+            _summary_json_bytes(
+                self.counts, self.hard, self.total, checked=checked
+            ).decode("ascii"),
+            encoding="ascii",
         )
         # summary.md is the human-readable file (em-dashes, etc.) — UTF-8, not the
         # ASCII-deterministic structured pair above.
-        (vdir / SUMMARY_MD).write_text(
+        fsutil.durable_write_text(
+            str(vdir / SUMMARY_MD),
             _summary_md_str(self.counts, self.hard, self.total, checked=checked),
-            encoding="utf-8",
         )
         return vdir

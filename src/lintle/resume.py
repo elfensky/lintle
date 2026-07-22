@@ -16,6 +16,7 @@ import enum
 import hashlib
 import json
 import os
+from collections.abc import Callable
 from pathlib import Path
 
 from lintle import (
@@ -41,7 +42,7 @@ SCHEMA_VERSION = 3
 _HASH_WINDOW = 65536
 
 
-def input_fingerprint(path):
+def input_fingerprint(path: str) -> dict[str, int | str]:
     """Return a cheap identity for ``path``: size, integer ``mtime_ns``,
     ``ctime_ns``, inode number, and SHA-256 of its first and last 64 KB.
     Integer nanosecond timestamps avoid JSON round-trip precision loss and
@@ -70,13 +71,13 @@ def input_fingerprint(path):
     }
 
 
-def run_started_stamp():
+def run_started_stamp() -> str:
     """ISO-8601 UTC timestamp for archive/lock naming. Isolated so the rest of the
     resume logic stays clock-free and testable."""
     return datetime.datetime.now(datetime.UTC).strftime("%Y%m%dT%H%M%SZ")
 
 
-def output_sizes(out_dir, stats):
+def output_sizes(out_dir: str, stats) -> dict[str, int]:
     """Map each output *chunk* basename this file produced to its on-disk size,
     captured at completion for the resume integrity check (spec §3.6). The cleaned
     and broken streams are chunk sets (``<stem>.NNNNN.<suffix>``); every chunk is
@@ -111,36 +112,19 @@ class CompletedEntry:
 
     Owns the ``{"summary": ..., "outputs": ...}`` shape that worker_pool
     builds after each file completes and that resume readers consume.
-    ``from_stats`` is the single construction site so key names cannot drift;
-    ``as_dict`` serialises to the exact wire shape consumed by
-    ``build_checkpoint`` and the resume readers. ``summary`` holds the
-    :func:`report.summary_dict` result; ``outputs`` holds the
-    :func:`output_sizes` result. Both are plain dicts so the checkpoint JSON
-    is byte-identical to the pre-refactor form — ``build_checkpoint`` passes
-    the whole ``completed`` mapping through ``json.dumps(sort_keys=True)``,
-    which sorts ``"outputs"`` before ``"summary"`` regardless of field order.
+    ``summary`` holds the :func:`report.summary_dict` result; ``outputs``
+    holds the :func:`output_sizes` result — both built by the caller
+    (worker_pool), so resume stays an actual leaf: it never imports
+    ``report``. ``as_dict`` serialises to the exact wire shape consumed by
+    ``build_checkpoint`` and the resume readers. Both fields are plain dicts
+    so the checkpoint JSON is byte-identical to the pre-refactor form —
+    ``build_checkpoint`` passes the whole ``completed`` mapping through
+    ``json.dumps(sort_keys=True)``, which sorts ``"outputs"`` before
+    ``"summary"`` regardless of field order.
     """
 
     summary: dict
     outputs: dict
-
-    @classmethod
-    def from_stats(cls, out_dir, stats) -> CompletedEntry:
-        """Build a CompletedEntry from a completed file's stats and out_dir.
-
-        ``report`` is imported locally rather than at module level: resume is a
-        deliberately minimal leaf, so a top-level ``report`` import would widen
-        its dependency surface (worker_pool also dropped its module-level
-        ``report`` import in the #118 refactor). Called as
-        ``CompletedEntry.from_stats(out_dir, stats)`` from worker_pool after
-        each file's future resolves.
-        """
-        from lintle import report  # local import keeps resume a minimal leaf
-
-        return cls(
-            summary=report.summary_dict(stats),
-            outputs=output_sizes(out_dir, stats),
-        )
 
     def as_dict(self) -> dict:
         """Serialise to the ``{"summary": ..., "outputs": ...}`` wire shape.
@@ -154,7 +138,7 @@ class CompletedEntry:
         return {"summary": self.summary, "outputs": self.outputs}
 
 
-def build_checkpoint(*, inputs, completed, run_identity):
+def build_checkpoint(*, inputs: dict, completed: dict, run_identity: dict) -> dict:
     """Assemble the checkpoint payload, pinning schema, lintle version, and the
     run identity (spec §3.1). ``inputs`` maps each discovered input path to its
     :func:`input_fingerprint`; ``completed`` maps each fully-processed path to a
@@ -171,11 +155,11 @@ def build_checkpoint(*, inputs, completed, run_identity):
     }
 
 
-def _checkpoint_path(out_dir):
+def _checkpoint_path(out_dir: str) -> str:
     return str(Path(out_dir) / CHECKPOINT_NAME)
 
 
-def write_checkpoint(out_dir, checkpoint):
+def write_checkpoint(out_dir: str, checkpoint: dict) -> str:
     """Write ``checkpoint`` to ``<out_dir>/.clean-state.json`` atomically and
     durably via a ``.partial`` temp + :func:`fsutil.durable_replace`, so a
     reader — or a crash mid-write — never sees a half-written file, and the
@@ -190,7 +174,7 @@ def write_checkpoint(out_dir, checkpoint):
     return dest
 
 
-def load_checkpoint(out_dir):
+def load_checkpoint(out_dir: str) -> dict | None:
     """Return the parsed checkpoint from ``out_dir``, or ``None`` if it is absent,
     unparseable, or not a JSON object. A corrupt checkpoint is treated as no
     checkpoint — the safe default is to redo work, never to resume against garbage.
@@ -211,7 +195,7 @@ class CheckpointStatus(enum.Enum):
     STALE = "stale"
 
 
-@dataclasses.dataclass
+@dataclasses.dataclass(slots=True)
 class Classification:
     """Result of :func:`classify_checkpoint` — bundles status, optional reason string
     (populated for STALE), and the parsed payload (populated for VALID and STALE).
@@ -222,7 +206,9 @@ class Classification:
     checkpoint: dict | None = None
 
 
-def classify_checkpoint(out_dir, current_inputs, current_run_identity):
+def classify_checkpoint(
+    out_dir: str, current_inputs: dict, current_run_identity: dict
+) -> Classification:
     """Classify the checkpoint in ``out_dir`` against the current run (spec §2.3).
     Distinguishes ABSENT (no file), CORRUPT (present but unparseable or structurally
     malformed — never treated as absent, so a damaged interrupted run is surfaced,
@@ -249,7 +235,7 @@ def classify_checkpoint(out_dir, current_inputs, current_run_identity):
 _STALE_ARCHIVE_KEEP = 3  # how many stale-checkpoint archives to retain
 
 
-def archive_checkpoint(out_dir, *, timestamp):
+def archive_checkpoint(out_dir: str, *, timestamp: str) -> str | None:
     """Rename the checkpoint to ``.clean-state.json.stale-<timestamp>`` so a fresh
     run never silently destroys a recoverable interrupted run (spec §2.3): the
     operator can downgrade/revert and recover it. Returns the archived basename,
@@ -274,7 +260,7 @@ def archive_checkpoint(out_dir, *, timestamp):
     return archived
 
 
-def delete_checkpoint(out_dir):
+def delete_checkpoint(out_dir: str) -> None:
     """Remove the checkpoint if present; a no-op when absent. Called on a fully
     successful run so a completed run leaves no resumable state behind.
     """
@@ -293,7 +279,7 @@ _OUTPUT_DIRS = (
 )
 
 
-def _locate_output(out_dir, name):
+def _locate_output(out_dir: str, name: str) -> Path | None:
     """Return the on-disk path of output basename ``name`` under ``out_dir``'s
     output trees, or None if it is in none of them. Searching the known trees
     (rather than inferring the directory from the filename suffix) keeps the
@@ -307,7 +293,7 @@ def _locate_output(out_dir, name):
     return None
 
 
-def verify_completed_outputs(completed, out_dir):
+def verify_completed_outputs(completed: dict, out_dir: str) -> list[str]:
     """Return the list of input paths whose recorded outputs are missing or do
     not match their recorded size (spec §3.6). A checkpoint entry is trusted only
     when every output file it named still exists on disk at the exact byte size
@@ -332,7 +318,7 @@ class ResumeAction(enum.Enum):
     ABORT = "abort"
 
 
-@dataclasses.dataclass
+@dataclasses.dataclass(slots=True)
 class Decision:
     """Result of :func:`resolve_resume_action` — bundles the chosen action, an
     optional human-readable message for the caller to surface, and the process
@@ -344,7 +330,14 @@ class Decision:
     exit_code: int | None = None
 
 
-def resolve_resume_action(classification, *, resume, no_resume, interactive, prompt):
+def resolve_resume_action(
+    classification: Classification,
+    *,
+    resume: bool,
+    no_resume: bool,
+    interactive: bool,
+    prompt: Callable[..., bool | None],
+) -> Decision:
     """Pure decision for the §2.3 matrix. ``resume``/``no_resume`` are the explicit
     flags (authoritative); ``interactive`` is the detected mode; ``prompt`` is a
     callable ``(message, *, default) -> bool | None`` (None = EOF/no-answer) used
@@ -394,7 +387,9 @@ def resolve_resume_action(classification, *, resume, no_resume, interactive, pro
     return Decision(ResumeAction.ABORT, "aborted", 2)
 
 
-def validate_run_identity(checkpoint, current_inputs, current_run_identity):
+def validate_run_identity(
+    checkpoint: dict, current_inputs: dict, current_run_identity: dict
+) -> str | None:
     """Return a human-readable reason the checkpoint cannot be resumed against the
     current run, or None if it can. Refuse-on-change (spec §3.1, all-or-nothing):
     schema, lintle version, output-affecting configuration, or any input identity
@@ -429,7 +424,7 @@ def validate_run_identity(checkpoint, current_inputs, current_run_identity):
     return _validate_completed_shape(checkpoint)
 
 
-def _validate_completed_shape(checkpoint):
+def _validate_completed_shape(checkpoint: dict) -> str | None:
     """Return a human-readable reason the ``completed`` block is structurally
     corrupt, or ``None`` if it is well-formed. Checked independently of identity
     so :func:`classify_checkpoint` can route structural violations to CORRUPT

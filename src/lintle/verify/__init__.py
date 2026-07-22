@@ -13,13 +13,13 @@ validity judgment and never re-defines what a valid TLE is."""
 
 from pathlib import Path
 
-from lintle import term
+from lintle import CLEANED_DIRNAME, DATA_DIRNAME, term
 from lintle.chunking import CHUNK_RECORDS_DEFAULT
 from lintle.verify import checks, grouping, records
 from lintle.verify.report import SuspectSink
 
 
-def run_verify(
+def run(
     out_dir: str,
     source_dir: str | None,
     *,
@@ -37,8 +37,9 @@ def run_verify(
     hard suspects found, 2 operational error (no cleaned output)."""
     stems = records.cleaned_stems(out_dir)
     if not stems:
+        cleaned_dir = Path(out_dir) / DATA_DIRNAME / CLEANED_DIRNAME
         term.error(
-            f"no cleaned output found under {Path(out_dir) / 'cleaned'!s}.\n"
+            f"no cleaned output found under {cleaned_dir!s}.\n"
             "  run 'lintle clean' first, or point at its --out-dir."
         )
         return 2
@@ -102,7 +103,7 @@ def run_verify(
             sink,
             sample=sample,
             all_sats=all_sats,
-            sensitivity=orbit_pass._TIERS[sensitivity],
+            sensitivity=orbit_pass.TIERS[sensitivity],
             oversample=dup_epoch_catalogs,
         )
         checked.update(orbit_census)

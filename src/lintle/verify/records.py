@@ -9,7 +9,7 @@ import re
 from collections.abc import Iterator
 from pathlib import Path
 
-from lintle import CLEANED_DIRNAME, CLEANED_SUFFIX, DATA_DIRNAME, chunking
+from lintle import CLEANED_DIRNAME, CLEANED_SUFFIX, DATA_DIRNAME, chunking, tle
 from lintle.verify import epoch
 
 # Distinct-stem parse for the chunked layout: <stem>.NNNNN.cleaned.txt. A
@@ -44,7 +44,7 @@ def catalog_of(line1: str) -> int | None:
     if len(line1) < 7 or not line1.startswith("1 "):
         return None
     field = line1[2:7].strip()
-    return int(field) if field.isdigit() else None
+    return int(field) if tle.is_ascii_digits(field) else None
 
 
 def _catalog_and_key(line1: str) -> tuple[int, float]:

@@ -13,7 +13,9 @@ one chunk at a time."""
 
 import contextlib
 import re
+from collections.abc import Iterator
 from pathlib import Path
+from types import TracebackType
 
 from lintle import fsutil
 
@@ -46,13 +48,13 @@ class ChunkedWriter:
 
     def __init__(
         self,
-        directory,
-        stem,
-        suffix,
-        units_per_chunk=CHUNK_RECORDS_DEFAULT,
+        directory: str | Path,
+        stem: str,
+        suffix: str,
+        units_per_chunk: int | None = CHUNK_RECORDS_DEFAULT,
         *,
-        scrub_existing=True,
-    ):
+        scrub_existing: bool = True,
+    ) -> None:
         self._dir = Path(directory)
         self._stem = stem
         self._suffix = suffix
@@ -66,10 +68,10 @@ class ChunkedWriter:
         self._opened_any = False
         self._closed = False
 
-    def __enter__(self):
+    def __enter__(self) -> ChunkedWriter:
         return self
 
-    def _open_next(self):
+    def _open_next(self) -> None:
         """Open the next chunk's ``.partial`` temp for writing."""
         if self._index == 0 and self._scrub_existing:
             # First chunk: scrub any pre-existing set for this stem so a shorter
@@ -92,7 +94,7 @@ class ChunkedWriter:
         self._count = 0
         self._opened_any = True
 
-    def _commit(self):
+    def _commit(self) -> None:
         """Durably commit the currently open chunk to its final name."""
         if self._handle is None:
             return
@@ -100,7 +102,7 @@ class ChunkedWriter:
         self._handle = None
         fsutil.durable_replace(self._tmp, str(self._final))
 
-    def _discard(self):
+    def _discard(self) -> None:
         """Drop the in-progress chunk's temp without committing (crash/exception
         path); already-committed chunks are durable and stay."""
         if self._handle is not None and not self._handle.closed:
@@ -110,7 +112,7 @@ class ChunkedWriter:
             with contextlib.suppress(OSError):
                 Path(self._tmp).unlink()
 
-    def discard_all(self):
+    def discard_all(self) -> None:
         """Abandon the whole set: drop the in-progress temp AND unlink every
         chunk this writer already committed. Restores per-file atomicity when a
         write must be thrown away mid-stream (a failed input file must leave no
@@ -120,7 +122,7 @@ class ChunkedWriter:
             with contextlib.suppress(OSError):
                 path.unlink()
 
-    def write(self, payload: bytes):
+    def write(self, payload: bytes) -> None:
         """Write one unit's raw bytes, rolling to a new chunk first if the
         current one has reached ``units_per_chunk`` (the roll happens *before*
         writing unit N+1, so an exact multiple leaves no trailing empty chunk)."""
@@ -132,7 +134,7 @@ class ChunkedWriter:
         self._handle.write(payload)
         self._count += 1
 
-    def write_raw(self, payload: bytes):
+    def write_raw(self, payload: bytes) -> None:
         """Write raw preamble bytes to the first chunk *without* counting a unit
         — for a file header that must live in ``.00001`` but is not a record, so
         the roll boundary still falls every ``units_per_chunk`` records. Opens
@@ -141,17 +143,17 @@ class ChunkedWriter:
             self._open_next()
         self._handle.write(payload)
 
-    def write_record(self, line1: bytes, line2: bytes):
+    def write_record(self, line1: bytes, line2: bytes) -> None:
         """Write one 2-line TLE record (two ``\\n``-terminated lines), counting 1
         unit — the roll never splits a record across a chunk."""
         self.write(line1 + b"\n" + line2 + b"\n")
 
-    def write_line(self, text: str):
+    def write_line(self, text: str) -> None:
         """Write one ``\\n``-terminated UTF-8 line, counting 1 unit. Binary write
         of explicit ``\\n`` keeps the artifact byte-deterministic across platforms."""
         self.write((text + "\n").encode("utf-8"))
 
-    def close(self):
+    def close(self) -> None:
         """Commit the final in-progress chunk; emit one empty ``.00001`` if the
         stream was empty. Idempotent."""
         if self._closed:
@@ -161,7 +163,12 @@ class ChunkedWriter:
         self._commit()
         self._closed = True
 
-    def __exit__(self, exc_type, exc, tb):
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> bool:
         if exc_type is None:
             self.close()
         else:
@@ -176,13 +183,13 @@ class ChunkedReader:
     the set unambiguous even when another stem's name is a prefix (``tle`` vs
     ``tle.00001``) and ignores non-matching files (``summary.json``)."""
 
-    def __init__(self, directory, stem, suffix):
+    def __init__(self, directory: str | Path, stem: str, suffix: str) -> None:
         self._dir = Path(directory)
         self._stem = stem
         self._suffix = suffix
         self._rx = re.compile(rf"^{re.escape(stem)}\.(\d{{5}}){re.escape(suffix)}$")
 
-    def chunk_paths(self):
+    def chunk_paths(self) -> list[Path]:
         """Return the set's chunk paths sorted by index (== lexical order)."""
         matches = []
         for path in self._dir.glob(f"{self._stem}.*{self._suffix}"):
@@ -192,7 +199,7 @@ class ChunkedReader:
         matches.sort()
         return [path for _, path in matches]
 
-    def iter_lines(self):
+    def iter_lines(self) -> Iterator[bytes]:
         """Yield each logical line as ``bytes`` (trailing ``\\n`` stripped),
         streaming one chunk at a time (constant memory)."""
         for path in self.chunk_paths():

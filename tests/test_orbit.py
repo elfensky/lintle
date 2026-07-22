@@ -9,9 +9,9 @@ import json
 from sgp4.api import Satrec
 
 from lintle import cli, tle
-from lintle.verify import epoch, orbit, run_verify
+from lintle.verify import epoch, orbit, run
 from lintle.verify.records import CleanedRecord, catalog_of
-from lintle.verify.report import VrfyRule
+from lintle.verify.report import VerifyRule
 
 # Six real, valid catalog-5 (Vanguard 1) TLEs in epoch order.
 TRACK = [
@@ -264,7 +264,7 @@ class TestTrackVerdict:
         assert pairs == 5
         assert len(suspects) == 1
         s = suspects[0]
-        assert s.rule is VrfyRule.ORBIT_OUTLIER and s.severity == "soft"
+        assert s.rule is VerifyRule.ORBIT_OUTLIER and s.severity == "soft"
         assert s.index == 5
 
     def test_decayed_record_is_not_convicted(self):
@@ -275,7 +275,7 @@ class TestTrackVerdict:
         recs = track_records()
         recs[2] = rec(l1, decayed, idx=2)
         suspects, _ = orbit._track_suspects(recs)
-        assert all(s.rule is not VrfyRule.ORBIT_ERROR for s in suspects)
+        assert all(s.rule is not VerifyRule.ORBIT_ERROR for s in suspects)
 
     def test_wide_gap_pair_is_skipped(self):
         # first and last epoch are ~4 days apart -> beyond the 3-day gate
@@ -298,7 +298,7 @@ class TestLeaveOneOut:
         suspects, _ = orbit._track_suspects(recs)
         assert len(suspects) == 1
         s = suspects[0]
-        assert s.rule is VrfyRule.ORBIT_OUTLIER and s.severity == "soft"
+        assert s.rule is VerifyRule.ORBIT_OUTLIER and s.severity == "soft"
         assert s.index == 2  # the culprit, not the successor (3)
         assert "isolated" in s.detail
 
@@ -314,7 +314,7 @@ class TestLeaveOneOut:
         ]
         suspects, _ = orbit._track_suspects(recs)
         assert len(suspects) == 2
-        assert all(s.rule is VrfyRule.ORBIT_OUTLIER for s in suspects)
+        assert all(s.rule is VerifyRule.ORBIT_OUTLIER for s in suspects)
         assert all("isolated" not in s.detail for s in suspects)
 
     def test_manoeuvre_step_is_a_single_suspect(self):
@@ -392,7 +392,7 @@ class TestSensitivity:
         ]
         sens, _ = orbit._track_suspects(recs, orbit.SENSITIVE)
         strict, _ = orbit._track_suspects(recs, orbit.STRICT)
-        assert len(sens) == 1 and sens[0].rule is VrfyRule.ORBIT_OUTLIER
+        assert len(sens) == 1 and sens[0].rule is VerifyRule.ORBIT_OUTLIER
         assert strict == []
 
     def test_default_tier_is_sensitive(self):
@@ -408,7 +408,7 @@ class TestSensitivity:
 class TestEndToEnd:
     def test_clean_track_passes_with_census(self, tmp_path):
         out = build_tree(tmp_path, TRACK)
-        assert run_verify(out, None, orbit=True) == 0
+        assert run(out, None, orbit=True) == 0
         summary = json.loads(
             (tmp_path / "output" / "verify" / "summary.json").read_text()
         )
@@ -420,13 +420,13 @@ class TestEndToEnd:
     def test_outlier_is_soft_exit_zero(self, tmp_path):
         pairs = TRACK[:-1] + [diverged_last()]
         out = build_tree(tmp_path, pairs)
-        assert run_verify(out, None, orbit=True) == 0  # inconclusive never blocks
+        assert run(out, None, orbit=True) == 0  # inconclusive never blocks
         rows = (tmp_path / "output" / "verify" / "suspects.00001.jsonl").read_text()
         assert "VRFY-ORBIT-OUTLIER" in rows
 
     def test_orbit_off_by_default(self, tmp_path):
         out = build_tree(tmp_path, TRACK)
-        assert run_verify(out, None) == 0
+        assert run(out, None) == 0
         summary = json.loads(
             (tmp_path / "output" / "verify" / "summary.json").read_text()
         )

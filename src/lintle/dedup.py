@@ -24,11 +24,11 @@ import json
 from collections.abc import Iterator
 from pathlib import Path
 
-from lintle import chunking, term
+from lintle import CLEANED_DIRNAME, DATA_DIRNAME, chunking, fsutil, term
 from lintle.chunking import CHUNK_RECORDS_DEFAULT
 from lintle.verify import checks, grouping, records
 from lintle.verify.records import CleanedRecord
-from lintle.verify.report import SUSPECTS_STEM, SUSPECTS_SUFFIX
+from lintle.verify.report import SUSPECTS_STEM, SUSPECTS_SUFFIX, VERIFY_DIRNAME
 
 DEDUP_DIRNAME = "dedup"
 IMPORT_SUFFIX = ".txt"
@@ -71,22 +71,17 @@ def _collapse(group: list[CleanedRecord]) -> Group:
     return Group(kept, dropped, checks.has_epoch_clash(group))
 
 
+def _group_key(rec: CleanedRecord) -> tuple[int, float]:
+    """Group key for :func:`grouping.grouped`: one group per ``(catalog, epoch)``."""
+    return (rec.catalog, rec.epoch_key)
+
+
 def _groups(sorted_records: Iterator[CleanedRecord]) -> Iterator[Group]:
     """Collapse a stream sorted by ``(catalog, epoch_key)`` group by group. Holds
     one group at a time — a handful of re-issues in validated ``cleaned/`` output.
     ponytail: a pathological giant group can't occur in validated cleaned records
     (each has a parseable, unique-ish key); a corrupt tree is ``verify``'s job."""
-    group_key: tuple[int, float] | None = None
-    buf: list[CleanedRecord] = []
-    for rec in sorted_records:
-        key = (rec.catalog, rec.epoch_key)
-        if key != group_key:
-            if buf:
-                yield _collapse(buf)
-            group_key = key
-            buf = []
-        buf.append(rec)
-    if buf:
+    for _, buf in grouping.grouped(sorted_records, key=_group_key):
         yield _collapse(buf)
 
 
@@ -99,7 +94,7 @@ def _load_hard_positions(out_dir: str) -> set[tuple[str, int]]:
     set is bounded by the hard-suspect count, the rare exception (~0 on healthy
     output), not the norm."""
     reader = chunking.ChunkedReader(
-        Path(out_dir) / "verify", SUSPECTS_STEM, SUSPECTS_SUFFIX
+        Path(out_dir) / VERIFY_DIRNAME, SUSPECTS_STEM, SUSPECTS_SUFFIX
     )
     hard: set[tuple[str, int]] = set()
     for raw in reader.iter_lines():
@@ -136,7 +131,7 @@ def _note_bytes(g: Group) -> bytes:
     )
 
 
-def run_dedup(out_dir: str, chunk_records: int = CHUNK_RECORDS_DEFAULT) -> int:
+def run(out_dir: str, chunk_records: int = CHUNK_RECORDS_DEFAULT) -> int:
     """De-duplicate a clean run's ``<out-dir>/cleaned`` into the chunked
     ``<out-dir>/dedup/import.NNNNN.txt`` set (+ ``notes.NNNNN.jsonl`` and
     ``summary.json``). Returns the exit code: ``0`` clean, ``1`` genuine
@@ -144,8 +139,9 @@ def run_dedup(out_dir: str, chunk_records: int = CHUNK_RECORDS_DEFAULT) -> int:
     (no cleaned output)."""
     stems = records.cleaned_stems(out_dir)
     if not stems:
+        cleaned_dir = Path(out_dir) / DATA_DIRNAME / CLEANED_DIRNAME
         term.error(
-            f"no cleaned output found under {Path(out_dir) / 'cleaned'!s}.\n"
+            f"no cleaned output found under {cleaned_dir!s}.\n"
             "  run 'lintle clean' first, or point at its --out-dir."
         )
         return 2
@@ -198,7 +194,8 @@ def run_dedup(out_dir: str, chunk_records: int = CHUNK_RECORDS_DEFAULT) -> int:
         "exit_code": code,
     }
     body = json.dumps(summary, ensure_ascii=True, indent=2, sort_keys=True) + "\n"
-    (ddir / SUMMARY_NAME).write_bytes(body.encode("ascii"))
+    # Structured artifact — commit through the one sanctioned durable path.
+    fsutil.durable_write_text(str(ddir / SUMMARY_NAME), body, encoding="ascii")
 
     verdict = (
         f"{n_written} records written, {n_dropped} re-issue duplicate(s) collapsed"

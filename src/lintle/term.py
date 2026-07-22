@@ -37,7 +37,7 @@ class Severity(enum.Enum):
 _STYLES = {Severity.ERROR: "bold red", Severity.WARNING: "yellow"}
 
 
-def emit(severity, message):
+def emit(severity: Severity, message: str) -> None:
     """Write ``"<severity>: <message>"`` to stderr — the prefix styled on a
     TTY, the whole line plain (no ANSI, unwrapped) when stderr is redirected.
     ``message`` is appended as literal text, so brackets in paths or values are
@@ -49,17 +49,17 @@ def emit(severity, message):
     stderr_console.file.flush()
 
 
-def error(message):
+def error(message: str) -> None:
     """Emit an ``error: …`` line to stderr (see :func:`emit`)."""
     emit(Severity.ERROR, message)
 
 
-def warning(message):
+def warning(message: str) -> None:
     """Emit a ``warning: …`` line to stderr (see :func:`emit`)."""
     emit(Severity.WARNING, message)
 
 
-def note(message):
+def note(message: str) -> None:
     """Write an unprefixed status/notice line to stderr (e.g. ``processing …``),
     plain off a TTY and routed through the shared Console so every stderr write
     goes through one channel."""
@@ -67,7 +67,7 @@ def note(message):
     stderr_console.file.flush()
 
 
-def prompt(message):
+def prompt(message: str) -> None:
     """Write a prompt to stderr with no trailing newline (the operator types on
     the same line) and flush, so it is visible before stdin is read. Plain text
     — a y/n prompt needs no styling — but routed through the shared Console for
@@ -76,7 +76,7 @@ def prompt(message):
     stderr_console.file.flush()
 
 
-def is_interactive():
+def is_interactive() -> bool:
     """A run is interactive iff both stdin (where the prompt answer is read) and
     stderr (where :func:`prompt` writes the question) are TTYs, and no
     CI/NONINTERACTIVE env var forces non-interactive. Requiring stderr too
@@ -91,7 +91,7 @@ def is_interactive():
         return False
 
 
-def prompt_yes_no(message, *, default):
+def prompt_yes_no(message: str, *, default: bool) -> bool | None:
     """Ask a y/n question on stderr, reading the answer from stdin (spec §2.4).
     Enter takes ``default``; up to 3 unrecognised answers then give up; EOF/Ctrl-D
     gives up. Returns True/False, or None when the operator gave no usable answer

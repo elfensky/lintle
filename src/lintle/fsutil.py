@@ -29,6 +29,7 @@ import json
 import os
 import socket
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 
 # True power-loss durability on macOS requires F_FULLFSYNC, not plain fsync
@@ -42,7 +43,7 @@ _USE_FULLFSYNC = sys.platform == "darwin" and hasattr(fcntl, "F_FULLFSYNC")
 _fullfsync_works: bool | None = None
 
 
-def _fsync(fd):
+def _fsync(fd: int) -> None:
     """Flush ``fd`` to stable storage, using the platform's true durability
     barrier (``F_FULLFSYNC`` on macOS, ``os.fsync`` otherwise). On macOS,
     if ``F_FULLFSYNC`` raises ``OSError`` (e.g. SMB/NFS/exFAT volumes that
@@ -60,7 +61,7 @@ def _fsync(fd):
     os.fsync(fd)
 
 
-def durable_replace(tmp, dest):
+def durable_replace(tmp: str, dest: str) -> str:
     """Atomically and durably commit ``tmp`` to ``dest``: flush ``tmp``'s data to
     stable storage, ``os.replace`` it onto ``dest``, then flush the containing
     directory so the rename itself is durable. Returns ``dest``.
@@ -79,7 +80,7 @@ def durable_replace(tmp, dest):
     return dest
 
 
-def durable_write_text(path, text, *, encoding="utf-8"):
+def durable_write_text(path: str, text: str, *, encoding: str = "utf-8") -> None:
     """Write ``text`` to ``path`` atomically, durably, and with pinned LF
     line endings (``newline="\\n"``), so the artifact is byte-identical across
     platforms (Critical Rules #1/#2). Owns the ``.partial`` suffix, the open,
@@ -100,7 +101,7 @@ class LockHeldError(RuntimeError):
     """Raised when the out-dir lock is held by another live run."""
 
 
-def _host_id():
+def _host_id() -> str:
     """Hostname, recorded as informational holder identity in the lock file.
 
     Used only to make a ``LockHeldError`` message legible — exclusion itself is
@@ -110,7 +111,7 @@ def _host_id():
     return socket.gethostname()
 
 
-def read_json_or_none(path):
+def read_json_or_none(path: str | Path) -> dict[str, object] | None:
     """Open ``path`` as UTF-8 JSON and return its parsed value if it is a
     ``dict``; return ``None`` on any read or parse error (``OSError``,
     ``json.JSONDecodeError``, ``UnicodeDecodeError``) and also when the
@@ -125,7 +126,7 @@ def read_json_or_none(path):
 
 
 @contextlib.contextmanager
-def out_dir_lock(out_dir, *, started="unknown"):
+def out_dir_lock(out_dir: str | Path, *, started: str = "unknown") -> Iterator[None]:
     """Exclusive lock over ``out_dir`` for the duration of a run (spec §3.3).
 
     Held as an advisory ``fcntl.flock`` on the ``.clean.lock`` sidecar. The

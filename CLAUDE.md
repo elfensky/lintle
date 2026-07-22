@@ -127,12 +127,21 @@ src/lintle/
 ├── diff.py        # read-only: per-rule delta between two runs' report.jsonl (lintle diff)
 ├── explain.py     # read-only: renders rule/fix documentation (lintle explain)
 ├── dedup.py       # `lintle dedup` — latest-re-issue-only import list from cleaned/ (reuses verify's sort)
+├── chunking.py    # ChunkedWriter/ChunkedReader — the <stem>.NNNNN.<suffix> chunk-set layer
 ├── config.py      # optional ./.lintle.json remembering source/output dirs (stdlib JSON)
 ├── wizard.py      # interactive rich menu shown when `lintle` runs with no subcommand
 ├── tle.py         # the validator — column layout, checksum, semantic ranges, pairing
 ├── diagnostics.py # stable RuleID registry + structured Diagnostic dataclass (pure data)
 ├── categories.py  # FixClass enum + FixSpec registry — the repair taxonomy (pure data)
-└── explain_examples.py # validator-verified examples + citations backing explain (pure data)
+├── explain_examples.py # validator-verified examples + citations backing explain (pure data)
+└── verify/        # `lintle verify` — post-run auditor (sole importer of sgp4, via orbit.py)
+    ├── __init__.py # run() orchestration
+    ├── checks.py   # revalidation, source byte-diff, contradiction rules
+    ├── epoch.py    # epoch parsing/keys
+    ├── grouping.py # external merge-sort for (catalog, epoch) grouping
+    ├── orbit.py    # opt-in --orbit sgp4 physics pass (lazy import)
+    ├── records.py  # streams cleaned chunk sets back as records
+    └── report.py   # SuspectSink, suspects.jsonl + summary.{json,md} writers
 ```
 
 Module dependencies flow one way: `cli.py → pipeline.py → repair.py → tle.py`,

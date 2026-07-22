@@ -823,7 +823,7 @@ class TestQuarantineSink:
         sink = report_writers.QuarantineSink(cap=5)
         for i in range(3):
             sink.add(self._stub(i))
-        sample = sink.finalize(entries=3)
+        sample = sink.finalize()
         assert len(sample.buckets[RuleID.CHECKSUM_MISMATCH]) == 3
 
     def test_add_over_cap_silently_drops(self):
@@ -833,7 +833,7 @@ class TestQuarantineSink:
         sink = report_writers.QuarantineSink(cap=5)
         for i in range(6):
             sink.add(self._stub(i))  # must not raise
-        sample = sink.finalize(entries=6)
+        sample = sink.finalize()
         assert len(sample.buckets[RuleID.CHECKSUM_MISMATCH]) == 5
 
     def test_cap_holds_under_skew(self):
@@ -843,7 +843,7 @@ class TestQuarantineSink:
         for i in range(1000):
             sink.add(self._stub(i, RuleID.CHECKSUM_MISMATCH))
         sink.add(self._stub(9999, RuleID.BAD_PREFIX))
-        sample = sink.finalize(entries=1001)
+        sample = sink.finalize()
         assert len(sample.buckets[RuleID.CHECKSUM_MISMATCH]) == 5
         assert len(sample.buckets[RuleID.BAD_PREFIX]) == 1
 
@@ -857,14 +857,14 @@ class TestQuarantineSink:
         sink = report_writers.QuarantineSink(cap=5)
         for i in range(1000):
             sink.add(self._stub(i, rng.choice(rules)))
-        sample = sink.finalize(entries=1000)
+        sample = sink.finalize()
         for bucket in sample.buckets.values():
             assert len(bucket) <= 5
 
     def test_finalize_returns_filesample_with_matching_cap(self):
         # The cap travels with the sample so renderers can show truncation.
         sink = report_writers.QuarantineSink(cap=5)
-        sample = sink.finalize(entries=0)
+        sample = sink.finalize()
         assert sample.cap == 5
 
     def test_validate_mode_skips_writer(self, tmp_path):
@@ -872,7 +872,7 @@ class TestQuarantineSink:
         sink = report_writers.QuarantineSink(cap=5)  # no broken_path
         with sink:
             sink.add(self._stub(1))
-            sink.finalize(entries=1)
+            sink.finalize()
         # The parent dir should have no partials touched by the sink.
         assert list(tmp_path.iterdir()) == []
 
@@ -890,7 +890,7 @@ class TestQuarantineSink:
         with sink:
             for entry in entries:
                 sink.add(entry)
-            sink.finalize(entries=3)
+            sink.finalize()
         chunk = tmp_path / "x.00001.broken.txt"
         body = chunk.read_bytes()
         assert b"# source: x.txt" in body
@@ -919,7 +919,7 @@ class TestQuarantineSink:
         # spec §4.5 contract so future contributors don't accidentally
         # turn the sink into a reusable container.
         sink = report_writers.QuarantineSink(cap=5)
-        sink.finalize(entries=0)
+        sink.finalize()
         with pytest.raises(RuntimeError, match="already finalized"):
             sink.add(self._stub(1))
 
@@ -929,7 +929,7 @@ class TestQuarantineSink:
         sink = report_writers.QuarantineSink(cap=5)
         for i in range(3):
             sink.add(self._stub(i))
-        sample = sink.finalize(entries=3)
+        sample = sink.finalize()
         assert sample.dropped_count == {}
 
     def test_dropped_count_increments_per_drop(self):
@@ -938,7 +938,7 @@ class TestQuarantineSink:
         sink = report_writers.QuarantineSink(cap=5)
         for i in range(7):
             sink.add(self._stub(i))
-        sample = sink.finalize(entries=7)
+        sample = sink.finalize()
         assert sample.dropped_count[RuleID.CHECKSUM_MISMATCH] == 2
 
     def test_dropped_count_per_rule_independent(self):
@@ -950,7 +950,7 @@ class TestQuarantineSink:
             sink.add(self._stub(i, RuleID.CHECKSUM_MISMATCH))
         for i in range(2):  # no drops
             sink.add(self._stub(i + 100, RuleID.BAD_PREFIX))
-        sample = sink.finalize(entries=10)
+        sample = sink.finalize()
         assert sample.dropped_count[RuleID.CHECKSUM_MISMATCH] == 3
         assert RuleID.BAD_PREFIX not in sample.dropped_count
 
@@ -968,7 +968,7 @@ class TestQuarantineSink:
             rule = rng.choice(rules)
             seen[rule] += 1
             sink.add(self._stub(i, rule))
-        sample = sink.finalize(entries=1000)
+        sample = sink.finalize()
         for rule, total in seen.items():
             bucket_size = len(sample.buckets.get(rule, ()))
             dropped = sample.dropped_count.get(rule, 0)
@@ -986,7 +986,7 @@ class TestQuarantineSink:
             sink.add(self._stub(10))
             sink.add(self._stub(20))
             sink.add(self._stub(30))
-            sink.finalize(entries=3)
+            sink.finalize()
         with open(jsonl_path, encoding="utf-8") as handle:
             lines = handle.readlines()
         assert len(lines) == 3
@@ -999,7 +999,7 @@ class TestQuarantineSink:
         # No jsonl_path -> no shard artifact. Validate-mode contract.
         with report_writers.QuarantineSink(cap=5) as sink:
             sink.add(self._stub(1))
-            sink.finalize(entries=1)
+            sink.finalize()
         assert os.listdir(tmp_path) == []
 
     def test_jsonl_path_requires_src_name(self, tmp_path):
@@ -1046,7 +1046,7 @@ class TestQuarantineSink:
         ) as sink:
             for i in range(10):
                 sink.add(self._stub(i))
-            sample = sink.finalize(entries=10)
+            sample = sink.finalize()
         assert len(sample.buckets[RuleID.CHECKSUM_MISMATCH]) == 3
         with open(jsonl_path, encoding="utf-8") as handle:
             lines = handle.readlines()

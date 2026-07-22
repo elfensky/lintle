@@ -134,7 +134,7 @@ class TestEndToEnd:
             tmp_path,
             [(other_catalog(9), L2), (L1, L2)],  # 00009 then 00005
         )
-        assert dedup.run_dedup(out_dir) == 0
+        assert dedup.run(out_dir) == 0
         body = read_import(out)
         # sorted by catalog: 00005 before 00009
         assert body == f"{L1}\n{L2}\n{other_catalog(9)}\n{L2}\n"
@@ -144,7 +144,7 @@ class TestEndToEnd:
         out = tmp_path / "output"
         pairs = [(with_elset(L1, 100), L2), (with_elset(L1, 200), L2)]
         out_dir = build_tree(tmp_path, pairs)
-        assert dedup.run_dedup(out_dir) == 0
+        assert dedup.run(out_dir) == 0
         # only the highest element-set survives
         assert read_import(out) == f"{with_elset(L1, 200)}\n{L2}\n"
         notes = read_notes(out)
@@ -162,7 +162,7 @@ class TestEndToEnd:
         pairs = [(with_elset(L1, 200), L2), (with_elset(L1, 200), mutated_l2())]
         out_dir = build_tree(tmp_path, pairs)
         # a real contradiction -> exit 1 (review), but still emit a kept record
-        assert dedup.run_dedup(out_dir) == 1
+        assert dedup.run(out_dir) == 1
         assert read_import(out) == f"{with_elset(L1, 200)}\n{mutated_l2()}\n"
         notes = read_notes(out)
         assert len(notes) == 1 and notes[0]["conflict"] is True
@@ -174,7 +174,7 @@ class TestEndToEnd:
         out = tmp_path / "output"
         pairs = [(with_elset(L1, 100), L2), (with_elset(L1, 200), mutated_l2())]
         out_dir = build_tree(tmp_path, pairs)
-        assert dedup.run_dedup(out_dir) == 0
+        assert dedup.run(out_dir) == 0
         assert read_import(out) == f"{with_elset(L1, 200)}\n{mutated_l2()}\n"
         notes = read_notes(out)
         assert len(notes) == 1 and notes[0]["conflict"] is False
@@ -196,7 +196,7 @@ class TestEndToEnd:
             },
         ]
         out_dir = build_tree(tmp_path, pairs, suspects=suspects)
-        assert dedup.run_dedup(out_dir) == 0
+        assert dedup.run(out_dir) == 0
         assert read_import(out) == f"{L1}\n{L2}\n"  # the suspect is gone
         assert read_summary(out)["excluded_hard_suspects"] == 1
 
@@ -215,7 +215,7 @@ class TestEndToEnd:
             },
         ]
         out_dir = build_tree(tmp_path, pairs, suspects=suspects)
-        assert dedup.run_dedup(out_dir) == 0
+        assert dedup.run(out_dir) == 0
         assert read_summary(out)["excluded_hard_suspects"] == 0
         assert read_import(out).count("\n") == 4  # both records kept
 
@@ -223,7 +223,7 @@ class TestEndToEnd:
         out = tmp_path / "output"
         pairs = [(with_elset(L1, 100), L2), (with_elset(L1, 200), L2)]
         out_dir = build_tree(tmp_path, pairs)  # no verify/ dir at all
-        assert dedup.run_dedup(out_dir) == 0
+        assert dedup.run(out_dir) == 0
         assert read_import(out) == f"{with_elset(L1, 200)}\n{L2}\n"
 
     def test_cleaned_tree_is_immutable(self, tmp_path):
@@ -231,7 +231,7 @@ class TestEndToEnd:
         pairs = [(with_elset(L1, 100), L2), (with_elset(L1, 200), L2)]
         out_dir = build_tree(tmp_path, pairs)
         before = (out / "data" / "cleaned" / "tle01.00001.cleaned.txt").read_bytes()
-        dedup.run_dedup(out_dir)
+        dedup.run(out_dir)
         after = (out / "data" / "cleaned" / "tle01.00001.cleaned.txt").read_bytes()
         assert before == after
 
@@ -243,15 +243,15 @@ class TestEndToEnd:
             (with_elset(L1, 100), L2),
         ]
         out_dir = build_tree(tmp_path, pairs)
-        dedup.run_dedup(out_dir)
+        dedup.run(out_dir)
         imp1 = read_chunk_bytes(out, "import", ".txt")
         notes1 = read_chunk_bytes(out, "notes", ".jsonl")
-        dedup.run_dedup(out_dir)
+        dedup.run(out_dir)
         assert read_chunk_bytes(out, "import", ".txt") == imp1
         assert read_chunk_bytes(out, "notes", ".jsonl") == notes1
 
     def test_missing_cleaned_dir_is_operational_error(self, tmp_path):
-        assert dedup.run_dedup(str(tmp_path / "nope")) == 2
+        assert dedup.run(str(tmp_path / "nope")) == 2
 
 
 class TestCLI:

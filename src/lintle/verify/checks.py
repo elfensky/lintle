@@ -13,7 +13,7 @@ from collections.abc import Iterable, Iterator
 
 from lintle import tle
 from lintle.verify.records import CleanedRecord
-from lintle.verify.report import Suspect, VrfyRule
+from lintle.verify.report import Suspect, VerifyRule
 
 # Memory bound for the source read buffer: at most this many source lines are
 # held at once. It is NOT a search-distance limit — ``check`` slides this buffer
@@ -31,7 +31,7 @@ def revalidate(rec: CleanedRecord) -> Suspect | None:
     errors = tle.validate_record(rec.line1, rec.line2)
     if errors:
         return Suspect(
-            VrfyRule.REVALIDATE_FAIL,
+            VerifyRule.REVALIDATE_FAIL,
             rec.catalog,
             rec.epoch_key,
             rec.src_file,
@@ -145,7 +145,7 @@ def find_conflicts(
             # this element-set already appeared with a different orbit — a clash
             conflicts.append(
                 Suspect(
-                    VrfyRule.EPOCH_CONFLICT,
+                    VerifyRule.EPOCH_CONFLICT,
                     rec.catalog,
                     rec.epoch_key,
                     rec.src_file,
@@ -286,7 +286,7 @@ class SourceAligner:
                     # Consume it and keep scanning forward for the real origin.
                     continue
                 return Suspect(
-                    VrfyRule.INTERIOR_MUT,
+                    VerifyRule.INTERIOR_MUT,
                     rec.catalog,
                     rec.epoch_key,
                     rec.src_file,
@@ -297,7 +297,7 @@ class SourceAligner:
                 # EOF reached with no origin found (a cleaned record with no source
                 # origin should not happen; kept as a soft signal, not a crash).
                 return Suspect(
-                    VrfyRule.ORIGIN_MISSING,
+                    VerifyRule.ORIGIN_MISSING,
                     rec.catalog,
                     rec.epoch_key,
                     rec.src_file,

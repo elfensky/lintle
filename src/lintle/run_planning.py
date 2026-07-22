@@ -4,6 +4,7 @@ import contextlib
 import dataclasses
 import shutil
 from pathlib import Path
+from typing import Literal
 
 from lintle import (
     BROKEN_DIRNAME,
@@ -56,7 +57,9 @@ class CleanConfig:
     """
 
     out_dir: str
-    command: str
+    # Mirrors pipeline.process_file's mode contract — cli.main only builds a
+    # CleanConfig on the clean path, so "clean" is what production ever holds.
+    command: Literal["clean", "validate"]
     max_quarantined: str
     reconstruct_checksum: bool
     resume: bool
@@ -75,7 +78,9 @@ class CleanConfig:
             resume=args.resume,
             no_resume=args.no_resume,
             jobs=args.jobs,
-            chunk_records=getattr(args, "chunk_records", CHUNK_RECORDS_DEFAULT),
+            # Attribute access, not getattr-with-default: a flag rename must
+            # fail loudly here (the class contract), never silently default.
+            chunk_records=args.chunk_records,
         )
 
 

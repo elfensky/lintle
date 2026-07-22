@@ -4,7 +4,13 @@ Pure functions only — no I/O. Column references use 1-indexed TLE column
 numbers in prose; Python slices below are 0-indexed.
 """
 
+from typing import Literal
+
 LINE_LENGTH = 69
+
+# The closed set of FieldError kinds — repair routes on these (#106), so the
+# vocabulary is a typed contract, not free-form prose.
+FieldErrorKind = Literal["length", "column", "semantic", "checksum", "catalog"]
 
 # Only these ASCII characters count as TLE digits. str.isdigit() also accepts
 # non-ASCII Unicode digits (e.g. '²', '٣') — which int() may then reject or
@@ -17,6 +23,14 @@ _DIGIT = "0123456789"
 # Non-ASCII codepoints are absent from the table and default to 0 via .get().
 _CHECKSUM_CONTRIB: dict[str, int] = {str(d): d for d in range(10)}
 _CHECKSUM_CONTRIB["-"] = 1
+
+
+def is_ascii_digits(field: str) -> bool:
+    """True if ``field`` is non-empty and every character is an ASCII digit —
+    the TLE digit rule. The one digit test shared by every consumer, because
+    ``str.isdigit()`` also accepts non-ASCII Unicode digits (e.g. ``'²'``,
+    ``'٣'``) that ``int()`` may reject or silently misread."""
+    return bool(field) and all(c in _DIGIT for c in field)
 
 
 def compute_checksum(line: str) -> int:
@@ -113,8 +127,9 @@ class FieldError(str):
     working byte-for-byte, while :mod:`repair` reads the structured fields to
     route on the error *kind* (not by grepping prose, #106) and to populate
     ``report.jsonl``'s ``column_range``/``observed``/``expected`` for column and
-    semantic findings (#120). ``kind`` is one of ``"length"``, ``"column"``,
-    ``"semantic"``, ``"checksum"``, ``"catalog"``. ``column_range`` is a 1-indexed
+    semantic findings (#120). ``kind`` is a :data:`FieldErrorKind` —
+    ``"length"``/``"column"``/``"semantic"``/``"checksum"``/``"catalog"``.
+    ``column_range`` is a 1-indexed
     inclusive ``(low, high)`` span (or ``None``). Instances are only ever *read*
     — never sliced or concatenated — so the str-subclass caveat that operations
     return a plain ``str`` never bites.
@@ -122,7 +137,15 @@ class FieldError(str):
 
     __slots__ = ("kind", "column_range", "observed", "expected")
 
-    def __new__(cls, message, *, kind, column_range=None, observed=None, expected=None):
+    def __new__(
+        cls,
+        message,
+        *,
+        kind: FieldErrorKind,
+        column_range=None,
+        observed=None,
+        expected=None,
+    ):
         self = super().__new__(cls, message)
         self.kind = kind
         self.column_range = column_range
@@ -360,7 +383,7 @@ def extract_norad_id(line: str | bytes) -> int | None:
     if len(line) < 7 or not line.startswith("1 "):
         return None
     field = line[2:7]
-    if not field.isdigit():
+    if not is_ascii_digits(field):
         return None
     return int(field)
 
