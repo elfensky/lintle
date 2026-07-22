@@ -6,6 +6,38 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+## [0.10.2] - 2026-07-22
+
+### Fixed
+
+- **`verify --source` no longer false-flags quarantined duplicates as interior
+  mutations.** The aligner resyncs on an anchor of `(catalog, epoch-columns)`,
+  which is not unique: the real corpus (tle2020) stores each satellite twice at
+  one epoch — a `+`-signed 68-char *missing-checksum* copy clean drops, and the
+  real space-signed 69-char copy it keeps — so the dropped copy shares the
+  kept copy's anchor. When that quarantined shadow fell in the scan path it was
+  reported as a hard `VRFY-INTERIOR-MUT`. The anchor branch now skips a
+  same-anchor source pair that does not itself reduce to a valid, clean-able
+  record (one clean would have quarantined) and keeps scanning for the real
+  origin. A genuine interior mutation is unaffected — its origin is a valid
+  record — so nothing is hidden. Regression test:
+  `test_quarantined_duplicate_is_not_interior_mutation`.
+
+- **`verify --source` no longer desyncs on long quarantine runs.** The
+  `SourceAligner` used a fixed 4096-line resync window as a *search-distance*
+  cap: when more than ~4096 dropped (quarantined) source lines separated two
+  accepted records, it could not reach the later record's origin, so it
+  advanced one line at a time and falsely flagged every subsequent cleaned
+  record as `VRFY-ORIGIN-MISSING`. On the full corpus (e.g. `tle2020` cleaned
+  without `--reconstruct-checksum`, which quarantines runs of 20k–28k
+  consecutive 68-char missing-checksum records) this produced ~44M false
+  suspects and ran ~31h, single-core-bound. The window is now only a
+  memory bound on the read buffer; the forward scan slides it without limit —
+  a cleaned record is always a sanctioned edit of a real source pair, so its
+  origin exists ahead — crossing quarantine runs of any length in O(source
+  lines) total. Interior-mutation and re-issue detection are unchanged.
+  Regression test: `test_resyncs_across_long_quarantine_gap`.
+
 ## [0.10.1] - 2026-07-21
 
 ### Changed

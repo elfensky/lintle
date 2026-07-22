@@ -15,10 +15,12 @@ from lintle import tle
 from lintle.verify.records import CleanedRecord
 from lintle.verify.report import Suspect, VrfyRule
 
-# Source lines buffered to resync across a run of quarantined (dropped) source
-# records. A gap larger than this reports ORIGIN_MISSING (soft) rather than a
-# false interior-mutation. ponytail: fixed window; raise it if real corpora show
-# quarantine runs longer than this between two accepted records.
+# Memory bound for the source read buffer: at most this many source lines are
+# held at once. It is NOT a search-distance limit — ``check`` slides this buffer
+# forward without bound (see below), so a quarantine run of ANY length between
+# two accepted records is crossed. (A fixed *search* window here was the 44M-false-
+# suspect / 31h desync cascade: real corpora have quarantine runs of 20k+ lines,
+# far past any fixed cap.)
 _RESYNC_WINDOW = 4096
 
 
@@ -210,11 +212,28 @@ def _anchor(line1: str) -> tuple[int, str] | None:
     return (catalog, line1[18:32])
 
 
+def _is_quarantined_shadow(line1: str, line2: str) -> bool:
+    """True iff this source pair, after the sanctioned edge reduction, is NOT a
+    valid record — i.e. one clean would have QUARANTINED. Such a pair can share a
+    cleaned record's anchor (``(catalog, epoch-columns)``) yet is never that
+    record's origin (an origin is a valid, accepted record), so the aligner skips
+    it rather than reporting a false interior mutation. The real corpus needs
+    this: tle2020 carries each satellite twice at one epoch — a ``+``-signed
+    68-char *missing-checksum* copy clean drops, and the real space-signed 69-char
+    copy it keeps — and both share the anchor. A genuine interior mutation is
+    unaffected: its origin is a valid record, so this returns False and the
+    mutation is still flagged."""
+    return bool(tle.validate_record(sanctioned_reduce(line1), sanctioned_reduce(line2)))
+
+
 class SourceAligner:
     """Streams one source file alongside a cleaned file's records, matching each
-    cleaned record to its source origin through a bounded forward window. Common
-    case (next pair matches immediately) is O(1) per record; the window is only
-    scanned when quarantined records intervene."""
+    cleaned record to its source origin. Every cleaned record is a *sanctioned
+    edit* of a real source pair, so its origin always exists ahead in the source;
+    the aligner slides a memory-bounded read buffer forward — across quarantine
+    runs of ANY length — until it finds that origin. Common case (next pair matches
+    immediately) is O(1) per record, and total work is O(source lines) even when
+    thousands of quarantined records separate two accepted ones."""
 
     def __init__(self, source_path: str) -> None:
         self._fh = open(source_path, encoding="ascii", errors="replace")  # noqa: SIM115
@@ -234,41 +253,60 @@ class SourceAligner:
 
     def check(self, rec: CleanedRecord) -> Suspect | None:
         """Locate ``rec``'s source origin and classify it: clean match (None),
-        interior mutation (hard), or no origin in window (soft)."""
-        self._refill()
+        interior mutation (hard), or no origin through EOF (soft). Scans forward
+        without bound: when a buffer holds neither a byte-match nor an anchor for
+        ``rec``, every line in it is a quarantined record BEFORE ``rec``'s origin
+        (cleaned records are in source order, so nothing buffered belongs to
+        ``rec`` or any later record) — so the whole buffer is dropped and the scan
+        continues, crossing a quarantine run of any length."""
         rec_anchor: tuple[int, str] | None = None
-        anchor_at: int | None = None
-        for i in range(len(self._buf) - 1):
-            if sanctioned_match(self._buf[i], rec.line1) and sanctioned_match(
-                self._buf[i + 1], rec.line2
-            ):
-                del self._buf[: i + 2]
-                return None
-            if anchor_at is None:
-                if rec_anchor is None:
-                    rec_anchor = _anchor(rec.line1)
-                if rec_anchor is not None and _anchor(self._buf[i]) == rec_anchor:
-                    anchor_at = i
-        if anchor_at is not None:
-            del self._buf[: anchor_at + 2]
-            return Suspect(
-                VrfyRule.INTERIOR_MUT,
-                rec.catalog,
-                rec.epoch_key,
-                rec.src_file,
-                rec.index,
-                "cleaned record differs from its source in a non-edge column",
-            )
-        if self._buf:
-            del self._buf[:1]  # keep scanning forward
-        return Suspect(
-            VrfyRule.ORIGIN_MISSING,
-            rec.catalog,
-            rec.epoch_key,
-            rec.src_file,
-            rec.index,
-            f"no source origin within the {_RESYNC_WINDOW}-line resync window",
-        )
+        anchor_computed = False  # defer _anchor(rec.line1) off the O(1) happy path
+        while True:
+            self._refill()
+            anchor_at: int | None = None
+            for i in range(len(self._buf) - 1):
+                if sanctioned_match(self._buf[i], rec.line1) and sanctioned_match(
+                    self._buf[i + 1], rec.line2
+                ):
+                    del self._buf[: i + 2]
+                    return None
+                if anchor_at is None:
+                    if not anchor_computed:
+                        rec_anchor = _anchor(rec.line1)
+                        anchor_computed = True
+                    if rec_anchor is not None and _anchor(self._buf[i]) == rec_anchor:
+                        anchor_at = i
+            if anchor_at is not None:
+                shadow = _is_quarantined_shadow(
+                    self._buf[anchor_at], self._buf[anchor_at + 1]
+                )
+                del self._buf[: anchor_at + 2]
+                if shadow:
+                    # A dropped duplicate sharing rec's anchor, not its origin.
+                    # Consume it and keep scanning forward for the real origin.
+                    continue
+                return Suspect(
+                    VrfyRule.INTERIOR_MUT,
+                    rec.catalog,
+                    rec.epoch_key,
+                    rec.src_file,
+                    rec.index,
+                    "cleaned record differs from its source in a non-edge column",
+                )
+            if len(self._buf) <= 1:
+                # EOF reached with no origin found (a cleaned record with no source
+                # origin should not happen; kept as a soft signal, not a crash).
+                return Suspect(
+                    VrfyRule.ORIGIN_MISSING,
+                    rec.catalog,
+                    rec.epoch_key,
+                    rec.src_file,
+                    rec.index,
+                    "no source origin found through end of source file",
+                )
+            # Drop the scanned window, keeping the last line so a pair straddling
+            # the buffer boundary is still checked on the next refill.
+            del self._buf[: len(self._buf) - 1]
 
     def close(self) -> None:
         self._fh.close()

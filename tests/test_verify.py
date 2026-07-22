@@ -275,6 +275,46 @@ class TestSourceAligner:
         assert aligner.check(rec()) is None
         aligner.close()
 
+    def test_resyncs_across_long_quarantine_gap(self, tmp_path):
+        # A run of quarantined (dropped) source records LONGER than the resync
+        # window sits between two cleaned records. The real corpus (tle2020,
+        # cleaned without --reconstruct-checksum) has runs of 20k+ consecutive
+        # 68-char missing-checksum records — far past _RESYNC_WINDOW — between
+        # two accepted records. Skipping such a run is normal alignment, not an
+        # ORIGIN_MISSING: the second record's origin genuinely exists just past
+        # the gap. Regression for the verify desync cascade (44M false suspects,
+        # 31h runtime on the full corpus).
+        gap = "".join(
+            f"1 {10000 + i:05d}U 20001A   00179.00000000  .00000000  00000-0  "
+            f"00000-0 0  000\n2 {10000 + i:05d}  00.0000 000.0000 0000000 "
+            "000.0000 000.0000 15.00000000000000\n"
+            for i in range(checks._RESYNC_WINDOW)  # 2*window lines > window
+        )
+        src = tmp_path / "s.txt"
+        src.write_text(f"{L1}\n{L2}\n{gap}{L1}\n{L2}\n", encoding="ascii")
+        aligner = checks.SourceAligner(str(src))
+        assert aligner.check(rec()) is None  # first record matches at the top
+        assert aligner.check(rec()) is None  # second record's origin is past the gap
+        aligner.close()
+
+    def test_quarantined_duplicate_is_not_interior_mutation(self, tmp_path):
+        # tle2020 carries each satellite twice at one epoch: a +signed 68-char
+        # missing-checksum copy clean QUARANTINES, then the real space-signed
+        # 69-char copy it keeps. Both share the aligner anchor (catalog + epoch
+        # cols). The dropped copy must not be reported as an interior mutation of
+        # the cleaned record whose true origin (a byte-match) lies further ahead.
+        # A same-anchor 68-char (invalid) shadow: keep cols [0:32] (the anchor)
+        # from L1, differ in the body, drop the checksum -> not a sanctioned match
+        # and not clean-able.
+        shadow1 = L1[:32] + " +.00000023 +00000-0 +28098-4 0 0001"  # 68 chars
+        shadow2 = L2[:68]
+        assert len(shadow1) == 68 and checks._anchor(shadow1) == checks._anchor(L1)
+        src = tmp_path / "s.txt"
+        src.write_text(f"{shadow1}\n{shadow2}\n{L1}\n{L2}\n", encoding="ascii")
+        aligner = checks.SourceAligner(str(src))
+        assert aligner.check(rec()) is None  # real origin found past the shadow
+        aligner.close()
+
     def test_blank_line_between_pair_is_clean_match(self, tmp_path):
         # tle2019 source has stray blank lines between line 1 and line 2, both
         # missing their checksum (#155). clean skips the blank, pairs them, and
