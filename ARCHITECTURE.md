@@ -132,8 +132,9 @@ from the clean path — so it reuses `verify`'s one definition of "same orbit" /
 rather than spawning a divergent second one. `extract.py` is a third read-only consumer, one
 hop further downstream — `cli ──▶ extract ──▶ dedup` (naming constants only) `+ verify.{checks,
 epoch, records}` (+ `chunking`, `fsutil`, `term`), also one-way and lazily dispatched, also
-barred from the clean path, and also equally barred from ever reaching `sgp4` — an import-graph
-test walks its own closure to confirm that (see §7). The `cli ↔ wizard` cycle — `cli` launches the menu,
+barred from the clean path, and also equally barred from ever reaching `sgp4` — the import-graph
+test walks its closure and additionally pins the exact `verify` submodules `extract` may import
+(`{checks, epoch, records}`), asserting none of them imports `sgp4` (see §7). The `cli ↔ wizard` cycle — `cli` launches the menu,
 the menu re-enters `cli.main` — is broken by a lazy import on *both* sides (`cli` imports
 `wizard` only inside the no-subcommand TTY branch; `wizard` imports `cli` only inside its
 dispatch), so `wizard ──▶ config`/`term` are the only module-load-time edges.
