@@ -127,7 +127,7 @@ pipe would swallow.
 ### Auditing a clean run — `lintle verify`
 
 `clean` promises byte-faithful, always-valid output; `verify` is the independent second
-opinion that checks the promise held. It reads a finished run's `<out-dir>/data/cleaned/` (never
+opinion that checks the promise held. It reads a finished run's `<out-dir>/01-cleaned/` (never
 mutating it) and runs three sgp4-free checks:
 
 - **re-validate** — every cleaned record must still pass the one validator (`tle.py`);
@@ -156,14 +156,14 @@ uv run lintle verify data/output --orbit --all
 
 | Option | Default | Meaning |
 |--------|---------|---------|
-| `out-dir` | stored config, else `data/output` | The finished clean run to audit (reads `<out-dir>/data/cleaned/`). |
+| `out-dir` | stored config, else `data/output` | The finished clean run to audit (reads `<out-dir>/01-cleaned/`). |
 | `--source DIR` | stored config, else `data/source` | Original source tree for the byte-diff (goal 1). |
 | `--no-source-diff` | off | Skip the byte-diff; re-validate and check contradictions only. |
 | `--orbit` | off | Run the sampled `sgp4` orbit-consistency pass (goal 2). |
 | `--sample N` | `3000` | (`--orbit`) satellites to sample; ignored with `--all`. |
 | `--all` | off | (`--orbit`) check every satellite, not a sample. |
 
-The suspects report is written under `<out-dir>/verify/` (`suspects.jsonl` +
+The suspects report is written under `<out-dir>/04-verify/` (`suspects.jsonl` +
 `summary.{json,md}`). Exit codes: **`0`** clean, **`1`** at least one hard suspect
 (a re-validation failure, an element-set contradiction, an interior mutation, or an
 `sgp4`-unphysical element set), **`2`** operational error (no cleaned output to audit).
@@ -171,11 +171,11 @@ Orbit-residual outliers are soft (inconclusive) and never raise the exit code.
 
 ### A "latest only" import list — `lintle dedup`
 
-The `cleaned/` archive faithfully keeps every published record — including the near-identical
+The `01-cleaned/` archive faithfully keeps every published record — including the near-identical
 re-issues space-track emits for the *same* satellite at the *same* epoch (same orbit, just a
 bumped element-set or revolution number). A consumer that wants "the orbit for satellite X at
 time T" then has to pick one. `lintle dedup` produces that pick as a **separate** artifact —
-`cleaned/` is never touched:
+`01-cleaned/` is never touched:
 
 - one card per `(catalog, epoch)`, keeping the **latest re-issue** (highest element-set number);
 - benign re-issues (identical orbital state) collapse silently;
@@ -184,15 +184,23 @@ time T" then has to pick one. `lintle dedup` produces that pick as a **separate*
 - if a `verify` run's `suspects.jsonl` exists, **hard suspects are excluded** from the list first.
 
 ```bash
-# De-duplicate the default run -> data/output/dedup/import.txt
+# De-duplicate the default run -> data/output/05-dedup/import.txt
 uv run lintle dedup data/output
 ```
 
-Writes `<out-dir>/dedup/`: `import.NNNNN.txt` (the chunked ingest list, sorted by
+Writes `<out-dir>/05-dedup/`: `import.NNNNN.txt` (the chunked ingest list, sorted by
 `(catalog, epoch)`), `notes.NNNNN.jsonl` (one entry per collapsed group — kept vs dropped), and
-`summary.json` (counts). This realises the output tiering **`source/` → `data/cleaned/`
-(immutable archive) → `dedup/import.txt` (verified + deduped, ready to ingest)**. Exit codes: **`0`** clean, **`1`** a genuine
+`summary.json` (counts). This realises the output tiering **`source/` → `01-cleaned/`
+(immutable archive) → `05-dedup/import.txt` (verified + deduped, ready to ingest)**. Exit codes: **`0`** clean, **`1`** a genuine
 contradiction was arbitrated (review `notes.jsonl`), **`2`** no cleaned output.
+
+### One satellite's history — `lintle extract`
+
+`lintle extract <NORAD-ID>...` binary-searches a prior `dedup` run's sorted import set and
+writes each satellite's complete deduped history as `<id>.txt` (pure TLE lines,
+epoch-ascending) plus a `<id>.json` stats sidecar. With no `--dest`, output goes to
+`<out-dir>/06-extract/` (which also gets a README); an explicit `--dest DIR` writes there
+instead and is never decorated with a README — it's the user's own directory.
 
 ### Interactive wizard & remembered paths — `.lintle.json`
 
@@ -236,30 +244,37 @@ structural (drop blanks), and corrupt (quarantine).
 
 ## Output
 
-A `clean` run lays `--out-dir` out like this:
+`clean` (and, optionally, `verify`/`dedup`/`extract` after it) lays `--out-dir` out as one flat
+level of directories, numbered in pipeline order:
 
 ```
 <out-dir>/
-├── README.md               — static explainer of this layout
-├── data/                   everything `lintle clean` writes
-│   ├── cleaned/            tleYYYY.00001.cleaned.txt, .00002… — chunk set per input file
-│   ├── broken/             tleYYYY.00001.broken.txt, .00002…  — chunk set per input file
-│   └── report/             report.md · report.json · report.00001.jsonl · broken-noradids.ndjson
-├── verify/                 `lintle verify` output (suspects.NNNNN.jsonl, summary.{json,md})
-└── dedup/                  `lintle dedup` output (import.NNNNN.txt, notes.NNNNN.jsonl, summary.json)
+├── README.md          — overview: the six dirs, order of operations, regen note
+├── 01-cleaned/        — tleYYYY.00001.cleaned.txt, .00002… chunk set per input file  + README.md
+├── 02-broken/         — tleYYYY.00001.broken.txt, .00002…  chunk set per input file  + README.md
+├── 03-report/         — report.md · report.json · report.00001.jsonl ·
+│                        broken-noradids.ndjson                                       + README.md
+├── 04-verify/         — `lintle verify` output (suspects.NNNNN.jsonl, summary.{json,md}) + README.md
+├── 05-dedup/          — `lintle dedup` output (import.NNNNN.txt, notes.NNNNN.jsonl,
+│                        summary.json)                                                + README.md
+└── 06-extract/        — `lintle extract` output (<id>.txt, <id>.json)                + README.md
 ```
 
-The out-dir root has one directory per pipeline step — `data/` (all of `clean`'s output),
-`verify/`, and `dedup/` — plus a self-describing `README.md`. Every record/line output stream is
-split into a `<stem>.NNNNN.<suffix>` **chunk set** of
-`--chunk-records` records each (default 1,000,000 ≈ 140 MB, so no single output file is ever
+The out-dir root has one numbered directory per pipeline step — `01-cleaned`, `02-broken`, and
+`03-report` (written by `clean`), `04-verify` (written by `verify`), `05-dedup` (written by
+`dedup`), and `06-extract` (written by `extract`, its default destination) — plus a
+self-describing root `README.md`. Every populated step directory also carries its own static
+`README.md`. This is a **breaking layout change** as of 0.11.0: the 0.10.1 `data/` grouping is
+retired, and outputs from ≤ 0.10.3 must be regenerated (a fresh `clean` run scrubs both legacy
+layouts). Every record/line output stream is split into a `<stem>.NNNNN.<suffix>` **chunk set**
+of `--chunk-records` records each (default 1,000,000 ≈ 140 MB, so no single output file is ever
 huge), tunable via `--chunk-records N` on `clean`/`dedup`/`verify` (`0` = a single `.00001`
 chunk). `cat <stem>.*.<suffix>` reproduces the pre-chunking single file byte-for-byte. Aggregate
 summaries (`report.md`, `report.json`, `broken-noradids.ndjson`, `*/summary.*`) stay single files.
 
-- **`cleaned/tleYYYY.NNNNN.cleaned.txt`** — standard 2-line TLE text, every record verified valid
-  and ready for downstream ingestion.
-- **`broken/tleYYYY.NNNNN.broken.txt`** — the quarantine sidecar: source line number(s), a
+- **`01-cleaned/tleYYYY.NNNNN.cleaned.txt`** — standard 2-line TLE text, every record verified
+  valid and ready for downstream ingestion.
+- **`02-broken/tleYYYY.NNNNN.broken.txt`** — the quarantine sidecar: source line number(s), a
   human-readable reason, and the offending line(s) copied **byte-faithfully**, with a header
   formatted to paste into a space-track defect report.
 - **`broken-noradids.ndjson`** — one `{"noradId":N}` per line, the deduplicated, sorted set
@@ -276,7 +291,7 @@ corpus totals, % cleaned/quarantined, and the top fix / quarantine rules — siz
 terminal width (with an ASCII-bar fallback off a TTY). Text-mode stdout stays empty; the
 full machine summary is `report.json` (or `--report json` on stdout). `records` counts
 paired 2-line entries; `clean` are those that passed and were written; `quarantined` is
-everything routed to `broken/` (failed records **and** every orphan line). The invariant is
+everything routed to `02-broken/` (failed records **and** every orphan line). The invariant is
 `records + orphan == clean + quarantined`. Defects key by the stable `RuleID` registry
 (`TLE-CHK-001`, `TLE-PAIR-001`, …) so one identifier names a defect across every artifact.
 
@@ -322,7 +337,7 @@ checkpoint and starts fresh (clearing prior outputs).
 
 ### Disk space
 
-Every record is **routed** to exactly one of `cleaned/` or `broken/` — never duplicated — so
+Every record is **routed** to exactly one of `01-cleaned/` or `02-broken/` — never duplicated — so
 the output is roughly the input's size plus tiny metadata. As a guard, lintle requires
 **~2× the total input size** free on the `--out-dir` volume before starting, aborting with
 exit `2` if short (and warning on stderr in the 2×–2.5× borderline band). Rule of thumb for
