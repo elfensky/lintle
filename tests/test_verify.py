@@ -549,7 +549,14 @@ class TestImportGuard:
         for the shared catalog/epoch parsers — that edge is expected and
         fine — but it must never drag in ``sgp4`` itself, which stays the
         sole province of ``verify/orbit.py`` under the lazy ``--orbit``
-        gate. Same walk as the clean-path test, seeded at ``extract``."""
+        gate. Same walk as the clean-path test, seeded at ``extract``.
+        NOTE: ``_module_level_imports`` collapses any ``lintle.verify.X``
+        import to the single name ``"verify"`` (there is no ``verify.py``
+        file to descend into, only the ``verify/`` package), so this walk
+        alone cannot see past that collapse into the ``verify`` submodules
+        — it would not notice ``extract`` reaching ``verify.orbit``. See
+        ``test_extract_verify_submodule_imports_are_pinned_and_sgp4_free``
+        for the leg that actually enforces the submodule boundary."""
         src = Path(lintle.__file__).parent
         seen: set[str] = set()
         frontier = {"extract"}
@@ -561,3 +568,44 @@ class TestImportGuard:
             if not mod_path.is_file():
                 continue  # a package attribute (constant/function), not a module
             frontier |= self._module_level_imports(mod_path) - seen
+
+    @staticmethod
+    def _verify_submodules_imported(path):
+        """Names of ``lintle.verify.*`` submodules imported at module level
+        by ``path`` — both ``from lintle.verify.X import ...`` and
+        ``from lintle.verify import X, Y`` spellings. This is the fine-grained
+        counterpart to ``_module_level_imports``, which collapses either
+        spelling to the single opaque name ``"verify"``."""
+        names = set()
+        for node in ast.parse(path.read_text(encoding="utf-8")).body:
+            match node:
+                case ast.Import(names=aliases):
+                    for a in aliases:
+                        parts = a.name.split(".")
+                        if parts[:2] == ["lintle", "verify"] and len(parts) > 2:
+                            names.add(parts[2])
+                case ast.ImportFrom(module="lintle.verify", names=aliases):
+                    names.update(a.name for a in aliases)
+                case ast.ImportFrom(module=mod, names=aliases) if (
+                    mod and mod.startswith("lintle.verify.")
+                ):
+                    names.add(mod.split(".")[2])
+        return names
+
+    def test_extract_verify_submodule_imports_are_pinned_and_sgp4_free(self):
+        """Pins the exact ``verify`` submodules ``extract`` is allowed to
+        import — ``{checks, epoch, records}`` — so a future ``from
+        lintle.verify import orbit`` (or ``from lintle.verify.orbit import
+        ...``) in ``extract.py`` fails this assertion instead of silently
+        passing the coarse closure walk above. Then, for each of those
+        submodule files, checks their own module-level imports directly for
+        ``sgp4`` (name or from-import), the same detector the coarse walk
+        uses but applied one level deeper than that walk can reach."""
+        src = Path(lintle.__file__).parent
+        extract_submodules = self._verify_submodules_imported(src / "extract.py")
+        assert extract_submodules == {"checks", "epoch", "records"}
+        for name in extract_submodules:
+            mod_path = src / "verify" / f"{name}.py"
+            assert mod_path.is_file(), f"missing lintle/verify/{name}.py"
+            imports = self._module_level_imports(mod_path)
+            assert "sgp4" not in imports, f"verify.{name} imports sgp4 directly"
