@@ -87,7 +87,10 @@ def _bisect(fh, n: int, pred) -> int:
     return lo
 
 
-_COPY_BLOCK = 1 << 20  # 1 MiB — constant-memory streaming copy
+# Largest RECORD_BYTES-multiple <= 1 MiB — constant-memory streaming copy that
+# never splits a record across a block boundary (Critical Rule #3 + #4: a
+# misaligned block would decode stats from the middle of a record).
+_COPY_BLOCK = (1 << 20) // RECORD_BYTES * RECORD_BYTES
 
 
 def _epoch_dt(line1: str) -> _dt.datetime:
@@ -102,7 +105,15 @@ def _iso(dt: _dt.datetime) -> str:
     return dt.isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
-def _sidecar(out_dir: str, catalog: int, first, last, n, gap, gap_at) -> str:
+def _sidecar(
+    out_dir: str,
+    catalog: int,
+    first: _dt.datetime,
+    last: _dt.datetime,
+    stats: dict,
+    gap: float,
+    gap_at: _dt.datetime | None,
+) -> str:
     """The ``<id>.json`` document (sorted keys, 2-space indent, trailing LF —
     the house deterministic-JSON shape)."""
     span = (last - first).total_seconds() / 86400.0
@@ -111,15 +122,15 @@ def _sidecar(out_dir: str, catalog: int, first, last, n, gap, gap_at) -> str:
     doc = {
         "schema_version": "1",
         "norad_id": catalog,
-        "records": n["count"],
+        "records": stats["count"],
         "first_epoch": _iso(first),
         "last_epoch": _iso(last),
         "span_days": round(span, 6),
-        "mean_records_per_day": round(n["count"] / span, 6) if span else None,
+        "mean_records_per_day": round(stats["count"] / span, 6) if span else None,
         "largest_gap_days": round(gap, 6),
         "largest_gap_at": _iso(gap_at) if gap_at is not None else None,
-        "element_set_first": n["elset_first"],
-        "element_set_last": n["elset_last"],
+        "element_set_first": stats["elset_first"],
+        "element_set_last": stats["elset_last"],
         "source": {
             "out_dir": str(Path(out_dir)),
             "dedup_records_written": summary.get("records_written"),
@@ -142,30 +153,34 @@ def _extract_one(out_dir: str, catalog: int, dest: Path) -> bool:
     prev = None
     gap = 0.0
     stats = {"count": 0, "elset_first": None, "elset_last": None}
-    with open(tmp, "wb") as out:
-        for chunk, lo, hi in spans:
-            with open(chunk, "rb") as fh:
-                fh.seek(lo * RECORD_BYTES)
-                remaining = (hi - lo) * RECORD_BYTES
-                while remaining:
-                    block = fh.read(min(_COPY_BLOCK, remaining))
-                    out.write(block)
-                    remaining -= len(block)
-                    # per-record stats over the block (records never split
-                    # blocks: both are multiples of RECORD_BYTES)
-                    for off in range(0, len(block), RECORD_BYTES):
-                        line1 = block[off : off + 69].decode("ascii")
-                        dt = _epoch_dt(line1)
-                        if first is None:
-                            first = dt
-                            stats["elset_first"] = element_set(line1)
-                        if prev is not None:
-                            step = (dt - prev).total_seconds() / 86400.0
-                            if step > gap:
-                                gap, gap_at = step, dt
-                        prev = last = dt
-                        stats["elset_last"] = element_set(line1)
-                        stats["count"] += 1
+    try:
+        with open(tmp, "wb") as out:
+            for chunk, lo, hi in spans:
+                with open(chunk, "rb") as fh:
+                    fh.seek(lo * RECORD_BYTES)
+                    remaining = (hi - lo) * RECORD_BYTES
+                    while remaining:
+                        block = fh.read(min(_COPY_BLOCK, remaining))
+                        out.write(block)
+                        remaining -= len(block)
+                        # per-record stats over the block (records never
+                        # split blocks: both are multiples of RECORD_BYTES)
+                        for off in range(0, len(block), RECORD_BYTES):
+                            line1 = block[off : off + 69].decode("ascii")
+                            dt = _epoch_dt(line1)
+                            if first is None:
+                                first = dt
+                                stats["elset_first"] = element_set(line1)
+                            if prev is not None:
+                                step = (dt - prev).total_seconds() / 86400.0
+                                if step > gap:
+                                    gap, gap_at = step, dt
+                            prev = last = dt
+                            stats["elset_last"] = element_set(line1)
+                            stats["count"] += 1
+    except Exception:
+        Path(tmp).unlink(missing_ok=True)
+        raise
     fsutil.durable_replace(tmp, str(txt))
     fsutil.durable_write_text(
         str(dest / f"{catalog}.json"),
@@ -177,13 +192,22 @@ def _extract_one(out_dir: str, catalog: int, dest: Path) -> bool:
 
 def run(out_dir: str, catalogs: list[int], dest: str) -> int:
     """Extract each catalog's history into ``dest``. Exit 0 if every id was
-    found; 2 if any was absent (the others are still written) or on an
-    operational error (missing/torn dedup tree — nothing written for it)."""
+    found; 2 if any was absent, any catalog's extraction raised, or on an
+    operational error up front (missing/torn dedup tree — nothing written at
+    all). A raise mid-catalog is isolated: it is reported, the partial temp is
+    never left behind, and the remaining catalogs still run."""
+    _import_chunks(out_dir)  # raises ExtractError before any per-catalog work
     dest_dir = Path(dest)
     dest_dir.mkdir(parents=True, exist_ok=True)
     missing = []
     for catalog in catalogs:
-        if _extract_one(out_dir, catalog, dest_dir):
+        try:
+            found = _extract_one(out_dir, catalog, dest_dir)
+        except Exception as exc:
+            term.error(f"extraction failed for catalog {catalog}: {exc}")
+            missing.append(catalog)
+            continue
+        if found:
             term.note(f"wrote {dest_dir / f'{catalog}.txt'}")
         else:
             missing.append(catalog)
