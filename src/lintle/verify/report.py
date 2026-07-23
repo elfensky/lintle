@@ -226,7 +226,7 @@ class SuspectSink:
         checked: dict[str, int],
         chunk_records: int = CHUNK_RECORDS_DEFAULT,
     ) -> Path:
-        """Write ``<out-dir>/verify/{suspects.NNNNN.jsonl,summary.json,summary.md}``
+        """Write ``<out-dir>/04-verify/{suspects.NNNNN.jsonl,summary.json,summary.md}``
         and return the verify directory. Consumes the sink (drains the temp runs);
         deterministic bytes, overwrites in place. The suspects stream is chunked
         into a ``suspects.NNNNN.jsonl`` set."""

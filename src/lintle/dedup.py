@@ -131,7 +131,7 @@ def _note_bytes(g: Group) -> bytes:
 
 
 def run(out_dir: str, chunk_records: int = CHUNK_RECORDS_DEFAULT) -> int:
-    """De-duplicate a clean run's ``<out-dir>/cleaned`` into the chunked
+    """De-duplicate a clean run's ``<out-dir>/01-cleaned`` into the chunked
     ``<out-dir>/05-dedup/import.NNNNN.txt`` set (+ ``notes.NNNNN.jsonl`` and
     ``summary.json``). Returns the exit code: ``0`` clean, ``1`` genuine
     contradiction(s) arbitrated (review the notes), ``2`` operational error

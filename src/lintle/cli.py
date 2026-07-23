@@ -308,7 +308,8 @@ def _add_report_subparser(subparsers):
 def _add_verify_subparser(subparsers):
     """Add the ``verify`` subparser: audit a clean run's output for
     cleaning-corruption (goal 1) and structural contradictions (goal 3). Reads
-    ``<out-dir>/cleaned`` and the source tree; writes only ``<out-dir>/verify``."""
+    ``<out-dir>/01-cleaned`` and the source tree; writes only
+    ``<out-dir>/04-verify``."""
     verify_parser = subparsers.add_parser(
         "verify",
         help="audit a clean run's cleaned output for corruption and contradictions",
@@ -317,7 +318,7 @@ def _add_verify_subparser(subparsers):
             "flag any (catalog, epoch) contradiction, and — when the original "
             "source is available — confirm every cleaned line is a sanctioned "
             "edit of a real source line (no interior mutation). Writes a suspects "
-            "report under <out-dir>/verify. Exit 1 if any hard suspect is found."
+            "report under <out-dir>/04-verify. Exit 1 if any hard suspect is found."
         ),
         epilog=_EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -384,9 +385,9 @@ def _add_verify_subparser(subparsers):
 
 def _add_dedup_subparser(subparsers):
     """Add the ``dedup`` subparser: collapse a clean run's re-issued records into
-    a single 'latest only' import list. Reads ``<out-dir>/cleaned`` (and a prior
+    a single 'latest only' import list. Reads ``<out-dir>/01-cleaned`` (and a prior
     ``verify`` run's ``suspects.jsonl`` if present); writes only
-    ``<out-dir>/dedup``. ``cleaned/`` is never modified."""
+    ``<out-dir>/05-dedup``. ``01-cleaned/`` is never modified."""
     dedup_parser = subparsers.add_parser(
         "dedup",
         help="collapse re-issued records into a 'latest only' import list",
@@ -396,7 +397,7 @@ def _add_dedup_subparser(subparsers):
             "highest element-set number. Benign re-issues collapse silently; a "
             "genuine same-epoch orbit contradiction is kept-latest but flagged "
             "(exit 1). When a verify run's suspects.jsonl exists, hard suspects "
-            "are excluded first. Writes <out-dir>/dedup/import.txt; cleaned/ is "
+            "are excluded first. Writes <out-dir>/05-dedup/import.txt; 01-cleaned/ is "
             "never modified."
         ),
         epilog=_EPILOG,
@@ -424,7 +425,7 @@ def _add_extract_subparser(subparsers):
         help="extract one satellite's complete TLE history from a dedup run",
         description=(
             "Extract each NORAD id's complete deduped history from "
-            "<out-dir>/dedup into <dest>/<id>.txt (pure TLE lines, "
+            "<out-dir>/05-dedup into <dest>/<id>.txt (pure TLE lines, "
             "epoch-ascending) and <dest>/<id>.json (stats). Read-only and "
             "local; requires a prior 'lintle dedup' run."
         ),
@@ -440,7 +441,7 @@ def _add_extract_subparser(subparsers):
         "--out-dir",
         metavar="DIR",
         default=_DEFAULT_OUTPUT,
-        help="pipeline output tree holding dedup/ (default: %(default)s)",
+        help="pipeline output tree holding 05-dedup/ (default: %(default)s)",
     )
     extract_parser.add_argument(
         "--dest",
@@ -711,8 +712,8 @@ def main(argv=None):
             return summary.run(args.out_dir, args.report)
 
         # `verify` is a post-run auditor of a clean run's cleaned output (plus
-        # the source tree for the byte-diff). It never touches cleaned/ but
-        # does write <out-dir>/verify, so it runs under the out-dir lock like
+        # the source tree for the byte-diff). It never touches 01-cleaned/ but
+        # does write <out-dir>/04-verify, so it runs under the out-dir lock like
         # every other writer.
         case "verify":
             # Lazy: keeps lintle.verify out of the clean path's module-level
@@ -734,8 +735,8 @@ def main(argv=None):
                 ),
             )
 
-        # `dedup` consumes cleaned/ (plus a prior verify run's suspects set);
-        # it never touches cleaned/ but does write <out-dir>/dedup, so it too
+        # `dedup` consumes 01-cleaned/ (plus a prior verify run's suspects set);
+        # it never touches 01-cleaned/ but does write <out-dir>/05-dedup, so it too
         # runs under the out-dir lock.
         case "dedup":
             # Lazy for the same wall reason: dedup imports lintle.verify.
