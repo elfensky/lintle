@@ -143,12 +143,16 @@ def _sidecar(
 def _extract_one(out_dir: str, catalog: int, dest: Path) -> bool:
     """Extract one satellite: stream its byte range verbatim to
     ``<dest>/<id>.txt`` (durable temp-then-rename) and write the stats sidecar.
-    False if the catalog has no records."""
+    ``<id>.txt`` + ``<id>.json`` are one atomic unit: a failure anywhere in the
+    txt-stream + txt-commit + sidecar-write sequence leaves nothing behind for
+    this catalog — the committed txt and any sidecar partial are cleaned up
+    alongside the txt temp. False if the catalog has no records."""
     spans = find_spans(out_dir, catalog)
     if not spans:
         return False
     txt = dest / f"{catalog}.txt"
     tmp = str(txt) + fsutil.PARTIAL_SUFFIX
+    sidecar_partial = str(dest / f"{catalog}.json") + fsutil.PARTIAL_SUFFIX
     first = last = gap_at = None
     prev = None
     gap = 0.0
@@ -178,15 +182,17 @@ def _extract_one(out_dir: str, catalog: int, dest: Path) -> bool:
                             prev = last = dt
                             stats["elset_last"] = element_set(line1)
                             stats["count"] += 1
+        fsutil.durable_replace(tmp, str(txt))
+        fsutil.durable_write_text(
+            str(dest / f"{catalog}.json"),
+            _sidecar(out_dir, catalog, first, last, stats, gap, gap_at),
+            encoding="ascii",
+        )
     except Exception:
         Path(tmp).unlink(missing_ok=True)
+        Path(txt).unlink(missing_ok=True)
+        Path(sidecar_partial).unlink(missing_ok=True)
         raise
-    fsutil.durable_replace(tmp, str(txt))
-    fsutil.durable_write_text(
-        str(dest / f"{catalog}.json"),
-        _sidecar(out_dir, catalog, first, last, stats, gap, gap_at),
-        encoding="ascii",
-    )
     return True
 
 
