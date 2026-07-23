@@ -250,13 +250,27 @@ class TestCli:
         assert rc == 0
         assert (dest / "200.txt").exists() and (dest / "200.json").exists()
 
-    def test_dest_defaults_to_cwd(self, tmp_path, monkeypatch):
+    def test_dest_defaults_to_out_dir_extract(self, tmp_path, monkeypatch):
         out = write_import_tree(tmp_path, recs((300, 1.0)), 10)
         workdir = tmp_path / "wd"
         workdir.mkdir()
         monkeypatch.chdir(workdir)
         assert cli.main(["extract", "300", "--out-dir", str(out)]) == 0
-        assert (workdir / "300.txt").exists()
+        extract_dir = out / "06-extract"
+        assert (extract_dir / "300.txt").exists()
+        assert (extract_dir / "README.md").exists()
+        assert not (workdir / "300.txt").exists()
+
+    def test_explicit_dest_gets_no_readme(self, tmp_path, monkeypatch):
+        out = write_import_tree(tmp_path, recs((300, 1.0)), 10)
+        dest = tmp_path / "somewhere"
+        monkeypatch.chdir(tmp_path)
+        assert (
+            cli.main(["extract", "300", "--out-dir", str(out), "--dest", str(dest)])
+            == 0
+        )
+        assert (dest / "300.txt").exists()
+        assert not (dest / "README.md").exists()
 
     def test_missing_tree_exit_2(self, tmp_path, monkeypatch, capsys):
         monkeypatch.chdir(tmp_path)
@@ -301,12 +315,29 @@ class TestReadme:
         extract.run(str(out), [100], str(dest), write_readme=True)
         assert (dest / "README.md").read_bytes() == first
 
-    def test_cli_does_not_pass_write_readme_yet(self, tmp_path, monkeypatch):
-        # Task 3 wires cli to pass write_readme; this task keeps the default
-        # dest (cwd) behavior inert — no README appears via the cli today.
+    def test_cli_writes_readme_only_for_default_dest(self, tmp_path, monkeypatch):
+        # No --dest -> default <out-dir>/06-extract gets a README; an explicit
+        # --dest is the user's own directory and is never decorated.
         out = write_import_tree(tmp_path, recs((200, 1.0)), 10)
         workdir = tmp_path / "wd"
         workdir.mkdir()
         monkeypatch.chdir(workdir)
         assert cli.main(["extract", "200", "--out-dir", str(out)]) == 0
+        assert (out / "06-extract" / "README.md").exists()
         assert not (workdir / "README.md").exists()
+
+        explicit_dest = tmp_path / "explicit"
+        assert (
+            cli.main(
+                [
+                    "extract",
+                    "200",
+                    "--out-dir",
+                    str(out),
+                    "--dest",
+                    str(explicit_dest),
+                ]
+            )
+            == 0
+        )
+        assert not (explicit_dest / "README.md").exists()

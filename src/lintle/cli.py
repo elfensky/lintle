@@ -13,6 +13,7 @@ from pathlib import Path
 from lintle import (
     BROKEN_SUFFIX,
     CLEANED_SUFFIX,
+    EXTRACT_DIRNAME,
     SHARDS_DIRNAME,
     __version__,
     cli_progress,
@@ -446,8 +447,8 @@ def _add_extract_subparser(subparsers):
     extract_parser.add_argument(
         "--dest",
         metavar="DIR",
-        default=".",
-        help="where <id>.txt / <id>.json are written (default: cwd)",
+        default=None,
+        help=("where <id>.txt / <id>.json are written (default: <out-dir>/06-extract)"),
     )
 
 
@@ -749,17 +750,23 @@ def main(argv=None):
             )
 
         # `extract` reads a prior dedup run's import chunk set (read-only) and
-        # writes only <dest>, which is never <out-dir> by default — but runs
+        # writes only <dest>, which defaults to <out-dir>/06-extract but runs
         # under the same out-dir lock as dedup/verify since a concurrent
         # `clean` scrubbing the out-dir mid-read would corrupt it.
         case "extract":
             # Lazy for the wall: extract imports lintle.verify parsers.
             from lintle import extract as extract_mod
 
+            dest = args.dest or str(Path(args.out_dir) / EXTRACT_DIRNAME)
             return _locked_postrun(
                 args.out_dir,
                 "extract",
-                lambda: extract_mod.run(args.out_dir, args.norad_ids, args.dest),
+                lambda: extract_mod.run(
+                    args.out_dir,
+                    args.norad_ids,
+                    dest,
+                    write_readme=args.dest is None,
+                ),
             )
 
     # `args.path` is None when the user passed nothing — fall back to the

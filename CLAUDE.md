@@ -75,8 +75,9 @@ output shows failures.
 ## The corpus (`data/`, git-ignored)
 
 - `data/source/` — 29 raw `tle*.txt` files (~30 GB) plus `TLEs.zip` (~12 GB). Inputs.
-- `data/output/` — where `clean` writes its `data/` tree (`data/cleaned/`, `data/broken/`,
-  `data/report/`) plus a root `README.md`; `verify`/`dedup` add `verify/`/`dedup/`. Outputs.
+- `data/output/` — where `clean` writes its numbered output tree (`01-cleaned/`, `02-broken/`,
+  `03-report/`) plus a root `README.md`; `verify`/`dedup`/`extract` add `04-verify/`/
+  `05-dedup/`/`06-extract/`. Outputs.
 - The whole `data/` tree is git-ignored — ~42 GB — and must never be staged or committed.
 - **Never read a corpus file whole** — the largest is 3.2 GB. Sample with `head`, `awk`,
   or `sed -n`.
