@@ -108,8 +108,9 @@ _BROKEN_README = """\
 Every record here failed validation and could not be *safely* repaired
 (Critical Rule #2: correctness over recovery — a doubtful record is
 quarantined, never guessed at). Files are `<stem>.NNNNN.broken.txt` chunk
-sets, byte-faithful sidecars: each quarantined record is followed by the
-rule tag(s) it failed. Run `lintle explain <rule>` for what any tag means.
+sets, byte-faithful sidecars: each quarantined record's rule tag(s) come
+first, then the raw record lines. Run `lintle explain <rule>` for what any
+tag means.
 Regenerate with `lintle clean`.
 """
 
