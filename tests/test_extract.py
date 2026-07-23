@@ -166,3 +166,29 @@ class TestRun:
         assert not (dest / "300.txt.partial").exists()
         assert (dest / "100.txt").exists()
         assert (dest / "100.json").exists()
+
+    def test_run_missing_tree_raises_before_any_output(self, tmp_path):
+        dest = tmp_path / "dest"
+        with pytest.raises(extract.ExtractError, match="lintle dedup"):
+            extract.run(str(tmp_path), [100], str(dest))
+        assert not dest.exists() or list(dest.iterdir()) == []
+
+    def test_sidecar_failure_leaves_nothing_for_that_catalog(
+        self, tmp_path, monkeypatch
+    ):
+        out = write_import_tree(tmp_path, recs((100, 1.0), (200, 1.0)), 10)
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        real_durable_write_text = extract.fsutil.durable_write_text
+
+        def flaky(path, text, *, encoding="utf-8"):
+            if path.endswith("200.json"):
+                raise OSError("boom")
+            return real_durable_write_text(path, text, encoding=encoding)
+
+        monkeypatch.setattr(extract.fsutil, "durable_write_text", flaky)
+        assert extract.run(str(out), [200, 100], str(dest)) == 2
+        assert sorted(p.name for p in dest.iterdir()) == ["100.json", "100.txt"]
+        assert not (dest / "200.txt").exists()
+        assert not (dest / "200.json").exists()
+        assert list(dest.glob("*.partial")) == []
