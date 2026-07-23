@@ -72,6 +72,7 @@ cli.py ──▶ pipeline.py ──▶ repair.py ──▶ tle.py
   ├──▶ term.py          (stderr+stdout rich Consoles + error/warning/note/prompt + is_interactive/prompt_yes_no)
   ├──▶ verify/          (`lintle verify` auditor — own package; → tle, term; cli edge lazy, never in the clean path)
   ├──▶ dedup.py ──▶ verify/  (`lintle dedup` — latest-re-issue import list; → verify.{checks,grouping,records}, fsutil, term; cli edge lazy)
+  ├──▶ extract.py ──▶ dedup.py, verify/  (`lintle extract` — per-satellite TLE history; → dedup naming constants, verify.{checks,epoch,records}, chunking, fsutil, term; cli edge lazy)
   └──▶ wizard.py ──▶ config.py   (no-subcommand TTY menu; cli.main is injected — wizard never imports cli)
 
 verify/   (lintle verify — Increment-1 core + opt-in --orbit physics pass; cli ──▶ verify, never the reverse)
@@ -112,6 +113,7 @@ config.py    stdlib-JSON leaf — ./.lintle.json load/save (no internal deps)
 | `cli_progress.py` | Rich presentation leaf for `clean`: the live `ProgressDisplay`, the pre-run `render_roster`, and the `status` spinner. Consumes `pipeline`'s typed progress messages. Imports `humanize` for human-readable roster sizes (`naturalsize(gnu=True)`). |
 | `verify/` | The `lintle verify` post-run auditor (own package): `epoch` (epoch-key parsing), `records` (the `CleanedRecord` dataclass + cleaned-tree readers), `grouping` (the spill-to-disk `ExternalSorter` for the constant-memory contradiction pass), `checks` (`revalidate` / `find_conflicts` — both routing the #158 same-epoch clash through the one `_is_clash` predicate `has_epoch_clash` also uses — / the `SourceAligner` byte-diff: a null object built via `SourceAligner.open`, inert when a stem has no source, whose `feed(rec, revalidated=...)` internalizes the revalidate-skip policy so `run`'s loop carries no aligner guards), `report` (`VerifyRule`, `Suspect`, and the `SuspectSink` (which owns the exit-code rule) — an external merge-sort that streams suspects to disk and renders `suspects.jsonl` + `summary.{json,md}` at flat peak memory, byte-identical to its list renderers; #156), `__init__.run` (orchestration), and `orbit` (Increment 2 — the opt-in sampled `sgp4` orbit-consistency pass: adjacent-pair position residuals, soft `VRFY-ORBIT-OUTLIER` outliers, deterministic 0.1 km quantum; refined in #163 with regime-aware gap gates (GEO 7-day vs LEO/MEO 3-day), a windowed local-median threshold term, leave-one-out culprit isolation for lone interior spikes, a `--sensitivity {sensitive,strict}` dial, and dup-epoch stratified oversampling of the satellite sample). A pure *consumer* of `tle` (its sole validity authority) and `term`; `orbit` is the package's **only** `sgp4` importer, lazily imported by `run` only under `--orbit` so the default path stays `sgp4`-free. |
 | `dedup.py` | The `lintle dedup` pass: reads `cleaned/` (never mutating it), excludes hard suspects from a prior `verify` run's `suspects.jsonl`, groups by `(catalog, epoch)` through `verify`'s `ExternalSorter`, and writes `<out-dir>/dedup/{import.txt,notes.jsonl,summary.json}` — one card per group, the latest re-issue kept, benign re-issues (including refined orbits under a new element-set) collapsed and genuine same-element-set contradictions kept-latest-but-flagged. Reuses `verify.checks.orbital_state`/`element_set` and the shared `has_epoch_clash` #158 predicate (one definition of "same orbit" / "latest" / "same-epoch clash" — #164). Constant memory; deterministic bytes. |
+| `extract.py` | The `lintle extract` pass: reads a prior `dedup` run's sorted fixed-width `import.*` chunk set (140 bytes/record — guarded, never assumed) and binary-searches one catalog's contiguous run into `<dest>/<id>.txt` (verbatim byte slice, epoch-ascending) plus a deterministic `<id>.json` stats sidecar. Read-only, local, no index artifact; reuses `verify`'s `catalog_of`/`parse_epoch`/`element_set` so catalog and epoch keep one definition. |
 | `config.py` | Optional `./.lintle.json` project config: stdlib-JSON `load`/`save` of the two remembered keys (`source`, `output`). Never an authority over an explicit CLI arg. No internal deps. |
 | `wizard.py` | The interactive rich menu shown when `lintle` runs with no subcommand on a TTY (configure / clean / verify / report / quit). A thin front-end that builds an argv and calls `cli.main`, reimplementing no orchestration; imports `config` + `term`. |
 
@@ -127,7 +129,11 @@ path (`pipeline`, `repair`, `tle`, `cli`'s clean path) never imports `lintle.ver
 enforces the wall (see §7). `dedup.py` is a second read-only consumer of the same package —
 `cli ──▶ dedup ──▶ verify.{checks, grouping, records}` (+ `term`), one-way, and equally barred
 from the clean path — so it reuses `verify`'s one definition of "same orbit" / "latest re-issue"
-rather than spawning a divergent second one. The `cli ↔ wizard` cycle — `cli` launches the menu,
+rather than spawning a divergent second one. `extract.py` is a third read-only consumer, one
+hop further downstream — `cli ──▶ extract ──▶ dedup` (naming constants only) `+ verify.{checks,
+epoch, records}` (+ `chunking`, `fsutil`, `term`), also one-way and lazily dispatched, also
+barred from the clean path, and also equally barred from ever reaching `sgp4` — an import-graph
+test walks its own closure to confirm that (see §7). The `cli ↔ wizard` cycle — `cli` launches the menu,
 the menu re-enters `cli.main` — is broken by a lazy import on *both* sides (`cli` imports
 `wizard` only inside the no-subcommand TTY branch; `wizard` imports `cli` only inside its
 dispatch), so `wizard ──▶ config`/`term` are the only module-load-time edges.

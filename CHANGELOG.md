@@ -6,6 +6,15 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Added
+
+- **`lintle extract <noradID>…`** — one satellite's complete deduped TLE
+  history as pure `<id>.txt` (epoch-ascending 2-line records) plus a
+  deterministic `<id>.json` stats sidecar (record count, epoch range, largest
+  gap, elset range, provenance). Binary search over the sorted fixed-width
+  `dedup/import` chunks — no index artifact, works on any existing dedup
+  output. `--dest` picks the destination (default: cwd); missing ids exit 2.
+
 ## [0.10.3] - 2026-07-23
 
 ### Changed

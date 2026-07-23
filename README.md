@@ -64,6 +64,9 @@ uv run lintle verify [out-dir] --source [src-dir]
 # Emit a de-duplicated "latest re-issue only" import list
 uv run lintle dedup [out-dir]
 
+# Extract one satellite's complete deduped TLE history + stats sidecar
+uv run lintle extract <NORAD-ID>... [--out-dir DIR] [--dest DIR]
+
 # Re-render a prior clean run's aggregate summary from its report.json
 uv run lintle report [out-dir]
 
