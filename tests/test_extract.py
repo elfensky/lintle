@@ -132,3 +132,37 @@ class TestRun:
         dest.mkdir()
         extract.run(str(out), [100], str(dest))
         assert list(dest.glob("*.partial")) == []
+
+    def test_multi_block_catalog_stats_and_bytes(self, tmp_path):
+        # 8000 records in a single chunk: 8000 * 140 = 1_120_000 bytes, which
+        # spans multiple _COPY_BLOCK reads — exercises the 140-aligned block
+        # boundary (Critical 1).
+        records = recs(*[(500, 1.0 + i * 0.001) for i in range(8000)])
+        out = write_import_tree(tmp_path, records, 10000)
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        assert extract.run(str(out), [500], str(dest)) == 0
+        txt = (dest / "500.txt").read_bytes()
+        assert txt == b"".join(f"{a}\n{b}\n".encode("ascii") for a, b in records)
+        meta = json.loads((dest / "500.json").read_text(encoding="ascii"))
+        assert meta["records"] == 8000
+        assert meta["first_epoch"] == "2020-01-01T00:00:00Z"
+        assert list(dest.glob("*.partial")) == []
+
+    def test_failure_cleans_partial_and_continues(self, tmp_path, monkeypatch):
+        out = write_import_tree(tmp_path, recs((100, 1.0), (300, 1.0)), 10)
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        real_epoch_dt = extract._epoch_dt
+
+        def flaky(line1):
+            if " 300U" in line1:
+                raise ValueError("boom")
+            return real_epoch_dt(line1)
+
+        monkeypatch.setattr(extract, "_epoch_dt", flaky)
+        assert extract.run(str(out), [300, 100], str(dest)) == 2
+        assert not (dest / "300.txt").exists()
+        assert not (dest / "300.txt.partial").exists()
+        assert (dest / "100.txt").exists()
+        assert (dest / "100.json").exists()
