@@ -127,6 +127,7 @@ src/lintle/
 ├── diff.py        # read-only: per-rule delta between two runs' report.jsonl (lintle diff)
 ├── explain.py     # read-only: renders rule/fix documentation (lintle explain)
 ├── dedup.py       # `lintle dedup` — latest-re-issue-only import list from cleaned/ (reuses verify's sort)
+├── extract.py     # `lintle extract` — one satellite's TLE history + stats sidecar from a dedup run (binary search, no index)
 ├── chunking.py    # ChunkedWriter/ChunkedReader — the <stem>.NNNNN.<suffix> chunk-set layer
 ├── config.py      # optional ./.lintle.json remembering source/output dirs (stdlib JSON)
 ├── wizard.py      # interactive rich menu shown when `lintle` runs with no subcommand

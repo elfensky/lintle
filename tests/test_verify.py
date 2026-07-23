@@ -487,8 +487,13 @@ class TestImportGuard:
     path, not just three files' direct source text, so a collaborator quietly
     importing sgp4 two hops away still trips the wall. Function-level lazy
     imports are deliberately outside the walk — those are the sanctioned
-    dispatch points (``cli.main``'s verify/dedup branches), which only run
-    when the operator asks for a verify/dedup command."""
+    dispatch points (``cli.main``'s verify/dedup/extract branches), which
+    only run when the operator asks for a verify/dedup/extract command.
+    ``lintle.extract`` is a read-only consumer of a prior ``dedup`` run
+    (like ``dedup`` is of ``verify``), so it too must stay out of the clean
+    path's closure and its own closure must stay ``sgp4``-free even though
+    it legitimately reaches into ``verify`` for the shared epoch/catalog
+    parsers."""
 
     @staticmethod
     def _module_level_imports(path):
@@ -531,6 +536,27 @@ class TestImportGuard:
             assert name != "verify", (
                 f"lintle.verify reached from the clean path via {seen}"
             )
+            assert name != "extract", (
+                f"lintle.extract reached from the clean path via {seen}"
+            )
+            mod_path = src / "__init__.py" if name == "__init__" else src / f"{name}.py"
+            if not mod_path.is_file():
+                continue  # a package attribute (constant/function), not a module
+            frontier |= self._module_level_imports(mod_path) - seen
+
+    def test_extract_closure_never_imports_sgp4(self):
+        """``lintle.extract`` reaches into ``verify.{checks,epoch,records}``
+        for the shared catalog/epoch parsers — that edge is expected and
+        fine — but it must never drag in ``sgp4`` itself, which stays the
+        sole province of ``verify/orbit.py`` under the lazy ``--orbit``
+        gate. Same walk as the clean-path test, seeded at ``extract``."""
+        src = Path(lintle.__file__).parent
+        seen: set[str] = set()
+        frontier = {"extract"}
+        while frontier:
+            name = frontier.pop()
+            seen.add(name)
+            assert name != "sgp4", f"sgp4 reached from lintle.extract via {seen}"
             mod_path = src / "__init__.py" if name == "__init__" else src / f"{name}.py"
             if not mod_path.is_file():
                 continue  # a package attribute (constant/function), not a module
