@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 
 import lintle
-from lintle import DATA_DIRNAME, cli, tle
+from lintle import CLEANED_DIRNAME, VERIFY_DIRNAME, cli, tle
 from lintle.verify import checks, epoch, grouping, records, report, run
 from lintle.verify.records import CleanedRecord
 from lintle.verify.report import Suspect, VerifyRule
@@ -65,8 +65,8 @@ def build_tree_with_source(tmp_path, cleaned_pairs, source_lines=None, stem="tle
     """Write a minimal clean-run output tree (and optional source file); return
     ``(out_dir, source_dir)`` as strings."""
     out = tmp_path / "output"
-    (out / DATA_DIRNAME / "cleaned").mkdir(parents=True, exist_ok=True)
-    (out / DATA_DIRNAME / "cleaned" / f"{stem}.00001.cleaned.txt").write_text(
+    (out / CLEANED_DIRNAME).mkdir(parents=True, exist_ok=True)
+    (out / CLEANED_DIRNAME / f"{stem}.00001.cleaned.txt").write_text(
         "".join(f"{a}\n{b}\n" for a, b in cleaned_pairs), encoding="ascii"
     )
     src = tmp_path / "source"
@@ -419,7 +419,9 @@ class TestEndToEnd:
     def test_clean_tree_passes(self, tmp_path):
         out, src = build_tree_with_source(tmp_path, [(L1, L2)], source_lines=[L1, L2])
         assert run(out, src) == 0
-        suspects = (tmp_path / "output" / "verify" / "suspects.00001.jsonl").read_text()
+        suspects = (
+            tmp_path / "output" / VERIFY_DIRNAME / "suspects.00001.jsonl"
+        ).read_text()
         assert suspects == ""
 
     def test_interior_mutation_fails(self, tmp_path):
@@ -429,7 +431,7 @@ class TestEndToEnd:
         assert run(out, src) == 1
         rows = [
             json.loads(line)
-            for line in (tmp_path / "output" / "verify" / "suspects.00001.jsonl")
+            for line in (tmp_path / "output" / VERIFY_DIRNAME / "suspects.00001.jsonl")
             .read_text()
             .splitlines()
         ]
@@ -439,7 +441,9 @@ class TestEndToEnd:
         # same satellite+epoch, SAME element-set, different orbit -> a hard clash
         out, _ = build_tree_with_source(tmp_path, [(L1, L2), (L1, mutated_l2())])
         assert run(out, None) == 1
-        rows = (tmp_path / "output" / "verify" / "suspects.00001.jsonl").read_text()
+        rows = (
+            tmp_path / "output" / VERIFY_DIRNAME / "suspects.00001.jsonl"
+        ).read_text()
         assert "VRFY-EPOCH-CONFLICT" in rows
 
     def test_refined_reissue_is_census_pass(self, tmp_path):
@@ -449,10 +453,12 @@ class TestEndToEnd:
             tmp_path, [(L1, L2), (reissued_refined_l1(), L2)]
         )
         assert run(out, None) == 0
-        suspects = (tmp_path / "output" / "verify" / "suspects.00001.jsonl").read_text()
+        suspects = (
+            tmp_path / "output" / VERIFY_DIRNAME / "suspects.00001.jsonl"
+        ).read_text()
         assert suspects == ""
         summary = json.loads(
-            (tmp_path / "output" / "verify" / "summary.json").read_text()
+            (tmp_path / "output" / VERIFY_DIRNAME / "summary.json").read_text()
         )
         assert summary["checked"]["epoch_reissues"] == 1
 
@@ -463,7 +469,7 @@ class TestEndToEnd:
         out, _ = build_tree_with_source(tmp_path, [(L1, L2)])
         assert run(out, None) == 0
         summary = json.loads(
-            (tmp_path / "output" / "verify" / "summary.json").read_text()
+            (tmp_path / "output" / VERIFY_DIRNAME / "summary.json").read_text()
         )
         assert summary["checked"]["source_diff"] == "skipped"
 

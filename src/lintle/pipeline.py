@@ -11,7 +11,6 @@ from lintle import (
     BROKEN_SUFFIX,
     CLEANED_DIRNAME,
     CLEANED_SUFFIX,
-    DATA_DIRNAME,
     SHARDS_DIRNAME,
     chunking,
     repair,
@@ -295,9 +294,9 @@ def process_file(
 ) -> report.FileStats:
     """Process one source file and return its ``report.FileStats``.
 
-    ``mode`` is ``"clean"`` (writes the ``data/cleaned/<stem>.NNNNN.cleaned.txt``
-    and ``data/broken/<stem>.NNNNN.broken.txt`` chunk sets plus the
-    ``report/shards`` findings shard under ``out_dir``) or ``"validate"``
+    ``mode`` is ``"clean"`` (writes the ``01-cleaned/<stem>.NNNNN.cleaned.txt``
+    and ``02-broken/<stem>.NNNNN.broken.txt`` chunk sets plus the
+    ``.shards`` findings shard under ``out_dir``) or ``"validate"``
     (audit only — writes nothing). The production caller
     (``worker_pool.run_workers``) always passes ``"clean"``; ``"validate"`` is
     a test/internal audit surface (e.g. ``test_integration`` re-validates
@@ -448,10 +447,10 @@ def _clean_output_paths(out_dir: str, src_name: str) -> _CleanPaths:
     internal staging the cli concatenates into ``report.jsonl`` at end of run
     and then removes (issue #9, spec §4.6). Suffix/dirname constants live in
     ``lintle.__init__`` — the single naming-convention authority."""
-    data = Path(out_dir) / DATA_DIRNAME
-    cleaned_dir = data / CLEANED_DIRNAME
+    out = Path(out_dir)
+    cleaned_dir = out / CLEANED_DIRNAME
     cleaned_dir.mkdir(parents=True, exist_ok=True)
-    broken_dir = data / BROKEN_DIRNAME
+    broken_dir = out / BROKEN_DIRNAME
     broken_dir.mkdir(parents=True, exist_ok=True)
     (Path(out_dir) / SHARDS_DIRNAME).mkdir(parents=True, exist_ok=True)
     return _CleanPaths(

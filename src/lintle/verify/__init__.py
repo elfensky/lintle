@@ -7,13 +7,14 @@ real source line, never an interior mutation (goal 1). The opt-in ``--orbit`` pa
 (Increment 2, goal 2) adds sampled ``sgp4`` orbit-consistency, lazily imported
 from ``orbit.py`` so the default checks stay ``sgp4``-free.
 
-The verifier is a pure *consumer*: it reads ``<out-dir>/cleaned`` and the source
-tree, and writes only under ``<out-dir>/verify``. It reuses ``tle.py`` for every
-validity judgment and never re-defines what a valid TLE is."""
+The verifier is a pure *consumer*: it reads ``<out-dir>/01-cleaned`` and the
+source tree, and writes only under ``<out-dir>/04-verify``. It reuses
+``tle.py`` for every validity judgment and never re-defines what a valid TLE
+is."""
 
 from pathlib import Path
 
-from lintle import CLEANED_DIRNAME, DATA_DIRNAME, term
+from lintle import CLEANED_DIRNAME, term
 from lintle.chunking import CHUNK_RECORDS_DEFAULT
 from lintle.verify import checks, grouping, records
 from lintle.verify.report import SuspectSink
@@ -37,7 +38,7 @@ def run(
     hard suspects found, 2 operational error (no cleaned output)."""
     stems = records.cleaned_stems(out_dir)
     if not stems:
-        cleaned_dir = Path(out_dir) / DATA_DIRNAME / CLEANED_DIRNAME
+        cleaned_dir = Path(out_dir) / CLEANED_DIRNAME
         term.error(
             f"no cleaned output found under {cleaned_dir!s}.\n"
             "  run 'lintle clean' first, or point at its --out-dir."

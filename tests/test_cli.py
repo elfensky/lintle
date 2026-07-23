@@ -9,6 +9,9 @@ import sys
 import pytest
 
 from lintle import (
+    BROKEN_DIRNAME,
+    CLEANED_DIRNAME,
+    REPORT_DIRNAME,
     cli,
     explain,
     worker_pool,
@@ -151,16 +154,16 @@ class TestMain:
         rc = cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
 
         assert rc == 0
-        assert (out / "data" / "cleaned" / "tle2099.00001.cleaned.txt").exists()
-        assert (out / "data" / "broken" / "tle2099.00001.broken.txt").exists()
+        assert (out / CLEANED_DIRNAME / "tle2099.00001.cleaned.txt").exists()
+        assert (out / BROKEN_DIRNAME / "tle2099.00001.broken.txt").exists()
         # A clean run writes a Markdown run report to the out-dir root.
-        report_md = (out / "data" / "report" / "report.md").read_text()
+        report_md = (out / REPORT_DIRNAME / "report.md").read_text()
         assert "# lintle clean run report" in report_md
         assert "tle2099.txt" in report_md
         assert "Records:" in report_md
         # broken-noradids.ndjson is always emitted on clean — empty when
         # nothing was quarantined, so downstream sees a stable artifact.
-        assert (out / "data" / "report" / "broken-noradids.ndjson").read_bytes() == b""
+        assert (out / REPORT_DIRNAME / "broken-noradids.ndjson").read_bytes() == b""
 
     def test_main_routes_default_jobs_through_resolve_jobs(
         self, tmp_path, monkeypatch, line1, line2
@@ -203,7 +206,7 @@ class TestMain:
         assert rc == 1
         # NORAD 00005 (Vanguard 1) — the canonical fixture's catalog number.
         assert (
-            out / "data" / "report" / "broken-noradids.ndjson"
+            out / REPORT_DIRNAME / "broken-noradids.ndjson"
         ).read_bytes() == b'{"noradId":5}\n'
 
     def test_main_returns_one_when_records_quarantined(self, tmp_path, line1, line2):
@@ -731,7 +734,7 @@ class TestReportJsonl:
 
         cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
 
-        jsonl_path = out / "data" / "report" / "report.00001.jsonl"
+        jsonl_path = out / REPORT_DIRNAME / "report.00001.jsonl"
         assert jsonl_path.exists()
         lines = jsonl_path.read_text(encoding="utf-8").splitlines()
         assert len(lines) == 1
@@ -754,7 +757,7 @@ class TestReportJsonl:
 
         cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
 
-        jsonl_path = out / "data" / "report" / "report.00001.jsonl"
+        jsonl_path = out / REPORT_DIRNAME / "report.00001.jsonl"
         assert jsonl_path.exists()
         assert jsonl_path.read_text(encoding="utf-8") == ""
 
@@ -768,7 +771,7 @@ class TestReportJsonl:
         out = tmp_path / "out"
 
         cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
-        assert (out / "data" / "report" / "report.00001.jsonl").exists()
+        assert (out / REPORT_DIRNAME / "report.00001.jsonl").exists()
 
 
 class TestExplainCommand:
@@ -842,7 +845,7 @@ class TestReportArtifactAndCommand:
         out = tmp_path / "out"
         cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
         data = json.loads(
-            (out / "data" / "report" / "report.json").read_text(encoding="utf-8")
+            (out / REPORT_DIRNAME / "report.json").read_text(encoding="utf-8")
         )
         assert data["schema_version"] == "3"
         assert data["run"]["command"] == "clean"
@@ -870,7 +873,7 @@ class TestReportArtifactAndCommand:
         stdout = capsys.readouterr().out
         # report.json uses indent=2 + trailing newline; stdout is
         # json.dumps(...) + "\n" via print(), so they must match exactly.
-        assert (out / "data" / "report" / "report.json").read_text(
+        assert (out / REPORT_DIRNAME / "report.json").read_text(
             encoding="utf-8"
         ) == stdout
 
@@ -903,7 +906,7 @@ class TestReportArtifactAndCommand:
         rc = cli.main(["report", str(out), "--report", "json"])
         cap = capsys.readouterr()
         assert rc == 0
-        assert cap.out == (out / "data" / "report" / "report.json").read_text(
+        assert cap.out == (out / REPORT_DIRNAME / "report.json").read_text(
             encoding="utf-8"
         )
 
@@ -1078,9 +1081,7 @@ class TestReconstructChecksumFlag:
         # The record is quarantined (not reconstructed), so the default
         # quality gate (0 quarantines) fails and nothing is written clean.
         assert rc == 1
-        assert (
-            out / "data" / "cleaned" / "tle2099.00001.cleaned.txt"
-        ).read_text() == ""
+        assert (out / CLEANED_DIRNAME / "tle2099.00001.cleaned.txt").read_text() == ""
 
     def test_flag_recovers_checksumless_record(self, tmp_path, line1, line2):
         src = self._checksumless_src(tmp_path, line1, line2)
@@ -1097,5 +1098,5 @@ class TestReconstructChecksumFlag:
             ]
         )
         assert rc == 0
-        cleaned = (out / "data" / "cleaned" / "tle2099.00001.cleaned.txt").read_text()
+        cleaned = (out / CLEANED_DIRNAME / "tle2099.00001.cleaned.txt").read_text()
         assert cleaned == line1 + "\n" + line2 + "\n"

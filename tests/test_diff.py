@@ -10,7 +10,7 @@ import json
 
 import pytest
 
-from lintle import cli, diff, report, report_writers
+from lintle import REPORT_DIRNAME, cli, diff, report, report_writers
 from lintle.diagnostics import RuleID, diagnostic
 
 
@@ -32,9 +32,9 @@ def _entry(primary_rule, related_rules=(), *, norad_id=25544):
 
 def _report_path(run_dir):
     """Return the report.00001.jsonl chunk path under ``run_dir``, creating
-    the ``data/report/`` directories that hold it (the moved output layout —
-    ``<run>/data/report/report.NNNNN.jsonl``)."""
-    path = run_dir / "data" / "report" / "report.00001.jsonl"
+    the ``03-report/`` directory that holds it (the flat numbered output
+    layout — ``<run>/03-report/report.NNNNN.jsonl``)."""
+    path = run_dir / REPORT_DIRNAME / "report.00001.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
     return path
 

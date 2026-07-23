@@ -17,10 +17,9 @@ from collections.abc import Iterable
 from enum import StrEnum
 from pathlib import Path
 
-from lintle import chunking, fsutil
+from lintle import VERIFY_DIRNAME, chunking, fsutil
 from lintle.chunking import CHUNK_RECORDS_DEFAULT
 
-VERIFY_DIRNAME = "verify"
 SUSPECTS_STEM = "suspects"
 SUSPECTS_SUFFIX = ".jsonl"
 SUMMARY_JSON = "summary.json"
