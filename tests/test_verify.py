@@ -243,6 +243,20 @@ class TestHasEpochClash:
     def test_identical_records_no_clash(self):
         assert not checks.has_epoch_clash([rec(idx=0), rec(idx=1)])
 
+    def test_agrees_with_find_conflicts_on_every_group_shape(self):
+        # The property the old hand-synced twin implementations protected:
+        # for any same-(catalog, epoch) group, the group-level boolean and
+        # find_conflicts' per-record findings name the same clashes.
+        groups = [
+            [rec(idx=0), rec(line2=mutated_l2(), idx=1)],  # clash
+            [rec(idx=0), rec(line1=reissued_refined_l1(), idx=1)],  # re-issue
+            [rec(idx=0), rec(idx=1)],  # exact duplicate
+            [rec(idx=0)],  # singleton
+        ]
+        for group in groups:
+            conflicts, _, _ = checks.find_conflicts(iter(group))
+            assert bool(conflicts) == checks.has_epoch_clash(group)
+
 
 class TestSourceAligner:
     def test_clean_padded_match(self, tmp_path):

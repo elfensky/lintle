@@ -96,6 +96,17 @@ def element_set(line1: str) -> int | None:
         return None
 
 
+def _is_clash(
+    by_elset: dict[int | None, tuple], elset: int | None, state: tuple
+) -> bool:
+    """The #158 clash predicate — the one implementation both
+    :func:`find_conflicts` (per record) and :func:`has_epoch_clash` (per group)
+    route through: True iff ``elset`` was already seen in this
+    ``(catalog, epoch)`` group with a *different* orbital state. Records
+    ``state`` as ``elset``'s first-seen orbit on the way (setdefault)."""
+    return by_elset.setdefault(elset, state) != state
+
+
 def find_conflicts(
     sorted_records: Iterator[CleanedRecord],
     orbit: bool = False,
@@ -141,8 +152,7 @@ def find_conflicts(
             dup_epoch_catalogs.add(rec.catalog)
         state = orbital_state(rec.line1, rec.line2)
         elset = element_set(rec.line1)
-        if by_elset.get(elset, state) != state:
-            # this element-set already appeared with a different orbit — a clash
+        if _is_clash(by_elset, elset, state):
             conflicts.append(
                 Suspect(
                     VerifyRule.EPOCH_CONFLICT,
@@ -156,25 +166,22 @@ def find_conflicts(
             )
         elif states and state not in states:
             reissues += 1  # a new orbit under a new element-set — a re-issue
-        by_elset.setdefault(elset, state)
         states.add(state)
     return conflicts, reissues, dup_epoch_catalogs
 
 
 def has_epoch_clash(records: Iterable[CleanedRecord]) -> bool:
     """True iff some element-set among these same-``(catalog, epoch)`` records names
-    more than one orbital state — the #158 definition of a genuine contradiction,
-    shared with :func:`find_conflicts` so ``verify`` and ``dedup`` agree on what a
-    same-epoch clash is. A *different* element-set with a different orbit is a
-    benign refined re-issue (space-track's successive solution), not a clash — the
-    distinction :func:`find_conflicts` draws per record, expressed here as one
-    boolean over a materialised group (bounded: a handful of re-issues)."""
+    more than one orbital state — the #158 definition of a genuine contradiction.
+    Routes through the same :func:`_is_clash` predicate as :func:`find_conflicts`,
+    so ``verify`` and ``dedup`` agree on what a same-epoch clash is by
+    construction, not by hand-synced twins. A *different* element-set with a
+    different orbit is a benign refined re-issue, not a clash."""
     by_elset: dict[int | None, tuple] = {}
-    for r in records:
-        state = orbital_state(r.line1, r.line2)
-        if by_elset.setdefault(element_set(r.line1), state) != state:
-            return True
-    return False
+    return any(
+        _is_clash(by_elset, element_set(r.line1), orbital_state(r.line1, r.line2))
+        for r in records
+    )
 
 
 def sanctioned_reduce(src_line: str) -> str:
