@@ -11,7 +11,7 @@ import json
 import statistics
 from pathlib import Path
 
-from lintle import fsutil, term
+from lintle import REPORT_DIRNAME, fsutil, term
 from lintle.chunking import ChunkedReader
 from lintle.dedup import DEDUP_DIRNAME, IMPORT_STEM, IMPORT_SUFFIX
 from lintle.verify.checks import element_set
@@ -55,6 +55,24 @@ def _import_chunks(out_dir: str) -> list[Path]:
                 "corrupted or foreign import chunk; re-run 'lintle dedup'."
             )
     return chunks
+
+
+def _quarantined_ids(out_dir: str) -> set[int] | None:
+    """NORAD IDs quarantined during clean, from the run report's
+    ``broken-noradids.ndjson`` — ``None`` (unknown, not false) when the report
+    is absent or unreadable, e.g. a pruned tree."""
+    path = Path(out_dir) / REPORT_DIRNAME / "broken-noradids.ndjson"
+    if not path.is_file():
+        return None
+    try:
+        return {
+            json.loads(line)["noradId"]
+            for line in path.read_text(encoding="ascii").splitlines()
+            if line
+        }
+    except json.JSONDecodeError, KeyError, TypeError, UnicodeDecodeError:
+        term.warning(f"unreadable {path.name} — quarantine info unavailable")
+        return None
 
 
 def _catalog_at(fh, index: int) -> int:
