@@ -187,7 +187,7 @@ class JsonlFindingsWriter:
     def __init__(self, path: str, src_name: str) -> None:
         self.path = path
         self.src_name = src_name
-        self._partial = path + ".partial"
+        self._partial = path + fsutil.PARTIAL_SUFFIX
         self._handle = None
         self._completed = False
 

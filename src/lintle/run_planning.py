@@ -17,7 +17,7 @@ from lintle import (
     resume,
     term,
 )
-from lintle.chunking import CHUNK_RECORDS_DEFAULT
+from lintle.chunking import CHUNK_RECORDS_DEFAULT, ChunkedReader
 
 # Marker written into the out-dir on the first fresh run.  Its presence (or the
 # presence of a checkpoint / stale-checkpoint archive) is the ownership signal
@@ -181,7 +181,10 @@ def scrub_outputs(out_dir):
     for name in _REPORT_ARTIFACTS:
         with contextlib.suppress(OSError):
             (out / name).unlink()
-    for chunk in out.glob("report.*.jsonl"):
+    # Legacy root-level report chunk set: enumerate through ChunkedReader's
+    # anchored parse — the one chunk-naming authority — not a loose glob that
+    # could eat non-chunk bystanders like report.backup.jsonl.
+    for chunk in ChunkedReader(out, "report", ".jsonl").chunk_paths():
         with contextlib.suppress(OSError):
             chunk.unlink()
 
