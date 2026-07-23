@@ -145,8 +145,9 @@ def _extract_one(out_dir: str, catalog: int, dest: Path) -> bool:
     ``<dest>/<id>.txt`` (durable temp-then-rename) and write the stats sidecar.
     ``<id>.txt`` + ``<id>.json`` are one atomic unit: a failure anywhere in the
     txt-stream + txt-commit + sidecar-write sequence leaves nothing behind for
-    this catalog — the committed txt and any sidecar partial are cleaned up
-    alongside the txt temp. False if the catalog has no records."""
+    this run's attempted output. A failed extraction leaves the destination
+    exactly as it found it — pre-existing files from an earlier successful run
+    are never touched. False if the catalog has no records."""
     spans = find_spans(out_dir, catalog)
     if not spans:
         return False
@@ -157,6 +158,7 @@ def _extract_one(out_dir: str, catalog: int, dest: Path) -> bool:
     prev = None
     gap = 0.0
     stats = {"count": 0, "elset_first": None, "elset_last": None}
+    committed = False
     try:
         with open(tmp, "wb") as out:
             for chunk, lo, hi in spans:
@@ -183,6 +185,7 @@ def _extract_one(out_dir: str, catalog: int, dest: Path) -> bool:
                             stats["elset_last"] = element_set(line1)
                             stats["count"] += 1
         fsutil.durable_replace(tmp, str(txt))
+        committed = True
         fsutil.durable_write_text(
             str(dest / f"{catalog}.json"),
             _sidecar(out_dir, catalog, first, last, stats, gap, gap_at),
@@ -190,8 +193,10 @@ def _extract_one(out_dir: str, catalog: int, dest: Path) -> bool:
         )
     except Exception:
         Path(tmp).unlink(missing_ok=True)
-        Path(txt).unlink(missing_ok=True)
         Path(sidecar_partial).unlink(missing_ok=True)
+        if committed:
+            Path(txt).unlink(missing_ok=True)
+            Path(dest / f"{catalog}.json").unlink(missing_ok=True)
         raise
     return True
 
