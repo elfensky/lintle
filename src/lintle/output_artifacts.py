@@ -3,7 +3,6 @@
 from pathlib import Path
 
 from lintle import (
-    DATA_DIRNAME,
     REPORT_DIRNAME,
     __version__,
     cli_progress,
@@ -23,7 +22,7 @@ def write_clean_artifacts(
     chunk_records=CHUNK_RECORDS_DEFAULT,
 ):
     """Write the corpus-wide artifacts for a completed ``clean`` run into
-    ``<out-dir>/data/report/``: the Markdown ``report.md``, the machine
+    ``<out-dir>/03-report/``: the Markdown ``report.md``, the machine
     ``report.json`` (the byte-identical twin of the ``--report json`` stdout
     envelope), the ``broken-noradids.ndjson``, and the concatenated
     ``report.NNNNN.jsonl`` set. Also drops a root ``README.md`` describing the
@@ -34,7 +33,7 @@ def write_clean_artifacts(
     (the caller guards with ``if all_stats:``).
     """
     with cli_progress.status("finalizing report…"):
-        rdir = Path(out_dir) / DATA_DIRNAME / REPORT_DIRNAME
+        rdir = Path(out_dir) / REPORT_DIRNAME
         rdir.mkdir(parents=True, exist_ok=True)
         report.write_run_report(
             str(rdir / "report.md"), all_stats, failed_files=failed_files

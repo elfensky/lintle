@@ -1,6 +1,7 @@
 """Tests for the streaming ``SuspectSink`` (#156): peak memory independent of the
 suspect count, byte-identical to the list-based writer it replaces."""
 
+from lintle import VERIFY_DIRNAME
 from lintle.chunking import ChunkedReader
 from lintle.verify import report
 from lintle.verify.report import Suspect, SuspectSink, VerifyRule
@@ -36,7 +37,7 @@ def _read_suspects(vdir) -> bytes:
 
 def _drain(sink: SuspectSink, out_dir) -> tuple[bytes, bytes, str]:
     sink.write(str(out_dir), checked=CHECKED)
-    vdir = out_dir / "verify"
+    vdir = out_dir / VERIFY_DIRNAME
     return (
         _read_suspects(vdir),
         (vdir / "summary.json").read_bytes(),
@@ -89,5 +90,5 @@ class TestConstantMemory:
             assert len(sink._buf) <= 10
         assert len(sink._runs) == 10  # spilled every full chunk -> constant memory
         sink.write(str(tmp_path), checked=CHECKED)
-        lines = _read_suspects(tmp_path / "verify").splitlines()
+        lines = _read_suspects(tmp_path / VERIFY_DIRNAME).splitlines()
         assert len(lines) == 100  # nothing lost across the spill/merge

@@ -621,7 +621,7 @@ def _locked_postrun(out_dir, name, action):
     """Run a post-run consumer (``verify``/``dedup``) under the out-dir lock
     with the same exit-2 operational backstop as ``clean`` (issue #89).
 
-    Both consumers stream ``<out-dir>/data/cleaned`` and write their own
+    Both consumers stream ``<out-dir>/01-cleaned`` and write their own
     subtree, so a concurrent ``clean`` scrubbing the out-dir mid-read would
     corrupt them — the advisory flock serializes them against it. A missing
     out-dir skips the lock (nothing to protect); the consumer's own "no
