@@ -26,6 +26,17 @@ SUMMARY_JSON = "summary.json"
 SUMMARY_MD = "summary.md"
 SCHEMA_VERSION = "1"
 
+_README = """\
+# 04-verify — independent audit of 01-cleaned
+
+- `suspects.NNNNN.jsonl` — flagged records, one JSON object per line: `hard`
+  means must-fix (the run exits 1), `soft` means inconclusive telemetry that
+  never blocks.
+- `summary.json` / `summary.md` — audit tallies and the pass/fail verdict.
+
+Regenerate with `lintle verify`.
+"""
+
 
 class VerifyRule(StrEnum):
     """Stable wire tokens for verify findings. ``hard`` rules convict (exit 1);
@@ -264,4 +275,5 @@ class SuspectSink:
             str(vdir / SUMMARY_MD),
             _summary_md_str(self.counts, self.hard, self.total, checked=checked),
         )
+        fsutil.durable_write_text(str(vdir / "README.md"), _README, encoding="utf-8")
         return vdir

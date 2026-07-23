@@ -37,6 +37,19 @@ NOTES_STEM = "notes"
 SUMMARY_NAME = "summary.json"
 SCHEMA_VERSION = "1"
 
+_README = """\
+# 05-dedup — latest-re-issue-only import list
+
+- `import.NNNNN.txt` — the de-duplicated ingest list: one card per
+  (catalog, epoch), hard suspects excluded, re-issues collapsed to the
+  latest element-set.
+- `notes.NNNNN.jsonl` — one note per collapsed group (the kept and dropped
+  cards, and whether it was a genuine same-epoch conflict).
+- `summary.json` — dedup tallies and verdict.
+
+Regenerate with `lintle dedup`.
+"""
+
 
 @dataclasses.dataclass(slots=True, frozen=True)
 class Group:
@@ -195,6 +208,7 @@ def run(out_dir: str, chunk_records: int = CHUNK_RECORDS_DEFAULT) -> int:
     body = json.dumps(summary, ensure_ascii=True, indent=2, sort_keys=True) + "\n"
     # Structured artifact — commit through the one sanctioned durable path.
     fsutil.durable_write_text(str(ddir / SUMMARY_NAME), body, encoding="ascii")
+    fsutil.durable_write_text(str(ddir / "README.md"), _README, encoding="utf-8")
 
     verdict = (
         f"{n_written} records written, {n_dropped} re-issue duplicate(s) collapsed"

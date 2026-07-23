@@ -613,6 +613,23 @@ class TestOutputSizes:
         sizes = resume.output_sizes(str(tmp_path), st)
         assert sizes == {}
 
+    def test_readme_basenames_are_never_recorded(self, tmp_path):
+        # Task 2 (flat-numbered-layout): each step dir now carries its own
+        # README.md. It is data ABOUT the dir, not a per-file output chunk, so
+        # it must never show up in the resume integrity check — a pin: the
+        # chunk-set reader is stem+suffix scoped and the shard stat is an
+        # exact findings-suffix name, so a README.md basename can't match
+        # either path; this test documents and locks in that immunity.
+        st = self._make_stats("tle2099.txt")
+        self._write(
+            tmp_path / CLEANED_DIRNAME / "tle2099.00001.cleaned.txt",
+            b"x" * 200,
+        )
+        self._write(tmp_path / CLEANED_DIRNAME / "README.md", b"# 01-cleaned\n")
+        self._write(tmp_path / BROKEN_DIRNAME / "README.md", b"# 02-broken\n")
+        sizes = resume.output_sizes(str(tmp_path), st)
+        assert "README.md" not in sizes
+
 
 class TestVerifyCompletedOutputsWithShard:
     """verify_completed_outputs must flag reprocessing when the shard is missing

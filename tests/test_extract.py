@@ -267,3 +267,46 @@ class TestCli:
     def test_rejects_non_numeric_id(self, tmp_path, capsys):
         with pytest.raises(SystemExit):
             cli.main(["extract", "ISS", "--out-dir", str(tmp_path)])
+
+
+class TestReadme:
+    """``run``'s ``write_readme`` keyword, default False, is inert this task —
+    Task 3 wires the cli to pass True only for the default
+    ``<out-dir>/06-extract`` dest, never for an explicit ``--dest``."""
+
+    def test_defaults_to_no_readme(self, tmp_path):
+        out = write_import_tree(tmp_path, recs((100, 1.0)), 10)
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        assert extract.run(str(out), [100], str(dest)) == 0
+        assert not (dest / "README.md").exists()
+
+    def test_write_readme_true_writes_it(self, tmp_path):
+        out = write_import_tree(tmp_path, recs((100, 1.0)), 10)
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        assert extract.run(str(out), [100], str(dest), write_readme=True) == 0
+        readme = dest / "README.md"
+        assert readme.is_file()
+        text = readme.read_text(encoding="utf-8")
+        assert "06-extract" in text
+        assert "lintle extract" in text
+
+    def test_readme_is_deterministic(self, tmp_path):
+        out = write_import_tree(tmp_path, recs((100, 1.0)), 10)
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        extract.run(str(out), [100], str(dest), write_readme=True)
+        first = (dest / "README.md").read_bytes()
+        extract.run(str(out), [100], str(dest), write_readme=True)
+        assert (dest / "README.md").read_bytes() == first
+
+    def test_cli_does_not_pass_write_readme_yet(self, tmp_path, monkeypatch):
+        # Task 3 wires cli to pass write_readme; this task keeps the default
+        # dest (cwd) behavior inert — no README appears via the cli today.
+        out = write_import_tree(tmp_path, recs((200, 1.0)), 10)
+        workdir = tmp_path / "wd"
+        workdir.mkdir()
+        monkeypatch.chdir(workdir)
+        assert cli.main(["extract", "200", "--out-dir", str(out)]) == 0
+        assert not (workdir / "README.md").exists()
