@@ -89,7 +89,7 @@ class ChunkedWriter:
             )
         self._index += 1
         self._final = self._dir / f"{self._stem}.{self._index:05d}{self._suffix}"
-        self._tmp = str(self._final) + ".partial"
+        self._tmp = str(self._final) + fsutil.PARTIAL_SUFFIX
         self._handle = open(self._tmp, "wb")  # noqa: SIM115 — streaming; closed on roll/commit/discard
         self._count = 0
         self._opened_any = True

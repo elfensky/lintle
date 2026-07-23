@@ -80,15 +80,22 @@ def durable_replace(tmp: str, dest: str) -> str:
     return dest
 
 
+# The one temp-file suffix for every atomic commit in the tree — bounded
+# writers via durable_write_text, streaming writers (ChunkedWriter,
+# JsonlFindingsWriter) via their own .partial-then-durable_replace dance.
+# One authority so scrubbers and writers can never disagree on the name.
+PARTIAL_SUFFIX = ".partial"
+
+
 def durable_write_text(path: str, text: str, *, encoding: str = "utf-8") -> None:
     """Write ``text`` to ``path`` atomically, durably, and with pinned LF
     line endings (``newline="\\n"``), so the artifact is byte-identical across
-    platforms (Critical Rules #1/#2). Owns the ``.partial`` suffix, the open,
-    the write, and the :func:`durable_replace` call, deduplicating the
-    boilerplate from bounded text-mode writers (issue #85). NOT for streaming
-    writers, which cannot buffer their whole output as a single string.
+    platforms (Critical Rules #1/#2). Owns the open, the write, and the
+    :func:`durable_replace` call, deduplicating the boilerplate from bounded
+    text-mode writers (issue #85). NOT for streaming writers, which cannot
+    buffer their whole output as a single string.
     """
-    tmp = path + ".partial"
+    tmp = path + PARTIAL_SUFFIX
     with open(tmp, "w", encoding=encoding, newline="\n") as handle:
         handle.write(text)
     durable_replace(tmp, path)
