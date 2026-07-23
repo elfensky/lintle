@@ -86,3 +86,49 @@ class TestFindSpans:
     def test_missing_dedup_tree_is_operational_error(self, tmp_path):
         with pytest.raises(extract.ExtractError, match="lintle dedup"):
             extract.find_spans(str(tmp_path), 100)
+
+
+class TestRun:
+    def test_writes_txt_and_json(self, tmp_path, capsys):
+        out = write_import_tree(tmp_path, recs((200, 1.0), (200, 2.5), (200, 10.0)), 2)
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        assert extract.run(str(out), [200], str(dest)) == 0
+        txt = (dest / "200.txt").read_bytes()
+        records = recs((200, 1.0), (200, 2.5), (200, 10.0))
+        assert txt == b"".join(f"{a}\n{b}\n".encode("ascii") for a, b in records)
+        meta = json.loads((dest / "200.json").read_text(encoding="ascii"))
+        assert meta["schema_version"] == "1"
+        assert meta["norad_id"] == 200 and meta["records"] == 3
+        assert meta["first_epoch"] == "2020-01-01T00:00:00Z"
+        assert meta["last_epoch"] == "2020-01-10T00:00:00Z"
+        assert meta["span_days"] == 9.0
+        assert meta["largest_gap_days"] == 7.5
+        assert meta["largest_gap_at"] == "2020-01-10T00:00:00Z"
+        assert meta["source"]["dedup_records_written"] == 3
+
+    def test_missing_id_partial_success_exit_2(self, tmp_path, capsys):
+        out = write_import_tree(tmp_path, recs((100, 1.0)), 10)
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        assert extract.run(str(out), [100, 424242], str(dest)) == 2
+        assert (dest / "100.txt").exists()
+        assert not (dest / "424242.txt").exists()
+        assert "424242" in capsys.readouterr().err
+
+    def test_single_record_satellite_null_rate(self, tmp_path):
+        out = write_import_tree(tmp_path, recs((100, 1.0)), 10)
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        assert extract.run(str(out), [100], str(dest)) == 0
+        meta = json.loads((dest / "100.json").read_text(encoding="ascii"))
+        assert meta["records"] == 1 and meta["span_days"] == 0.0
+        assert meta["mean_records_per_day"] is None
+        assert meta["largest_gap_days"] == 0.0 and meta["largest_gap_at"] is None
+
+    def test_no_partial_debris_on_success(self, tmp_path):
+        out = write_import_tree(tmp_path, recs((100, 1.0)), 10)
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        extract.run(str(out), [100], str(dest))
+        assert list(dest.glob("*.partial")) == []

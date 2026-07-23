@@ -5,10 +5,15 @@ bytes each) globally sorted by ``(catalog, epoch)``, so each satellite is one
 contiguous byte range found by pure binary search — the sorted fixed-width
 stream *is* the index. Never imports sgp4; never touches the clean path."""
 
+import datetime as _dt
+import json
 from pathlib import Path
 
+from lintle import fsutil, term
 from lintle.chunking import ChunkedReader
 from lintle.dedup import DEDUP_DIRNAME, IMPORT_STEM, IMPORT_SUFFIX
+from lintle.verify.checks import element_set
+from lintle.verify.epoch import parse_epoch
 from lintle.verify.records import catalog_of
 
 # two validated-perfect 69-char lines + two \n — guarded, not assumed
@@ -80,3 +85,109 @@ def _bisect(fh, n: int, pred) -> int:
         else:
             lo = mid + 1
     return lo
+
+
+_COPY_BLOCK = 1 << 20  # 1 MiB — constant-memory streaming copy
+
+
+def _epoch_dt(line1: str) -> _dt.datetime:
+    """Record epoch as an aware UTC datetime — pure arithmetic from
+    ``parse_epoch``'s ``(year, day_of_year)``; no wall clock, so sidecar bytes
+    stay deterministic."""
+    year, day = parse_epoch(line1)
+    return _dt.datetime(year, 1, 1, tzinfo=_dt.UTC) + _dt.timedelta(days=day - 1)
+
+
+def _iso(dt: _dt.datetime) -> str:
+    return dt.isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def _sidecar(out_dir: str, catalog: int, first, last, n, gap, gap_at) -> str:
+    """The ``<id>.json`` document (sorted keys, 2-space indent, trailing LF —
+    the house deterministic-JSON shape)."""
+    span = (last - first).total_seconds() / 86400.0
+    summary_path = Path(out_dir) / DEDUP_DIRNAME / "summary.json"
+    summary = json.loads(summary_path.read_text(encoding="ascii"))
+    doc = {
+        "schema_version": "1",
+        "norad_id": catalog,
+        "records": n["count"],
+        "first_epoch": _iso(first),
+        "last_epoch": _iso(last),
+        "span_days": round(span, 6),
+        "mean_records_per_day": round(n["count"] / span, 6) if span else None,
+        "largest_gap_days": round(gap, 6),
+        "largest_gap_at": _iso(gap_at) if gap_at is not None else None,
+        "element_set_first": n["elset_first"],
+        "element_set_last": n["elset_last"],
+        "source": {
+            "out_dir": str(Path(out_dir)),
+            "dedup_records_written": summary.get("records_written"),
+            "dedup_schema_version": summary.get("schema_version"),
+        },
+    }
+    return json.dumps(doc, indent=2, sort_keys=True) + "\n"
+
+
+def _extract_one(out_dir: str, catalog: int, dest: Path) -> bool:
+    """Extract one satellite: stream its byte range verbatim to
+    ``<dest>/<id>.txt`` (durable temp-then-rename) and write the stats sidecar.
+    False if the catalog has no records."""
+    spans = find_spans(out_dir, catalog)
+    if not spans:
+        return False
+    txt = dest / f"{catalog}.txt"
+    tmp = str(txt) + fsutil.PARTIAL_SUFFIX
+    first = last = gap_at = None
+    prev = None
+    gap = 0.0
+    stats = {"count": 0, "elset_first": None, "elset_last": None}
+    with open(tmp, "wb") as out:
+        for chunk, lo, hi in spans:
+            with open(chunk, "rb") as fh:
+                fh.seek(lo * RECORD_BYTES)
+                remaining = (hi - lo) * RECORD_BYTES
+                while remaining:
+                    block = fh.read(min(_COPY_BLOCK, remaining))
+                    out.write(block)
+                    remaining -= len(block)
+                    # per-record stats over the block (records never split
+                    # blocks: both are multiples of RECORD_BYTES)
+                    for off in range(0, len(block), RECORD_BYTES):
+                        line1 = block[off : off + 69].decode("ascii")
+                        dt = _epoch_dt(line1)
+                        if first is None:
+                            first = dt
+                            stats["elset_first"] = element_set(line1)
+                        if prev is not None:
+                            step = (dt - prev).total_seconds() / 86400.0
+                            if step > gap:
+                                gap, gap_at = step, dt
+                        prev = last = dt
+                        stats["elset_last"] = element_set(line1)
+                        stats["count"] += 1
+    fsutil.durable_replace(tmp, str(txt))
+    fsutil.durable_write_text(
+        str(dest / f"{catalog}.json"),
+        _sidecar(out_dir, catalog, first, last, stats, gap, gap_at),
+        encoding="ascii",
+    )
+    return True
+
+
+def run(out_dir: str, catalogs: list[int], dest: str) -> int:
+    """Extract each catalog's history into ``dest``. Exit 0 if every id was
+    found; 2 if any was absent (the others are still written) or on an
+    operational error (missing/torn dedup tree — nothing written for it)."""
+    dest_dir = Path(dest)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    missing = []
+    for catalog in catalogs:
+        if _extract_one(out_dir, catalog, dest_dir):
+            term.note(f"wrote {dest_dir / f'{catalog}.txt'}")
+        else:
+            missing.append(catalog)
+            term.error(
+                f"no records for catalog {catalog} in {Path(out_dir) / DEDUP_DIRNAME}"
+            )
+    return 2 if missing else 0
