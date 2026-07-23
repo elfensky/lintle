@@ -826,6 +826,23 @@ class TestScrubClearsReportArtifacts:
         for name in artifacts:
             assert not (out / name).exists(), f"{name} should have been removed"
 
+    def test_scrub_removes_legacy_report_chunks_only(self, tmp_path):
+        # The legacy root-level report chunk set goes; a non-chunk bystander
+        # that the old loose glob would have caught survives — the scrub now
+        # shares ChunkedReader's anchored 5-digit parse (one naming authority).
+        out = tmp_path / "out"
+        out.mkdir()
+        (out / "report.00001.jsonl").write_text("stale", encoding="utf-8")
+        (out / "report.00002.jsonl").write_text("stale", encoding="utf-8")
+        bystander = out / "report.backup.jsonl"
+        bystander.write_text("keep me", encoding="utf-8")
+
+        run_planning.scrub_outputs(str(out))
+
+        assert not (out / "report.00001.jsonl").exists()
+        assert not (out / "report.00002.jsonl").exists()
+        assert bystander.exists()
+
     def test_fresh_run_does_not_show_stale_report(
         self, tmp_path, line1, line2, monkeypatch, capsys
     ):

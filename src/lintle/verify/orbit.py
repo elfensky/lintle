@@ -28,7 +28,7 @@ from sgp4.api import Satrec
 
 from lintle.verify import grouping, records
 from lintle.verify.records import CleanedRecord
-from lintle.verify.report import Suspect, SuspectSink, VrfyRule
+from lintle.verify.report import Suspect, SuspectSink, VerifyRule
 
 GEO_MEAN_MOTION_MAX = 1.5  # ponytail: rev/day below this = geosync/GEO regime
 GAP_LIMIT_LEO_MEO_DAYS = 3.0  # LEO/MEO/Molniya: sgp4 residual grows fast over a gap
@@ -52,7 +52,8 @@ class Sensitivity:
 
 SENSITIVE = Sensitivity(floor_km=100.0, mad_k=10.0)  # today's default
 STRICT = Sensitivity(floor_km=200.0, mad_k=20.0)  # fewer, higher-confidence outliers
-_TIERS = {"sensitive": SENSITIVE, "strict": STRICT}
+# Public name → tier mapping; the CLI's --sensitivity choices resolve through this.
+TIERS = {"sensitive": SENSITIVE, "strict": STRICT}
 # sgp4 init errors that mean "these mean elements are not a physical orbit" -> hard.
 # Error 6 (decayed) is a real end-of-life state, not corruption, so it is excluded.
 _HARD_SGP4_ERRORS = frozenset({1, 2, 3, 4, 5})
@@ -145,7 +146,7 @@ def _track_suspects(
             if sat.error in _HARD_SGP4_ERRORS:
                 suspects.append(
                     Suspect(
-                        VrfyRule.ORBIT_ERROR,
+                        VerifyRule.ORBIT_ERROR,
                         rec.catalog,
                         rec.epoch_key,
                         rec.src_file,
@@ -188,7 +189,7 @@ def _track_suspects(
     def outlier(i: int, detail: str) -> Suspect:
         rec = sats[i][1]
         return Suspect(
-            VrfyRule.ORBIT_OUTLIER,
+            VerifyRule.ORBIT_OUTLIER,
             rec.catalog,
             rec.epoch_key,
             rec.src_file,
@@ -252,6 +253,11 @@ def _track_suspects(
     return suspects, len(measured)
 
 
+def _by_catalog(rec: CleanedRecord) -> int:
+    """Group key for :func:`grouping.grouped`: one track per satellite."""
+    return rec.catalog
+
+
 def sample_catalogs(
     population: set[int],
     sample: int | None,
@@ -308,19 +314,7 @@ def run_orbit_pass(
                 sorter.add(rec)
 
     n_pairs = n_tracks = 0
-    track: list[CleanedRecord] = []
-    current: int | None = None
-    for rec in sorter.sorted_records():
-        if rec.catalog != current:
-            if track:
-                found, pairs = _track_suspects(track, sensitivity)
-                sink.add_all(found)
-                n_pairs += pairs
-                n_tracks += 1
-            current = rec.catalog
-            track = []
-        track.append(rec)
-    if track:
+    for _, track in grouping.grouped(sorter.sorted_records(), key=_by_catalog):
         found, pairs = _track_suspects(track, sensitivity)
         sink.add_all(found)
         n_pairs += pairs

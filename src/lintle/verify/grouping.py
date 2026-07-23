@@ -7,11 +7,23 @@ satellite's records together and in epoch order — what the contradiction check
 (and, later, the continuity/sgp4 pass) consumes."""
 
 import heapq
+import itertools
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
 
 from lintle.verify.records import CleanedRecord
+
+
+def grouped[K](
+    sorted_records: Iterable[CleanedRecord], key: Callable[[CleanedRecord], K]
+) -> Iterator[tuple[K, list[CleanedRecord]]]:
+    """Yield ``(key_value, records)`` groups from an already-sorted stream — the
+    one streaming group-by shape shared by the orbit and dedup passes (each was
+    previously a hand-rolled buffer + trailing-flush loop). Holds one group in
+    memory at a time, so constant memory w.r.t. the corpus is preserved."""
+    for k, group in itertools.groupby(sorted_records, key=key):
+        yield k, list(group)
 
 
 def _key(rec: CleanedRecord) -> tuple[int, float]:

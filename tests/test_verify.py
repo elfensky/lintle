@@ -1,12 +1,14 @@
 """Tests for ``lintle verify`` (Increment 1: the exhaustive, sgp4-free core)."""
 
-import inspect
+import ast
 import json
+from pathlib import Path
 
-from lintle import DATA_DIRNAME, cli, pipeline, repair, tle
-from lintle.verify import checks, epoch, grouping, records, report, run_verify
+import lintle
+from lintle import DATA_DIRNAME, cli, tle
+from lintle.verify import checks, epoch, grouping, records, report, run
 from lintle.verify.records import CleanedRecord
-from lintle.verify.report import Suspect, VrfyRule
+from lintle.verify.report import Suspect, VerifyRule
 
 # A canonical known-good record (Vanguard 1, NORAD 00005).
 L1 = "1 00005U 58002B   00179.78495062  .00000023  00000-0  28098-4 0  4753"
@@ -59,7 +61,7 @@ def rec(line1=L1, line2=L2, src="tle01", idx=0) -> CleanedRecord:
     )
 
 
-def build_tree(tmp_path, cleaned_pairs, source_lines=None, stem="tle01"):
+def build_tree_with_source(tmp_path, cleaned_pairs, source_lines=None, stem="tle01"):
     """Write a minimal clean-run output tree (and optional source file); return
     ``(out_dir, source_dir)`` as strings."""
     out = tmp_path / "output"
@@ -127,7 +129,7 @@ class TestRevalidate:
             -1, -1.0, "garbage line one", "garbage line two", "tle01", 3
         )
         s = checks.revalidate(bad)
-        assert s is not None and s.rule is VrfyRule.REVALIDATE_FAIL
+        assert s is not None and s.rule is VerifyRule.REVALIDATE_FAIL
         assert s.severity == "hard"
 
 
@@ -154,7 +156,7 @@ class TestConflicts:
         # same element-set (default L1), different orbit -> a hard clash
         stream = [rec(idx=0), rec(line2=mutated_l2(), idx=1)]  # inclination differs
         out, n, _ = checks.find_conflicts(iter(stream))
-        assert len(out) == 1 and out[0].rule is VrfyRule.EPOCH_CONFLICT and n == 0
+        assert len(out) == 1 and out[0].rule is VerifyRule.EPOCH_CONFLICT and n == 0
 
     def test_element_set_reissue_is_not_a_conflict(self):
         # same orbital state, only the element-set number (cols 65-68) differs
@@ -182,7 +184,7 @@ class TestConflicts:
         r0 = rec(line1=fix(L1[:53] + " 10000-3" + L1[61:]), idx=0)
         r1 = rec(line1=fix(L1[:53] + " 20000-3" + L1[61:]), idx=1)
         out, n, _ = checks.find_conflicts(iter([r0, r1]))
-        assert len(out) == 1 and out[0].rule is VrfyRule.EPOCH_CONFLICT and n == 0
+        assert len(out) == 1 and out[0].rule is VerifyRule.EPOCH_CONFLICT and n == 0
 
     def test_refined_reissue_is_census_not_conflict(self):
         # same (catalog, epoch), a NEW element-set AND a refined orbit -> a benign
@@ -241,30 +243,78 @@ class TestHasEpochClash:
     def test_identical_records_no_clash(self):
         assert not checks.has_epoch_clash([rec(idx=0), rec(idx=1)])
 
+    def test_agrees_with_find_conflicts_on_every_group_shape(self):
+        # The property the old hand-synced twin implementations protected:
+        # for any same-(catalog, epoch) group, the group-level boolean and
+        # find_conflicts' per-record findings name the same clashes.
+        groups = [
+            [rec(idx=0), rec(line2=mutated_l2(), idx=1)],  # clash
+            [rec(idx=0), rec(line1=reissued_refined_l1(), idx=1)],  # re-issue
+            [rec(idx=0), rec(idx=1)],  # exact duplicate
+            [rec(idx=0)],  # singleton
+        ]
+        for group in groups:
+            conflicts, _, _ = checks.find_conflicts(iter(group))
+            assert bool(conflicts) == checks.has_epoch_clash(group)
+
+
+class TestSourceAlignerNullObject:
+    """The debate-consensus (C) seam: always construct, inert without a source,
+    skip policy behind feed() — no caller-side guards or skip conventions."""
+
+    def test_open_without_source_dir_is_inert(self):
+        aligner = checks.SourceAligner.open(None, "tle_x")
+        assert not aligner.active
+        assert aligner.feed(rec()) is None  # unconditionally callable
+        aligner.close()  # and unconditionally closable
+
+    def test_open_with_missing_file_is_inert(self, tmp_path):
+        aligner = checks.SourceAligner.open(str(tmp_path), "tle_missing")
+        assert not aligner.active
+        assert aligner.feed(rec()) is None
+        aligner.close()
+
+    def test_open_with_real_file_is_active(self, tmp_path):
+        (tmp_path / "tle_x.txt").write_text(f"{L1}\n{L2}\n", encoding="ascii")
+        aligner = checks.SourceAligner.open(str(tmp_path), "tle_x")
+        assert aligner.active
+        assert aligner.feed(rec()) is None  # clean match
+        aligner.close()
+
+    def test_revalidate_failed_record_does_not_consume_source(self, tmp_path):
+        # The old caller-side skip contract, now inside the interface: feeding a
+        # revalidate-failed record must leave the buffer untouched, so the SAME
+        # origin still matches the next (revalidated) record.
+        (tmp_path / "tle_x.txt").write_text(f"{L1}\n{L2}\n", encoding="ascii")
+        aligner = checks.SourceAligner.open(str(tmp_path), "tle_x")
+        assert aligner.feed(rec(), revalidated=False) is None
+        assert aligner.feed(rec()) is None  # origin still there — not consumed
+        aligner.close()
+
 
 class TestSourceAligner:
     def test_clean_padded_match(self, tmp_path):
         src = tmp_path / "s.txt"
         src.write_text(f"  {L1}  \n{L2}\r\n", encoding="ascii")
         aligner = checks.SourceAligner(str(src))
-        assert aligner.check(rec()) is None
+        assert aligner.feed(rec()) is None
         aligner.close()
 
     def test_interior_mutation_flagged(self, tmp_path):
         src = tmp_path / "s.txt"
         src.write_text(f"{L1}\n{L2}\n", encoding="ascii")
         aligner = checks.SourceAligner(str(src))
-        s = aligner.check(rec(line2=mutated_l2()))
+        s = aligner.feed(rec(line2=mutated_l2()))
         aligner.close()
-        assert s is not None and s.rule is VrfyRule.INTERIOR_MUT
+        assert s is not None and s.rule is VerifyRule.INTERIOR_MUT
 
     def test_origin_missing(self, tmp_path):
         src = tmp_path / "s.txt"
         src.write_text("unrelated one\nunrelated two\n", encoding="ascii")
         aligner = checks.SourceAligner(str(src))
-        s = aligner.check(rec())
+        s = aligner.feed(rec())
         aligner.close()
-        assert s is not None and s.rule is VrfyRule.ORIGIN_MISSING
+        assert s is not None and s.rule is VerifyRule.ORIGIN_MISSING
         assert s.severity == "soft"
 
     def test_resyncs_across_quarantine_gap(self, tmp_path):
@@ -272,7 +322,7 @@ class TestSourceAligner:
         src = tmp_path / "s.txt"
         src.write_text(f"junk a\njunk b\n{L1}\n{L2}\n", encoding="ascii")
         aligner = checks.SourceAligner(str(src))
-        assert aligner.check(rec()) is None
+        assert aligner.feed(rec()) is None
         aligner.close()
 
     def test_resyncs_across_long_quarantine_gap(self, tmp_path):
@@ -293,8 +343,8 @@ class TestSourceAligner:
         src = tmp_path / "s.txt"
         src.write_text(f"{L1}\n{L2}\n{gap}{L1}\n{L2}\n", encoding="ascii")
         aligner = checks.SourceAligner(str(src))
-        assert aligner.check(rec()) is None  # first record matches at the top
-        assert aligner.check(rec()) is None  # second record's origin is past the gap
+        assert aligner.feed(rec()) is None  # first record matches at the top
+        assert aligner.feed(rec()) is None  # second record's origin is past the gap
         aligner.close()
 
     def test_quarantined_duplicate_is_not_interior_mutation(self, tmp_path):
@@ -312,7 +362,7 @@ class TestSourceAligner:
         src = tmp_path / "s.txt"
         src.write_text(f"{shadow1}\n{shadow2}\n{L1}\n{L2}\n", encoding="ascii")
         aligner = checks.SourceAligner(str(src))
-        assert aligner.check(rec()) is None  # real origin found past the shadow
+        assert aligner.feed(rec()) is None  # real origin found past the shadow
         aligner.close()
 
     def test_blank_line_between_pair_is_clean_match(self, tmp_path):
@@ -323,24 +373,30 @@ class TestSourceAligner:
         src = tmp_path / "s.txt"
         src.write_text(f"{L1[:68]}\n\n{L2[:68]}\n", encoding="ascii")
         aligner = checks.SourceAligner(str(src))
-        assert aligner.check(rec()) is None
+        assert aligner.feed(rec()) is None
         aligner.close()
 
 
 class TestReport:
     def test_suspects_jsonl_is_deterministic(self):
-        a = Suspect(VrfyRule.EPOCH_CONFLICT, 5, 2000179.0, "tle01", 2, "x")
-        b = Suspect(VrfyRule.INTERIOR_MUT, 5, 2000179.0, "tle01", 1, "y")
+        a = Suspect(VerifyRule.EPOCH_CONFLICT, 5, 2000179.0, "tle01", 2, "x")
+        b = Suspect(VerifyRule.INTERIOR_MUT, 5, 2000179.0, "tle01", 1, "y")
         assert report.render_suspects_jsonl([a, b]) == report.render_suspects_jsonl(
             [b, a]
         )
 
     def test_exit_code(self):
-        soft = Suspect(VrfyRule.ORIGIN_MISSING, 5, 1.0, "t", 0, "x")
-        hard = Suspect(VrfyRule.INTERIOR_MUT, 5, 1.0, "t", 0, "y")
-        assert report.exit_code([]) == 0
-        assert report.exit_code([soft]) == 0
-        assert report.exit_code([soft, hard]) == 1
+        soft = Suspect(VerifyRule.ORIGIN_MISSING, 5, 1.0, "t", 0, "x")
+        hard = Suspect(VerifyRule.INTERIOR_MUT, 5, 1.0, "t", 0, "y")
+
+        def code(suspects):
+            sink = report.SuspectSink()
+            sink.add_all(suspects)
+            return sink.exit_code
+
+        assert code([]) == 0
+        assert code([soft]) == 0
+        assert code([soft, hard]) == 1
 
 
 class TestGrouping:
@@ -361,14 +417,16 @@ class TestGrouping:
 
 class TestEndToEnd:
     def test_clean_tree_passes(self, tmp_path):
-        out, src = build_tree(tmp_path, [(L1, L2)], source_lines=[L1, L2])
-        assert run_verify(out, src) == 0
+        out, src = build_tree_with_source(tmp_path, [(L1, L2)], source_lines=[L1, L2])
+        assert run(out, src) == 0
         suspects = (tmp_path / "output" / "verify" / "suspects.00001.jsonl").read_text()
         assert suspects == ""
 
     def test_interior_mutation_fails(self, tmp_path):
-        out, src = build_tree(tmp_path, [(L1, mutated_l2())], source_lines=[L1, L2])
-        assert run_verify(out, src) == 1
+        out, src = build_tree_with_source(
+            tmp_path, [(L1, mutated_l2())], source_lines=[L1, L2]
+        )
+        assert run(out, src) == 1
         rows = [
             json.loads(line)
             for line in (tmp_path / "output" / "verify" / "suspects.00001.jsonl")
@@ -379,16 +437,18 @@ class TestEndToEnd:
 
     def test_contradiction_fails(self, tmp_path):
         # same satellite+epoch, SAME element-set, different orbit -> a hard clash
-        out, _ = build_tree(tmp_path, [(L1, L2), (L1, mutated_l2())])
-        assert run_verify(out, None) == 1
+        out, _ = build_tree_with_source(tmp_path, [(L1, L2), (L1, mutated_l2())])
+        assert run(out, None) == 1
         rows = (tmp_path / "output" / "verify" / "suspects.00001.jsonl").read_text()
         assert "VRFY-EPOCH-CONFLICT" in rows
 
     def test_refined_reissue_is_census_pass(self, tmp_path):
         # same satellite+epoch, a NEW element-set AND refined orbit -> a benign
         # re-issue: verify PASSES and the record is counted in the census (#158)
-        out, _ = build_tree(tmp_path, [(L1, L2), (reissued_refined_l1(), L2)])
-        assert run_verify(out, None) == 0
+        out, _ = build_tree_with_source(
+            tmp_path, [(L1, L2), (reissued_refined_l1(), L2)]
+        )
+        assert run(out, None) == 0
         suspects = (tmp_path / "output" / "verify" / "suspects.00001.jsonl").read_text()
         assert suspects == ""
         summary = json.loads(
@@ -397,11 +457,11 @@ class TestEndToEnd:
         assert summary["checked"]["epoch_reissues"] == 1
 
     def test_missing_cleaned_dir_is_operational_error(self, tmp_path):
-        assert run_verify(str(tmp_path / "nope"), None) == 2
+        assert run(str(tmp_path / "nope"), None) == 2
 
     def test_source_diff_skipped_when_no_source(self, tmp_path):
-        out, _ = build_tree(tmp_path, [(L1, L2)])
-        assert run_verify(out, None) == 0
+        out, _ = build_tree_with_source(tmp_path, [(L1, L2)])
+        assert run(out, None) == 0
         summary = json.loads(
             (tmp_path / "output" / "verify" / "summary.json").read_text()
         )
@@ -410,19 +470,68 @@ class TestEndToEnd:
 
 class TestCLI:
     def test_verify_subcommand_dispatches(self, tmp_path):
-        out, src = build_tree(tmp_path, [(L1, L2)], source_lines=[L1, L2])
+        out, src = build_tree_with_source(tmp_path, [(L1, L2)], source_lines=[L1, L2])
         assert cli.main(["verify", out, "--source", src]) == 0
 
     def test_verify_flags_via_cli(self, tmp_path):
-        out, src = build_tree(tmp_path, [(L1, mutated_l2())], source_lines=[L1, L2])
+        out, src = build_tree_with_source(
+            tmp_path, [(L1, mutated_l2())], source_lines=[L1, L2]
+        )
         assert cli.main(["verify", out, "--source", src]) == 1
 
 
 class TestImportGuard:
-    def test_clean_core_never_imports_sgp4_or_verify(self):
-        for module in (tle, repair, pipeline):
-            source = inspect.getsource(module)
-            assert "import sgp4" not in source
-            assert "from sgp4" not in source
-            assert "lintle.verify" not in source
-            assert "import verify" not in source
+    """The sgp4/verify import wall (Critical Rule #4 and the dependency
+    policy): the clean path must never import ``sgp4`` or ``lintle.verify``.
+    Enforced over the *transitive* module-level import closure of the clean
+    path, not just three files' direct source text, so a collaborator quietly
+    importing sgp4 two hops away still trips the wall. Function-level lazy
+    imports are deliberately outside the walk — those are the sanctioned
+    dispatch points (``cli.main``'s verify/dedup branches), which only run
+    when the operator asks for a verify/dedup command."""
+
+    @staticmethod
+    def _module_level_imports(path):
+        """Names imported at module level: lintle submodule names, plus the
+        sentinel ``"sgp4"`` for any sgp4 import."""
+        names = set()
+        for node in ast.parse(path.read_text(encoding="utf-8")).body:
+            match node:
+                case ast.Import(names=aliases):
+                    for a in aliases:
+                        root = a.name.split(".")[0]
+                        if root == "sgp4":
+                            names.add("sgp4")
+                        elif root == "lintle":
+                            names.add(
+                                a.name.split(".")[1] if "." in a.name else "__init__"
+                            )
+                case ast.ImportFrom(module=mod, names=aliases) if mod:
+                    root = mod.split(".")[0]
+                    if root == "sgp4":
+                        names.add("sgp4")
+                    elif mod == "lintle":
+                        # ``from lintle import x`` — x may be a submodule or a
+                        # package attribute; submodules resolve below.
+                        names.update(a.name for a in aliases)
+                        names.add("__init__")
+                    elif root == "lintle":
+                        names.add(mod.split(".")[1])
+        return names
+
+    def test_clean_path_closure_never_imports_sgp4_or_verify(self):
+        src = Path(lintle.__file__).parent
+        seeds = {"cli", "pipeline", "repair", "tle"}
+        seen: set[str] = set()
+        frontier = set(seeds)
+        while frontier:
+            name = frontier.pop()
+            seen.add(name)
+            assert name != "sgp4", f"sgp4 reached from the clean path via {seen}"
+            assert name != "verify", (
+                f"lintle.verify reached from the clean path via {seen}"
+            )
+            mod_path = src / "__init__.py" if name == "__init__" else src / f"{name}.py"
+            if not mod_path.is_file():
+                continue  # a package attribute (constant/function), not a module
+            frontier |= self._module_level_imports(mod_path) - seen

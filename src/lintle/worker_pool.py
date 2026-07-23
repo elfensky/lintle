@@ -1,22 +1,59 @@
 """Process-pool dispatch for clean runs.
 
-``run_workers`` returns a 5-tuple:
-``(all_stats, failed_files, interrupted, interrupted_signo, operational_error)``.
-``failed_files`` is a ``list[tuple[str, str]]`` of ``(path, error_string)``
-pairs, one entry per file whose worker raised an exception.  The path is the
-full input path as submitted to the executor; the error string is ``str(exc)``
-from the caught exception.  Callers that only need the truthiness check (is
-the list non-empty?) are unaffected by the shape change.
+``run_workers`` returns a :class:`WorkerRunResult`. ``failed_files`` is a
+``list[tuple[str, str]]`` of ``(path, error_string)`` pairs, one entry per
+file whose worker raised an exception — the path as submitted to the
+executor, the error string ``str(exc)`` from the caught exception.
 """
 
 import concurrent.futures
+import dataclasses
 import multiprocessing
+import os
 import signal
 
-from lintle import cli_progress, pipeline, process_control, resume, run_planning, term
+from lintle import (
+    cli_progress,
+    pipeline,
+    process_control,
+    report,
+    resume,
+    run_planning,
+    term,
+)
 
 
-def run_workers(config: run_planning.CleanConfig, files, plan, jobs, console, sizes):
+@dataclasses.dataclass(slots=True, frozen=True)
+class WorkerRunResult:
+    """Outcome of one pool dispatch: the collected per-file stats, the files
+    whose workers raised, and how the run ended (interrupt signal or
+    parent-side operational error)."""
+
+    all_stats: list
+    failed_files: list[tuple[str, str]]
+    interrupted: bool
+    interrupted_signo: int
+    operational_error: Exception | None
+
+
+def _failure_detail(exc: Exception) -> str:
+    """The error string recorded for a failed file. Normally ``str(exc)``; with
+    ``LINTLE_DEBUG`` set, the chained remote traceback (which the pool carries
+    on ``__cause__``) is appended so the worker-side failure site isn't lost at
+    the process boundary."""
+    if os.environ.get("LINTLE_DEBUG") and exc.__cause__ is not None:
+        return f"{exc}\n{exc.__cause__}"
+    return str(exc)
+
+
+def run_workers(
+    config: run_planning.CleanConfig,
+    files: list[str],
+    plan: run_planning.RunPlan,
+    jobs: int,
+    console,
+    sizes: dict[str, int],
+) -> WorkerRunResult:
     """Dispatch ``plan.files_to_process`` across a worker pool."""
     all_stats = list(plan.reused_stats)
     failed_files = []
@@ -34,13 +71,11 @@ def run_workers(config: run_planning.CleanConfig, files, plan, jobs, console, si
             caught["signo"] = signo
             raise KeyboardInterrupt
 
-        # Save ALL three previous handlers before installing the traps so the
-        # finally block can restore them on every exit path — success,
-        # KeyboardInterrupt, or unexpected operational error. Issue #100: the
-        # previous code only saved prev_term/prev_hup; the KI branch then set
-        # SIGINT to SIG_IGN but never restored it, leaving it ignored after an
-        # interrupted run.
-        prev_int = signal.signal(signal.SIGINT, signal.getsignal(signal.SIGINT))
+        # Save ALL three previous handlers — including SIGINT — before
+        # installing the traps so the finally block can restore them on every
+        # exit path: success, KeyboardInterrupt, or operational error
+        # (issue #100).
+        prev_int = signal.getsignal(signal.SIGINT)
         prev_term = signal.signal(signal.SIGTERM, _raise_interrupt)
         prev_hup = signal.signal(signal.SIGHUP, _raise_interrupt)
         try:
@@ -69,7 +104,7 @@ def run_workers(config: run_planning.CleanConfig, files, plan, jobs, console, si
                         stats = future.result()
                     except Exception as exc:
                         progress.file_failed(path, exc)
-                        failed_files.append((path, str(exc)))
+                        failed_files.append((path, _failure_detail(exc)))
                     else:
                         # Guard the parent-side post-result bookkeeping so an
                         # unexpected OSError (e.g. ENOSPC from write_checkpoint)
@@ -80,8 +115,9 @@ def run_workers(config: run_planning.CleanConfig, files, plan, jobs, console, si
                         try:
                             all_stats.append(stats)
                             progress.file_done(stats)
-                            plan.completed[path] = resume.CompletedEntry.from_stats(
-                                config.out_dir, stats
+                            plan.completed[path] = resume.CompletedEntry(
+                                summary=report.summary_dict(stats),
+                                outputs=resume.output_sizes(config.out_dir, stats),
                             ).as_dict()
                             resume.write_checkpoint(
                                 config.out_dir,
@@ -118,11 +154,14 @@ def run_workers(config: run_planning.CleanConfig, files, plan, jobs, console, si
         else:
             executor.shutdown(wait=True)
         finally:
-            # Issue #100: restore ALL three handlers — including SIGINT — on
-            # every exit path (success, KI, or operational error). Previously
-            # only SIGTERM and SIGHUP were restored; SIGINT was left as SIG_IGN
-            # after an interrupted run.
+            # Restore all three handlers saved above (issue #100).
             signal.signal(signal.SIGINT, prev_int)
             signal.signal(signal.SIGTERM, prev_term)
             signal.signal(signal.SIGHUP, prev_hup)
-    return all_stats, failed_files, interrupted, interrupted_signo, operational_error
+    return WorkerRunResult(
+        all_stats=all_stats,
+        failed_files=failed_files,
+        interrupted=interrupted,
+        interrupted_signo=interrupted_signo,
+        operational_error=operational_error,
+    )

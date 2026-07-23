@@ -51,21 +51,27 @@ class TestNoCommand:
 
     def test_interactive_launches_wizard(self, monkeypatch):
         monkeypatch.setattr(cli.term, "is_interactive", lambda: True)
-        monkeypatch.setattr("lintle.wizard.run", lambda: 7)
+        monkeypatch.setattr("lintle.wizard.run", lambda dispatch: 7)
         assert cli.main([]) == 7
 
 
 class TestWizardDispatch:
     def test_dispatch_clean_builds_argv(self, monkeypatch):
         calls = []
-        monkeypatch.setattr("lintle.cli.main", lambda argv: calls.append(argv) or 0)
-        wizard._dispatch({"source": "/s", "output": "/o"}, "clean")
+        wizard._dispatch(
+            {"source": "/s", "output": "/o"},
+            "clean",
+            lambda argv: calls.append(argv) or 0,
+        )
         assert calls == [["clean", "/s", "--out-dir", "/o"]]
 
     def test_dispatch_verify_builds_argv(self, monkeypatch):
         calls = []
-        monkeypatch.setattr("lintle.cli.main", lambda argv: calls.append(argv) or 0)
-        wizard._dispatch({"source": "/s", "output": "/o"}, "verify")
+        wizard._dispatch(
+            {"source": "/s", "output": "/o"},
+            "verify",
+            lambda argv: calls.append(argv) or 0,
+        )
         assert calls == [["verify", "/o", "--source", "/s"]]
 
 
@@ -76,7 +82,7 @@ class TestWizardLoop:
         (tmp_path / "o").mkdir()
         config.save({"source": str(tmp_path / "s"), "output": str(tmp_path / "o")})
         _script(monkeypatch, ["5"])  # menu -> quit
-        assert wizard.run() == 0
+        assert wizard.run(cli.main) == 0
 
     def test_clean_then_quit_dispatches(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
@@ -84,9 +90,8 @@ class TestWizardLoop:
         (tmp_path / "o").mkdir()
         config.save({"source": str(tmp_path / "s"), "output": str(tmp_path / "o")})
         calls = []
-        monkeypatch.setattr("lintle.cli.main", lambda argv: calls.append(argv) or 0)
         _script(monkeypatch, ["1", "5"])  # clean, then quit
-        assert wizard.run() == 0
+        assert wizard.run(lambda argv: calls.append(argv) or 0) == 0
         assert calls == [
             ["clean", str(tmp_path / "s"), "--out-dir", str(tmp_path / "o")]
         ]

@@ -3,6 +3,7 @@ findings shards, the corpus ``broken-noradids.ndjson``, and shard concat."""
 
 import contextlib
 import json
+from collections import Counter
 from pathlib import Path
 
 from lintle import (
@@ -154,11 +155,8 @@ class BrokenFileWriter:
         self._entry_count += 1
         self._writer.write(_render_entry(self._entry_count, entry))
 
-    def finalize(self, *, entries: int | None = None) -> None:
-        """Commit the final chunk. ``entries`` is accepted for calling-convention
-        parity with :meth:`QuarantineSink.finalize` but no longer used — the
-        chunked header carries no counts.
-        """
+    def finalize(self) -> None:
+        """Commit the final chunk."""
         if self._writer is not None:
             self._writer.close()
         self._completed = True
@@ -189,7 +187,7 @@ class JsonlFindingsWriter:
     def __init__(self, path: str, src_name: str) -> None:
         self.path = path
         self.src_name = src_name
-        self._partial = path + ".partial"
+        self._partial = path + fsutil.PARTIAL_SUFFIX
         self._handle = None
         self._completed = False
 
@@ -264,7 +262,7 @@ class QuarantineSink:
         # Per-rule running count of entries dropped because the bucket was
         # at cap. Surfaced on the finalized FileSample as ``dropped_count``
         # so consumers can show "5 of 1,000" without recomputing (issue #46).
-        self._dropped = {}
+        self._dropped = Counter()
         self._writer = None
         self._jsonl_writer = None
         self._stack = None
@@ -328,17 +326,16 @@ class QuarantineSink:
             # Cap reached for this rule — track the drop (issue #46) so
             # the finalized sample can surface "K dropped" alongside the
             # bounded examples without consumers recomputing it.
-            self._dropped[rule_id] = self._dropped.get(rule_id, 0) + 1
+            self._dropped[rule_id] += 1
         if self._writer is not None:
             self._writer.write_entry(entry)
         if self._jsonl_writer is not None:
             self._jsonl_writer.write_entry(entry)
 
-    def finalize(self, *, entries: int) -> FileSample:
+    def finalize(self) -> FileSample:
         """Seal the sink and return the immutable :class:`FileSample`.
 
-        ``entries`` is the denominator shown in the sidecar header
-        (``paired_records + orphan_entries``). The sink builds the
+        The sink builds the
         ``FileSample`` directly rather than going through
         ``FileSample.from_bounded`` because the sink IS the invariant
         boundary — every bucket here is already capped by construction,
@@ -349,7 +346,7 @@ class QuarantineSink:
         if self._finalized:
             return self._sample
         if self._writer is not None:
-            self._writer.finalize(entries=entries)
+            self._writer.finalize()
         if self._jsonl_writer is not None:
             self._jsonl_writer.finalize()
         self._sample = FileSample(
@@ -387,7 +384,7 @@ def write_broken_file(
         flattened.sort(key=lambda e: e.source_lines[0])
         for entry in flattened:
             writer.write_entry(entry)
-        writer.finalize(entries=stats.paired_records + stats.orphan_entries)
+        writer.finalize()
 
 
 def aggregate_broken_norad_ids(all_stats: list[FileStats]) -> list[int]:

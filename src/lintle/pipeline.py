@@ -2,6 +2,7 @@
 
 import dataclasses
 import time
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Literal
 
@@ -46,14 +47,14 @@ class Orphan:
     diag: Diagnostic
 
 
-@dataclasses.dataclass(frozen=True)
+@dataclasses.dataclass(slots=True, frozen=True)
 class FileStarted:
     """Progress event: a worker has begun processing ``name`` (issue #53)."""
 
     name: str
 
 
-@dataclasses.dataclass(frozen=True)
+@dataclasses.dataclass(slots=True, frozen=True)
 class FileEnded:
     """Progress event: a worker has finished or failed ``name`` (issue #53).
 
@@ -64,7 +65,7 @@ class FileEnded:
     name: str
 
 
-@dataclasses.dataclass(frozen=True)
+@dataclasses.dataclass(slots=True, frozen=True)
 class FileProgress:
     """Per-file progress delta (issue #53 §6): ``bytes_delta`` is the advance in
     the true file offset and ``records_delta`` the records routed since the last
@@ -110,10 +111,10 @@ class _ProgressBatcher:
     # condition (two attribute reads + a bool() call) on every item_seen call.
     _enabled: bool = dataclasses.field(init=False)
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         self._enabled = self.progress_queue is not None and bool(self.progress_every)
 
-    def item_seen(self, stats):
+    def item_seen(self, stats: report.FileStats) -> None:
         """Record one routed candidate and emit a batch when due."""
         self.entries_processed += 1
         if not self._enabled:
@@ -122,7 +123,7 @@ class _ProgressBatcher:
         if self.entries_processed % self.progress_every == 0:
             self._put(stats)
 
-    def flush(self, stats):
+    def flush(self, stats: report.FileStats) -> None:
         """Emit the trailing partial batch so the caller's tally is exact."""
         if not self._enabled:
             return
@@ -132,7 +133,7 @@ class _ProgressBatcher:
                 FileProgress(self.src_name, byte_delta, self.records_since_flush)
             )
 
-    def _put(self, stats):
+    def _put(self, stats: report.FileStats) -> None:
         byte_delta = stats.bytes_consumed - self.bytes_flushed
         self.progress_queue.put(
             FileProgress(self.src_name, byte_delta, self.records_since_flush)
@@ -141,12 +142,14 @@ class _ProgressBatcher:
         self.records_since_flush = 0
 
 
-def _orphan(raw_line, src, rule_id, note):
+def _orphan(raw_line: bytes, src: int, rule_id: RuleID, note: str) -> Orphan:
     """Build an :class:`Orphan` with a pre-constructed :class:`Diagnostic`."""
     return Orphan(raw_line, src, diagnostic(rule_id, source_line_nos=(src,), note=note))
 
 
-def iter_records(path, stats=None):
+def iter_records(
+    path: str, stats: report.FileStats | None = None
+) -> Iterator[RecordCandidate | Orphan]:
     """Yield ``RecordCandidate`` / ``Orphan`` items streamed from ``path``.
 
     The file is read in binary so ``\\r`` and stray bytes are observed
@@ -281,24 +284,26 @@ def iter_records(path, stats=None):
 
 
 def process_file(
-    src_path,
-    out_dir,
+    src_path: str,
+    out_dir: str,
     mode: Literal["clean", "validate"],
-    progress_queue=None,
-    progress_every=25_000,
+    progress_queue: object | None = None,
+    progress_every: int = 25_000,
     *,
-    reconstruct_checksum=False,
-    chunk_records=CHUNK_RECORDS_DEFAULT,
-):
+    reconstruct_checksum: bool = False,
+    chunk_records: int = CHUNK_RECORDS_DEFAULT,
+) -> report.FileStats:
     """Process one source file and return its ``report.FileStats``.
 
-    ``mode`` is ``"clean"`` (writes ``cleaned/<name>.cleaned.txt`` and
-    ``broken/<name>.broken.txt`` under ``out_dir``) or ``"validate"`` (audit
-    only — writes nothing). The production caller (``worker_pool.run_workers``)
-    always passes ``"clean"``; ``"validate"`` is a test/internal audit surface
-    (e.g. ``test_integration`` re-validates cleaned output without writing).
-    The cleaned file is written to a temp file and atomically renamed, so an
-    interrupted run never leaves a half-written output.
+    ``mode`` is ``"clean"`` (writes the ``data/cleaned/<stem>.NNNNN.cleaned.txt``
+    and ``data/broken/<stem>.NNNNN.broken.txt`` chunk sets plus the
+    ``report/shards`` findings shard under ``out_dir``) or ``"validate"``
+    (audit only — writes nothing). The production caller
+    (``worker_pool.run_workers``) always passes ``"clean"``; ``"validate"`` is
+    a test/internal audit surface (e.g. ``test_integration`` re-validates
+    cleaned output without writing). Every chunk commits through the durable
+    temp-file + atomic-rename path, so an interrupted run never leaves a
+    half-written output.
 
     When ``progress_queue`` is given, a :class:`FileProgress` delta is pushed
     every ``progress_every`` records — and once more when the file ends — so the
@@ -351,7 +356,11 @@ def process_file(
             progress_queue.put(FileEnded(src_name))
 
 
-def _record_acceptance(stats, cleaned_writer, result):
+def _record_acceptance(
+    stats: report.FileStats,
+    cleaned_writer: chunking.ChunkedWriter | None,
+    result: repair.Accepted,
+) -> None:
     """Tally and optionally write one accepted repaired record.
 
     The record is written as one chunk unit (:meth:`ChunkedWriter.write_record`),
@@ -359,15 +368,20 @@ def _record_acceptance(stats, cleaned_writer, result):
     byte-identical to the pre-chunking single-write output (ASCII, LF-terminated).
     """
     stats.clean_count += 1
-    for fix in result.fixes:
-        stats.fix_counts[fix] = stats.fix_counts.get(fix, 0) + 1
+    stats.fix_counts.update(result.fixes)
     if cleaned_writer is not None:
         cleaned_writer.write_record(
             result.line1.encode("ascii"), result.line2.encode("ascii")
         )
 
 
-def _route_candidate(candidate, stats, sink, cleaned_writer, reconstruct_checksum):
+def _route_candidate(
+    candidate: RecordCandidate | Orphan,
+    stats: report.FileStats,
+    sink: report_writers.QuarantineSink,
+    cleaned_writer: chunking.ChunkedWriter | None,
+    reconstruct_checksum: bool,
+) -> None:
     """Route one paired record or orphan into accepted/quarantined accounting."""
     if isinstance(candidate, Orphan):
         stats.orphan_entries += 1
@@ -419,7 +433,7 @@ def _route_candidate(candidate, stats, sink, cleaned_writer, reconstruct_checksu
         )
 
 
-@dataclasses.dataclass(frozen=True)
+@dataclasses.dataclass(slots=True, frozen=True)
 class _CleanPaths:
     """Destination paths for one file's clean-mode outputs."""
 
@@ -428,7 +442,7 @@ class _CleanPaths:
     jsonl: str
 
 
-def _clean_output_paths(out_dir, src_name):
+def _clean_output_paths(out_dir: str, src_name: str) -> _CleanPaths:
     """Create the cleaned/, broken/, and .shards/ trees under ``out_dir`` and
     return the three per-file output paths. The ``.shards`` findings shard is
     internal staging the cli concatenates into ``report.jsonl`` at end of run
@@ -448,15 +462,15 @@ def _clean_output_paths(out_dir, src_name):
 
 
 def _run(
-    src_path,
-    out_dir,
-    mode,
-    stats,
-    progress_queue,
-    progress_every,
-    reconstruct_checksum,
-    chunk_records=CHUNK_RECORDS_DEFAULT,
-):
+    src_path: str,
+    out_dir: str,
+    mode: Literal["clean", "validate"],
+    stats: report.FileStats,
+    progress_queue: object | None,
+    progress_every: int,
+    reconstruct_checksum: bool,
+    chunk_records: int = CHUNK_RECORDS_DEFAULT,
+) -> report.FileStats:
     """Process one file once start/end progress events are accounted for —
     body of :func:`process_file`. Kept separate so the wrapper above can
     own the queue-event lifecycle without doubling this function's
@@ -543,14 +557,19 @@ def _run(
         # adversarial-review voices caught this bug in the original spec.
         if completed and mode == "clean":
             cleaned_writer.close()
-        stats.quarantine_sample = sink.finalize(
-            entries=stats.paired_records + stats.orphan_entries
-        )
+        stats.quarantine_sample = sink.finalize()
 
     return stats
 
 
-def _record_quarantine(stats, sink, primary, related, raw_lines, source_lines):
+def _record_quarantine(
+    stats: report.FileStats,
+    sink: report_writers.QuarantineSink,
+    primary: Diagnostic,
+    related: tuple[Diagnostic, ...],
+    raw_lines: list[bytes],
+    source_lines: list[int],
+) -> None:
     """Tally one quarantined record; hand it to the sink for sampling + streaming.
 
     ``primary`` is the headline :class:`Diagnostic`; its ``rule_id`` (string
@@ -575,9 +594,7 @@ def _record_quarantine(stats, sink, primary, related, raw_lines, source_lines):
     # primary.rule_id is a StrEnum — equal to and hashable as its string
     # value, so the dict key is the stable wire token ("TLE-CHK-001") and
     # downstream JSON / sort orders are deterministic.
-    stats.quarantine_counts[primary.rule_id] = (
-        stats.quarantine_counts.get(primary.rule_id, 0) + 1
-    )
+    stats.quarantine_counts[primary.rule_id] += 1
     # Decode the NORAD ID once, before constructing QuarantineEntry, so the
     # structured ``report.jsonl`` emitter sees the same value the per-NORAD
     # breakdown does (issue #9). Orphan-line-2 and bad-prefix quarantines

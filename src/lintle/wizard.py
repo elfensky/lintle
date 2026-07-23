@@ -2,8 +2,9 @@
 run with no subcommand on a TTY. It remembers the source/output directories via
 :mod:`lintle.config`, re-checks they still exist on start, and dispatches
 configure / clean / verify / report actions. A thin presentation leaf — it
-constructs an argv and calls :func:`lintle.cli.main`, reimplementing none of the
-orchestration (``cli`` imports it lazily, so there is no import cycle). Off a TTY
+constructs an argv and hands it to the ``dispatch`` callable ``cli`` passes in
+(dependency inversion: the wizard never imports ``cli``, so the dependency edge
+is strictly one-way, cli -> wizard). Off a TTY
 it never runs; ``cli`` falls back to printing help. rich styling is fine here
 because the wizard only ever runs on a TTY."""
 
@@ -55,23 +56,23 @@ def _ensure_paths(cfg: dict[str, str]) -> dict[str, str]:
     return cfg
 
 
-def _dispatch(cfg: dict[str, str], action: str) -> int:
-    """Run one action by handing an explicit argv to the existing CLI."""
-    from lintle import cli  # lazy: breaks the cli <-> wizard import cycle
-
+def _dispatch(cfg: dict[str, str], action: str, dispatch) -> int:
+    """Run one action by handing an explicit argv to ``dispatch`` (``cli.main``)."""
     match action:
         case "clean":
-            return cli.main(["clean", cfg["source"], "--out-dir", cfg["output"]])
+            return dispatch(["clean", cfg["source"], "--out-dir", cfg["output"]])
         case "verify":
-            return cli.main(["verify", cfg["output"], "--source", cfg["source"]])
+            return dispatch(["verify", cfg["output"], "--source", cfg["source"]])
         case "report":
-            return cli.main(["report", cfg["output"]])
+            return dispatch(["report", cfg["output"]])
     return 0
 
 
-def run() -> int:
-    """Run the interactive menu loop. Returns the exit code of the last dispatched
-    command (0 if none was run); Ctrl-C / EOF exits cleanly."""
+def run(dispatch) -> int:
+    """Run the interactive menu loop, handing each chosen action's argv to
+    ``dispatch`` (``cli.main``, injected so the wizard never imports cli).
+    Returns the exit code of the last dispatched command (0 if none was run);
+    Ctrl-C / EOF exits cleanly."""
     try:
         cfg = _ensure_paths(config.load())
         last = 0
@@ -92,7 +93,7 @@ def run() -> int:
             if action == "configure":
                 cfg = _configure(cfg)
                 continue
-            last = _dispatch(cfg, action)
+            last = _dispatch(cfg, action, dispatch)
     except KeyboardInterrupt, EOFError:
         term.note("")
         return 130

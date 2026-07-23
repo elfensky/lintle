@@ -7,6 +7,7 @@ import os
 import shutil
 import sys
 import time
+import traceback
 from pathlib import Path
 
 from lintle import (
@@ -15,7 +16,6 @@ from lintle import (
     SHARDS_DIRNAME,
     __version__,
     cli_progress,
-    dedup,
     diff,
     explain,
     fsutil,
@@ -27,7 +27,6 @@ from lintle import (
     summary,
     term,
     thresholds,
-    verify,
     worker_pool,
 )
 from lintle import (
@@ -97,7 +96,7 @@ def discover_paths(path):
     files (excluding ``*.cleaned.txt`` / ``*.broken.txt`` tool output, and
     excluding dangling symlinks and directories even when named ``tle*.txt``);
     a file is returned as a single-element list. A nonexistent entry yields
-    ``[]`` — callers should validate inputs with :func:`check_paths` first.
+    ``[]`` — callers should validate inputs with :func:`input_path_error` first.
     """
     directory = Path(path)
     if directory.is_dir():
@@ -117,7 +116,7 @@ def discover_paths(path):
     return []
 
 
-def check_paths(path, using_default):
+def input_path_error(path, using_default):
     """Return a user-facing error string if ``path`` does not exist, else
     ``None``. ``using_default`` tailors the message for the case where the
     user passed nothing and the default (``data/source``) is what's missing.
@@ -579,6 +578,39 @@ def _apply_config_paths(args, argv, config):
             args.out_dir = args.out_dir or config.get("output") or _DEFAULT_OUTPUT
 
 
+def _locked_postrun(out_dir, name, action):
+    """Run a post-run consumer (``verify``/``dedup``) under the out-dir lock
+    with the same exit-2 operational backstop as ``clean`` (issue #89).
+
+    Both consumers stream ``<out-dir>/data/cleaned`` and write their own
+    subtree, so a concurrent ``clean`` scrubbing the out-dir mid-read would
+    corrupt them — the advisory flock serializes them against it. A missing
+    out-dir skips the lock (nothing to protect); the consumer's own "no
+    cleaned output" error is friendlier than a lock failure would be.
+    """
+    try:
+        if not Path(out_dir).is_dir():
+            return action()
+        with fsutil.out_dir_lock(out_dir, started=resume.run_started_stamp()):
+            return action()
+    except fsutil.LockHeldError as exc:
+        term.error(str(exc))
+        return 2
+    except Exception as exc:
+        # Catch-all backstop: any unhandled exception maps to a clean exit-2
+        # operational error so exit 1 stays unambiguous as the findings signal.
+        term.error(f"unexpected error during {name}: {exc}")
+        _debug_traceback()
+        return 2
+
+
+def _debug_traceback() -> None:
+    """Emit the full traceback to stderr when ``LINTLE_DEBUG`` is set — the
+    opt-in escape hatch behind the clean single-line operational errors."""
+    if os.environ.get("LINTLE_DEBUG"):
+        term.error(traceback.format_exc())
+
+
 def main(argv=None):
     """Entry point for the ``lintle`` console script.
 
@@ -598,9 +630,12 @@ def main(argv=None):
     # exiting 2, so nothing that pipes `lintle` ever blocks on a prompt.
     if args.command is None:
         if term.is_interactive():
-            from lintle import wizard  # lazy: avoid the cli <-> wizard import cycle
+            # Lazy so the wizard's rich menu never loads for scripted runs; the
+            # wizard itself never imports cli (main is injected), so the
+            # dependency edge is strictly one-way.
+            from lintle import wizard
 
-            return wizard.run()
+            return wizard.run(main)
         build_parser().print_help(sys.stderr)
         return 2
 
@@ -609,51 +644,69 @@ def main(argv=None):
     argv_list = list(sys.argv[1:] if argv is None else argv)
     _apply_config_paths(args, argv_list, user_config.load())
 
-    # `diff` is a read-only consumer of two report.jsonl files; it shares none
-    # of the `clean` argument surface (paths, jobs, out-dir, threshold), so
-    # dispatch it before any of that logic runs.
-    if args.command == "diff":
-        return diff.run(args.run_a, args.run_b)
+    # Dispatch every non-`clean` subcommand first — none of them shares the
+    # `clean` argument surface (paths, jobs, threshold), so they never reach
+    # the clean orchestration below.
+    match args.command:
+        # `diff` is a read-only consumer of two report.jsonl files.
+        case "diff":
+            return diff.run(args.run_a, args.run_b)
 
-    # `explain` is a read-only documentation lookup — no input files, no output
-    # tree. An unknown tag is an operational error (exit 2) with the valid tags
-    # listed so the operator can correct it.
-    if args.command == "explain":
-        try:
-            _print_doc(explain.render(args.tag))
-        except explain.UnknownTag:
-            term.error(
-                f"unknown tag {args.tag!r}.\n"
-                f"  valid tags: {', '.join(explain.known_tags())}"
+        # `explain` is a read-only documentation lookup — no input files, no
+        # output tree. An unknown tag is an operational error (exit 2) with
+        # the valid tags listed so the operator can correct it.
+        case "explain":
+            try:
+                _print_doc(explain.render(args.tag))
+            except explain.UnknownTag:
+                term.error(
+                    f"unknown tag {args.tag!r}.\n"
+                    f"  valid tags: {', '.join(explain.known_tags())}"
+                )
+                return 2
+            return 0
+
+        # `report` is a read-only render of a prior clean run's report.json —
+        # text renders the aggregate panel to stdout, json echoes the file.
+        case "report":
+            return summary.run(args.out_dir, args.report)
+
+        # `verify` is a post-run auditor of a clean run's cleaned output (plus
+        # the source tree for the byte-diff). It never touches cleaned/ but
+        # does write <out-dir>/verify, so it runs under the out-dir lock like
+        # every other writer.
+        case "verify":
+            # Lazy: keeps lintle.verify out of the clean path's module-level
+            # import closure (the sgp4/verify wall — TestImportGuard).
+            from lintle import verify
+
+            source = None if args.no_source_diff else args.source
+            return _locked_postrun(
+                args.out_dir,
+                "verify",
+                lambda: verify.run(
+                    args.out_dir,
+                    source,
+                    orbit=args.orbit,
+                    sample=args.sample,
+                    all_sats=args.all_sats,
+                    sensitivity=args.sensitivity,
+                    chunk_records=args.chunk_records,
+                ),
             )
-            return 2
-        return 0
 
-    # `report` is a read-only render of a prior clean run's report.json — text
-    # renders the aggregate panel to stdout, json echoes the file verbatim.
-    # Shares none of the `clean` surface, so dispatch it before that logic.
-    if args.command == "report":
-        return summary.run(args.out_dir, args.report)
+        # `dedup` consumes cleaned/ (plus a prior verify run's suspects set);
+        # it never touches cleaned/ but does write <out-dir>/dedup, so it too
+        # runs under the out-dir lock.
+        case "dedup":
+            # Lazy for the same wall reason: dedup imports lintle.verify.
+            from lintle import dedup
 
-    # `verify` is a read-only post-run auditor of a clean run's cleaned output
-    # (plus the source tree for the byte-diff). It writes only <out-dir>/verify
-    # and shares none of the `clean` surface, so dispatch it before that logic.
-    if args.command == "verify":
-        source = None if args.no_source_diff else args.source
-        return verify.run_verify(
-            args.out_dir,
-            source,
-            orbit=args.orbit,
-            sample=args.sample,
-            all_sats=args.all_sats,
-            sensitivity=args.sensitivity,
-            chunk_records=args.chunk_records,
-        )
-
-    # `dedup` is a read-only consumer of cleaned/ (plus a prior verify run's
-    # suspects.jsonl); it writes only <out-dir>/dedup and never touches cleaned/.
-    if args.command == "dedup":
-        return dedup.run_dedup(args.out_dir, args.chunk_records)
+            return _locked_postrun(
+                args.out_dir,
+                "dedup",
+                lambda: dedup.run(args.out_dir, args.chunk_records),
+            )
 
     # `args.path` is None when the user passed nothing — fall back to the
     # default source dir, and remember it so we can give a tailored error if
@@ -673,7 +726,7 @@ def main(argv=None):
         term.error(str(exc))
         return 2
 
-    path_error = check_paths(path, using_default=using_default)
+    path_error = input_path_error(path, using_default=using_default)
     if path_error:
         term.error(path_error)
         return 2
@@ -776,28 +829,26 @@ def main(argv=None):
         run_started_iso = report.utc_stamp()
         run_monotonic_start = time.monotonic()
 
-        all_stats, failed_files, interrupted, interrupted_signo, operational_error = (
-            worker_pool.run_workers(config, files, plan, jobs, console, sizes)
-        )
+        result = worker_pool.run_workers(config, files, plan, jobs, console, sizes)
 
-        if operational_error is not None:
+        if result.operational_error is not None:
             # Issue #89: parent-side bookkeeping failure (e.g. ENOSPC from
             # write_checkpoint). The pool has already been torn down via the
             # KI path; surface a clean error and return 2 (operational error).
             # Exit 1 is reserved exclusively for the quarantine quality gate.
             term.error(
-                f"run aborted due to an operational error: {operational_error}\n"
+                f"run aborted due to an operational error: {result.operational_error}\n"
                 "  if some files completed, re-run with --resume to finish."
             )
             return 2
 
-        if interrupted:
-            return process_control.signal_exit_code(interrupted_signo)
+        if result.interrupted:
+            return process_control.signal_exit_code(result.interrupted_signo)
 
         return _finalize_run(
             args,
-            all_stats,
-            failed_files,
+            result.all_stats,
+            result.failed_files,
             run_started_iso=run_started_iso,
             run_monotonic_start=run_monotonic_start,
             threshold_mode=threshold_mode,
@@ -813,6 +864,7 @@ def main(argv=None):
             f"unexpected error during clean: {exc}\n"
             "  if some files completed, re-run with --resume to finish."
         )
+        _debug_traceback()
         return 2
     finally:
         _lock_stack.close()

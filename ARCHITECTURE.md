@@ -62,7 +62,7 @@ cli.py ──▶ pipeline.py ──▶ repair.py ──▶ tle.py
   ├──▶ cli_progress.py  (rich live progress + roster; imports pipeline's progress messages)
   ├──▶ resume.py        (single-run checkpoint + run-stamp/output-size helpers; → __version__, fsutil, stem, naming-constants)
   ├──▶ run_planning.py  (disk-space guard + output scrub + resume/fresh-run decision; CleanConfig + RunPlan; → fsutil, report, resume, term)
-  ├──▶ worker_pool.py   (process-pool dispatch + progress collection; → pipeline, cli_progress, process_control, resume, run_planning, term + stdlib futures/mp/signal)
+  ├──▶ worker_pool.py   (process-pool dispatch + progress collection; → pipeline, cli_progress, process_control, report, resume, run_planning, term + stdlib futures/mp/signal)
   ├──▶ output_artifacts.py (clean-run report.md/json + NDJSON/JSONL finalization; → report, report_writers, cli_progress, term)
   ├──▶ thresholds.py    (--max-quarantined parsing + quality-gate exit policy; pure, no internal deps)
   ├──▶ process_control.py (worker SIGINT setup + fast pool termination; → term; also used by worker_pool)
@@ -70,12 +70,12 @@ cli.py ──▶ pipeline.py ──▶ repair.py ──▶ tle.py
   ├──▶ explain.py ──▶ explain_examples.py
   ├──▶ summary.py       (aggregate-panel renderer + read-only `lintle report` over report.json; → term)
   ├──▶ term.py          (stderr+stdout rich Consoles + error/warning/note/prompt + is_interactive/prompt_yes_no)
-  ├──▶ verify/          (read-only `lintle verify` auditor — own package; → tle, term; never in the clean path)
-  ├──▶ dedup.py ──▶ verify/  (read-only `lintle dedup` — latest-re-issue import list; → verify.{checks,grouping,records}, term)
-  └──▶ wizard.py ──▶ config.py   (no-subcommand TTY menu; cli↔wizard edge lazy on both sides)
+  ├──▶ verify/          (`lintle verify` auditor — own package; → tle, term; cli edge lazy, never in the clean path)
+  ├──▶ dedup.py ──▶ verify/  (`lintle dedup` — latest-re-issue import list; → verify.{checks,grouping,records}, fsutil, term; cli edge lazy)
+  └──▶ wizard.py ──▶ config.py   (no-subcommand TTY menu; cli.main is injected — wizard never imports cli)
 
 verify/   (lintle verify — Increment-1 core + opt-in --orbit physics pass; cli ──▶ verify, never the reverse)
-  __init__.py (run_verify) ──▶ checks.py ──▶ tle.py
+  __init__.py (run) ──▶ checks.py ──▶ tle.py
                           ├──▶ grouping.py ──▶ records.py ──▶ epoch.py
                           ├──▶ report.py          (checks ──▶ records, report; records ──▶ __init__ naming constants; __init__ ──▶ term)
                           └──▶ orbit.py ──▶ sgp4   (Increment 2; lazy-imported only under --orbit)
@@ -94,7 +94,7 @@ config.py    stdlib-JSON leaf — ./.lintle.json load/save (no internal deps)
 | `report_aggregation.py` | Pure corpus aggregation helpers for run totals and per-NORAD rollups consumed by `report.py`. |
 | `report_writers.py` | Structured-file writers leaf: the `.broken.txt` sidecar (`BrokenFileWriter`), the `report.jsonl` findings shards (`JsonlFindingsWriter`), the `QuarantineSink` (bounded sample + streaming), `broken-noradids.ndjson`, and shard concatenation. Imports `report.py` one-way. |
 | `output_artifacts.py` | End-of-clean-run finalization for `report.md`, the machine-readable `report.json`, `broken-noradids.ndjson`, and corpus-wide `report.jsonl` — all committed in one place. |
-| `resume.py` | The single-run `.clean-state.json` checkpoint for `clean --resume`: input fingerprinting, checkpoint build/load, the resume-decision matrix, the run-start timestamp, per-file output-size capture, and the typed `CompletedEntry` dataclass (issue #118). Module-level imports only `__version__`, `fsutil`, and `stem`/naming-constants; `CompletedEntry.from_stats` does a local `from lintle import report` to avoid a module-level cycle. |
+| `resume.py` | The single-run `.clean-state.json` checkpoint for `clean --resume`: input fingerprinting, checkpoint build/load, the resume-decision matrix, the run-start timestamp, per-file output-size capture, and the typed `CompletedEntry` dataclass (issue #118). Imports only `__version__`, `fsutil`, and `stem`/naming-constants — an actual leaf: `CompletedEntry`'s `summary`/`outputs` dicts are built by its caller (worker_pool), so resume never imports `report`. |
 | `run_planning.py` | Clean-run preflight: disk-space policy, resume classification, fresh-run output scrubbing, and the resolved `RunPlan` (slots=True). Also owns `CleanConfig` (issue #121) — the typed `clean`-command configuration snapshot built once in `cli.main` and passed to both leaf functions instead of a raw argparse `Namespace`. Imports `fsutil`, `report`, `resume`, `term`. |
 | `worker_pool.py` | Process-pool dispatch, progress collection, per-file failure handling, checkpoint updates via `resume.CompletedEntry.from_stats` (issue #118), and interrupt shutdown. Now imports `run_planning` for the `CleanConfig` type (one-way, no cycle). |
 | `fsutil.py` | `durable_replace` (the one atomic+fsync commit path) and `out_dir_lock` (the advisory-flock out-dir lock). Stdlib only. |
@@ -110,7 +110,7 @@ config.py    stdlib-JSON leaf — ./.lintle.json load/save (no internal deps)
 | `term.py` | Two shared `rich` Consoles — `stderr_console` for status/errors, `stdout_console` for the `report` result view — the `error:` / `warning:` / `note` / `prompt` emitters, and the `is_interactive` / `prompt_yes_no` stdin helpers. |
 | `cli.py` | argparse, globbing, and top-level `clean` orchestration: delegates preflight to `run_planning`, dispatch to `worker_pool`, signal/shutdown to `process_control`, the quality-gate exit policy to `thresholds`, run finalization to `output_artifacts`, and the aggregate panel / `report` render to `summary`; owns the resulting process exit code. |
 | `cli_progress.py` | Rich presentation leaf for `clean`: the live `ProgressDisplay`, the pre-run `render_roster`, and the `status` spinner. Consumes `pipeline`'s typed progress messages. Imports `humanize` for human-readable roster sizes (`naturalsize(gnu=True)`). |
-| `verify/` | The `lintle verify` post-run auditor (own package): `epoch` (epoch-key parsing), `records` (the `CleanedRecord` dataclass + cleaned-tree readers), `grouping` (the spill-to-disk `ExternalSorter` for the constant-memory contradiction pass), `checks` (`revalidate` / `find_conflicts` / the `SourceAligner` byte-diff), `report` (`VrfyRule`, `Suspect`, `exit_code`, and the `SuspectSink` — an external merge-sort that streams suspects to disk and renders `suspects.jsonl` + `summary.{json,md}` at flat peak memory, byte-identical to its list renderers; #156), `__init__.run_verify` (orchestration), and `orbit` (Increment 2 — the opt-in sampled `sgp4` orbit-consistency pass: adjacent-pair position residuals, soft `VRFY-ORBIT-OUTLIER` outliers, deterministic 0.1 km quantum; refined in #163 with regime-aware gap gates (GEO 7-day vs LEO/MEO 3-day), a windowed local-median threshold term, leave-one-out culprit isolation for lone interior spikes, a `--sensitivity {sensitive,strict}` dial, and dup-epoch stratified oversampling of the satellite sample). A pure *consumer* of `tle` (its sole validity authority) and `term`; `orbit` is the package's **only** `sgp4` importer, lazily imported by `run_verify` only under `--orbit` so the default path stays `sgp4`-free. |
+| `verify/` | The `lintle verify` post-run auditor (own package): `epoch` (epoch-key parsing), `records` (the `CleanedRecord` dataclass + cleaned-tree readers), `grouping` (the spill-to-disk `ExternalSorter` for the constant-memory contradiction pass), `checks` (`revalidate` / `find_conflicts` — both routing the #158 same-epoch clash through the one `_is_clash` predicate `has_epoch_clash` also uses — / the `SourceAligner` byte-diff: a null object built via `SourceAligner.open`, inert when a stem has no source, whose `feed(rec, revalidated=...)` internalizes the revalidate-skip policy so `run`'s loop carries no aligner guards), `report` (`VerifyRule`, `Suspect`, and the `SuspectSink` (which owns the exit-code rule) — an external merge-sort that streams suspects to disk and renders `suspects.jsonl` + `summary.{json,md}` at flat peak memory, byte-identical to its list renderers; #156), `__init__.run` (orchestration), and `orbit` (Increment 2 — the opt-in sampled `sgp4` orbit-consistency pass: adjacent-pair position residuals, soft `VRFY-ORBIT-OUTLIER` outliers, deterministic 0.1 km quantum; refined in #163 with regime-aware gap gates (GEO 7-day vs LEO/MEO 3-day), a windowed local-median threshold term, leave-one-out culprit isolation for lone interior spikes, a `--sensitivity {sensitive,strict}` dial, and dup-epoch stratified oversampling of the satellite sample). A pure *consumer* of `tle` (its sole validity authority) and `term`; `orbit` is the package's **only** `sgp4` importer, lazily imported by `run` only under `--orbit` so the default path stays `sgp4`-free. |
 | `dedup.py` | The `lintle dedup` pass: reads `cleaned/` (never mutating it), excludes hard suspects from a prior `verify` run's `suspects.jsonl`, groups by `(catalog, epoch)` through `verify`'s `ExternalSorter`, and writes `<out-dir>/dedup/{import.txt,notes.jsonl,summary.json}` — one card per group, the latest re-issue kept, benign re-issues (including refined orbits under a new element-set) collapsed and genuine same-element-set contradictions kept-latest-but-flagged. Reuses `verify.checks.orbital_state`/`element_set` and the shared `has_epoch_clash` #158 predicate (one definition of "same orbit" / "latest" / "same-epoch clash" — #164). Constant memory; deterministic bytes. |
 | `config.py` | Optional `./.lintle.json` project config: stdlib-JSON `load`/`save` of the two remembered keys (`source`, `output`). Never an authority over an explicit CLI arg. No internal deps. |
 | `wizard.py` | The interactive rich menu shown when `lintle` runs with no subcommand on a TTY (configure / clean / verify / report / quit). A thin front-end that builds an argv and calls `cli.main`, reimplementing no orchestration; imports `config` + `term`. |
@@ -325,6 +325,11 @@ Concurrent runs **on one host** (the common case) are fully serialized. A `--out
 concurrently from **multiple hosts** over a network filesystem relies on `flock` propagating
 server-side (modern NFSv4) and is not a tested configuration — give each host its own
 `--out-dir`. POSIX-only (`fcntl.flock`); Windows is out of scope (use WSL).
+
+`verify` and `dedup` participate in the same lock (via `cli._locked_postrun`): both stream
+`<out-dir>/data/cleaned` and write their own subtree, so a concurrent `clean` scrubbing the
+out-dir mid-read would corrupt them. A missing out-dir skips the lock — the consumer's own
+"no cleaned output" exit-2 error is the friendlier failure.
 
 ### Single-run resume
 

@@ -4,6 +4,7 @@ import contextlib
 import dataclasses
 import shutil
 from pathlib import Path
+from typing import Literal
 
 from lintle import (
     BROKEN_DIRNAME,
@@ -16,7 +17,7 @@ from lintle import (
     resume,
     term,
 )
-from lintle.chunking import CHUNK_RECORDS_DEFAULT
+from lintle.chunking import CHUNK_RECORDS_DEFAULT, ChunkedReader
 
 # Marker written into the out-dir on the first fresh run.  Its presence (or the
 # presence of a checkpoint / stale-checkpoint archive) is the ownership signal
@@ -56,7 +57,9 @@ class CleanConfig:
     """
 
     out_dir: str
-    command: str
+    # Mirrors pipeline.process_file's mode contract — cli.main only builds a
+    # CleanConfig on the clean path, so "clean" is what production ever holds.
+    command: Literal["clean", "validate"]
     max_quarantined: str
     reconstruct_checksum: bool
     resume: bool
@@ -75,7 +78,9 @@ class CleanConfig:
             resume=args.resume,
             no_resume=args.no_resume,
             jobs=args.jobs,
-            chunk_records=getattr(args, "chunk_records", CHUNK_RECORDS_DEFAULT),
+            # Attribute access, not getattr-with-default: a flag rename must
+            # fail loudly here (the class contract), never silently default.
+            chunk_records=args.chunk_records,
         )
 
 
@@ -176,7 +181,10 @@ def scrub_outputs(out_dir):
     for name in _REPORT_ARTIFACTS:
         with contextlib.suppress(OSError):
             (out / name).unlink()
-    for chunk in out.glob("report.*.jsonl"):
+    # Legacy root-level report chunk set: enumerate through ChunkedReader's
+    # anchored parse — the one chunk-naming authority — not a loose glob that
+    # could eat non-chunk bystanders like report.backup.jsonl.
+    for chunk in ChunkedReader(out, "report", ".jsonl").chunk_paths():
         with contextlib.suppress(OSError):
             chunk.unlink()
 

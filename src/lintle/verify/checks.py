@@ -10,10 +10,11 @@
   ``repair.py``) so a repair bug can't hide behind its own output."""
 
 from collections.abc import Iterable, Iterator
+from pathlib import Path
 
 from lintle import tle
 from lintle.verify.records import CleanedRecord
-from lintle.verify.report import Suspect, VrfyRule
+from lintle.verify.report import Suspect, VerifyRule
 
 # Memory bound for the source read buffer: at most this many source lines are
 # held at once. It is NOT a search-distance limit — ``check`` slides this buffer
@@ -31,7 +32,7 @@ def revalidate(rec: CleanedRecord) -> Suspect | None:
     errors = tle.validate_record(rec.line1, rec.line2)
     if errors:
         return Suspect(
-            VrfyRule.REVALIDATE_FAIL,
+            VerifyRule.REVALIDATE_FAIL,
             rec.catalog,
             rec.epoch_key,
             rec.src_file,
@@ -96,6 +97,17 @@ def element_set(line1: str) -> int | None:
         return None
 
 
+def _is_clash(
+    by_elset: dict[int | None, tuple], elset: int | None, state: tuple
+) -> bool:
+    """The #158 clash predicate — the one implementation both
+    :func:`find_conflicts` (per record) and :func:`has_epoch_clash` (per group)
+    route through: True iff ``elset`` was already seen in this
+    ``(catalog, epoch)`` group with a *different* orbital state. Records
+    ``state`` as ``elset``'s first-seen orbit on the way (setdefault)."""
+    return by_elset.setdefault(elset, state) != state
+
+
 def find_conflicts(
     sorted_records: Iterator[CleanedRecord],
     orbit: bool = False,
@@ -141,11 +153,10 @@ def find_conflicts(
             dup_epoch_catalogs.add(rec.catalog)
         state = orbital_state(rec.line1, rec.line2)
         elset = element_set(rec.line1)
-        if by_elset.get(elset, state) != state:
-            # this element-set already appeared with a different orbit — a clash
+        if _is_clash(by_elset, elset, state):
             conflicts.append(
                 Suspect(
-                    VrfyRule.EPOCH_CONFLICT,
+                    VerifyRule.EPOCH_CONFLICT,
                     rec.catalog,
                     rec.epoch_key,
                     rec.src_file,
@@ -156,25 +167,22 @@ def find_conflicts(
             )
         elif states and state not in states:
             reissues += 1  # a new orbit under a new element-set — a re-issue
-        by_elset.setdefault(elset, state)
         states.add(state)
     return conflicts, reissues, dup_epoch_catalogs
 
 
 def has_epoch_clash(records: Iterable[CleanedRecord]) -> bool:
     """True iff some element-set among these same-``(catalog, epoch)`` records names
-    more than one orbital state — the #158 definition of a genuine contradiction,
-    shared with :func:`find_conflicts` so ``verify`` and ``dedup`` agree on what a
-    same-epoch clash is. A *different* element-set with a different orbit is a
-    benign refined re-issue (space-track's successive solution), not a clash — the
-    distinction :func:`find_conflicts` draws per record, expressed here as one
-    boolean over a materialised group (bounded: a handful of re-issues)."""
+    more than one orbital state — the #158 definition of a genuine contradiction.
+    Routes through the same :func:`_is_clash` predicate as :func:`find_conflicts`,
+    so ``verify`` and ``dedup`` agree on what a same-epoch clash is by
+    construction, not by hand-synced twins. A *different* element-set with a
+    different orbit is a benign refined re-issue, not a clash."""
     by_elset: dict[int | None, tuple] = {}
-    for r in records:
-        state = orbital_state(r.line1, r.line2)
-        if by_elset.setdefault(element_set(r.line1), state) != state:
-            return True
-    return False
+    return any(
+        _is_clash(by_elset, element_set(r.line1), orbital_state(r.line1, r.line2))
+        for r in records
+    )
 
 
 def sanctioned_reduce(src_line: str) -> str:
@@ -235,9 +243,33 @@ class SourceAligner:
     immediately) is O(1) per record, and total work is O(source lines) even when
     thousands of quarantined records separate two accepted ones."""
 
-    def __init__(self, source_path: str) -> None:
-        self._fh = open(source_path, encoding="ascii", errors="replace")  # noqa: SIM115
+    def __init__(self, source_path: str | None) -> None:
+        # None -> a null object: feed()/close() are unconditionally callable and
+        # do nothing, so callers never carry an `if aligner is not None` guard.
+        self._fh = (
+            open(source_path, encoding="ascii", errors="replace")  # noqa: SIM115
+            if source_path is not None
+            else None
+        )
         self._buf: list[str] = []
+
+    @classmethod
+    def open(cls, source_dir: str | None, file_stem: str) -> SourceAligner:
+        """Build the aligner for one cleaned stem: active when
+        ``<source_dir>/<file_stem>.txt`` exists, inert otherwise (no source dir,
+        or the stem has no source file). The existence check lives here so the
+        caller constructs, feeds, and closes unconditionally."""
+        if source_dir is not None:
+            src_path = Path(source_dir) / (file_stem + ".txt")
+            if src_path.is_file():
+                return cls(str(src_path))
+        return cls(None)
+
+    @property
+    def active(self) -> bool:
+        """True iff a real source file backs this aligner (inert ones swallow
+        every ``feed`` — used by the caller only for missing-source counting)."""
+        return self._fh is not None
 
     def _refill(self) -> None:
         while len(self._buf) < _RESYNC_WINDOW:
@@ -251,14 +283,20 @@ class SourceAligner:
             if stripped.strip():
                 self._buf.append(stripped)
 
-    def check(self, rec: CleanedRecord) -> Suspect | None:
+    def feed(self, rec: CleanedRecord, *, revalidated: bool = True) -> Suspect | None:
         """Locate ``rec``'s source origin and classify it: clean match (None),
-        interior mutation (hard), or no origin through EOF (soft). Scans forward
-        without bound: when a buffer holds neither a byte-match nor an anchor for
-        ``rec``, every line in it is a quarantined record BEFORE ``rec``'s origin
-        (cleaned records are in source order, so nothing buffered belongs to
-        ``rec`` or any later record) — so the whole buffer is dropped and the scan
-        continues, crossing a quarantine run of any length."""
+        interior mutation (hard), or no origin through EOF (soft). Feed EVERY
+        record in on-disk order — the skip policy lives here, not in the caller:
+        an inert aligner or a revalidate-failed record (``revalidated=False``)
+        returns None *without consuming source lines*, preserving the
+        forward-only buffer invariant the 5bd4026/6cdb340 bug class depended on
+        the caller to uphold. Scans forward without bound: when a buffer holds
+        neither a byte-match nor an anchor for ``rec``, every line in it is a
+        quarantined record BEFORE ``rec``'s origin (cleaned records are in
+        source order), so the whole buffer is dropped and the scan continues,
+        crossing a quarantine run of any length."""
+        if self._fh is None or not revalidated:
+            return None
         rec_anchor: tuple[int, str] | None = None
         anchor_computed = False  # defer _anchor(rec.line1) off the O(1) happy path
         while True:
@@ -286,7 +324,7 @@ class SourceAligner:
                     # Consume it and keep scanning forward for the real origin.
                     continue
                 return Suspect(
-                    VrfyRule.INTERIOR_MUT,
+                    VerifyRule.INTERIOR_MUT,
                     rec.catalog,
                     rec.epoch_key,
                     rec.src_file,
@@ -297,7 +335,7 @@ class SourceAligner:
                 # EOF reached with no origin found (a cleaned record with no source
                 # origin should not happen; kept as a soft signal, not a crash).
                 return Suspect(
-                    VrfyRule.ORIGIN_MISSING,
+                    VerifyRule.ORIGIN_MISSING,
                     rec.catalog,
                     rec.epoch_key,
                     rec.src_file,
@@ -309,4 +347,5 @@ class SourceAligner:
             del self._buf[: len(self._buf) - 1]
 
     def close(self) -> None:
-        self._fh.close()
+        if self._fh is not None:
+            self._fh.close()

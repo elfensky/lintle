@@ -3,7 +3,7 @@ suspect count, byte-identical to the list-based writer it replaces."""
 
 from lintle.chunking import ChunkedReader
 from lintle.verify import report
-from lintle.verify.report import Suspect, SuspectSink, VrfyRule
+from lintle.verify.report import Suspect, SuspectSink, VerifyRule
 
 CHECKED = {
     "files": 3,
@@ -16,14 +16,14 @@ CHECKED = {
 # A scrambled, multi-rule set spanning hard + soft, several catalogs/epochs/files,
 # and a tie-key pair (same sort key, different detail) to lock the tie-break order.
 SUSPECTS = [
-    Suspect(VrfyRule.ORBIT_OUTLIER, 25544, 2020001.5, "tle2020", 9, "resid 250 km"),
-    Suspect(VrfyRule.EPOCH_CONFLICT, 5, 2000179.0, "tle01", 2, "clash A"),
-    Suspect(VrfyRule.INTERIOR_MUT, 5, 2000179.0, "tle01", 1, "mutated"),
-    Suspect(VrfyRule.EPOCH_CONFLICT, 5, 2000179.0, "tle01", 2, "clash B"),  # tie key
-    Suspect(VrfyRule.ORIGIN_MISSING, 100, 1999300.0, "tle99", 0, "no origin"),
-    Suspect(VrfyRule.REVALIDATE_FAIL, -1, -1.0, "tle07", 42, "garbage"),
-    Suspect(VrfyRule.ORBIT_ERROR, 6, 2001001.0, "tle01", 3, "sgp4 error 2"),
-    Suspect(VrfyRule.ORBIT_OUTLIER, 5, 2000179.0, "tle01", 4, "resid 900 km"),
+    Suspect(VerifyRule.ORBIT_OUTLIER, 25544, 2020001.5, "tle2020", 9, "resid 250 km"),
+    Suspect(VerifyRule.EPOCH_CONFLICT, 5, 2000179.0, "tle01", 2, "clash A"),
+    Suspect(VerifyRule.INTERIOR_MUT, 5, 2000179.0, "tle01", 1, "mutated"),
+    Suspect(VerifyRule.EPOCH_CONFLICT, 5, 2000179.0, "tle01", 2, "clash B"),  # tie key
+    Suspect(VerifyRule.ORIGIN_MISSING, 100, 1999300.0, "tle99", 0, "no origin"),
+    Suspect(VerifyRule.REVALIDATE_FAIL, -1, -1.0, "tle07", 42, "garbage"),
+    Suspect(VerifyRule.ORBIT_ERROR, 6, 2001001.0, "tle01", 3, "sgp4 error 2"),
+    Suspect(VerifyRule.ORBIT_OUTLIER, 5, 2000179.0, "tle01", 4, "resid 900 km"),
 ]
 
 
@@ -77,7 +77,7 @@ class TestTally:
         hard = sum(1 for s in SUSPECTS if s.severity == "hard")
         assert sink.total == len(SUSPECTS)
         assert sink.hard == hard
-        assert sink.exit_code == report.exit_code(SUSPECTS)
+        assert sink.exit_code == (1 if hard else 0)
 
 
 class TestConstantMemory:
@@ -85,7 +85,7 @@ class TestConstantMemory:
         # 100 suspects, chunk 10 -> spills to disk, buffer never exceeds one chunk.
         sink = SuspectSink(chunk_size=10)
         for i in range(100):
-            sink.add(Suspect(VrfyRule.ORBIT_OUTLIER, i, float(i), "tle", i, "x"))
+            sink.add(Suspect(VerifyRule.ORBIT_OUTLIER, i, float(i), "tle", i, "x"))
             assert len(sink._buf) <= 10
         assert len(sink._runs) == 10  # spilled every full chunk -> constant memory
         sink.write(str(tmp_path), checked=CHECKED)

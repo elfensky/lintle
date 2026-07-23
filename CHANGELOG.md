@@ -6,6 +6,31 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+## [0.10.3] - 2026-07-23
+
+### Changed
+
+- **`verify`'s source aligner is now a null object with the skip policy behind
+  its seam.** `SourceAligner.open(source_dir, stem)` always returns an aligner —
+  inert when the stem has no source file — and `feed(rec, revalidated=...)`
+  no-ops for revalidate-failed records without consuming source lines. The
+  caller-side `continue`/`is not None` conventions that produced the 0.10.2
+  aligner bug class are gone; behavior is byte-identical (A/B-verified against
+  a 2-file, 7.7M-record corpus subset through clean → verify → dedup).
+- The #158 same-epoch clash rule has one implementation: `find_conflicts` and
+  `has_epoch_clash` both route through a shared `_is_clash` predicate, ending
+  the hand-synced twin implementations (#164).
+- One `.partial` temp-suffix authority (`fsutil.PARTIAL_SUFFIX`), and the
+  legacy root-level `report.*.jsonl` scrub now enumerates chunks through
+  `ChunkedReader`'s anchored parse instead of a loose glob, so non-chunk
+  bystander files survive a fresh-run scrub.
+- Desloppify code-health pass (51 review findings): typed signatures across the
+  writer/pipeline surface, `Counter` tallies, `WorkerRunResult` instead of a
+  5-tuple, `match` dispatch in `cli.main` with lazy `verify`/`dedup` imports,
+  and renames — `VrfyRule` → `VerifyRule`, `verify.run_verify` → `verify.run`,
+  `orbit._TIERS` → public `TIERS`. CLI surface and all structured outputs are
+  unchanged.
+
 ## [0.10.2] - 2026-07-22
 
 ### Fixed

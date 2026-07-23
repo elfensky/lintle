@@ -6,6 +6,7 @@ import datetime
 import json
 import os
 import sys
+from collections import Counter
 
 from lintle import __version__, fsutil, report_aggregation
 from lintle.categories import FixClass
@@ -138,7 +139,7 @@ class NoradTracker:
     contract.
     """
 
-    counts: dict[int, dict[RuleID, int]] = dataclasses.field(default_factory=dict)
+    counts: dict[int, Counter[RuleID]] = dataclasses.field(default_factory=dict)
 
     def record(self, norad_id: int, rule_id: RuleID) -> None:
         """Tally one quarantine for ``norad_id`` against ``rule_id``.
@@ -148,8 +149,7 @@ class NoradTracker:
         :class:`RuleID` member, value is a running count. First call
         for a NORAD initialises the bucket; repeated calls accrue.
         """
-        per_rule = self.counts.setdefault(norad_id, {})
-        per_rule[rule_id] = per_rule.get(rule_id, 0) + 1
+        self.counts.setdefault(norad_id, Counter())[rule_id] += 1
 
 
 @dataclasses.dataclass(slots=True)
@@ -197,8 +197,8 @@ class FileStats:
     bytes_consumed: int = 0
     clean_count: int = 0
     quarantined_count: int = 0
-    fix_counts: dict[FixClass, int] = dataclasses.field(default_factory=dict)
-    quarantine_counts: dict[RuleID, int] = dataclasses.field(default_factory=dict)
+    fix_counts: Counter[FixClass] = dataclasses.field(default_factory=Counter)
+    quarantine_counts: Counter[RuleID] = dataclasses.field(default_factory=Counter)
     quarantine_sample: FileSample = dataclasses.field(
         default_factory=lambda: FileSample.empty(PER_RULE_EXEMPLAR_BOUND)
     )
@@ -294,8 +294,10 @@ def stats_from_summary(data: dict[str, object]) -> FileStats:
         input_lines_seen=data["input_lines_seen"],
         clean_count=data["clean_count"],
         quarantined_count=data["quarantined_count"],
-        fix_counts={FixClass(k): v for k, v in data["fix_counts"].items()},
-        quarantine_counts={RuleID(k): v for k, v in data["quarantine_counts"].items()},
+        fix_counts=Counter({FixClass(k): v for k, v in data["fix_counts"].items()}),
+        quarantine_counts=Counter(
+            {RuleID(k): v for k, v in data["quarantine_counts"].items()}
+        ),
         quarantine_sample=FileSample.from_bounded(
             cap=PER_RULE_EXEMPLAR_BOUND,
             entries_by_rule={},
@@ -303,7 +305,9 @@ def stats_from_summary(data: dict[str, object]) -> FileStats:
         ),
         quarantined_norad_ids=NoradTracker(
             counts={
-                int(nid): {RuleID(rule): count for rule, count in rule_counts.items()}
+                int(nid): Counter(
+                    {RuleID(rule): count for rule, count in rule_counts.items()}
+                )
                 for nid, rule_counts in data["quarantined_norad_ids"].items()
             }
         ),

@@ -1,9 +1,14 @@
 """Quarantine threshold parsing and exit-code policy."""
 
+from collections.abc import Sequence
 from fractions import Fraction
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from lintle.report import FileStats
 
 
-def parse_quarantine_threshold(raw):
+def parse_quarantine_threshold(raw: str) -> tuple[str, int | Fraction]:
     """Parse a ``--max-quarantined`` value into ``(mode, threshold)``.
 
     A bare integer (e.g. ``"100"``) is an absolute record count and returns
@@ -37,7 +42,11 @@ def parse_quarantine_threshold(raw):
     return ("count", count)
 
 
-def quarantine_exit_code(all_stats, threshold_mode, quarantine_threshold):
+def quarantine_exit_code(
+    all_stats: Sequence[FileStats],
+    threshold_mode: str,
+    quarantine_threshold: int | Fraction,
+) -> int:
     """Return the quality-gate exit code for completed file stats.
 
     ``0`` means the run stayed at or below ``--max-quarantined``; ``1`` means

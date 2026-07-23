@@ -2,12 +2,17 @@
 
 import dataclasses
 from collections import Counter
+from collections.abc import Iterable, Sequence
+from typing import TYPE_CHECKING
 
 from lintle.categories import FixClass
 from lintle.diagnostics import RuleID
 
+if TYPE_CHECKING:
+    from lintle.report import FileStats
 
-@dataclasses.dataclass(frozen=True)
+
+@dataclasses.dataclass(slots=True, frozen=True)
 class Totals:
     """Corpus-wide totals summed across every file's stats."""
 
@@ -21,7 +26,7 @@ class Totals:
     dropped: dict[RuleID, int]
 
 
-def aggregate(all_stats):
+def aggregate(all_stats: Sequence[FileStats]) -> Totals:
     """Sum every file's stats into corpus-wide totals and count dicts."""
     fixes = Counter()
     quarantines = Counter()
@@ -45,7 +50,9 @@ def aggregate(all_stats):
     )
 
 
-def aggregate_per_norad(all_stats):
+def aggregate_per_norad(
+    all_stats: Sequence[FileStats],
+) -> dict[int, dict[str, object]]:
     """Roll the per-file per-NORAD breakdowns up into a corpus-wide view."""
     rollup = {}
     for stats in all_stats:
@@ -61,13 +68,13 @@ def aggregate_per_norad(all_stats):
     return rollup
 
 
-def format_per_norad_rules(rule_counts):
+def format_per_norad_rules(rule_counts: dict[RuleID, int]) -> str:
     """Render a per-NORAD ``{RuleID: count}`` mapping."""
     items = sorted(rule_counts.items(), key=lambda kv: (-kv[1], str(kv[0])))
     return ", ".join(f"{rule} ({count})" for rule, count in items)
 
 
-def format_per_norad_files(files, *, preview_count):
+def format_per_norad_files(files: Iterable[str], *, preview_count: int) -> str:
     """Render a bounded, deterministic filename list."""
     ordered = sorted(files)
     if len(ordered) <= preview_count:
@@ -76,7 +83,9 @@ def format_per_norad_files(files, *, preview_count):
     return f"{head}, +{len(ordered) - preview_count} more"
 
 
-def format_per_norad_section(all_stats, top_n, *, files_preview):
+def format_per_norad_section(
+    all_stats: Sequence[FileStats], top_n: int | None, *, files_preview: int
+) -> list[str]:
     """Render the ``## Per-NORAD breakdown`` Markdown section as a line list."""
     rollup = aggregate_per_norad(all_stats)
     lines = ["", "## Per-NORAD breakdown", ""]

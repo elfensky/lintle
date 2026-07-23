@@ -13,13 +13,13 @@ validity judgment and never re-defines what a valid TLE is."""
 
 from pathlib import Path
 
-from lintle import term
+from lintle import CLEANED_DIRNAME, DATA_DIRNAME, term
 from lintle.chunking import CHUNK_RECORDS_DEFAULT
 from lintle.verify import checks, grouping, records
 from lintle.verify.report import SuspectSink
 
 
-def run_verify(
+def run(
     out_dir: str,
     source_dir: str | None,
     *,
@@ -37,8 +37,9 @@ def run_verify(
     hard suspects found, 2 operational error (no cleaned output)."""
     stems = records.cleaned_stems(out_dir)
     if not stems:
+        cleaned_dir = Path(out_dir) / DATA_DIRNAME / CLEANED_DIRNAME
         term.error(
-            f"no cleaned output found under {Path(out_dir) / 'cleaned'!s}.\n"
+            f"no cleaned output found under {cleaned_dir!s}.\n"
             "  run 'lintle clean' first, or point at its --out-dir."
         )
         return 2
@@ -50,30 +51,29 @@ def run_verify(
     missing_source = 0
 
     for file_stem in stems:
-        aligner = None
-        if source_dir is not None:
-            src_path = Path(source_dir) / (file_stem + ".txt")
-            if src_path.is_file():
-                aligner = checks.SourceAligner(str(src_path))
-            else:
-                missing_source += 1
+        # Null-object seam: always constructed, inert when the stem has no
+        # source — no `is not None` guards, no caller-side skip contract.
+        aligner = checks.SourceAligner.open(source_dir, file_stem)
+        if source_dir is not None and not aligner.active:
+            missing_source += 1
         try:
             for rec in records.iter_file(out_dir, file_stem):
                 n_records += 1
                 bad = checks.revalidate(rec)
                 if bad is not None:
                     sink.add(bad)
-                    continue  # keys untrustworthy — don't sort or byte-diff it
+                    # keys untrustworthy — the aligner no-ops without consuming
+                    # source lines (its buffer invariant, internalized).
+                    aligner.feed(rec, revalidated=False)
+                    continue  # and don't sort it either
                 sorter.add(rec)
                 if orbit and rec.catalog != -1:
                     population.add(rec.catalog)
-                if aligner is not None:
-                    mutated = aligner.check(rec)
-                    if mutated is not None:
-                        sink.add(mutated)
+                mutated = aligner.feed(rec)
+                if mutated is not None:
+                    sink.add(mutated)
         finally:
-            if aligner is not None:
-                aligner.close()
+            aligner.close()
 
     # Contradiction pass over the fully sorted stream (goal 3b): same-epoch
     # re-issues are counted (a census); only a same-element-set clash is hard.
@@ -102,7 +102,7 @@ def run_verify(
             sink,
             sample=sample,
             all_sats=all_sats,
-            sensitivity=orbit_pass._TIERS[sensitivity],
+            sensitivity=orbit_pass.TIERS[sensitivity],
             oversample=dup_epoch_catalogs,
         )
         checked.update(orbit_census)

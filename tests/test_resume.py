@@ -15,7 +15,7 @@ from lintle import (
     resume,
     stem,
 )
-from lintle.report import FileStats
+from lintle.report import FileStats, summary_dict
 
 
 def _write(path, data: bytes):
@@ -659,9 +659,16 @@ class TestVerifyCompletedOutputsWithShard:
 
 
 class TestCompletedEntryRoundTrip:
-    """CompletedEntry.from_stats → as_dict → verify_completed_outputs round-trip
-    (issue #118): the typed constructor must produce a dict shape that
-    verify_completed_outputs accepts and actually inspects on disk."""
+    """CompletedEntry → as_dict → verify_completed_outputs round-trip
+    (issue #118): the typed record must produce a dict shape that
+    verify_completed_outputs accepts and actually inspects on disk. Entries
+    are built the way worker_pool builds them — summary_dict + output_sizes —
+    since resume deliberately owns no report import."""
+
+    def _entry(self, out_dir, st):
+        return resume.CompletedEntry(
+            summary=summary_dict(st), outputs=resume.output_sizes(out_dir, st)
+        )
 
     def _write_output(self, root, dirname, name, data=b"x" * 50):
         d = root / dirname
@@ -676,14 +683,14 @@ class TestCompletedEntryRoundTrip:
         assert d["summary"] == {"src_name": "tle2099.txt"}
         assert d["outputs"] == {}
 
-    def test_from_stats_builds_valid_entry(self, tmp_path):
-        # from_stats must produce an entry with a summary dict and an outputs
-        # dict; the summary must include at least src_name.
+    def test_built_entry_is_valid(self, tmp_path):
+        # The worker_pool construction recipe must produce an entry with a
+        # summary dict and an outputs dict; the summary must include src_name.
         st = FileStats(src_name="tle2099.txt")
         self._write_output(
             tmp_path, f"{DATA_DIRNAME}/{CLEANED_DIRNAME}", "tle2099.00001.cleaned.txt"
         )
-        entry = resume.CompletedEntry.from_stats(str(tmp_path), st)
+        entry = self._entry(str(tmp_path), st)
         assert isinstance(entry.summary, dict)
         assert isinstance(entry.outputs, dict)
         assert entry.summary.get("src_name") == "tle2099.txt"
@@ -701,7 +708,7 @@ class TestCompletedEntryRoundTrip:
             "tle2099.00001.cleaned.txt",
             data,
         )
-        entry = resume.CompletedEntry.from_stats(str(tmp_path), st)
+        entry = self._entry(str(tmp_path), st)
         completed = {"tle2099.txt": entry.as_dict()}
         assert resume.verify_completed_outputs(completed, str(tmp_path)) == []
 
@@ -716,7 +723,7 @@ class TestCompletedEntryRoundTrip:
             "tle2099.00001.cleaned.txt",
             data,
         )
-        entry = resume.CompletedEntry.from_stats(str(tmp_path), st)
+        entry = self._entry(str(tmp_path), st)
         # Remove the output chunk to simulate a post-completion corruption.
         (
             tmp_path / DATA_DIRNAME / CLEANED_DIRNAME / "tle2099.00001.cleaned.txt"
