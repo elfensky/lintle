@@ -1,6 +1,6 @@
 """`lintle extract` — one satellite's complete deduped TLE history as
 ``<id>.txt`` + ``<id>.json``. A read-only consumer of a prior `dedup` run: the
-``dedup/import.*`` chunk set holds only validated-perfect records (exactly 140
+``05-dedup/import.*`` chunk set holds only validated-perfect records (exactly 140
 bytes each) globally sorted by ``(catalog, epoch)``, so each satellite is one
 contiguous byte range found by pure binary search — the sorted fixed-width
 stream *is* the index. Never imports sgp4; never touches the clean path."""
