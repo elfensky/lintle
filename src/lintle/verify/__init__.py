@@ -51,30 +51,29 @@ def run(
     missing_source = 0
 
     for file_stem in stems:
-        aligner = None
-        if source_dir is not None:
-            src_path = Path(source_dir) / (file_stem + ".txt")
-            if src_path.is_file():
-                aligner = checks.SourceAligner(str(src_path))
-            else:
-                missing_source += 1
+        # Null-object seam: always constructed, inert when the stem has no
+        # source — no `is not None` guards, no caller-side skip contract.
+        aligner = checks.SourceAligner.open(source_dir, file_stem)
+        if source_dir is not None and not aligner.active:
+            missing_source += 1
         try:
             for rec in records.iter_file(out_dir, file_stem):
                 n_records += 1
                 bad = checks.revalidate(rec)
                 if bad is not None:
                     sink.add(bad)
-                    continue  # keys untrustworthy — don't sort or byte-diff it
+                    # keys untrustworthy — the aligner no-ops without consuming
+                    # source lines (its buffer invariant, internalized).
+                    aligner.feed(rec, revalidated=False)
+                    continue  # and don't sort it either
                 sorter.add(rec)
                 if orbit and rec.catalog != -1:
                     population.add(rec.catalog)
-                if aligner is not None:
-                    mutated = aligner.check(rec)
-                    if mutated is not None:
-                        sink.add(mutated)
+                mutated = aligner.feed(rec)
+                if mutated is not None:
+                    sink.add(mutated)
         finally:
-            if aligner is not None:
-                aligner.close()
+            aligner.close()
 
     # Contradiction pass over the fully sorted stream (goal 3b): same-epoch
     # re-issues are counted (a census); only a same-element-set clash is hard.

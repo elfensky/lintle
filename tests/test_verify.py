@@ -258,19 +258,53 @@ class TestHasEpochClash:
             assert bool(conflicts) == checks.has_epoch_clash(group)
 
 
+class TestSourceAlignerNullObject:
+    """The debate-consensus (C) seam: always construct, inert without a source,
+    skip policy behind feed() — no caller-side guards or skip conventions."""
+
+    def test_open_without_source_dir_is_inert(self):
+        aligner = checks.SourceAligner.open(None, "tle_x")
+        assert not aligner.active
+        assert aligner.feed(rec()) is None  # unconditionally callable
+        aligner.close()  # and unconditionally closable
+
+    def test_open_with_missing_file_is_inert(self, tmp_path):
+        aligner = checks.SourceAligner.open(str(tmp_path), "tle_missing")
+        assert not aligner.active
+        assert aligner.feed(rec()) is None
+        aligner.close()
+
+    def test_open_with_real_file_is_active(self, tmp_path):
+        (tmp_path / "tle_x.txt").write_text(f"{L1}\n{L2}\n", encoding="ascii")
+        aligner = checks.SourceAligner.open(str(tmp_path), "tle_x")
+        assert aligner.active
+        assert aligner.feed(rec()) is None  # clean match
+        aligner.close()
+
+    def test_revalidate_failed_record_does_not_consume_source(self, tmp_path):
+        # The old caller-side skip contract, now inside the interface: feeding a
+        # revalidate-failed record must leave the buffer untouched, so the SAME
+        # origin still matches the next (revalidated) record.
+        (tmp_path / "tle_x.txt").write_text(f"{L1}\n{L2}\n", encoding="ascii")
+        aligner = checks.SourceAligner.open(str(tmp_path), "tle_x")
+        assert aligner.feed(rec(), revalidated=False) is None
+        assert aligner.feed(rec()) is None  # origin still there — not consumed
+        aligner.close()
+
+
 class TestSourceAligner:
     def test_clean_padded_match(self, tmp_path):
         src = tmp_path / "s.txt"
         src.write_text(f"  {L1}  \n{L2}\r\n", encoding="ascii")
         aligner = checks.SourceAligner(str(src))
-        assert aligner.check(rec()) is None
+        assert aligner.feed(rec()) is None
         aligner.close()
 
     def test_interior_mutation_flagged(self, tmp_path):
         src = tmp_path / "s.txt"
         src.write_text(f"{L1}\n{L2}\n", encoding="ascii")
         aligner = checks.SourceAligner(str(src))
-        s = aligner.check(rec(line2=mutated_l2()))
+        s = aligner.feed(rec(line2=mutated_l2()))
         aligner.close()
         assert s is not None and s.rule is VerifyRule.INTERIOR_MUT
 
@@ -278,7 +312,7 @@ class TestSourceAligner:
         src = tmp_path / "s.txt"
         src.write_text("unrelated one\nunrelated two\n", encoding="ascii")
         aligner = checks.SourceAligner(str(src))
-        s = aligner.check(rec())
+        s = aligner.feed(rec())
         aligner.close()
         assert s is not None and s.rule is VerifyRule.ORIGIN_MISSING
         assert s.severity == "soft"
@@ -288,7 +322,7 @@ class TestSourceAligner:
         src = tmp_path / "s.txt"
         src.write_text(f"junk a\njunk b\n{L1}\n{L2}\n", encoding="ascii")
         aligner = checks.SourceAligner(str(src))
-        assert aligner.check(rec()) is None
+        assert aligner.feed(rec()) is None
         aligner.close()
 
     def test_resyncs_across_long_quarantine_gap(self, tmp_path):
@@ -309,8 +343,8 @@ class TestSourceAligner:
         src = tmp_path / "s.txt"
         src.write_text(f"{L1}\n{L2}\n{gap}{L1}\n{L2}\n", encoding="ascii")
         aligner = checks.SourceAligner(str(src))
-        assert aligner.check(rec()) is None  # first record matches at the top
-        assert aligner.check(rec()) is None  # second record's origin is past the gap
+        assert aligner.feed(rec()) is None  # first record matches at the top
+        assert aligner.feed(rec()) is None  # second record's origin is past the gap
         aligner.close()
 
     def test_quarantined_duplicate_is_not_interior_mutation(self, tmp_path):
@@ -328,7 +362,7 @@ class TestSourceAligner:
         src = tmp_path / "s.txt"
         src.write_text(f"{shadow1}\n{shadow2}\n{L1}\n{L2}\n", encoding="ascii")
         aligner = checks.SourceAligner(str(src))
-        assert aligner.check(rec()) is None  # real origin found past the shadow
+        assert aligner.feed(rec()) is None  # real origin found past the shadow
         aligner.close()
 
     def test_blank_line_between_pair_is_clean_match(self, tmp_path):
@@ -339,7 +373,7 @@ class TestSourceAligner:
         src = tmp_path / "s.txt"
         src.write_text(f"{L1[:68]}\n\n{L2[:68]}\n", encoding="ascii")
         aligner = checks.SourceAligner(str(src))
-        assert aligner.check(rec()) is None
+        assert aligner.feed(rec()) is None
         aligner.close()
 
 
