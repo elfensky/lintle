@@ -193,6 +193,53 @@ class TestRun:
         assert not (dest / "200.json").exists()
         assert list(dest.glob("*.partial")) == []
 
+    def test_failed_rerun_preserves_previous_good_pair(self, tmp_path, monkeypatch):
+        # A prior successful run's <id>.txt + <id>.json must survive a later
+        # failed re-run untouched (Finding 1): the except-block cleanup must
+        # not blindly unlink the final txt path, or a re-run failure destroys
+        # good output from an earlier run and orphans its sidecar.
+        out = write_import_tree(tmp_path, recs((100, 1.0), (100, 2.5)), 10)
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        assert extract.run(str(out), [100], str(dest)) == 0
+        txt_before = (dest / "100.txt").read_bytes()
+        json_before = (dest / "100.json").read_bytes()
+
+        def always_raise(line1):
+            raise ValueError("boom")
+
+        monkeypatch.setattr(extract, "_epoch_dt", always_raise)
+        assert extract.run(str(out), [100], str(dest)) == 2
+        assert (dest / "100.txt").read_bytes() == txt_before
+        assert (dest / "100.json").read_bytes() == json_before
+
+    def test_sidecar_bytes_golden(self, tmp_path):
+        out = write_import_tree(tmp_path, recs((100, 1.0), (100, 2.5)))
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        assert extract.run(str(out), [100], str(dest)) == 0
+        expected = (
+            "{\n"
+            '  "element_set_first": 1,\n'
+            '  "element_set_last": 1,\n'
+            '  "first_epoch": "2020-01-01T00:00:00Z",\n'
+            '  "largest_gap_at": "2020-01-02T12:00:00Z",\n'
+            '  "largest_gap_days": 1.5,\n'
+            '  "last_epoch": "2020-01-02T12:00:00Z",\n'
+            '  "mean_records_per_day": 1.333333,\n'
+            '  "norad_id": 100,\n'
+            '  "records": 2,\n'
+            '  "schema_version": "1",\n'
+            '  "source": {\n'
+            '    "dedup_records_written": 2,\n'
+            '    "dedup_schema_version": "1",\n'
+            f'    "out_dir": "{out}"\n'
+            "  },\n"
+            '  "span_days": 1.5\n'
+            "}\n"
+        )
+        assert (dest / "100.json").read_bytes() == expected.encode("ascii")
+
 
 class TestCli:
     def test_end_to_end(self, tmp_path, monkeypatch):
