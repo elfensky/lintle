@@ -10,6 +10,7 @@
   ``repair.py``) so a repair bug can't hide behind its own output."""
 
 from collections.abc import Iterable, Iterator
+from pathlib import Path
 
 from lintle import tle
 from lintle.verify.records import CleanedRecord
@@ -242,9 +243,33 @@ class SourceAligner:
     immediately) is O(1) per record, and total work is O(source lines) even when
     thousands of quarantined records separate two accepted ones."""
 
-    def __init__(self, source_path: str) -> None:
-        self._fh = open(source_path, encoding="ascii", errors="replace")  # noqa: SIM115
+    def __init__(self, source_path: str | None) -> None:
+        # None -> a null object: feed()/close() are unconditionally callable and
+        # do nothing, so callers never carry an `if aligner is not None` guard.
+        self._fh = (
+            open(source_path, encoding="ascii", errors="replace")  # noqa: SIM115
+            if source_path is not None
+            else None
+        )
         self._buf: list[str] = []
+
+    @classmethod
+    def open(cls, source_dir: str | None, file_stem: str) -> SourceAligner:
+        """Build the aligner for one cleaned stem: active when
+        ``<source_dir>/<file_stem>.txt`` exists, inert otherwise (no source dir,
+        or the stem has no source file). The existence check lives here so the
+        caller constructs, feeds, and closes unconditionally."""
+        if source_dir is not None:
+            src_path = Path(source_dir) / (file_stem + ".txt")
+            if src_path.is_file():
+                return cls(str(src_path))
+        return cls(None)
+
+    @property
+    def active(self) -> bool:
+        """True iff a real source file backs this aligner (inert ones swallow
+        every ``feed`` — used by the caller only for missing-source counting)."""
+        return self._fh is not None
 
     def _refill(self) -> None:
         while len(self._buf) < _RESYNC_WINDOW:
@@ -258,14 +283,20 @@ class SourceAligner:
             if stripped.strip():
                 self._buf.append(stripped)
 
-    def check(self, rec: CleanedRecord) -> Suspect | None:
+    def feed(self, rec: CleanedRecord, *, revalidated: bool = True) -> Suspect | None:
         """Locate ``rec``'s source origin and classify it: clean match (None),
-        interior mutation (hard), or no origin through EOF (soft). Scans forward
-        without bound: when a buffer holds neither a byte-match nor an anchor for
-        ``rec``, every line in it is a quarantined record BEFORE ``rec``'s origin
-        (cleaned records are in source order, so nothing buffered belongs to
-        ``rec`` or any later record) — so the whole buffer is dropped and the scan
-        continues, crossing a quarantine run of any length."""
+        interior mutation (hard), or no origin through EOF (soft). Feed EVERY
+        record in on-disk order — the skip policy lives here, not in the caller:
+        an inert aligner or a revalidate-failed record (``revalidated=False``)
+        returns None *without consuming source lines*, preserving the
+        forward-only buffer invariant the 5bd4026/6cdb340 bug class depended on
+        the caller to uphold. Scans forward without bound: when a buffer holds
+        neither a byte-match nor an anchor for ``rec``, every line in it is a
+        quarantined record BEFORE ``rec``'s origin (cleaned records are in
+        source order), so the whole buffer is dropped and the scan continues,
+        crossing a quarantine run of any length."""
+        if self._fh is None or not revalidated:
+            return None
         rec_anchor: tuple[int, str] | None = None
         anchor_computed = False  # defer _anchor(rec.line1) off the O(1) happy path
         while True:
@@ -316,4 +347,5 @@ class SourceAligner:
             del self._buf[: len(self._buf) - 1]
 
     def close(self) -> None:
-        self._fh.close()
+        if self._fh is not None:
+            self._fh.close()
