@@ -19,6 +19,17 @@ from lintle.verify.records import catalog_of
 # two validated-perfect 69-char lines + two \n — guarded, not assumed
 RECORD_BYTES = 140
 
+_README = """\
+# 06-extract — per-satellite TLE history
+
+- `<id>.txt` — one satellite's complete deduped TLE history: pure 2-line
+  records, epoch-ascending, byte-identical to the source records.
+- `<id>.json` — a stats sidecar for that history (record count, epoch span,
+  largest gap, element-set range).
+
+Regenerate with `lintle extract <id>`.
+"""
+
 
 class ExtractError(RuntimeError):
     """Operational failure (missing/torn dedup tree) — cli maps this to exit 2."""
@@ -201,15 +212,24 @@ def _extract_one(out_dir: str, catalog: int, dest: Path) -> bool:
     return True
 
 
-def run(out_dir: str, catalogs: list[int], dest: str) -> int:
+def run(
+    out_dir: str, catalogs: list[int], dest: str, *, write_readme: bool = False
+) -> int:
     """Extract each catalog's history into ``dest``. Exit 0 if every id was
     found; 2 if any was absent, any catalog's extraction raised, or on an
     operational error up front (missing/torn dedup tree — nothing written at
     all). A raise mid-catalog is isolated: it is reported, the partial temp is
-    never left behind, and the remaining catalogs still run."""
+    never left behind, and the remaining catalogs still run. ``write_readme``
+    is False by default — an explicit ``--dest`` is the user's own directory
+    and is never decorated; the cli passes True only when ``dest`` resolved to
+    the default ``<out-dir>/06-extract`` (Task 3)."""
     _import_chunks(out_dir)  # raises ExtractError before any per-catalog work
     dest_dir = Path(dest)
     dest_dir.mkdir(parents=True, exist_ok=True)
+    if write_readme:
+        fsutil.durable_write_text(
+            str(dest_dir / "README.md"), _README, encoding="utf-8"
+        )
     missing = []
     for catalog in catalogs:
         try:

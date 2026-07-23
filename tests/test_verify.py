@@ -399,6 +399,27 @@ class TestReport:
         assert code([soft, hard]) == 1
 
 
+class TestReadme:
+    """``SuspectSink.write`` drops a static ``README.md`` in ``04-verify/`` —
+    the dir's own self-description, deterministic across runs."""
+
+    def test_writes_readme(self, tmp_path):
+        sink = report.SuspectSink()
+        sink.write(str(tmp_path), checked={})
+        readme = tmp_path / VERIFY_DIRNAME / "README.md"
+        assert readme.is_file()
+        text = readme.read_text(encoding="utf-8")
+        assert "04-verify" in text
+        assert "lintle verify" in text
+        assert "suspects.NNNNN.jsonl" in text
+
+    def test_readme_is_deterministic(self, tmp_path):
+        report.SuspectSink().write(str(tmp_path), checked={})
+        first = (tmp_path / VERIFY_DIRNAME / "README.md").read_bytes()
+        report.SuspectSink().write(str(tmp_path), checked={})
+        assert (tmp_path / VERIFY_DIRNAME / "README.md").read_bytes() == first
+
+
 class TestGrouping:
     def test_external_sort_orders_by_catalog_then_epoch(self):
         sorter = grouping.ExternalSorter(chunk_size=2)  # force a spill

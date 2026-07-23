@@ -3,6 +3,7 @@ list. Cleaned output is immutable; dedup only reads it and writes under
 ``<out-dir>/05-dedup``."""
 
 import json
+from pathlib import Path
 
 from lintle import CLEANED_DIRNAME, DEDUP_DIRNAME, VERIFY_DIRNAME, cli, dedup, tle
 from lintle.chunking import ChunkedReader
@@ -260,3 +261,25 @@ class TestCLI:
     def test_dedup_subcommand_dispatches(self, tmp_path):
         out_dir = build_tree(tmp_path, [(L1, L2)])
         assert cli.main(["dedup", out_dir]) == 0
+
+
+class TestReadme:
+    """``dedup.run`` drops a static ``README.md`` beside its ``summary.json``
+    in ``05-dedup/``, deterministic across runs."""
+
+    def test_writes_readme(self, tmp_path):
+        out_dir = build_tree(tmp_path, [(L1, L2)])
+        dedup.run(out_dir)
+        readme = Path(out_dir) / DEDUP_DIRNAME / "README.md"
+        assert readme.is_file()
+        text = readme.read_text(encoding="utf-8")
+        assert "05-dedup" in text
+        assert "lintle dedup" in text
+        assert "import.NNNNN.txt" in text
+
+    def test_readme_is_deterministic(self, tmp_path):
+        out_dir = build_tree(tmp_path, [(L1, L2)])
+        dedup.run(out_dir)
+        first = (Path(out_dir) / DEDUP_DIRNAME / "README.md").read_bytes()
+        dedup.run(out_dir)
+        assert (Path(out_dir) / DEDUP_DIRNAME / "README.md").read_bytes() == first
