@@ -283,6 +283,56 @@ class TestCli:
             cli.main(["extract", "ISS", "--out-dir", str(tmp_path)])
 
 
+class TestAnalyze:
+    """_analyze: pure pass-1 history stats — median spacing + reportable gaps."""
+
+    def _hs(self, tmp_path, *days):
+        out = write_import_tree(tmp_path, recs(*[(100, d) for d in days]), 10000)
+        return extract._analyze(extract.find_spans(str(out), 100))
+
+    def test_uniform_cadence_no_gaps(self, tmp_path):
+        hs = self._hs(tmp_path, *[1.0 + i for i in range(10)])
+        assert hs.count == 10
+        assert hs.median_spacing_days == 1.0
+        assert hs.gaps == () and hs.gap_count == 0
+        assert hs.largest_gap_days == 1.0
+
+    def test_one_hole_is_one_gap(self, tmp_path):
+        # daily cadence days 1-10, then a 40-day hole to day 50
+        hs = self._hs(tmp_path, *[1.0 + i for i in range(10)], 50.0, 51.0, 52.0)
+        assert hs.median_spacing_days == 1.0
+        assert hs.gap_count == 1 and len(hs.gaps) == 1
+        gap = hs.gaps[0]
+        assert gap.days == 40.0
+        assert gap.start == extract._epoch_dt(l1(100, day=10.0))
+        assert gap.end == extract._epoch_dt(l1(100, day=50.0))
+        assert hs.largest_gap_days == 40.0 and hs.largest_gap_at == gap.end
+
+    def test_under_three_records_skips_analysis(self, tmp_path):
+        hs = self._hs(tmp_path, 1.0, 2.5)
+        assert hs.count == 2
+        assert hs.median_spacing_days is None
+        assert hs.gaps == () and hs.gap_count == 0
+        assert hs.largest_gap_days == 1.5  # largest gap still tracked
+
+    def test_cap_keeps_ten_largest_chronological(self, tmp_path):
+        # 12 runs of 3 daily records, 28-day holes between runs: 11 reportable
+        days = [r * 30 + s for r in range(12) for s in (1.0, 2.0, 3.0)]
+        hs = self._hs(tmp_path, *days)
+        assert hs.gap_count == 11 and len(hs.gaps) == 10
+        starts = [g.start for g in hs.gaps]
+        assert starts == sorted(starts)  # chronological
+        assert all(g.days == 28.0 for g in hs.gaps)
+
+    def test_stats_match_extract_one(self, tmp_path):
+        hs = self._hs(tmp_path, 1.0, 2.5, 10.0)
+        assert hs.count == 3
+        assert hs.elset_first == 1 and hs.elset_last == 1
+        assert hs.first == extract._epoch_dt(l1(100, day=1.0))
+        assert hs.last == extract._epoch_dt(l1(100, day=10.0))
+        assert hs.largest_gap_days == 7.5
+
+
 class TestReadme:
     """``run``'s ``write_readme`` keyword, default False, is inert this task —
     Task 3 wires the cli to pass True only for the default

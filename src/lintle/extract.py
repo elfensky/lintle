@@ -5,8 +5,10 @@ bytes each) globally sorted by ``(catalog, epoch)``, so each satellite is one
 contiguous byte range found by pure binary search — the sorted fixed-width
 stream *is* the index. Never imports sgp4; never touches the clean path."""
 
+import dataclasses
 import datetime as _dt
 import json
+import statistics
 from pathlib import Path
 
 from lintle import fsutil, term
@@ -114,6 +116,86 @@ def _epoch_dt(line1: str) -> _dt.datetime:
 
 def _iso(dt: _dt.datetime) -> str:
     return dt.isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+# A gap is reportable when the inter-epoch delta exceeds GAP_FACTOR x the
+# satellite's own median spacing; the report keeps the GAPS_CAP largest.
+GAP_FACTOR = 10
+GAPS_CAP = 10
+
+
+@dataclasses.dataclass(slots=True, frozen=True)
+class Gap:
+    """One reportable hole in a satellite's history."""
+
+    start: _dt.datetime
+    end: _dt.datetime
+    days: float
+
+
+@dataclasses.dataclass(slots=True, frozen=True)
+class HistoryStats:
+    """Pass-1 analysis of one satellite's deduped span — everything the
+    sidecar and the warn/confirm flow need, computed before a byte is
+    exported."""
+
+    count: int
+    first: _dt.datetime | None
+    last: _dt.datetime | None
+    elset_first: int | None
+    elset_last: int | None
+    largest_gap_days: float
+    largest_gap_at: _dt.datetime | None
+    median_spacing_days: float | None
+    gaps: tuple[Gap, ...]
+    gap_count: int
+
+
+def _analyze(spans: list[tuple[Path, int, int]]) -> HistoryStats:
+    """Read ``spans`` (no writing) and compute the history stats. Holds one
+    satellite's epoch list in memory — bounded (tens of thousands of records,
+    ~hundreds of KB worst case), not a corpus file, so Critical Rule #3's
+    streaming mandate is not in play."""
+    epochs: list[_dt.datetime] = []
+    elset_first = elset_last = None
+    for chunk, lo, hi in spans:
+        with open(chunk, "rb") as fh:
+            fh.seek(lo * RECORD_BYTES)
+            remaining = (hi - lo) * RECORD_BYTES
+            while remaining:
+                block = fh.read(min(_COPY_BLOCK, remaining))
+                remaining -= len(block)
+                for off in range(0, len(block), RECORD_BYTES):
+                    line1 = block[off : off + 69].decode("ascii")
+                    if not epochs:
+                        elset_first = element_set(line1)
+                    elset_last = element_set(line1)
+                    epochs.append(_epoch_dt(line1))
+    deltas = [
+        (b - a).total_seconds() / 86400.0
+        for a, b in zip(epochs, epochs[1:], strict=False)
+    ]
+    largest = max(deltas, default=0.0)
+    largest_at = epochs[deltas.index(largest) + 1] if deltas else None
+    median = statistics.median(deltas) if len(deltas) >= 2 else None
+    reportable = [
+        Gap(epochs[i], epochs[i + 1], d)
+        for i, d in enumerate(deltas)
+        if median and d > GAP_FACTOR * median
+    ]
+    top = sorted(reportable, key=lambda g: g.days, reverse=True)[:GAPS_CAP]
+    return HistoryStats(
+        count=len(epochs),
+        first=epochs[0] if epochs else None,
+        last=epochs[-1] if epochs else None,
+        elset_first=elset_first,
+        elset_last=elset_last,
+        largest_gap_days=largest,
+        largest_gap_at=largest_at,
+        median_spacing_days=median,
+        gaps=tuple(sorted(top, key=lambda g: g.start)),
+        gap_count=len(reportable),
+    )
 
 
 def _sidecar(
