@@ -391,3 +391,22 @@ class TestReadme:
             == 0
         )
         assert not (explicit_dest / "README.md").exists()
+
+
+class TestQuarantinedIds:
+    def _write_ndjson(self, tmp_path, text):
+        rdir = tmp_path / "03-report"
+        rdir.mkdir(parents=True, exist_ok=True)
+        (rdir / "broken-noradids.ndjson").write_text(text, encoding="ascii")
+
+    def test_present_ids(self, tmp_path):
+        self._write_ndjson(tmp_path, '{"noradId":100}\n{"noradId":200}\n')
+        assert extract._quarantined_ids(str(tmp_path)) == {100, 200}
+
+    def test_missing_file_is_unknown(self, tmp_path):
+        assert extract._quarantined_ids(str(tmp_path)) is None
+
+    def test_malformed_file_is_unknown_with_warning(self, tmp_path, capsys):
+        self._write_ndjson(tmp_path, "not json\n")
+        assert extract._quarantined_ids(str(tmp_path)) is None
+        assert "broken-noradids" in capsys.readouterr().err
