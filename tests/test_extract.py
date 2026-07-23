@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from lintle import extract
+from lintle import cli, extract
 from lintle.dedup import DEDUP_DIRNAME, IMPORT_STEM, IMPORT_SUFFIX
 
 
@@ -192,3 +192,31 @@ class TestRun:
         assert not (dest / "200.txt").exists()
         assert not (dest / "200.json").exists()
         assert list(dest.glob("*.partial")) == []
+
+
+class TestCli:
+    def test_end_to_end(self, tmp_path, monkeypatch):
+        out = write_import_tree(tmp_path, recs((200, 1.0), (200, 2.0)), 10)
+        dest = tmp_path / "dest"
+        monkeypatch.chdir(tmp_path)
+        rc = cli.main(["extract", "200", "--out-dir", str(out), "--dest", str(dest)])
+        assert rc == 0
+        assert (dest / "200.txt").exists() and (dest / "200.json").exists()
+
+    def test_dest_defaults_to_cwd(self, tmp_path, monkeypatch):
+        out = write_import_tree(tmp_path, recs((300, 1.0)), 10)
+        workdir = tmp_path / "wd"
+        workdir.mkdir()
+        monkeypatch.chdir(workdir)
+        assert cli.main(["extract", "300", "--out-dir", str(out)]) == 0
+        assert (workdir / "300.txt").exists()
+
+    def test_missing_tree_exit_2(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.chdir(tmp_path)
+        rc = cli.main(["extract", "200", "--out-dir", str(tmp_path / "nope")])
+        assert rc == 2
+        assert "dedup" in capsys.readouterr().err
+
+    def test_rejects_non_numeric_id(self, tmp_path, capsys):
+        with pytest.raises(SystemExit):
+            cli.main(["extract", "ISS", "--out-dir", str(tmp_path)])

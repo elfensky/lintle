@@ -415,6 +415,41 @@ def _add_dedup_subparser(subparsers):
     _add_chunk_records_arg(dedup_parser)
 
 
+def _add_extract_subparser(subparsers):
+    """Add the ``extract`` subparser: one satellite's complete deduped TLE
+    history from a prior dedup run — ``<id>.txt`` (pure 2-line records,
+    epoch-ascending) plus a ``<id>.json`` stats sidecar, per requested id."""
+    extract_parser = subparsers.add_parser(
+        "extract",
+        help="extract one satellite's complete TLE history from a dedup run",
+        description=(
+            "Extract each NORAD id's complete deduped history from "
+            "<out-dir>/dedup into <dest>/<id>.txt (pure TLE lines, "
+            "epoch-ascending) and <dest>/<id>.json (stats). Read-only and "
+            "local; requires a prior 'lintle dedup' run."
+        ),
+    )
+    extract_parser.add_argument(
+        "norad_ids",
+        metavar="NORAD-ID",
+        nargs="+",
+        type=int,
+        help="catalog number(s) to extract (1-99999)",
+    )
+    extract_parser.add_argument(
+        "--out-dir",
+        metavar="DIR",
+        default=_DEFAULT_OUTPUT,
+        help="pipeline output tree holding dedup/ (default: %(default)s)",
+    )
+    extract_parser.add_argument(
+        "--dest",
+        metavar="DIR",
+        default=".",
+        help="where <id>.txt / <id>.json are written (default: cwd)",
+    )
+
+
 def build_parser():
     """Build the ``lintle`` argument parser."""
     parser = argparse.ArgumentParser(
@@ -435,13 +470,14 @@ def build_parser():
     subparsers = parser.add_subparsers(
         dest="command",
         required=False,
-        metavar="{clean,dedup,diff,explain,report,verify}",
+        metavar="{clean,dedup,diff,explain,extract,report,verify}",
         title="commands",
     )
     _add_clean_subparser(subparsers)
     _add_dedup_subparser(subparsers)
     _add_diff_subparser(subparsers)
     _add_explain_subparser(subparsers)
+    _add_extract_subparser(subparsers)
     _add_report_subparser(subparsers)
     _add_verify_subparser(subparsers)
     return parser
@@ -576,6 +612,9 @@ def _apply_config_paths(args, argv, config):
             args.source = args.source or config.get("source") or _DEFAULT_SOURCE
         case "report" | "dedup":
             args.out_dir = args.out_dir or config.get("output") or _DEFAULT_OUTPUT
+        case "extract":
+            if not _flag_present(argv, "--out-dir") and config.get("output"):
+                args.out_dir = config["output"]
 
 
 def _locked_postrun(out_dir, name, action):
@@ -706,6 +745,20 @@ def main(argv=None):
                 args.out_dir,
                 "dedup",
                 lambda: dedup.run(args.out_dir, args.chunk_records),
+            )
+
+        # `extract` reads a prior dedup run's import chunk set (read-only) and
+        # writes only <dest>, which is never <out-dir> by default — but runs
+        # under the same out-dir lock as dedup/verify since a concurrent
+        # `clean` scrubbing the out-dir mid-read would corrupt it.
+        case "extract":
+            # Lazy for the wall: extract imports lintle.verify parsers.
+            from lintle import extract as extract_mod
+
+            return _locked_postrun(
+                args.out_dir,
+                "extract",
+                lambda: extract_mod.run(args.out_dir, args.norad_ids, args.dest),
             )
 
     # `args.path` is None when the user passed nothing — fall back to the
