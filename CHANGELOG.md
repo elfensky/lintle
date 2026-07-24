@@ -14,6 +14,12 @@ All notable changes to this project are documented in this file. The format is b
   gap, elset range, provenance). Binary search over the sorted fixed-width
   `dedup/import` chunks — no index artifact, works on any existing dedup
   output. `--dest` picks the destination (default: cwd); missing ids exit 2.
+- **`lintle extract` now warns when a satellite's history has reportable gaps
+  (> 10× its median epoch spacing) or records quarantined during `clean`,
+  shows the gaps, and — on a TTY — asks y/n before exporting (non-TTY runs
+  warn and proceed; declining skips that satellite without an error). The
+  `<id>.json` sidecar is schema v2: `median_spacing_days`, `gap_count`,
+  `gaps`, `had_quarantined_records`.
 - **Every out-dir step ships its own `README.md`.** `clean` writes the root
   overview plus `01-cleaned/`, `02-broken/`, `03-report/` READMEs; `verify`,
   `dedup`, and `extract` write their own into `04-verify/`, `05-dedup/`, and
