@@ -199,10 +199,14 @@ class TestRun:
         assert list(dest.glob("*.partial")) == []
 
     def test_failed_rerun_preserves_previous_good_pair(self, tmp_path, monkeypatch):
-        # A prior successful run's <id>.txt + <id>.json must survive a later
-        # failed re-run untouched (Finding 1): the except-block cleanup must
-        # not blindly unlink the final txt path, or a re-run failure destroys
-        # good output from an earlier run and orphans its sidecar.
+        # Pre-commit failure on a re-run: pass-1 analysis (_epoch_dt) raises
+        # before the txt is ever copied or committed, so a prior successful
+        # run's <id>.txt + <id>.json must survive untouched (Finding 1): the
+        # except-block cleanup must not blindly unlink the final txt path, or
+        # a re-run failure destroys good output from an earlier run and
+        # orphans its sidecar. This only covers the pre-txt-commit path — see
+        # test_sidecar_failure_on_rerun_rolls_back_pair for the post-commit
+        # case, where the pair is rolled back as a unit instead.
         out = write_import_tree(tmp_path, recs((100, 1.0), (100, 2.5)), 10)
         dest = tmp_path / "dest"
         dest.mkdir()
@@ -218,10 +222,30 @@ class TestRun:
         assert (dest / "100.txt").read_bytes() == txt_before
         assert (dest / "100.json").read_bytes() == json_before
 
+    def test_sidecar_failure_on_rerun_rolls_back_pair(self, tmp_path, monkeypatch):
+        # Post-commit failure on a re-run: the new txt has already replaced
+        # the old one, so the pair rolls back as a unit — both files removed,
+        # never a mismatched txt/json pair left behind.
+        out = write_import_tree(tmp_path, recs((100, 1.0), (100, 2.5)), 10)
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        assert extract.run(str(out), [100], str(dest)) == 0
+        real = extract.fsutil.durable_write_text
+
+        def flaky(path, text, *, encoding="utf-8"):
+            if path.endswith("100.json"):
+                raise OSError("boom")
+            return real(path, text, encoding=encoding)
+
+        monkeypatch.setattr(extract.fsutil, "durable_write_text", flaky)
+        assert extract.run(str(out), [100], str(dest)) == 2
+        assert not (dest / "100.txt").exists()
+        assert not (dest / "100.json").exists()
+
     def test_copy_failure_cleans_written_partial(self, tmp_path, monkeypatch):
         # Failure during pass-2 _copy_spans — after real bytes hit the tmp —
         # must still remove the partial and leave the destination untouched.
-        out = write_import_tree(tmp_path, recs((100, 1.0), (300, 1.0)), 10)
+        out = write_import_tree(tmp_path, recs((100, 1.0)), 10)
         dest = tmp_path / "dest"
         dest.mkdir()
         real_copy = extract._copy_spans

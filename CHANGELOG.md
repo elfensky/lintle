@@ -13,7 +13,8 @@ All notable changes to this project are documented in this file. The format is b
   deterministic `<id>.json` stats sidecar (record count, epoch range, largest
   gap, elset range, provenance). Binary search over the sorted fixed-width
   `dedup/import` chunks — no index artifact, works on any existing dedup
-  output. `--dest` picks the destination (default: cwd); missing ids exit 2.
+  output. `--dest` picks the destination (default: `<out-dir>/06-extract/`);
+  missing ids exit 2.
 - **`lintle extract` now warns when a satellite's history has reportable gaps
   (> 10× its median epoch spacing) or records quarantined during `clean`,
   shows the gaps, and — on a TTY — asks y/n before exporting (non-TTY runs
