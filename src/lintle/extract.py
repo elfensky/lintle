@@ -216,32 +216,53 @@ def _analyze(spans: list[tuple[Path, int, int]]) -> HistoryStats:
     )
 
 
+def _copy_spans(spans: list[tuple[Path, int, int]], out) -> None:
+    """Pass 2: verbatim byte copy of ``spans`` into the open binary file
+    ``out`` — no decoding, no stats (pass 1 already has them)."""
+    for chunk, lo, hi in spans:
+        with open(chunk, "rb") as fh:
+            fh.seek(lo * RECORD_BYTES)
+            remaining = (hi - lo) * RECORD_BYTES
+            while remaining:
+                block = fh.read(min(_COPY_BLOCK, remaining))
+                out.write(block)
+                remaining -= len(block)
+
+
 def _sidecar(
-    out_dir: str,
-    catalog: int,
-    first: _dt.datetime,
-    last: _dt.datetime,
-    stats: dict,
-    gap: float,
-    gap_at: _dt.datetime | None,
+    out_dir: str, catalog: int, hs: HistoryStats, had_quarantined: bool | None
 ) -> str:
     """The ``<id>.json`` document (sorted keys, 2-space indent, trailing LF —
-    the house deterministic-JSON shape)."""
-    span = (last - first).total_seconds() / 86400.0
+    the house deterministic-JSON shape). Schema v2 adds the gap-awareness
+    fields; ``had_quarantined`` is tri-state (None = clean report absent)."""
+    span = (hs.last - hs.first).total_seconds() / 86400.0
     summary_path = Path(out_dir) / DEDUP_DIRNAME / "summary.json"
     summary = json.loads(summary_path.read_text(encoding="ascii"))
     doc = {
-        "schema_version": "1",
+        "schema_version": "2",
         "norad_id": catalog,
-        "records": stats["count"],
-        "first_epoch": _iso(first),
-        "last_epoch": _iso(last),
+        "records": hs.count,
+        "first_epoch": _iso(hs.first),
+        "last_epoch": _iso(hs.last),
         "span_days": round(span, 6),
-        "mean_records_per_day": round(stats["count"] / span, 6) if span else None,
-        "largest_gap_days": round(gap, 6),
-        "largest_gap_at": _iso(gap_at) if gap_at is not None else None,
-        "element_set_first": stats["elset_first"],
-        "element_set_last": stats["elset_last"],
+        "mean_records_per_day": round(hs.count / span, 6) if span else None,
+        "largest_gap_days": round(hs.largest_gap_days, 6),
+        "largest_gap_at": (
+            _iso(hs.largest_gap_at) if hs.largest_gap_at is not None else None
+        ),
+        "median_spacing_days": (
+            round(hs.median_spacing_days, 6)
+            if hs.median_spacing_days is not None
+            else None
+        ),
+        "gap_count": hs.gap_count,
+        "gaps": [
+            {"start": _iso(g.start), "end": _iso(g.end), "days": round(g.days, 6)}
+            for g in hs.gaps
+        ],
+        "had_quarantined_records": had_quarantined,
+        "element_set_first": hs.elset_first,
+        "element_set_last": hs.elset_last,
         "source": {
             "out_dir": str(Path(out_dir)),
             "dedup_records_written": summary.get("records_written"),
@@ -251,55 +272,33 @@ def _sidecar(
     return json.dumps(doc, indent=2, sort_keys=True) + "\n"
 
 
-def _extract_one(out_dir: str, catalog: int, dest: Path) -> bool:
-    """Extract one satellite: stream its byte range verbatim to
-    ``<dest>/<id>.txt`` (durable temp-then-rename) and write the stats sidecar.
-    ``<id>.txt`` + ``<id>.json`` are one atomic unit: a failure anywhere in the
-    txt-stream + txt-commit + sidecar-write sequence leaves nothing behind for
-    this run's attempted output. A failed extraction leaves the destination
-    exactly as it found it — pre-existing files from an earlier successful run
-    are never touched. False if the catalog has no records."""
+def _extract_one(
+    out_dir: str, catalog: int, dest: Path, quarantined: set[int] | None
+) -> bool:
+    """Extract one satellite in two passes: analyze the span read-only, then
+    stream its byte range verbatim to ``<dest>/<id>.txt`` (durable
+    temp-then-rename) and write the stats sidecar. ``<id>.txt`` + ``<id>.json``
+    are one atomic unit: a failure anywhere in the txt-stream + txt-commit +
+    sidecar-write sequence leaves nothing behind for this run's attempted
+    output, and pre-existing files from an earlier successful run are never
+    touched. False if the catalog has no records."""
     spans = find_spans(out_dir, catalog)
     if not spans:
         return False
+    hs = _analyze(spans)
+    had_quarantined = None if quarantined is None else catalog in quarantined
     txt = dest / f"{catalog}.txt"
     tmp = str(txt) + fsutil.PARTIAL_SUFFIX
     sidecar_partial = str(dest / f"{catalog}.json") + fsutil.PARTIAL_SUFFIX
-    first = last = gap_at = None
-    prev = None
-    gap = 0.0
-    stats = {"count": 0, "elset_first": None, "elset_last": None}
     committed = False
     try:
         with open(tmp, "wb") as out:
-            for chunk, lo, hi in spans:
-                with open(chunk, "rb") as fh:
-                    fh.seek(lo * RECORD_BYTES)
-                    remaining = (hi - lo) * RECORD_BYTES
-                    while remaining:
-                        block = fh.read(min(_COPY_BLOCK, remaining))
-                        out.write(block)
-                        remaining -= len(block)
-                        # per-record stats over the block (records never
-                        # split blocks: both are multiples of RECORD_BYTES)
-                        for off in range(0, len(block), RECORD_BYTES):
-                            line1 = block[off : off + 69].decode("ascii")
-                            dt = _epoch_dt(line1)
-                            if first is None:
-                                first = dt
-                                stats["elset_first"] = element_set(line1)
-                            if prev is not None:
-                                step = (dt - prev).total_seconds() / 86400.0
-                                if step > gap:
-                                    gap, gap_at = step, dt
-                            prev = last = dt
-                            stats["elset_last"] = element_set(line1)
-                            stats["count"] += 1
+            _copy_spans(spans, out)
         fsutil.durable_replace(tmp, str(txt))
         committed = True
         fsutil.durable_write_text(
             str(dest / f"{catalog}.json"),
-            _sidecar(out_dir, catalog, first, last, stats, gap, gap_at),
+            _sidecar(out_dir, catalog, hs, had_quarantined),
             encoding="ascii",
         )
     except Exception:
@@ -324,6 +323,7 @@ def run(
     and is never decorated; the cli passes True only when ``dest`` resolved to
     the default ``<out-dir>/06-extract`` (Task 3)."""
     _import_chunks(out_dir)  # raises ExtractError before any per-catalog work
+    quarantined = _quarantined_ids(out_dir)
     dest_dir = Path(dest)
     dest_dir.mkdir(parents=True, exist_ok=True)
     if write_readme:
@@ -333,7 +333,7 @@ def run(
     missing = []
     for catalog in catalogs:
         try:
-            found = _extract_one(out_dir, catalog, dest_dir)
+            found = _extract_one(out_dir, catalog, dest_dir, quarantined)
         except Exception as exc:
             term.error(f"extraction failed for catalog {catalog}: {exc}")
             missing.append(catalog)
