@@ -218,6 +218,24 @@ class TestRun:
         assert (dest / "100.txt").read_bytes() == txt_before
         assert (dest / "100.json").read_bytes() == json_before
 
+    def test_copy_failure_cleans_written_partial(self, tmp_path, monkeypatch):
+        # Failure during pass-2 _copy_spans — after real bytes hit the tmp —
+        # must still remove the partial and leave the destination untouched.
+        out = write_import_tree(tmp_path, recs((100, 1.0), (300, 1.0)), 10)
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        real_copy = extract._copy_spans
+
+        def flaky(spans, out_fh):
+            real_copy(spans, out_fh)  # bytes genuinely written first
+            raise OSError("disk full")
+
+        monkeypatch.setattr(extract, "_copy_spans", flaky)
+        assert extract.run(str(out), [100], str(dest)) == 2
+        assert not (dest / "100.txt").exists()
+        assert not (dest / "100.txt.partial").exists()
+        assert list(dest.glob("*")) == []
+
     def test_sidecar_bytes_golden(self, tmp_path):
         out = write_import_tree(tmp_path, recs((100, 1.0), (100, 2.5)))
         dest = tmp_path / "dest"
