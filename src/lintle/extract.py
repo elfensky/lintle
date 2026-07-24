@@ -3,7 +3,9 @@
 ``05-dedup/import.*`` chunk set holds only validated-perfect records (exactly 140
 bytes each) globally sorted by ``(catalog, epoch)``, so each satellite is one
 contiguous byte range found by pure binary search — the sorted fixed-width
-stream *is* the index. Never imports sgp4; never touches the clean path."""
+stream *is* the index. Never imports sgp4; never touches the clean path. Warns
+— and, interactively, confirms — before exporting a history with reportable
+gaps or upstream-quarantined records."""
 
 import dataclasses
 import datetime as _dt
@@ -27,7 +29,7 @@ _README = """\
 - `<id>.txt` — one satellite's complete deduped TLE history: pure 2-line
   records, epoch-ascending, byte-identical to the source records.
 - `<id>.json` — a stats sidecar for that history (record count, epoch span,
-  largest gap, element-set range).
+  median spacing, reportable gaps, quarantine flag, element-set range).
 
 Regenerate with `lintle extract <id>`.
 """
