@@ -4,6 +4,17 @@ All notable changes to this project are documented in this file. The format is b
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.11.1] - 2026-07-24
+
+### Fixed
+
+- **Fresh runs scrub the unnumbered root `verify/` and `dedup/` dirs every
+  0.10.x wrote.** The 0.11.0 flat-layout scrub removed the `data/` tree and the
+  ≤ 0.10.0 root layout but let these two legacy dirs survive beside
+  `04-verify/`/`05-dedup/`, leaving stale results next to fresh ones (flagged
+  in PR #180's final review; confirmed during the 0.11.0 corpus regeneration).
+  Regression test: `test_scrub_removes_legacy_root_verify_and_dedup`.
+
 ## [0.11.0] - 2026-07-24
 
 ### Added

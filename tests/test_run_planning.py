@@ -375,6 +375,18 @@ class TestScrubOutputs:
         run_planning.scrub_outputs(str(out))
         assert not (out / "data").exists()
 
+    def test_scrub_removes_legacy_root_verify_and_dedup(self, tmp_path):
+        # 0.10.x wrote verify/ and dedup/ at the out-dir root; they must not
+        # survive a fresh run beside 04-verify/05-dedup (PR #180 follow-up).
+        out = tmp_path / "out"
+        (out / "verify").mkdir(parents=True)
+        (out / "verify" / "suspects.00001.jsonl").write_text("stale")
+        (out / "dedup").mkdir(parents=True)
+        (out / "dedup" / "import.00001.txt").write_text("stale")
+        run_planning.scrub_outputs(str(out))
+        assert not (out / "verify").exists()
+        assert not (out / "dedup").exists()
+
     def test_scrub_removes_numbered_dirs(self, tmp_path):
         out = tmp_path / "out"
         for d in ("01-cleaned", "02-broken", "03-report"):
