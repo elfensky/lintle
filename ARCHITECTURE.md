@@ -387,9 +387,10 @@ the step that owns it, at the same point it writes that dir's artifacts. Transie
 state (`.shards/`, `.clean-state.json`, `.clean.lock`, `.lintle-output`) stays at the root
 as machinery, not step output. The naming constants (`CLEANED_DIRNAME` … `EXTRACT_DIRNAME`)
 live in `lintle/__init__.py`, the single source of truth every consumer imports from.
-Outputs from ≤ 0.10.3 (the `data/` layout) or ≤ 0.10.0 (bare `cleaned/`/`broken/` at the
-root) are not migrated — regenerate them; a fresh `clean` run scrubs both legacy layouts
-from `--out-dir` before writing the new one.
+Outputs from ≤ 0.10.3 (the `data/` layout, plus the unnumbered root `verify/`/`dedup/`
+every 0.10.x wrote) or ≤ 0.10.0 (bare `cleaned/`/`broken/` at the root) are not
+migrated — regenerate them; a fresh `clean` run scrubs all legacy layouts from
+`--out-dir` before writing the new one.
 
 **Chunked output layout.** Every record/line output *stream* is split into an always-indexed
 `<stem>.NNNNN.<suffix>` chunk set of `--chunk-records` units each (default 1,000,000 ≈ 140 MB),
