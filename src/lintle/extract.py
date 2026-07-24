@@ -70,7 +70,7 @@ def _quarantined_ids(out_dir: str) -> set[int] | None:
             for line in path.read_text(encoding="ascii").splitlines()
             if line
         }
-    except json.JSONDecodeError, KeyError, TypeError, UnicodeDecodeError:
+    except json.JSONDecodeError, KeyError, TypeError, UnicodeDecodeError, OSError:
         term.warning(f"unreadable {path.name} — quarantine info unavailable")
         return None
 
