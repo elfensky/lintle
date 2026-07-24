@@ -186,9 +186,11 @@ def scrub_outputs(out_dir):
     # Legacy (0.10.1–0.10.3) grouped layout.
     shutil.rmtree(out / "data", ignore_errors=True)
     # Legacy (≤ 0.10.0) wrote cleaned/, broken/, and the report artifacts at the
-    # out-dir root — clear any that linger so a fresh run over an old
-    # out-dir starts clean.
-    for sub in ("cleaned", "broken", "report"):
+    # out-dir root, and every 0.10.x verify/dedup wrote unnumbered verify/ and
+    # dedup/ there — clear any that linger so a fresh run over an old out-dir
+    # starts clean (PR #180 follow-up: verify/ and dedup/ used to survive
+    # beside 04-verify/05-dedup).
+    for sub in ("cleaned", "broken", "report", "verify", "dedup"):
         shutil.rmtree(out / sub, ignore_errors=True)
     for name in _REPORT_ARTIFACTS:
         with contextlib.suppress(OSError):
