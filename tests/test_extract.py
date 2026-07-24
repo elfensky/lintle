@@ -410,3 +410,15 @@ class TestQuarantinedIds:
         self._write_ndjson(tmp_path, "not json\n")
         assert extract._quarantined_ids(str(tmp_path)) is None
         assert "broken-noradids" in capsys.readouterr().err
+
+    def test_unreadable_file_is_unknown_with_warning(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        self._write_ndjson(tmp_path, '{"noradId":100}\n')
+        monkeypatch.setattr(
+            extract.Path,
+            "read_text",
+            lambda self, encoding=None: (_ for _ in ()).throw(PermissionError("boom")),
+        )
+        assert extract._quarantined_ids(str(tmp_path)) is None
+        assert "broken-noradids" in capsys.readouterr().err
