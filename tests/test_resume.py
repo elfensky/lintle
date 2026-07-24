@@ -9,7 +9,6 @@ from lintle import (
     BROKEN_DIRNAME,
     CLEANED_DIRNAME,
     CLEANED_SUFFIX,
-    DATA_DIRNAME,
     FINDINGS_SUFFIX,
     SHARDS_DIRNAME,
     resume,
@@ -163,13 +162,13 @@ def _ckpt(inputs):
 
 
 class TestBuildCheckpoint:
-    def test_schema_version_is_3_and_records_run_identity(self):
+    def test_schema_version_is_4_and_records_run_identity(self):
         ckpt = resume.build_checkpoint(
             inputs={"a.txt": {"size": 1}},
             completed={"a.txt": {"summary": {"clean_count": 3}, "outputs": {}}},
             run_identity={"args": []},
         )
-        assert ckpt["schema_version"] == 3
+        assert ckpt["schema_version"] == 4
         assert ckpt["run_identity"] == {"args": []}
         assert ckpt["completed"]["a.txt"]["summary"]["clean_count"] == 3
 
@@ -363,6 +362,22 @@ class TestClassifyCheckpoint:
         assert c.status is resume.CheckpointStatus.STALE
         assert "changed" in c.reason
 
+    def test_stale_on_old_schema_version(self, tmp_path):
+        # A checkpoint written by a lintle that predates the flat numbered
+        # layout (schema 3, or any schema other than the current one) must
+        # classify STALE, not VALID — the recorded chunk basenames no longer
+        # resolve against the new dirs.
+        ck = resume.build_checkpoint(
+            inputs={"a.txt": {"size": 1}}, completed={}, run_identity={"args": []}
+        )
+        ck["schema_version"] = resume.SCHEMA_VERSION - 1
+        resume.write_checkpoint(str(tmp_path), ck)
+        c = resume.classify_checkpoint(
+            str(tmp_path), {"a.txt": {"size": 1}}, {"args": []}
+        )
+        assert c.status is resume.CheckpointStatus.STALE
+        assert "schema_version" in c.reason
+
 
 class TestVerifyCompletedOutputs:
     def _completed(self, name, cleaned_size):
@@ -375,8 +390,8 @@ class TestVerifyCompletedOutputs:
 
     def test_intact_outputs_are_trusted(self, tmp_path):
         out = tmp_path
-        (out / DATA_DIRNAME / "cleaned").mkdir(parents=True)
-        (out / DATA_DIRNAME / "cleaned" / "tle2099.cleaned.txt").write_bytes(b"x" * 100)
+        (out / CLEANED_DIRNAME).mkdir(parents=True)
+        (out / CLEANED_DIRNAME / "tle2099.cleaned.txt").write_bytes(b"x" * 100)
         assert (
             resume.verify_completed_outputs(
                 self._completed("tle2099.txt", 100), str(out)
@@ -391,8 +406,8 @@ class TestVerifyCompletedOutputs:
 
     def test_truncated_output_flags_reprocess(self, tmp_path):
         out = tmp_path
-        (out / DATA_DIRNAME / "cleaned").mkdir(parents=True)
-        (out / DATA_DIRNAME / "cleaned" / "tle2099.cleaned.txt").write_bytes(b"x" * 7)
+        (out / CLEANED_DIRNAME).mkdir(parents=True)
+        (out / CLEANED_DIRNAME / "tle2099.cleaned.txt").write_bytes(b"x" * 7)
         assert resume.verify_completed_outputs(
             self._completed("tle2099.txt", 100), str(out)
         ) == ["tle2099.txt"]
@@ -403,8 +418,8 @@ class TestVerifyCompletedOutputs:
         # ``.cleaned.txt`` is still located if it exists. (Old suffix-routing
         # would look in broken/, miss it, and falsely flag a reprocess.)
         out = tmp_path
-        (out / DATA_DIRNAME / "cleaned").mkdir(parents=True)
-        (out / DATA_DIRNAME / "cleaned" / "weird.name").write_bytes(b"x" * 50)
+        (out / CLEANED_DIRNAME).mkdir(parents=True)
+        (out / CLEANED_DIRNAME / "weird.name").write_bytes(b"x" * 50)
         completed = {"in.txt": {"summary": {}, "outputs": {"weird.name": 50}}}
         assert resume.verify_completed_outputs(completed, str(out)) == []
 
@@ -559,11 +574,11 @@ class TestOutputSizes:
     def test_records_each_cleaned_chunk(self, tmp_path):
         st = self._make_stats("tle2099.txt")
         self._write(
-            tmp_path / DATA_DIRNAME / CLEANED_DIRNAME / "tle2099.00001.cleaned.txt",
+            tmp_path / CLEANED_DIRNAME / "tle2099.00001.cleaned.txt",
             b"x" * 200,
         )
         self._write(
-            tmp_path / DATA_DIRNAME / CLEANED_DIRNAME / "tle2099.00002.cleaned.txt",
+            tmp_path / CLEANED_DIRNAME / "tle2099.00002.cleaned.txt",
             b"y" * 50,
         )
         sizes = resume.output_sizes(str(tmp_path), st)
@@ -575,7 +590,7 @@ class TestOutputSizes:
         # quarantined), so its chunk set must always be recorded.
         st = self._make_stats("tle2099.txt", quarantined_count=0)
         self._write(
-            tmp_path / DATA_DIRNAME / BROKEN_DIRNAME / "tle2099.00001.broken.txt",
+            tmp_path / BROKEN_DIRNAME / "tle2099.00001.broken.txt",
             b"# header\n",
         )
         sizes = resume.output_sizes(str(tmp_path), st)
@@ -598,6 +613,23 @@ class TestOutputSizes:
         sizes = resume.output_sizes(str(tmp_path), st)
         assert sizes == {}
 
+    def test_readme_basenames_are_never_recorded(self, tmp_path):
+        # Task 2 (flat-numbered-layout): each step dir now carries its own
+        # README.md. It is data ABOUT the dir, not a per-file output chunk, so
+        # it must never show up in the resume integrity check — a pin: the
+        # chunk-set reader is stem+suffix scoped and the shard stat is an
+        # exact findings-suffix name, so a README.md basename can't match
+        # either path; this test documents and locks in that immunity.
+        st = self._make_stats("tle2099.txt")
+        self._write(
+            tmp_path / CLEANED_DIRNAME / "tle2099.00001.cleaned.txt",
+            b"x" * 200,
+        )
+        self._write(tmp_path / CLEANED_DIRNAME / "README.md", b"# 01-cleaned\n")
+        self._write(tmp_path / BROKEN_DIRNAME / "README.md", b"# 02-broken\n")
+        sizes = resume.output_sizes(str(tmp_path), st)
+        assert "README.md" not in sizes
+
 
 class TestVerifyCompletedOutputsWithShard:
     """verify_completed_outputs must flag reprocessing when the shard is missing
@@ -616,10 +648,8 @@ class TestVerifyCompletedOutputsWithShard:
         }
 
     def test_intact_shard_not_flagged(self, tmp_path):
-        (tmp_path / DATA_DIRNAME / CLEANED_DIRNAME).mkdir(parents=True)
-        (tmp_path / DATA_DIRNAME / CLEANED_DIRNAME / "tle2099.cleaned.txt").write_bytes(
-            b"x" * 100
-        )
+        (tmp_path / CLEANED_DIRNAME).mkdir(parents=True)
+        (tmp_path / CLEANED_DIRNAME / "tle2099.cleaned.txt").write_bytes(b"x" * 100)
         (tmp_path / SHARDS_DIRNAME).mkdir()
         (tmp_path / SHARDS_DIRNAME / "tle2099.findings.jsonl").write_bytes(b"y" * 50)
         assert (
@@ -631,20 +661,16 @@ class TestVerifyCompletedOutputsWithShard:
 
     def test_missing_shard_flags_reprocess(self, tmp_path):
         # Shard deleted out-of-band → file should be reprocessed.
-        (tmp_path / DATA_DIRNAME / CLEANED_DIRNAME).mkdir(parents=True)
-        (tmp_path / DATA_DIRNAME / CLEANED_DIRNAME / "tle2099.cleaned.txt").write_bytes(
-            b"x" * 100
-        )
+        (tmp_path / CLEANED_DIRNAME).mkdir(parents=True)
+        (tmp_path / CLEANED_DIRNAME / "tle2099.cleaned.txt").write_bytes(b"x" * 100)
         # No shard directory / shard file created.
         assert resume.verify_completed_outputs(
             self._completed_with_shard("tle2099.txt", 100, 50), str(tmp_path)
         ) == ["tle2099.txt"]
 
     def test_truncated_shard_flags_reprocess(self, tmp_path):
-        (tmp_path / DATA_DIRNAME / CLEANED_DIRNAME).mkdir(parents=True)
-        (tmp_path / DATA_DIRNAME / CLEANED_DIRNAME / "tle2099.cleaned.txt").write_bytes(
-            b"x" * 100
-        )
+        (tmp_path / CLEANED_DIRNAME).mkdir(parents=True)
+        (tmp_path / CLEANED_DIRNAME / "tle2099.cleaned.txt").write_bytes(b"x" * 100)
         (tmp_path / SHARDS_DIRNAME).mkdir()
         # Write only 10 bytes, but checkpoint says 50.
         (tmp_path / SHARDS_DIRNAME / "tle2099.findings.jsonl").write_bytes(b"y" * 10)
@@ -687,9 +713,7 @@ class TestCompletedEntryRoundTrip:
         # The worker_pool construction recipe must produce an entry with a
         # summary dict and an outputs dict; the summary must include src_name.
         st = FileStats(src_name="tle2099.txt")
-        self._write_output(
-            tmp_path, f"{DATA_DIRNAME}/{CLEANED_DIRNAME}", "tle2099.00001.cleaned.txt"
-        )
+        self._write_output(tmp_path, CLEANED_DIRNAME, "tle2099.00001.cleaned.txt")
         entry = self._entry(str(tmp_path), st)
         assert isinstance(entry.summary, dict)
         assert isinstance(entry.outputs, dict)
@@ -704,7 +728,7 @@ class TestCompletedEntryRoundTrip:
         data = b"y" * 80
         self._write_output(
             tmp_path,
-            f"{DATA_DIRNAME}/{CLEANED_DIRNAME}",
+            CLEANED_DIRNAME,
             "tle2099.00001.cleaned.txt",
             data,
         )
@@ -719,15 +743,13 @@ class TestCompletedEntryRoundTrip:
         data = b"z" * 60
         self._write_output(
             tmp_path,
-            f"{DATA_DIRNAME}/{CLEANED_DIRNAME}",
+            CLEANED_DIRNAME,
             "tle2099.00001.cleaned.txt",
             data,
         )
         entry = self._entry(str(tmp_path), st)
         # Remove the output chunk to simulate a post-completion corruption.
-        (
-            tmp_path / DATA_DIRNAME / CLEANED_DIRNAME / "tle2099.00001.cleaned.txt"
-        ).unlink()
+        (tmp_path / CLEANED_DIRNAME / "tle2099.00001.cleaned.txt").unlink()
         completed = {"tle2099.txt": entry.as_dict()}
         assert resume.verify_completed_outputs(completed, str(tmp_path)) == [
             "tle2099.txt"

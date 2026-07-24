@@ -4,12 +4,12 @@ import io
 
 from rich.console import Console
 
-from lintle import DATA_DIRNAME, REPORT_DIRNAME, report, summary
+from lintle import REPORT_DIRNAME, report, summary
 
 
 def _report_json_path(tmp_path):
-    """The path summary.run reads: ``<out_dir>/data/report/report.json``."""
-    d = tmp_path / DATA_DIRNAME / REPORT_DIRNAME
+    """The path summary.run reads: ``<out_dir>/03-report/report.json``."""
+    d = tmp_path / REPORT_DIRNAME
     d.mkdir(parents=True, exist_ok=True)
     return d / "report.json"
 

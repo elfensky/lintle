@@ -72,6 +72,7 @@ cli.py ──▶ pipeline.py ──▶ repair.py ──▶ tle.py
   ├──▶ term.py          (stderr+stdout rich Consoles + error/warning/note/prompt + is_interactive/prompt_yes_no)
   ├──▶ verify/          (`lintle verify` auditor — own package; → tle, term; cli edge lazy, never in the clean path)
   ├──▶ dedup.py ──▶ verify/  (`lintle dedup` — latest-re-issue import list; → verify.{checks,grouping,records}, fsutil, term; cli edge lazy)
+  ├──▶ extract.py ──▶ dedup.py, verify/  (`lintle extract` — per-satellite TLE history; → dedup naming constants, verify.{checks,epoch,records}, chunking, fsutil, term; cli edge lazy)
   └──▶ wizard.py ──▶ config.py   (no-subcommand TTY menu; cli.main is injected — wizard never imports cli)
 
 verify/   (lintle verify — Increment-1 core + opt-in --orbit physics pass; cli ──▶ verify, never the reverse)
@@ -111,7 +112,8 @@ config.py    stdlib-JSON leaf — ./.lintle.json load/save (no internal deps)
 | `cli.py` | argparse, globbing, and top-level `clean` orchestration: delegates preflight to `run_planning`, dispatch to `worker_pool`, signal/shutdown to `process_control`, the quality-gate exit policy to `thresholds`, run finalization to `output_artifacts`, and the aggregate panel / `report` render to `summary`; owns the resulting process exit code. |
 | `cli_progress.py` | Rich presentation leaf for `clean`: the live `ProgressDisplay`, the pre-run `render_roster`, and the `status` spinner. Consumes `pipeline`'s typed progress messages. Imports `humanize` for human-readable roster sizes (`naturalsize(gnu=True)`). |
 | `verify/` | The `lintle verify` post-run auditor (own package): `epoch` (epoch-key parsing), `records` (the `CleanedRecord` dataclass + cleaned-tree readers), `grouping` (the spill-to-disk `ExternalSorter` for the constant-memory contradiction pass), `checks` (`revalidate` / `find_conflicts` — both routing the #158 same-epoch clash through the one `_is_clash` predicate `has_epoch_clash` also uses — / the `SourceAligner` byte-diff: a null object built via `SourceAligner.open`, inert when a stem has no source, whose `feed(rec, revalidated=...)` internalizes the revalidate-skip policy so `run`'s loop carries no aligner guards), `report` (`VerifyRule`, `Suspect`, and the `SuspectSink` (which owns the exit-code rule) — an external merge-sort that streams suspects to disk and renders `suspects.jsonl` + `summary.{json,md}` at flat peak memory, byte-identical to its list renderers; #156), `__init__.run` (orchestration), and `orbit` (Increment 2 — the opt-in sampled `sgp4` orbit-consistency pass: adjacent-pair position residuals, soft `VRFY-ORBIT-OUTLIER` outliers, deterministic 0.1 km quantum; refined in #163 with regime-aware gap gates (GEO 7-day vs LEO/MEO 3-day), a windowed local-median threshold term, leave-one-out culprit isolation for lone interior spikes, a `--sensitivity {sensitive,strict}` dial, and dup-epoch stratified oversampling of the satellite sample). A pure *consumer* of `tle` (its sole validity authority) and `term`; `orbit` is the package's **only** `sgp4` importer, lazily imported by `run` only under `--orbit` so the default path stays `sgp4`-free. |
-| `dedup.py` | The `lintle dedup` pass: reads `cleaned/` (never mutating it), excludes hard suspects from a prior `verify` run's `suspects.jsonl`, groups by `(catalog, epoch)` through `verify`'s `ExternalSorter`, and writes `<out-dir>/dedup/{import.txt,notes.jsonl,summary.json}` — one card per group, the latest re-issue kept, benign re-issues (including refined orbits under a new element-set) collapsed and genuine same-element-set contradictions kept-latest-but-flagged. Reuses `verify.checks.orbital_state`/`element_set` and the shared `has_epoch_clash` #158 predicate (one definition of "same orbit" / "latest" / "same-epoch clash" — #164). Constant memory; deterministic bytes. |
+| `dedup.py` | The `lintle dedup` pass: reads `01-cleaned/` (never mutating it), excludes hard suspects from a prior `verify` run's `suspects.jsonl`, groups by `(catalog, epoch)` through `verify`'s `ExternalSorter`, and writes `<out-dir>/05-dedup/{import.txt,notes.jsonl,summary.json}` — one card per group, the latest re-issue kept, benign re-issues (including refined orbits under a new element-set) collapsed and genuine same-element-set contradictions kept-latest-but-flagged. Reuses `verify.checks.orbital_state`/`element_set` and the shared `has_epoch_clash` #158 predicate (one definition of "same orbit" / "latest" / "same-epoch clash" — #164). Constant memory; deterministic bytes. |
+| `extract.py` | The `lintle extract` pass: reads a prior `dedup` run's sorted fixed-width `import.*` chunk set (140 bytes/record — guarded, never assumed) and binary-searches one catalog's contiguous run into `<dest>/<id>.txt` (verbatim byte slice, epoch-ascending) plus a deterministic `<id>.json` stats sidecar (schema v2: median spacing, the 10 largest reportable gaps — delta > 10× the satellite's median spacing — and a tri-state quarantine flag from `03-report/broken-noradids.ndjson`); warns and, on a TTY, asks y/n before exporting a gappy or quarantine-affected history (non-TTY: warn + proceed; decline = skip, not an error), where `<dest>` defaults to `<out-dir>/06-extract` (with its own README) and only an explicit `--dest` overrides it, undecorated. Read-only, local, no index artifact; reuses `verify`'s `catalog_of`/`parse_epoch`/`element_set` so catalog and epoch keep one definition. |
 | `config.py` | Optional `./.lintle.json` project config: stdlib-JSON `load`/`save` of the two remembered keys (`source`, `output`). Never an authority over an explicit CLI arg. No internal deps. |
 | `wizard.py` | The interactive rich menu shown when `lintle` runs with no subcommand on a TTY (configure / clean / verify / report / quit). A thin front-end that builds an argv and calls `cli.main`, reimplementing no orchestration; imports `config` + `term`. |
 
@@ -127,7 +129,12 @@ path (`pipeline`, `repair`, `tle`, `cli`'s clean path) never imports `lintle.ver
 enforces the wall (see §7). `dedup.py` is a second read-only consumer of the same package —
 `cli ──▶ dedup ──▶ verify.{checks, grouping, records}` (+ `term`), one-way, and equally barred
 from the clean path — so it reuses `verify`'s one definition of "same orbit" / "latest re-issue"
-rather than spawning a divergent second one. The `cli ↔ wizard` cycle — `cli` launches the menu,
+rather than spawning a divergent second one. `extract.py` is a third read-only consumer, one
+hop further downstream — `cli ──▶ extract ──▶ dedup` (naming constants only) `+ verify.{checks,
+epoch, records}` (+ `chunking`, `fsutil`, `term`), also one-way and lazily dispatched, also
+barred from the clean path, and also equally barred from ever reaching `sgp4` — the import-graph
+test walks its closure and additionally pins the exact `verify` submodules `extract` may import
+(`{checks, epoch, records}`), asserting none of them imports `sgp4` (see §7). The `cli ↔ wizard` cycle — `cli` launches the menu,
 the menu re-enters `cli.main` — is broken by a lazy import on *both* sides (`cli` imports
 `wizard` only inside the no-subcommand TTY branch; `wizard` imports `cli` only inside its
 dispatch), so `wizard ──▶ config`/`term` are the only module-load-time edges.
@@ -326,10 +333,11 @@ concurrently from **multiple hosts** over a network filesystem relies on `flock`
 server-side (modern NFSv4) and is not a tested configuration — give each host its own
 `--out-dir`. POSIX-only (`fcntl.flock`); Windows is out of scope (use WSL).
 
-`verify` and `dedup` participate in the same lock (via `cli._locked_postrun`): both stream
-`<out-dir>/data/cleaned` and write their own subtree, so a concurrent `clean` scrubbing the
-out-dir mid-read would corrupt them. A missing out-dir skips the lock — the consumer's own
-"no cleaned output" exit-2 error is the friendlier failure.
+`verify`, `dedup`, and `extract` participate in the same lock (via `cli._locked_postrun`): all
+three stream `<out-dir>/01-cleaned` (or, for `extract`, `<out-dir>/05-dedup`) and write their
+own subtree, so a concurrent `clean` scrubbing the out-dir mid-read would corrupt them. A
+missing out-dir skips the lock — the consumer's own "no cleaned output" exit-2 error is the
+friendlier failure.
 
 ### Single-run resume
 
@@ -352,45 +360,45 @@ contract below was verified against the tool's actual output.
 
 ### Output-tree layout
 
-A successful `clean` run lays out `--out-dir`:
+A successful `clean` run (followed, optionally, by `verify`/`dedup`/`extract`) lays out
+`--out-dir` as one flat level of directories, numbered in pipeline order so the directory
+listing itself documents the order of operations (0.11.0 — the 0.10.1 `data/` grouping is
+retired):
 
 ```
 <out-dir>/
-├── README.md                — static explainer of this layout (written by clean)
-├── data/                    everything `lintle clean` produces
-│   ├── cleaned/             tleYYYY.00001.cleaned.txt, .00002… — chunk set per input file
-│   ├── broken/              tleYYYY.00001.broken.txt, .00002…  — chunk set per input file
-│   └── report/
-│       ├── report.md        — corpus-wide Markdown run report
-│       ├── report.json      — the run envelope, byte-identical to `--report json` stdout
-│       ├── report.00001.jsonl, … — corpus-wide structured findings, chunked
-│       └── broken-noradids.ndjson — corpus-wide list of quarantined NORAD IDs
-├── verify/                  `lintle verify` output (suspects.NNNNN.jsonl, summary.{json,md})
-└── dedup/                   `lintle dedup` output (import.NNNNN.txt, notes.NNNNN.jsonl, summary.json)
+├── README.md          — overview: the six dirs, order of operations, regen note
+├── 01-cleaned/        — <stem>.NNNNN.cleaned.txt chunk sets      + README.md
+├── 02-broken/         — <stem>.NNNNN.broken.txt sidecars          + README.md
+├── 03-report/         — report.md · report.json · report.NNNNN.jsonl ·
+│                        broken-noradids.ndjson                    + README.md
+├── 04-verify/         — suspects.NNNNN.jsonl · summary.{json,md}  + README.md
+├── 05-dedup/          — import.NNNNN.txt · notes.NNNNN.jsonl ·
+│                        summary.json                              + README.md
+└── 06-extract/        — <id>.txt · <id>.json                      + README.md
 ```
 
-**Per-step dirs (0.10.1).** The out-dir root holds one directory per pipeline step — `data/`
-(everything `clean` writes: the cleaned corpus, broken sidecars, and report), `verify/`, and
-`dedup/` — plus a self-describing `README.md`. Transient run state (`.shards/`, `.clean-state.json`,
-`.clean.lock`, `.lintle-output`) stays at the root as machinery, not step output.
+**Per-step dirs (0.11.0).** The out-dir root holds one numbered directory per pipeline
+step — `01-cleaned`, `02-broken`, and `03-report` (written by `clean`), `04-verify`
+(written by `verify`), `05-dedup` (written by `dedup`), and `06-extract` (written by
+`extract`, defaulting there when `--dest` is not given) — plus a self-describing root
+`README.md`. Every populated step dir also carries its own static `README.md`, written by
+the step that owns it, at the same point it writes that dir's artifacts. Transient run
+state (`.shards/`, `.clean-state.json`, `.clean.lock`, `.lintle-output`) stays at the root
+as machinery, not step output. The naming constants (`CLEANED_DIRNAME` … `EXTRACT_DIRNAME`)
+live in `lintle/__init__.py`, the single source of truth every consumer imports from.
+Outputs from ≤ 0.10.3 (the `data/` layout) or ≤ 0.10.0 (bare `cleaned/`/`broken/` at the
+root) are not migrated — regenerate them; a fresh `clean` run scrubs both legacy layouts
+from `--out-dir` before writing the new one.
 
 **Chunked output layout.** Every record/line output *stream* is split into an always-indexed
 `<stem>.NNNNN.<suffix>` chunk set of `--chunk-records` units each (default 1,000,000 ≈ 140 MB),
-so no single file is ever huge (the worst pre-chunking, `dedup/import.txt`, was 28.7 GB).
+so no single file is ever huge (the worst pre-chunking, `05-dedup/import.txt`, was 28.7 GB).
 Concatenating a set's chunks in index order (`cat <stem>.*.<suffix>`) is byte-identical to the
 old single file — the invariant that keeps Critical Rules #1/#2 intact. The six invariants
 (`chunking.py`): per-stream counting never global; always-index (no rename-on-roll); concat-identity;
 atomic commit per chunk; stale-chunk scrub on (re)run/resume; constant memory. Aggregate *summary*
-documents (`report.md`, `report.json`, `verify/summary.*`, `dedup/summary.json`,
-
-**Chunked output layout.** Every record/line output *stream* is split into an always-indexed
-`<stem>.NNNNN.<suffix>` chunk set of `--chunk-records` units each (default 1,000,000 ≈ 140 MB),
-so no single file is ever huge (the worst pre-chunking, `dedup/import.txt`, was 28.7 GB).
-Concatenating a set's chunks in index order (`cat <stem>.*.<suffix>`) is byte-identical to the
-old single file — the invariant that keeps Critical Rules #1/#2 intact. The six invariants
-(`chunking.py`): per-stream counting never global; always-index (no rename-on-roll); concat-identity;
-atomic commit per chunk; stale-chunk scrub on (re)run/resume; constant memory. Aggregate *summary*
-documents (`report.md`, `report.json`, `verify/summary.*`, `dedup/summary.json`,
+documents (`report.md`, `report.json`, `04-verify/summary.*`, `05-dedup/summary.json`,
 `broken-noradids.ndjson`) are not streams and stay single files.
 
 Transient run state lives alongside and is removed on success: `.shards/` (per-worker
@@ -402,9 +410,9 @@ the `report.*.jsonl` set, and `broken-noradids.ndjson` are **always** written on
 clean run — empty/zeroed when nothing was quarantined — so the consumer artifact set is stable.
 The persisted `report.json` is what the read-only `lintle report` command renders later.
 
-- **`cleaned/tleYYYY.cleaned.txt`** — standard 2-line TLE text, every record verified valid: 69
+- **`01-cleaned/tleYYYY.cleaned.txt`** — standard 2-line TLE text, every record verified valid: 69
   ASCII columns per line, `\n`-terminated, matching catalog numbers, valid checksums.
-- **`broken/tleYYYY.broken.txt`** — the byte-faithful quarantine sidecar (see below).
+- **`02-broken/tleYYYY.broken.txt`** — the byte-faithful quarantine sidecar (see below).
 
 ### stdout / stderr discipline
 
@@ -587,15 +595,17 @@ consumers ignore unknown fields. Empty file when nothing was quarantined. Verifi
 {"noradId":25544}
 ```
 
-### The checkpoint `.clean-state.json` — `schema_version 3`
+### The checkpoint `.clean-state.json` — `schema_version 4`
 
-The single-run resume checkpoint. Note `schema_version` here is an **integer** (`3`), unlike
-the string schema versions on the JSON surfaces above. Compact JSON, sorted keys. Verified
-shape:
+The single-run resume checkpoint. Note `schema_version` here is an **integer** (`4`), unlike
+the string schema versions on the JSON surfaces above. It bumped `3 → 4` in 0.11.0 when the
+flat numbered layout retired `data/`: recorded chunk basenames resolve against the new dirs,
+so an old (schema-3) checkpoint must classify `STALE` rather than resume against paths that no
+longer exist. Compact JSON, sorted keys. Verified shape:
 
 ```json
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "lintle_version": "0.3.0",
   "run_identity": { "max_quarantined": "0" },
   "inputs": {
@@ -637,8 +647,8 @@ checkpoint. Resolution:
 - `ABSENT`: `--resume` aborts ("no interrupted run to resume"); otherwise fresh.
 
 A fresh run **archives** any existing checkpoint to `.clean-state.json.stale-<timestamp>`
-(never destroying a recoverable run), then scrubs the `cleaned/`, `broken/`, `.shards/` trees
-and the four report artifacts (`report.md`, `report.json`, `report.jsonl`,
+(never destroying a recoverable run), then scrubs the `01-cleaned/`, `02-broken/`, `.shards/`
+trees and the four report artifacts (`report.md`, `report.json`, `report.jsonl`,
 `broken-noradids.ndjson`) so no orphans from a differently-scoped prior run linger and no stale
 report is left for `lintle report` to render if the fresh run is itself interrupted (issue #102).
 After archiving, `archive_checkpoint` prunes older stale archives keeping only the newest 3

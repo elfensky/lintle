@@ -8,7 +8,7 @@ import json
 
 from sgp4.api import Satrec
 
-from lintle import cli, tle
+from lintle import CLEANED_DIRNAME, VERIFY_DIRNAME, cli, tle
 from lintle.verify import epoch, orbit, run
 from lintle.verify.records import CleanedRecord, catalog_of
 from lintle.verify.report import VerifyRule
@@ -115,8 +115,8 @@ GEO_CULPRIT = (
 
 def build_tree(tmp_path, pairs, stem="tle01"):
     out = tmp_path / "output"
-    (out / "data" / "cleaned").mkdir(parents=True, exist_ok=True)
-    (out / "data" / "cleaned" / f"{stem}.00001.cleaned.txt").write_text(
+    (out / CLEANED_DIRNAME).mkdir(parents=True, exist_ok=True)
+    (out / CLEANED_DIRNAME / f"{stem}.00001.cleaned.txt").write_text(
         "".join(f"{a}\n{b}\n" for a, b in pairs), encoding="ascii"
     )
     return str(out)
@@ -410,7 +410,7 @@ class TestEndToEnd:
         out = build_tree(tmp_path, TRACK)
         assert run(out, None, orbit=True) == 0
         summary = json.loads(
-            (tmp_path / "output" / "verify" / "summary.json").read_text()
+            (tmp_path / "output" / VERIFY_DIRNAME / "summary.json").read_text()
         )
         checked = summary["checked"]
         assert checked["orbit_satellites_checked"] == 1
@@ -421,14 +421,16 @@ class TestEndToEnd:
         pairs = TRACK[:-1] + [diverged_last()]
         out = build_tree(tmp_path, pairs)
         assert run(out, None, orbit=True) == 0  # inconclusive never blocks
-        rows = (tmp_path / "output" / "verify" / "suspects.00001.jsonl").read_text()
+        rows = (
+            tmp_path / "output" / VERIFY_DIRNAME / "suspects.00001.jsonl"
+        ).read_text()
         assert "VRFY-ORBIT-OUTLIER" in rows
 
     def test_orbit_off_by_default(self, tmp_path):
         out = build_tree(tmp_path, TRACK)
         assert run(out, None) == 0
         summary = json.loads(
-            (tmp_path / "output" / "verify" / "summary.json").read_text()
+            (tmp_path / "output" / VERIFY_DIRNAME / "summary.json").read_text()
         )
         assert "orbit_population" not in summary["checked"]
 

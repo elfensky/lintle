@@ -9,9 +9,11 @@ from typing import Literal
 from lintle import (
     BROKEN_DIRNAME,
     CLEANED_DIRNAME,
-    DATA_DIRNAME,
+    DEDUP_DIRNAME,
+    EXTRACT_DIRNAME,
     REPORT_DIRNAME,
     SHARDS_DIRNAME,
+    VERIFY_DIRNAME,
     fsutil,
     report,
     resume,
@@ -169,14 +171,24 @@ def scrub_outputs(out_dir):
     Idempotent — missing trees/files are ignored.  Does NOT check ownership;
     callers that need the ownership gate call :func:`_is_safe_to_scrub` first."""
     out = Path(out_dir)
-    # Current layout: all of clean's output lives under data/ (cleaned/, broken/,
-    # report/); .shards/ is transient run state at the root.
-    shutil.rmtree(out / DATA_DIRNAME, ignore_errors=True)
+    # Current layout: six flat numbered dirs, one per pipeline step;
+    # .shards/ is transient run state at the root.
+    for sub in (
+        CLEANED_DIRNAME,
+        BROKEN_DIRNAME,
+        REPORT_DIRNAME,
+        VERIFY_DIRNAME,
+        DEDUP_DIRNAME,
+        EXTRACT_DIRNAME,
+    ):
+        shutil.rmtree(out / sub, ignore_errors=True)
     shutil.rmtree(out / SHARDS_DIRNAME, ignore_errors=True)
+    # Legacy (0.10.1–0.10.3) grouped layout.
+    shutil.rmtree(out / "data", ignore_errors=True)
     # Legacy (≤ 0.10.0) wrote cleaned/, broken/, and the report artifacts at the
-    # out-dir root — clear any that linger so a fresh 0.10.1+ run over an old
+    # out-dir root — clear any that linger so a fresh run over an old
     # out-dir starts clean.
-    for sub in (CLEANED_DIRNAME, BROKEN_DIRNAME, REPORT_DIRNAME):
+    for sub in ("cleaned", "broken", "report"):
         shutil.rmtree(out / sub, ignore_errors=True)
     for name in _REPORT_ARTIFACTS:
         with contextlib.suppress(OSError):

@@ -13,6 +13,7 @@ from pathlib import Path
 from lintle import (
     BROKEN_SUFFIX,
     CLEANED_SUFFIX,
+    EXTRACT_DIRNAME,
     SHARDS_DIRNAME,
     __version__,
     cli_progress,
@@ -308,7 +309,8 @@ def _add_report_subparser(subparsers):
 def _add_verify_subparser(subparsers):
     """Add the ``verify`` subparser: audit a clean run's output for
     cleaning-corruption (goal 1) and structural contradictions (goal 3). Reads
-    ``<out-dir>/cleaned`` and the source tree; writes only ``<out-dir>/verify``."""
+    ``<out-dir>/01-cleaned`` and the source tree; writes only
+    ``<out-dir>/04-verify``."""
     verify_parser = subparsers.add_parser(
         "verify",
         help="audit a clean run's cleaned output for corruption and contradictions",
@@ -317,7 +319,7 @@ def _add_verify_subparser(subparsers):
             "flag any (catalog, epoch) contradiction, and — when the original "
             "source is available — confirm every cleaned line is a sanctioned "
             "edit of a real source line (no interior mutation). Writes a suspects "
-            "report under <out-dir>/verify. Exit 1 if any hard suspect is found."
+            "report under <out-dir>/04-verify. Exit 1 if any hard suspect is found."
         ),
         epilog=_EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -384,9 +386,9 @@ def _add_verify_subparser(subparsers):
 
 def _add_dedup_subparser(subparsers):
     """Add the ``dedup`` subparser: collapse a clean run's re-issued records into
-    a single 'latest only' import list. Reads ``<out-dir>/cleaned`` (and a prior
+    a single 'latest only' import list. Reads ``<out-dir>/01-cleaned`` (and a prior
     ``verify`` run's ``suspects.jsonl`` if present); writes only
-    ``<out-dir>/dedup``. ``cleaned/`` is never modified."""
+    ``<out-dir>/05-dedup``. ``01-cleaned/`` is never modified."""
     dedup_parser = subparsers.add_parser(
         "dedup",
         help="collapse re-issued records into a 'latest only' import list",
@@ -396,7 +398,7 @@ def _add_dedup_subparser(subparsers):
             "highest element-set number. Benign re-issues collapse silently; a "
             "genuine same-epoch orbit contradiction is kept-latest but flagged "
             "(exit 1). When a verify run's suspects.jsonl exists, hard suspects "
-            "are excluded first. Writes <out-dir>/dedup/import.txt; cleaned/ is "
+            "are excluded first. Writes <out-dir>/05-dedup/import.txt; 01-cleaned/ is "
             "never modified."
         ),
         epilog=_EPILOG,
@@ -413,6 +415,41 @@ def _add_dedup_subparser(subparsers):
         ),
     )
     _add_chunk_records_arg(dedup_parser)
+
+
+def _add_extract_subparser(subparsers):
+    """Add the ``extract`` subparser: one satellite's complete deduped TLE
+    history from a prior dedup run — ``<id>.txt`` (pure 2-line records,
+    epoch-ascending) plus a ``<id>.json`` stats sidecar, per requested id."""
+    extract_parser = subparsers.add_parser(
+        "extract",
+        help="extract one satellite's complete TLE history from a dedup run",
+        description=(
+            "Extract each NORAD id's complete deduped history from "
+            "<out-dir>/05-dedup into <dest>/<id>.txt (pure TLE lines, "
+            "epoch-ascending) and <dest>/<id>.json (stats). Read-only and "
+            "local; requires a prior 'lintle dedup' run."
+        ),
+    )
+    extract_parser.add_argument(
+        "norad_ids",
+        metavar="NORAD-ID",
+        nargs="+",
+        type=int,
+        help="catalog number(s) to extract (1-99999)",
+    )
+    extract_parser.add_argument(
+        "--out-dir",
+        metavar="DIR",
+        default=_DEFAULT_OUTPUT,
+        help="pipeline output tree holding 05-dedup/ (default: %(default)s)",
+    )
+    extract_parser.add_argument(
+        "--dest",
+        metavar="DIR",
+        default=None,
+        help=("where <id>.txt / <id>.json are written (default: <out-dir>/06-extract)"),
+    )
 
 
 def build_parser():
@@ -435,13 +472,14 @@ def build_parser():
     subparsers = parser.add_subparsers(
         dest="command",
         required=False,
-        metavar="{clean,dedup,diff,explain,report,verify}",
+        metavar="{clean,dedup,diff,explain,extract,report,verify}",
         title="commands",
     )
     _add_clean_subparser(subparsers)
     _add_dedup_subparser(subparsers)
     _add_diff_subparser(subparsers)
     _add_explain_subparser(subparsers)
+    _add_extract_subparser(subparsers)
     _add_report_subparser(subparsers)
     _add_verify_subparser(subparsers)
     return parser
@@ -576,13 +614,16 @@ def _apply_config_paths(args, argv, config):
             args.source = args.source or config.get("source") or _DEFAULT_SOURCE
         case "report" | "dedup":
             args.out_dir = args.out_dir or config.get("output") or _DEFAULT_OUTPUT
+        case "extract":
+            if not _flag_present(argv, "--out-dir") and config.get("output"):
+                args.out_dir = config["output"]
 
 
 def _locked_postrun(out_dir, name, action):
     """Run a post-run consumer (``verify``/``dedup``) under the out-dir lock
     with the same exit-2 operational backstop as ``clean`` (issue #89).
 
-    Both consumers stream ``<out-dir>/data/cleaned`` and write their own
+    Both consumers stream ``<out-dir>/01-cleaned`` and write their own
     subtree, so a concurrent ``clean`` scrubbing the out-dir mid-read would
     corrupt them — the advisory flock serializes them against it. A missing
     out-dir skips the lock (nothing to protect); the consumer's own "no
@@ -672,8 +713,8 @@ def main(argv=None):
             return summary.run(args.out_dir, args.report)
 
         # `verify` is a post-run auditor of a clean run's cleaned output (plus
-        # the source tree for the byte-diff). It never touches cleaned/ but
-        # does write <out-dir>/verify, so it runs under the out-dir lock like
+        # the source tree for the byte-diff). It never touches 01-cleaned/ but
+        # does write <out-dir>/04-verify, so it runs under the out-dir lock like
         # every other writer.
         case "verify":
             # Lazy: keeps lintle.verify out of the clean path's module-level
@@ -695,8 +736,8 @@ def main(argv=None):
                 ),
             )
 
-        # `dedup` consumes cleaned/ (plus a prior verify run's suspects set);
-        # it never touches cleaned/ but does write <out-dir>/dedup, so it too
+        # `dedup` consumes 01-cleaned/ (plus a prior verify run's suspects set);
+        # it never touches 01-cleaned/ but does write <out-dir>/05-dedup, so it too
         # runs under the out-dir lock.
         case "dedup":
             # Lazy for the same wall reason: dedup imports lintle.verify.
@@ -706,6 +747,26 @@ def main(argv=None):
                 args.out_dir,
                 "dedup",
                 lambda: dedup.run(args.out_dir, args.chunk_records),
+            )
+
+        # `extract` reads a prior dedup run's import chunk set (read-only) and
+        # writes only <dest>, which defaults to <out-dir>/06-extract but runs
+        # under the same out-dir lock as dedup/verify since a concurrent
+        # `clean` scrubbing the out-dir mid-read would corrupt it.
+        case "extract":
+            # Lazy for the wall: extract imports lintle.verify parsers.
+            from lintle import extract as extract_mod
+
+            dest = args.dest or str(Path(args.out_dir) / EXTRACT_DIRNAME)
+            return _locked_postrun(
+                args.out_dir,
+                "extract",
+                lambda: extract_mod.run(
+                    args.out_dir,
+                    args.norad_ids,
+                    dest,
+                    write_readme=args.dest is None,
+                ),
             )
 
     # `args.path` is None when the user passed nothing — fall back to the

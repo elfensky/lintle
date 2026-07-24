@@ -1,9 +1,9 @@
 """``lintle dedup`` — emit a de-duplicated 'latest re-issue only' import list.
 
 Space-track republishes the *same* orbit at the *same* epoch with only a bumped
-element-set (or revolution) number; the faithful ``cleaned/`` archive keeps every
-copy by design. ``dedup`` reads that archive (never mutating it) and writes a
-single ingest-ready ``import.txt`` under ``<out-dir>/dedup``: one card per
+element-set (or revolution) number; the faithful ``01-cleaned/`` archive keeps
+every copy by design. ``dedup`` reads that archive (never mutating it) and
+writes a single ingest-ready ``import.txt`` under ``<out-dir>/05-dedup``: one card per
 ``(catalog, epoch)``, keeping the latest re-issue (highest element-set number).
 
 Re-issues — a new element-set at the same epoch, whether an identical or a refined
@@ -24,19 +24,31 @@ import json
 from collections.abc import Iterator
 from pathlib import Path
 
-from lintle import CLEANED_DIRNAME, DATA_DIRNAME, chunking, fsutil, term
+from lintle import CLEANED_DIRNAME, DEDUP_DIRNAME, chunking, fsutil, term
 from lintle.chunking import CHUNK_RECORDS_DEFAULT
 from lintle.verify import checks, grouping, records
 from lintle.verify.records import CleanedRecord
 from lintle.verify.report import SUSPECTS_STEM, SUSPECTS_SUFFIX, VERIFY_DIRNAME
 
-DEDUP_DIRNAME = "dedup"
 IMPORT_SUFFIX = ".txt"
 IMPORT_STEM = "import"
 NOTES_SUFFIX = ".jsonl"
 NOTES_STEM = "notes"
 SUMMARY_NAME = "summary.json"
 SCHEMA_VERSION = "1"
+
+_README = """\
+# 05-dedup — latest-re-issue-only import list
+
+- `import.NNNNN.txt` — the de-duplicated ingest list: one card per
+  (catalog, epoch), hard suspects excluded, re-issues collapsed to the
+  latest element-set.
+- `notes.NNNNN.jsonl` — one note per collapsed group (the kept and dropped
+  cards, and whether it was a genuine same-epoch conflict).
+- `summary.json` — dedup tallies and verdict.
+
+Regenerate with `lintle dedup`.
+"""
 
 
 @dataclasses.dataclass(slots=True, frozen=True)
@@ -132,14 +144,14 @@ def _note_bytes(g: Group) -> bytes:
 
 
 def run(out_dir: str, chunk_records: int = CHUNK_RECORDS_DEFAULT) -> int:
-    """De-duplicate a clean run's ``<out-dir>/cleaned`` into the chunked
-    ``<out-dir>/dedup/import.NNNNN.txt`` set (+ ``notes.NNNNN.jsonl`` and
+    """De-duplicate a clean run's ``<out-dir>/01-cleaned`` into the chunked
+    ``<out-dir>/05-dedup/import.NNNNN.txt`` set (+ ``notes.NNNNN.jsonl`` and
     ``summary.json``). Returns the exit code: ``0`` clean, ``1`` genuine
     contradiction(s) arbitrated (review the notes), ``2`` operational error
     (no cleaned output)."""
     stems = records.cleaned_stems(out_dir)
     if not stems:
-        cleaned_dir = Path(out_dir) / DATA_DIRNAME / CLEANED_DIRNAME
+        cleaned_dir = Path(out_dir) / CLEANED_DIRNAME
         term.error(
             f"no cleaned output found under {cleaned_dir!s}.\n"
             "  run 'lintle clean' first, or point at its --out-dir."
@@ -196,6 +208,7 @@ def run(out_dir: str, chunk_records: int = CHUNK_RECORDS_DEFAULT) -> int:
     body = json.dumps(summary, ensure_ascii=True, indent=2, sort_keys=True) + "\n"
     # Structured artifact — commit through the one sanctioned durable path.
     fsutil.durable_write_text(str(ddir / SUMMARY_NAME), body, encoding="ascii")
+    fsutil.durable_write_text(str(ddir / "README.md"), _README, encoding="utf-8")
 
     verdict = (
         f"{n_written} records written, {n_dropped} re-issue duplicate(s) collapsed"

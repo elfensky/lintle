@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 
 import lintle
-from lintle import DATA_DIRNAME, cli, tle
+from lintle import CLEANED_DIRNAME, VERIFY_DIRNAME, cli, tle
 from lintle.verify import checks, epoch, grouping, records, report, run
 from lintle.verify.records import CleanedRecord
 from lintle.verify.report import Suspect, VerifyRule
@@ -65,8 +65,8 @@ def build_tree_with_source(tmp_path, cleaned_pairs, source_lines=None, stem="tle
     """Write a minimal clean-run output tree (and optional source file); return
     ``(out_dir, source_dir)`` as strings."""
     out = tmp_path / "output"
-    (out / DATA_DIRNAME / "cleaned").mkdir(parents=True, exist_ok=True)
-    (out / DATA_DIRNAME / "cleaned" / f"{stem}.00001.cleaned.txt").write_text(
+    (out / CLEANED_DIRNAME).mkdir(parents=True, exist_ok=True)
+    (out / CLEANED_DIRNAME / f"{stem}.00001.cleaned.txt").write_text(
         "".join(f"{a}\n{b}\n" for a, b in cleaned_pairs), encoding="ascii"
     )
     src = tmp_path / "source"
@@ -399,6 +399,27 @@ class TestReport:
         assert code([soft, hard]) == 1
 
 
+class TestReadme:
+    """``SuspectSink.write`` drops a static ``README.md`` in ``04-verify/`` —
+    the dir's own self-description, deterministic across runs."""
+
+    def test_writes_readme(self, tmp_path):
+        sink = report.SuspectSink()
+        sink.write(str(tmp_path), checked={})
+        readme = tmp_path / VERIFY_DIRNAME / "README.md"
+        assert readme.is_file()
+        text = readme.read_text(encoding="utf-8")
+        assert "04-verify" in text
+        assert "lintle verify" in text
+        assert "suspects.NNNNN.jsonl" in text
+
+    def test_readme_is_deterministic(self, tmp_path):
+        report.SuspectSink().write(str(tmp_path), checked={})
+        first = (tmp_path / VERIFY_DIRNAME / "README.md").read_bytes()
+        report.SuspectSink().write(str(tmp_path), checked={})
+        assert (tmp_path / VERIFY_DIRNAME / "README.md").read_bytes() == first
+
+
 class TestGrouping:
     def test_external_sort_orders_by_catalog_then_epoch(self):
         sorter = grouping.ExternalSorter(chunk_size=2)  # force a spill
@@ -419,7 +440,9 @@ class TestEndToEnd:
     def test_clean_tree_passes(self, tmp_path):
         out, src = build_tree_with_source(tmp_path, [(L1, L2)], source_lines=[L1, L2])
         assert run(out, src) == 0
-        suspects = (tmp_path / "output" / "verify" / "suspects.00001.jsonl").read_text()
+        suspects = (
+            tmp_path / "output" / VERIFY_DIRNAME / "suspects.00001.jsonl"
+        ).read_text()
         assert suspects == ""
 
     def test_interior_mutation_fails(self, tmp_path):
@@ -429,7 +452,7 @@ class TestEndToEnd:
         assert run(out, src) == 1
         rows = [
             json.loads(line)
-            for line in (tmp_path / "output" / "verify" / "suspects.00001.jsonl")
+            for line in (tmp_path / "output" / VERIFY_DIRNAME / "suspects.00001.jsonl")
             .read_text()
             .splitlines()
         ]
@@ -439,7 +462,9 @@ class TestEndToEnd:
         # same satellite+epoch, SAME element-set, different orbit -> a hard clash
         out, _ = build_tree_with_source(tmp_path, [(L1, L2), (L1, mutated_l2())])
         assert run(out, None) == 1
-        rows = (tmp_path / "output" / "verify" / "suspects.00001.jsonl").read_text()
+        rows = (
+            tmp_path / "output" / VERIFY_DIRNAME / "suspects.00001.jsonl"
+        ).read_text()
         assert "VRFY-EPOCH-CONFLICT" in rows
 
     def test_refined_reissue_is_census_pass(self, tmp_path):
@@ -449,10 +474,12 @@ class TestEndToEnd:
             tmp_path, [(L1, L2), (reissued_refined_l1(), L2)]
         )
         assert run(out, None) == 0
-        suspects = (tmp_path / "output" / "verify" / "suspects.00001.jsonl").read_text()
+        suspects = (
+            tmp_path / "output" / VERIFY_DIRNAME / "suspects.00001.jsonl"
+        ).read_text()
         assert suspects == ""
         summary = json.loads(
-            (tmp_path / "output" / "verify" / "summary.json").read_text()
+            (tmp_path / "output" / VERIFY_DIRNAME / "summary.json").read_text()
         )
         assert summary["checked"]["epoch_reissues"] == 1
 
@@ -463,7 +490,7 @@ class TestEndToEnd:
         out, _ = build_tree_with_source(tmp_path, [(L1, L2)])
         assert run(out, None) == 0
         summary = json.loads(
-            (tmp_path / "output" / "verify" / "summary.json").read_text()
+            (tmp_path / "output" / VERIFY_DIRNAME / "summary.json").read_text()
         )
         assert summary["checked"]["source_diff"] == "skipped"
 
@@ -487,8 +514,13 @@ class TestImportGuard:
     path, not just three files' direct source text, so a collaborator quietly
     importing sgp4 two hops away still trips the wall. Function-level lazy
     imports are deliberately outside the walk — those are the sanctioned
-    dispatch points (``cli.main``'s verify/dedup branches), which only run
-    when the operator asks for a verify/dedup command."""
+    dispatch points (``cli.main``'s verify/dedup/extract branches), which
+    only run when the operator asks for a verify/dedup/extract command.
+    ``lintle.extract`` is a read-only consumer of a prior ``dedup`` run
+    (like ``dedup`` is of ``verify``), so it too must stay out of the clean
+    path's closure and its own closure must stay ``sgp4``-free even though
+    it legitimately reaches into ``verify`` for the shared epoch/catalog
+    parsers."""
 
     @staticmethod
     def _module_level_imports(path):
@@ -531,7 +563,76 @@ class TestImportGuard:
             assert name != "verify", (
                 f"lintle.verify reached from the clean path via {seen}"
             )
+            assert name != "extract", (
+                f"lintle.extract reached from the clean path via {seen}"
+            )
             mod_path = src / "__init__.py" if name == "__init__" else src / f"{name}.py"
             if not mod_path.is_file():
                 continue  # a package attribute (constant/function), not a module
             frontier |= self._module_level_imports(mod_path) - seen
+
+    def test_extract_closure_never_imports_sgp4(self):
+        """``lintle.extract`` reaches into ``verify.{checks,epoch,records}``
+        for the shared catalog/epoch parsers — that edge is expected and
+        fine — but it must never drag in ``sgp4`` itself, which stays the
+        sole province of ``verify/orbit.py`` under the lazy ``--orbit``
+        gate. Same walk as the clean-path test, seeded at ``extract``.
+        NOTE: ``_module_level_imports`` collapses any ``lintle.verify.X``
+        import to the single name ``"verify"`` (there is no ``verify.py``
+        file to descend into, only the ``verify/`` package), so this walk
+        alone cannot see past that collapse into the ``verify`` submodules
+        — it would not notice ``extract`` reaching ``verify.orbit``. See
+        ``test_extract_verify_submodule_imports_are_pinned_and_sgp4_free``
+        for the leg that actually enforces the submodule boundary."""
+        src = Path(lintle.__file__).parent
+        seen: set[str] = set()
+        frontier = {"extract"}
+        while frontier:
+            name = frontier.pop()
+            seen.add(name)
+            assert name != "sgp4", f"sgp4 reached from lintle.extract via {seen}"
+            mod_path = src / "__init__.py" if name == "__init__" else src / f"{name}.py"
+            if not mod_path.is_file():
+                continue  # a package attribute (constant/function), not a module
+            frontier |= self._module_level_imports(mod_path) - seen
+
+    @staticmethod
+    def _verify_submodules_imported(path):
+        """Names of ``lintle.verify.*`` submodules imported at module level
+        by ``path`` — both ``from lintle.verify.X import ...`` and
+        ``from lintle.verify import X, Y`` spellings. This is the fine-grained
+        counterpart to ``_module_level_imports``, which collapses either
+        spelling to the single opaque name ``"verify"``."""
+        names = set()
+        for node in ast.parse(path.read_text(encoding="utf-8")).body:
+            match node:
+                case ast.Import(names=aliases):
+                    for a in aliases:
+                        parts = a.name.split(".")
+                        if parts[:2] == ["lintle", "verify"] and len(parts) > 2:
+                            names.add(parts[2])
+                case ast.ImportFrom(module="lintle.verify", names=aliases):
+                    names.update(a.name for a in aliases)
+                case ast.ImportFrom(module=mod, names=aliases) if (
+                    mod and mod.startswith("lintle.verify.")
+                ):
+                    names.add(mod.split(".")[2])
+        return names
+
+    def test_extract_verify_submodule_imports_are_pinned_and_sgp4_free(self):
+        """Pins the exact ``verify`` submodules ``extract`` is allowed to
+        import — ``{checks, epoch, records}`` — so a future ``from
+        lintle.verify import orbit`` (or ``from lintle.verify.orbit import
+        ...``) in ``extract.py`` fails this assertion instead of silently
+        passing the coarse closure walk above. Then, for each of those
+        submodule files, checks their own module-level imports directly for
+        ``sgp4`` (name or from-import), the same detector the coarse walk
+        uses but applied one level deeper than that walk can reach."""
+        src = Path(lintle.__file__).parent
+        extract_submodules = self._verify_submodules_imported(src / "extract.py")
+        assert extract_submodules == {"checks", "epoch", "records"}
+        for name in extract_submodules:
+            mod_path = src / "verify" / f"{name}.py"
+            assert mod_path.is_file(), f"missing lintle/verify/{name}.py"
+            imports = self._module_level_imports(mod_path)
+            assert "sgp4" not in imports, f"verify.{name} imports sgp4 directly"

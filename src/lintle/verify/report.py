@@ -17,15 +17,25 @@ from collections.abc import Iterable
 from enum import StrEnum
 from pathlib import Path
 
-from lintle import chunking, fsutil
+from lintle import VERIFY_DIRNAME, chunking, fsutil
 from lintle.chunking import CHUNK_RECORDS_DEFAULT
 
-VERIFY_DIRNAME = "verify"
 SUSPECTS_STEM = "suspects"
 SUSPECTS_SUFFIX = ".jsonl"
 SUMMARY_JSON = "summary.json"
 SUMMARY_MD = "summary.md"
 SCHEMA_VERSION = "1"
+
+_README = """\
+# 04-verify — independent audit of 01-cleaned
+
+- `suspects.NNNNN.jsonl` — flagged records, one JSON object per line: `hard`
+  means must-fix (the run exits 1), `soft` means inconclusive telemetry that
+  never blocks.
+- `summary.json` / `summary.md` — audit tallies and the pass/fail verdict.
+
+Regenerate with `lintle verify`.
+"""
 
 
 class VerifyRule(StrEnum):
@@ -227,7 +237,7 @@ class SuspectSink:
         checked: dict[str, int],
         chunk_records: int = CHUNK_RECORDS_DEFAULT,
     ) -> Path:
-        """Write ``<out-dir>/verify/{suspects.NNNNN.jsonl,summary.json,summary.md}``
+        """Write ``<out-dir>/04-verify/{suspects.NNNNN.jsonl,summary.json,summary.md}``
         and return the verify directory. Consumes the sink (drains the temp runs);
         deterministic bytes, overwrites in place. The suspects stream is chunked
         into a ``suspects.NNNNN.jsonl`` set."""
@@ -265,4 +275,5 @@ class SuspectSink:
             str(vdir / SUMMARY_MD),
             _summary_md_str(self.counts, self.hard, self.total, checked=checked),
         )
+        fsutil.durable_write_text(str(vdir / "README.md"), _README, encoding="utf-8")
         return vdir

@@ -24,7 +24,6 @@ from lintle import (
     BROKEN_SUFFIX,
     CLEANED_DIRNAME,
     CLEANED_SUFFIX,
-    DATA_DIRNAME,
     FINDINGS_SUFFIX,
     SHARDS_DIRNAME,
     __version__,
@@ -34,7 +33,7 @@ from lintle import (
 )
 
 CHECKPOINT_NAME = ".clean-state.json"
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 # Head+tail window hashed for input identity — large enough that any append
 # (tail changes) or truncation (size changes) is caught in one seek, small
 # enough to stay O(1) regardless of file size. A one-time correctness gate on
@@ -90,13 +89,12 @@ def output_sizes(out_dir: str, stats) -> dict[str, int]:
     constants come from ``lintle.__init__`` — the single naming authority."""
     sizes = {}
     out = Path(out_dir)
-    data = out / DATA_DIRNAME
     file_stem = stem(stats.src_name)
     for sub, suffix in (
         (CLEANED_DIRNAME, CLEANED_SUFFIX),
         (BROKEN_DIRNAME, BROKEN_SUFFIX),
     ):
-        reader = chunking.ChunkedReader(data / sub, file_stem, suffix)
+        reader = chunking.ChunkedReader(out / sub, file_stem, suffix)
         for chunk in reader.chunk_paths():
             with contextlib.suppress(OSError):
                 sizes[chunk.name] = chunk.stat().st_size
@@ -273,8 +271,8 @@ def delete_checkpoint(out_dir: str) -> None:
 # authority (pipeline._clean_output_paths, resume.output_sizes, cli.discover_paths,
 # and report_writers.concat_findings_shards all import from there).
 _OUTPUT_DIRS = (
-    os.path.join(DATA_DIRNAME, CLEANED_DIRNAME),
-    os.path.join(DATA_DIRNAME, BROKEN_DIRNAME),
+    CLEANED_DIRNAME,
+    BROKEN_DIRNAME,
     SHARDS_DIRNAME,
 )
 

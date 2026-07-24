@@ -5,7 +5,7 @@ import os
 import pytest
 
 from lintle import (
-    DATA_DIRNAME,
+    CLEANED_DIRNAME,
     REPORT_DIRNAME,
     cli,
     pipeline,
@@ -152,9 +152,7 @@ class TestResume:
 
         out_partial = tmp_path / "partial"
         _simulate_interrupted_clean(paths, str(out_partial), completed_count=1)
-        first_cleaned = (
-            out_partial / DATA_DIRNAME / "cleaned" / "tle2098.00001.cleaned.txt"
-        )
+        first_cleaned = out_partial / CLEANED_DIRNAME / "tle2098.00001.cleaned.txt"
         mtime_before = first_cleaned.stat().st_mtime_ns
 
         rc_resume = cli.main(
@@ -173,8 +171,8 @@ class TestResume:
         # report.00001.jsonl and broken-noradids are timing-free — the golden
         # anchors. Small test corpora never exceed the default chunk boundary
         # (spec 2026-07-21-output-chunking-design), so exactly one chunk exists.
-        report_partial = out_partial / DATA_DIRNAME / REPORT_DIRNAME
-        report_full = out_full / DATA_DIRNAME / REPORT_DIRNAME
+        report_partial = out_partial / REPORT_DIRNAME
+        report_full = out_full / REPORT_DIRNAME
         assert (report_partial / "report.00001.jsonl").read_bytes() == (
             report_full / "report.00001.jsonl"
         ).read_bytes()
@@ -182,8 +180,8 @@ class TestResume:
             report_full / "broken-noradids.ndjson"
         ).read_bytes()
         for name in ("tle2098.00001.cleaned.txt", "tle2099.00001.cleaned.txt"):
-            assert (out_partial / DATA_DIRNAME / "cleaned" / name).read_bytes() == (
-                out_full / DATA_DIRNAME / "cleaned" / name
+            assert (out_partial / CLEANED_DIRNAME / name).read_bytes() == (
+                out_full / CLEANED_DIRNAME / name
             ).read_bytes()
         assert _strip_generated(report_partial / "report.md") == _strip_generated(
             report_full / "report.md"
@@ -221,8 +219,8 @@ class TestResume:
         )
         assert rc == 1  # quarantines present
         assert not (out / resume.CHECKPOINT_NAME).exists()
-        assert (out / DATA_DIRNAME / "cleaned" / "tle2098.00001.cleaned.txt").exists()
-        assert (out / DATA_DIRNAME / "cleaned" / "tle2099.00001.cleaned.txt").exists()
+        assert (out / CLEANED_DIRNAME / "tle2098.00001.cleaned.txt").exists()
+        assert (out / CLEANED_DIRNAME / "tle2099.00001.cleaned.txt").exists()
 
     def test_resume_refuses_when_input_changed(self, tmp_path, line1, line2, capsys):
         # --resume (explicit force-resume) with a stale checkpoint (input changed)
@@ -370,6 +368,22 @@ class TestScrubOutputs:
     def test_noop_on_empty_dir(self, tmp_path):
         run_planning.scrub_outputs(str(tmp_path))  # must not raise
 
+    def test_scrub_removes_grouped_data_layout(self, tmp_path):
+        out = tmp_path / "out"
+        (out / "data" / "cleaned").mkdir(parents=True)
+        (out / "data" / "cleaned" / "x.00001.cleaned.txt").write_text("stale")
+        run_planning.scrub_outputs(str(out))
+        assert not (out / "data").exists()
+
+    def test_scrub_removes_numbered_dirs(self, tmp_path):
+        out = tmp_path / "out"
+        for d in ("01-cleaned", "02-broken", "03-report"):
+            (out / d).mkdir(parents=True)
+            (out / d / "stale.txt").write_text("stale")
+        run_planning.scrub_outputs(str(out))
+        for d in ("01-cleaned", "02-broken", "03-report"):
+            assert not (out / d).exists()
+
 
 class TestResumeWiring:
     """Task 11: --no-resume flag + decision-core wiring in main() (spec §2)."""
@@ -431,7 +445,7 @@ class TestResumeWiring:
         first_name = os.path.basename(paths[0])
         first_stem = os.path.splitext(first_name)[0]
         first_cleaned = (
-            out_partial / DATA_DIRNAME / "cleaned" / f"{first_stem}.00001.cleaned.txt"
+            out_partial / CLEANED_DIRNAME / f"{first_stem}.00001.cleaned.txt"
         )
         mtime_before = first_cleaned.stat().st_mtime_ns
 
@@ -444,8 +458,8 @@ class TestResumeWiring:
         # The already-completed file was skipped, not reprocessed.
         assert first_cleaned.stat().st_mtime_ns == mtime_before
         # report.00001.jsonl output matches the full run.
-        report_partial = out_partial / DATA_DIRNAME / REPORT_DIRNAME
-        report_full = out_full / DATA_DIRNAME / REPORT_DIRNAME
+        report_partial = out_partial / REPORT_DIRNAME
+        report_full = out_full / REPORT_DIRNAME
         assert (report_partial / "report.00001.jsonl").read_bytes() == (
             report_full / "report.00001.jsonl"
         ).read_bytes()
@@ -469,8 +483,8 @@ class TestFreshRunOrphanScrub:
 
         rc1 = cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
         assert rc1 == 0
-        assert (out / DATA_DIRNAME / "cleaned" / "tle2000.00001.cleaned.txt").exists()
-        assert (out / DATA_DIRNAME / "cleaned" / "tle2001.00001.cleaned.txt").exists()
+        assert (out / CLEANED_DIRNAME / "tle2000.00001.cleaned.txt").exists()
+        assert (out / CLEANED_DIRNAME / "tle2001.00001.cleaned.txt").exists()
         # A completed run deletes the checkpoint.
         assert not (out / resume.CHECKPOINT_NAME).exists()
 
@@ -478,7 +492,7 @@ class TestFreshRunOrphanScrub:
         # now an orphan in the out-dir.
         (src / "tle2001.txt").unlink()
         assert (
-            out / DATA_DIRNAME / "cleaned" / "tle2001.00001.cleaned.txt"
+            out / CLEANED_DIRNAME / "tle2001.00001.cleaned.txt"
         ).exists()  # orphan present
 
         # Step 3 — fresh run (--no-resume) on the now-one-file dir.
@@ -488,13 +502,11 @@ class TestFreshRunOrphanScrub:
         assert rc2 == 0
 
         # The output for the surviving input must exist.
-        assert (out / DATA_DIRNAME / "cleaned" / "tle2000.00001.cleaned.txt").exists()
+        assert (out / CLEANED_DIRNAME / "tle2000.00001.cleaned.txt").exists()
 
         # The orphan from the prior run must be gone — spec §3.4 guarantees
         # the fresh run scrubs the whole cleaned/ tree before processing.
-        assert not (
-            out / DATA_DIRNAME / "cleaned" / "tle2001.00001.cleaned.txt"
-        ).exists()
+        assert not (out / CLEANED_DIRNAME / "tle2001.00001.cleaned.txt").exists()
 
 
 class TestStaleCheckpointNonInteractive:
@@ -616,8 +628,8 @@ class TestDiskGuardOrdering:
         real_check = run_planning.check_disk_space
 
         def recording_check(out_dir, input_bytes):
-            # Capture whether cleaned/ still exists at the moment of the check.
-            cleaned_exists = (tmp_path / "out" / "cleaned").exists()
+            # Capture whether 01-cleaned/ still exists at the moment of the check.
+            cleaned_exists = (tmp_path / "out" / CLEANED_DIRNAME).exists()
             calls.append({"cleaned_exists": cleaned_exists})
             return real_check(out_dir, input_bytes)
 
@@ -667,8 +679,8 @@ class TestScrubOwnershipGate:
         out = tmp_path / "out"
         out.mkdir()
         # Place user-owned subdirectory named like a lintle output tree.
-        (out / "cleaned").mkdir()
-        (out / "cleaned" / "my_data.txt").write_text("precious user data")
+        (out / CLEANED_DIRNAME).mkdir()
+        (out / CLEANED_DIRNAME / "my_data.txt").write_text("precious user data")
 
         rc = cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
         err = capsys.readouterr().err
@@ -678,7 +690,7 @@ class TestScrubOwnershipGate:
             "refusing to scrub" in err.lower() or "not a lintle output" in err.lower()
         )
         # Precious user data must survive.
-        assert (out / "cleaned" / "my_data.txt").exists()
+        assert (out / CLEANED_DIRNAME / "my_data.txt").exists()
 
     def test_refuses_user_file_sharing_checkpoint_prefix(
         self, tmp_path, line1, line2, capsys
@@ -694,14 +706,14 @@ class TestScrubOwnershipGate:
         out = tmp_path / "out"
         out.mkdir()
         (out / (resume.CHECKPOINT_NAME + ".bak")).write_text("user backup")
-        (out / "cleaned").mkdir()
-        (out / "cleaned" / "my_data.txt").write_text("precious user data")
+        (out / CLEANED_DIRNAME).mkdir()
+        (out / CLEANED_DIRNAME / "my_data.txt").write_text("precious user data")
 
         rc = cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
 
         assert rc == 2
         assert "refusing to scrub" in capsys.readouterr().err.lower()
-        assert (out / "cleaned" / "my_data.txt").exists()  # untouched
+        assert (out / CLEANED_DIRNAME / "my_data.txt").exists()  # untouched
 
     def test_proceeds_on_empty_dir(self, tmp_path, line1, line2):
         # An empty out-dir (only the lock is present, held by us) must proceed.
@@ -727,7 +739,7 @@ class TestScrubOwnershipGate:
         rc = cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
         # Old output must be scrubbed; a clean 1-file run succeeds.
         assert rc == 0
-        assert (out / DATA_DIRNAME / "cleaned" / "tle2000.00001.cleaned.txt").exists()
+        assert (out / CLEANED_DIRNAME / "tle2000.00001.cleaned.txt").exists()
         assert not (out / "cleaned" / "old_output.txt").exists()
 
     def test_proceeds_with_checkpoint_signal(self, tmp_path, line1, line2):
@@ -797,7 +809,7 @@ class TestScrubClearsReportArtifacts:
         out = tmp_path / "out"
         # First run: writes report artifacts.
         cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
-        report_dir = out / DATA_DIRNAME / REPORT_DIRNAME
+        report_dir = out / REPORT_DIRNAME
         assert (report_dir / "report.json").exists()
 
         # Plant a stale report.json so we can verify it is removed.
@@ -852,7 +864,7 @@ class TestScrubClearsReportArtifacts:
         out = tmp_path / "out"
         # First run: writes report.json.
         cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
-        assert (out / DATA_DIRNAME / REPORT_DIRNAME / "report.json").exists()
+        assert (out / REPORT_DIRNAME / "report.json").exists()
 
         # Simulate an "interrupted fresh run": scrub removes the old report.json
         # but the new run never finishes (we just call scrub_outputs directly

@@ -13,7 +13,7 @@ from rich import box
 from rich.table import Table
 from rich.text import Text
 
-from lintle import DATA_DIRNAME, REPORT_DIRNAME, term
+from lintle import REPORT_DIRNAME, term
 
 _BAR_CELLS = 24
 
@@ -201,10 +201,10 @@ _SCHEMA = "3"
 
 def run(out_dir, fmt):
     """Render the last run's aggregate panel from
-    ``<out_dir>/data/report/report.json`` (read-only). ``fmt`` ``"text"`` -> panel
+    ``<out_dir>/03-report/report.json`` (read-only). ``fmt`` ``"text"`` -> panel
     to stdout; ``"json"`` -> the file's bytes verbatim. Missing file or unexpected
     ``schema_version`` -> ``term.error`` + exit 2."""
-    path = Path(out_dir) / DATA_DIRNAME / REPORT_DIRNAME / "report.json"
+    path = Path(out_dir) / REPORT_DIRNAME / "report.json"
     try:
         raw = path.read_text(encoding="utf-8")
     except OSError:

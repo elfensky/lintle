@@ -1,10 +1,11 @@
 """Tests for ``lintle dedup`` — the de-duplicated 'latest re-issue only' import
 list. Cleaned output is immutable; dedup only reads it and writes under
-``<out-dir>/dedup``."""
+``<out-dir>/05-dedup``."""
 
 import json
+from pathlib import Path
 
-from lintle import cli, dedup, tle
+from lintle import CLEANED_DIRNAME, DEDUP_DIRNAME, VERIFY_DIRNAME, cli, dedup, tle
 from lintle.chunking import ChunkedReader
 from lintle.verify import epoch
 from lintle.verify.records import CleanedRecord
@@ -46,36 +47,38 @@ def build_tree(tmp_path, cleaned_pairs, *, suspects=None, stem="tle01"):
     """Write a minimal clean-run output tree (cleaned/ + optional verify/
     suspects.00001.jsonl chunk); return the out-dir as a string."""
     out = tmp_path / "output"
-    (out / "data" / "cleaned").mkdir(parents=True, exist_ok=True)
-    (out / "data" / "cleaned" / f"{stem}.00001.cleaned.txt").write_text(
+    (out / CLEANED_DIRNAME).mkdir(parents=True, exist_ok=True)
+    (out / CLEANED_DIRNAME / f"{stem}.00001.cleaned.txt").write_text(
         "".join(f"{a}\n{b}\n" for a, b in cleaned_pairs), encoding="ascii"
     )
     if suspects is not None:
-        (out / "verify").mkdir(parents=True, exist_ok=True)
-        (out / "verify" / "suspects.00001.jsonl").write_text(
+        (out / VERIFY_DIRNAME).mkdir(parents=True, exist_ok=True)
+        (out / VERIFY_DIRNAME / "suspects.00001.jsonl").write_text(
             "".join(json.dumps(s) + "\n" for s in suspects), encoding="ascii"
         )
     return str(out)
 
 
 def read_import(out) -> str:
-    reader = ChunkedReader(out / "dedup", "import", ".txt")
+    reader = ChunkedReader(out / DEDUP_DIRNAME, "import", ".txt")
     return "".join(f"{line.decode('ascii')}\n" for line in reader.iter_lines())
 
 
 def read_notes(out) -> list[dict]:
-    reader = ChunkedReader(out / "dedup", "notes", ".jsonl")
+    reader = ChunkedReader(out / DEDUP_DIRNAME, "notes", ".jsonl")
     return [json.loads(line) for line in reader.iter_lines() if line]
 
 
 def read_summary(out) -> dict:
-    return json.loads((out / "dedup" / "summary.json").read_text(encoding="ascii"))
+    return json.loads(
+        (out / DEDUP_DIRNAME / "summary.json").read_text(encoding="ascii")
+    )
 
 
 def read_chunk_bytes(out, stem, suffix) -> bytes:
     """Concatenate a chunk set's committed chunk files in index order — the
     byte-deterministic equivalent of the pre-chunking single file's bytes."""
-    reader = ChunkedReader(out / "dedup", stem, suffix)
+    reader = ChunkedReader(out / DEDUP_DIRNAME, stem, suffix)
     return b"".join(path.read_bytes() for path in reader.chunk_paths())
 
 
@@ -230,9 +233,9 @@ class TestEndToEnd:
         out = tmp_path / "output"
         pairs = [(with_elset(L1, 100), L2), (with_elset(L1, 200), L2)]
         out_dir = build_tree(tmp_path, pairs)
-        before = (out / "data" / "cleaned" / "tle01.00001.cleaned.txt").read_bytes()
+        before = (out / CLEANED_DIRNAME / "tle01.00001.cleaned.txt").read_bytes()
         dedup.run(out_dir)
-        after = (out / "data" / "cleaned" / "tle01.00001.cleaned.txt").read_bytes()
+        after = (out / CLEANED_DIRNAME / "tle01.00001.cleaned.txt").read_bytes()
         assert before == after
 
     def test_deterministic_bytes(self, tmp_path):
@@ -258,3 +261,25 @@ class TestCLI:
     def test_dedup_subcommand_dispatches(self, tmp_path):
         out_dir = build_tree(tmp_path, [(L1, L2)])
         assert cli.main(["dedup", out_dir]) == 0
+
+
+class TestReadme:
+    """``dedup.run`` drops a static ``README.md`` beside its ``summary.json``
+    in ``05-dedup/``, deterministic across runs."""
+
+    def test_writes_readme(self, tmp_path):
+        out_dir = build_tree(tmp_path, [(L1, L2)])
+        dedup.run(out_dir)
+        readme = Path(out_dir) / DEDUP_DIRNAME / "README.md"
+        assert readme.is_file()
+        text = readme.read_text(encoding="utf-8")
+        assert "05-dedup" in text
+        assert "lintle dedup" in text
+        assert "import.NNNNN.txt" in text
+
+    def test_readme_is_deterministic(self, tmp_path):
+        out_dir = build_tree(tmp_path, [(L1, L2)])
+        dedup.run(out_dir)
+        first = (Path(out_dir) / DEDUP_DIRNAME / "README.md").read_bytes()
+        dedup.run(out_dir)
+        assert (Path(out_dir) / DEDUP_DIRNAME / "README.md").read_bytes() == first
