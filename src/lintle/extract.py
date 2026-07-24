@@ -198,6 +198,9 @@ def _analyze(spans: list[tuple[Path, int, int]]) -> HistoryStats:
     largest = max(deltas, default=0.0)
     largest_at = epochs[deltas.index(largest) + 1] if deltas else None
     median = statistics.median(deltas) if len(deltas) >= 2 else None
+    # `median and ...`: 0 is intentionally excluded here — a zero median
+    # would otherwise flag every record as a gap (d > 10*0 is always true
+    # for d > 0), and deltas are strictly positive post-dedup anyway.
     reportable = [
         Gap(epochs[i], epochs[i + 1], d)
         for i, d in enumerate(deltas)
@@ -307,11 +310,15 @@ def _extract_one(
     """Extract one satellite in two passes: analyze the span read-only, then
     stream its byte range verbatim to ``<dest>/<id>.txt`` (durable
     temp-then-rename) and write the stats sidecar. ``<id>.txt`` + ``<id>.json``
-    are one atomic unit: a failure anywhere in the txt-stream + txt-commit +
-    sidecar-write sequence leaves nothing behind for this run's attempted
-    output, and pre-existing files from an earlier successful run are never
-    touched. Returns "written", "declined" (operator declined), or "absent"
-    (no records)."""
+    are committed as one atomic unit, but the guarantee differs before and
+    after the txt commit: a failure *before* ``durable_replace`` (the copy
+    itself) leaves the destination exactly as found — pre-existing outputs
+    from an earlier run are untouched. A failure *after* the txt commit (e.g.
+    the sidecar write) rolls the pair back as a unit: both the just-written
+    ``<id>.txt`` and any ``<id>.json`` at that path are removed, so a
+    mismatched txt/json pair can never remain — even if that means removing a
+    prior run's still-good pair on a failed re-run. Returns "written",
+    "declined" (operator declined), or "absent" (no records)."""
     spans = find_spans(out_dir, catalog)
     if not spans:
         return "absent"
@@ -384,4 +391,6 @@ def run(
                     f"no records for catalog {catalog} in "
                     f"{Path(out_dir) / DEDUP_DIRNAME}"
                 )
+            case _:  # pragma: no cover — outcome set is closed
+                raise AssertionError(f"unknown outcome {outcome!r}")
     return 2 if missing else 0
