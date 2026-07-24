@@ -98,7 +98,10 @@ class TestRun:
         records = recs((200, 1.0), (200, 2.5), (200, 10.0))
         assert txt == b"".join(f"{a}\n{b}\n".encode("ascii") for a, b in records)
         meta = json.loads((dest / "200.json").read_text(encoding="ascii"))
-        assert meta["schema_version"] == "1"
+        assert meta["schema_version"] == "2"
+        assert meta["median_spacing_days"] == 4.5  # deltas [1.5, 7.5]
+        assert meta["gap_count"] == 0 and meta["gaps"] == []
+        assert meta["had_quarantined_records"] is None
         assert meta["norad_id"] == 200 and meta["records"] == 3
         assert meta["first_epoch"] == "2020-01-01T00:00:00Z"
         assert meta["last_epoch"] == "2020-01-10T00:00:00Z"
@@ -125,6 +128,8 @@ class TestRun:
         assert meta["records"] == 1 and meta["span_days"] == 0.0
         assert meta["mean_records_per_day"] is None
         assert meta["largest_gap_days"] == 0.0 and meta["largest_gap_at"] is None
+        assert meta["median_spacing_days"] is None
+        assert meta["gap_count"] == 0 and meta["gaps"] == []
 
     def test_no_partial_debris_on_success(self, tmp_path):
         out = write_import_tree(tmp_path, recs((100, 1.0)), 10)
@@ -223,13 +228,17 @@ class TestRun:
             '  "element_set_first": 1,\n'
             '  "element_set_last": 1,\n'
             '  "first_epoch": "2020-01-01T00:00:00Z",\n'
+            '  "gap_count": 0,\n'
+            '  "gaps": [],\n'
+            '  "had_quarantined_records": null,\n'
             '  "largest_gap_at": "2020-01-02T12:00:00Z",\n'
             '  "largest_gap_days": 1.5,\n'
             '  "last_epoch": "2020-01-02T12:00:00Z",\n'
             '  "mean_records_per_day": 1.333333,\n'
+            '  "median_spacing_days": null,\n'
             '  "norad_id": 100,\n'
             '  "records": 2,\n'
-            '  "schema_version": "1",\n'
+            '  "schema_version": "2",\n'
             '  "source": {\n'
             '    "dedup_records_written": 2,\n'
             '    "dedup_schema_version": "1",\n'
@@ -391,6 +400,40 @@ class TestReadme:
             == 0
         )
         assert not (explicit_dest / "README.md").exists()
+
+
+class TestSidecarV2:
+    def test_quarantine_flag_true_and_false(self, tmp_path):
+        out = write_import_tree(tmp_path, recs((100, 1.0), (200, 1.0)), 10)
+        rdir = out / "03-report"
+        rdir.mkdir()
+        (rdir / "broken-noradids.ndjson").write_text(
+            '{"noradId":100}\n', encoding="ascii"
+        )
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        assert extract.run(str(out), [100, 200], str(dest)) == 0
+        meta100 = json.loads((dest / "100.json").read_text(encoding="ascii"))
+        meta200 = json.loads((dest / "200.json").read_text(encoding="ascii"))
+        assert meta100["had_quarantined_records"] is True
+        assert meta200["had_quarantined_records"] is False
+
+    def test_gap_fields_in_sidecar(self, tmp_path):
+        days = [1.0 + i for i in range(10)] + [50.0, 51.0, 52.0]
+        out = write_import_tree(tmp_path, recs(*[(100, d) for d in days]), 10000)
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        assert extract.run(str(out), [100], str(dest)) == 0
+        meta = json.loads((dest / "100.json").read_text(encoding="ascii"))
+        assert meta["median_spacing_days"] == 1.0
+        assert meta["gap_count"] == 1
+        assert meta["gaps"] == [
+            {
+                "days": 40.0,
+                "end": "2020-02-19T00:00:00Z",
+                "start": "2020-01-10T00:00:00Z",
+            }
+        ]
 
 
 class TestQuarantinedIds:
