@@ -272,21 +272,53 @@ def _sidecar(
     return json.dumps(doc, indent=2, sort_keys=True) + "\n"
 
 
+def _warn_and_confirm(
+    catalog: int, hs: HistoryStats, had_quarantined: bool | None
+) -> bool:
+    """Report the gaps (the GAPS_CAP largest, chronologically) and the
+    quarantine flag, then ask to continue. Non-interactive runs warn and
+    proceed; Enter and an unusable answer (EOF) both take the default —
+    proceed. Only an explicit "n" skips."""
+    if hs.gap_count:
+        term.warning(
+            f"history for {catalog} has {hs.gap_count} gap(s) "
+            f"(median spacing {hs.median_spacing_days:.2f} d):"
+        )
+        for g in hs.gaps:
+            term.note(f"  {g.start.date()} → {g.end.date()}  ({g.days:.1f} d)")
+        if hs.gap_count > len(hs.gaps):
+            term.note(f"  …and {hs.gap_count - len(hs.gaps)} more")
+    if had_quarantined:
+        term.warning(
+            f"records for {catalog} were quarantined during clean — gaps may "
+            f"stem from that; see {REPORT_DIRNAME}/report.jsonl"
+        )
+    if not term.is_interactive():
+        return True
+    answer = term.prompt_yes_no(f"continue export of {catalog}? [Y/n] ", default=True)
+    return answer is not False
+
+
 def _extract_one(
     out_dir: str, catalog: int, dest: Path, quarantined: set[int] | None
-) -> bool:
+) -> str:
     """Extract one satellite in two passes: analyze the span read-only, then
     stream its byte range verbatim to ``<dest>/<id>.txt`` (durable
     temp-then-rename) and write the stats sidecar. ``<id>.txt`` + ``<id>.json``
     are one atomic unit: a failure anywhere in the txt-stream + txt-commit +
     sidecar-write sequence leaves nothing behind for this run's attempted
     output, and pre-existing files from an earlier successful run are never
-    touched. False if the catalog has no records."""
+    touched. Returns "written", "declined" (operator declined), or "absent"
+    (no records)."""
     spans = find_spans(out_dir, catalog)
     if not spans:
-        return False
+        return "absent"
     hs = _analyze(spans)
     had_quarantined = None if quarantined is None else catalog in quarantined
+    if (hs.gap_count or had_quarantined) and not _warn_and_confirm(
+        catalog, hs, had_quarantined
+    ):
+        return "declined"
     txt = dest / f"{catalog}.txt"
     tmp = str(txt) + fsutil.PARTIAL_SUFFIX
     sidecar_partial = str(dest / f"{catalog}.json") + fsutil.PARTIAL_SUFFIX
@@ -308,7 +340,7 @@ def _extract_one(
             Path(txt).unlink(missing_ok=True)
             Path(dest / f"{catalog}.json").unlink(missing_ok=True)
         raise
-    return True
+    return "written"
 
 
 def run(
@@ -318,10 +350,11 @@ def run(
     found; 2 if any was absent, any catalog's extraction raised, or on an
     operational error up front (missing/torn dedup tree — nothing written at
     all). A raise mid-catalog is isolated: it is reported, the partial temp is
-    never left behind, and the remaining catalogs still run. ``write_readme``
-    is False by default — an explicit ``--dest`` is the user's own directory
-    and is never decorated; the cli passes True only when ``dest`` resolved to
-    the default ``<out-dir>/06-extract`` (Task 3)."""
+    never left behind, and the remaining catalogs still run. A user-declined
+    skip is not an error (exit stays 0). ``write_readme`` is False by default
+    — an explicit ``--dest`` is the user's own directory and is never
+    decorated; the cli passes True only when ``dest`` resolved to the default
+    ``<out-dir>/06-extract`` (Task 3)."""
     _import_chunks(out_dir)  # raises ExtractError before any per-catalog work
     quarantined = _quarantined_ids(out_dir)
     dest_dir = Path(dest)
@@ -333,16 +366,20 @@ def run(
     missing = []
     for catalog in catalogs:
         try:
-            found = _extract_one(out_dir, catalog, dest_dir, quarantined)
+            outcome = _extract_one(out_dir, catalog, dest_dir, quarantined)
         except Exception as exc:
             term.error(f"extraction failed for catalog {catalog}: {exc}")
             missing.append(catalog)
             continue
-        if found:
-            term.note(f"wrote {dest_dir / f'{catalog}.txt'}")
-        else:
-            missing.append(catalog)
-            term.error(
-                f"no records for catalog {catalog} in {Path(out_dir) / DEDUP_DIRNAME}"
-            )
+        match outcome:
+            case "written":
+                term.note(f"wrote {dest_dir / f'{catalog}.txt'}")
+            case "declined":
+                term.note(f"skipped {catalog}")
+            case "absent":
+                missing.append(catalog)
+                term.error(
+                    f"no records for catalog {catalog} in "
+                    f"{Path(out_dir) / DEDUP_DIRNAME}"
+                )
     return 2 if missing else 0

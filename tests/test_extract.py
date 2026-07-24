@@ -483,3 +483,85 @@ class TestQuarantinedIds:
         )
         assert extract._quarantined_ids(str(tmp_path)) is None
         assert "broken-noradids" in capsys.readouterr().err
+
+
+GAPPY_DAYS = [1.0 + i for i in range(10)] + [50.0, 51.0, 52.0]
+
+
+def gappy_tree(tmp_path, cat=100):
+    return write_import_tree(tmp_path, recs(*[(cat, d) for d in GAPPY_DAYS]), 10000)
+
+
+class TestWarnConfirm:
+    def test_non_tty_warns_and_proceeds(self, tmp_path, capsys):
+        out = gappy_tree(tmp_path)
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        assert extract.run(str(out), [100], str(dest)) == 0
+        assert (dest / "100.txt").exists()
+        err = capsys.readouterr().err
+        assert "1 gap" in err and "40.0 d" in err
+        assert "2020-01-10" in err and "2020-02-19" in err
+
+    def test_interactive_decline_skips_exit_0(self, tmp_path, monkeypatch, capsys):
+        out = gappy_tree(tmp_path)
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        monkeypatch.setattr(extract.term, "is_interactive", lambda: True)
+        monkeypatch.setattr(
+            extract.term, "prompt_yes_no", lambda msg, *, default: False
+        )
+        assert extract.run(str(out), [100], str(dest)) == 0
+        assert not (dest / "100.txt").exists()
+        assert not (dest / "100.json").exists()
+        assert "skipped 100" in capsys.readouterr().err
+
+    def test_interactive_accept_writes(self, tmp_path, monkeypatch):
+        out = gappy_tree(tmp_path)
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        monkeypatch.setattr(extract.term, "is_interactive", lambda: True)
+        monkeypatch.setattr(extract.term, "prompt_yes_no", lambda msg, *, default: True)
+        assert extract.run(str(out), [100], str(dest)) == 0
+        assert (dest / "100.txt").exists()
+
+    def test_prompt_eof_proceeds(self, tmp_path, monkeypatch):
+        out = gappy_tree(tmp_path)
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        monkeypatch.setattr(extract.term, "is_interactive", lambda: True)
+        monkeypatch.setattr(extract.term, "prompt_yes_no", lambda msg, *, default: None)
+        assert extract.run(str(out), [100], str(dest)) == 0
+        assert (dest / "100.txt").exists()
+
+    def test_clean_history_never_prompts(self, tmp_path, monkeypatch):
+        out = write_import_tree(tmp_path, recs((100, 1.0), (100, 2.0)), 10)
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        monkeypatch.setattr(extract.term, "is_interactive", lambda: True)
+
+        def boom(msg, *, default):
+            raise AssertionError("prompted on a clean history")
+
+        monkeypatch.setattr(extract.term, "prompt_yes_no", boom)
+        assert extract.run(str(out), [100], str(dest)) == 0
+
+    def test_quarantine_only_triggers_warning(self, tmp_path, capsys):
+        out = write_import_tree(tmp_path, recs((100, 1.0), (100, 2.0)), 10)
+        rdir = out / "03-report"
+        rdir.mkdir()
+        (rdir / "broken-noradids.ndjson").write_text(
+            '{"noradId":100}\n', encoding="ascii"
+        )
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        assert extract.run(str(out), [100], str(dest)) == 0
+        assert "quarantined during clean" in capsys.readouterr().err
+
+    def test_cap_prints_and_more_line(self, tmp_path, capsys):
+        days = [r * 30 + s for r in range(12) for s in (1.0, 2.0, 3.0)]
+        out = write_import_tree(tmp_path, recs(*[(100, d) for d in days]), 10000)
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        assert extract.run(str(out), [100], str(dest)) == 0
+        assert "and 1 more" in capsys.readouterr().err
