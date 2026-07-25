@@ -7,17 +7,16 @@ stream *is* the index. Never imports sgp4; never touches the clean path. Warns
 — and, interactively, confirms — before exporting a history with reportable
 gaps or upstream-quarantined records."""
 
-import dataclasses
-import datetime as _dt
 import json
-import statistics
 from pathlib import Path
 
 from lintle import REPORT_DIRNAME, fsutil, term
 from lintle.chunking import ChunkedReader
 from lintle.dedup import DEDUP_DIRNAME, IMPORT_STEM, IMPORT_SUFFIX
+from lintle.history import HistoryStats, analyze_epochs
+from lintle.history import epoch_dt as _epoch_dt
+from lintle.history import iso as _iso
 from lintle.verify.checks import element_set
-from lintle.verify.epoch import parse_epoch
 from lintle.verify.records import catalog_of
 
 # two validated-perfect 69-char lines + two \n — guarded, not assumed
@@ -126,58 +125,12 @@ def _bisect(fh, n: int, pred) -> int:
 _COPY_BLOCK = (1 << 20) // RECORD_BYTES * RECORD_BYTES
 
 
-def _epoch_dt(line1: str) -> _dt.datetime:
-    """Record epoch as an aware UTC datetime — pure arithmetic from
-    ``parse_epoch``'s ``(year, day_of_year)``; no wall clock, so sidecar bytes
-    stay deterministic."""
-    year, day = parse_epoch(line1)
-    return _dt.datetime(year, 1, 1, tzinfo=_dt.UTC) + _dt.timedelta(days=day - 1)
-
-
-def _iso(dt: _dt.datetime) -> str:
-    return dt.isoformat(timespec="seconds").replace("+00:00", "Z")
-
-
-# A gap is reportable when the inter-epoch delta exceeds GAP_FACTOR x the
-# satellite's own median spacing; the report keeps the GAPS_CAP largest.
-GAP_FACTOR = 10
-GAPS_CAP = 10
-
-
-@dataclasses.dataclass(slots=True, frozen=True)
-class Gap:
-    """One reportable hole in a satellite's history."""
-
-    start: _dt.datetime
-    end: _dt.datetime
-    days: float
-
-
-@dataclasses.dataclass(slots=True, frozen=True)
-class HistoryStats:
-    """Pass-1 analysis of one satellite's deduped span — everything the
-    sidecar and the warn/confirm flow need, computed before a byte is
-    exported."""
-
-    count: int
-    first: _dt.datetime | None
-    last: _dt.datetime | None
-    elset_first: int | None
-    elset_last: int | None
-    largest_gap_days: float
-    largest_gap_at: _dt.datetime | None
-    median_spacing_days: float | None
-    gaps: tuple[Gap, ...]
-    gap_count: int
-
-
 def _analyze(spans: list[tuple[Path, int, int]]) -> HistoryStats:
-    """Read ``spans`` (no writing) and compute the history stats. Holds one
-    satellite's epoch list in memory — bounded (tens of thousands of records,
-    ~hundreds of KB worst case), not a corpus file, so Critical Rule #3's
-    streaming mandate is not in play."""
-    epochs: list[_dt.datetime] = []
-    elset_first = elset_last = None
+    """Read ``spans`` (no writing), decode epochs + element sets, and delegate
+    the reduction to ``history.analyze_epochs``. Holds one satellite's lists in
+    memory — bounded, not a corpus file (Critical Rule #3 not in play)."""
+    epochs: list = []
+    elsets: list[int | None] = []
     for chunk, lo, hi in spans:
         with open(chunk, "rb") as fh:
             fh.seek(lo * RECORD_BYTES)
@@ -187,38 +140,9 @@ def _analyze(spans: list[tuple[Path, int, int]]) -> HistoryStats:
                 remaining -= len(block)
                 for off in range(0, len(block), RECORD_BYTES):
                     line1 = block[off : off + 69].decode("ascii")
-                    if not epochs:
-                        elset_first = element_set(line1)
-                    elset_last = element_set(line1)
+                    elsets.append(element_set(line1))
                     epochs.append(_epoch_dt(line1))
-    deltas = [
-        (b - a).total_seconds() / 86400.0
-        for a, b in zip(epochs, epochs[1:], strict=False)
-    ]
-    largest = max(deltas, default=0.0)
-    largest_at = epochs[deltas.index(largest) + 1] if deltas else None
-    median = statistics.median(deltas) if len(deltas) >= 2 else None
-    # `median and ...`: 0 is intentionally excluded here — a zero median
-    # would otherwise flag every record as a gap (d > 10*0 is always true
-    # for d > 0), and deltas are strictly positive post-dedup anyway.
-    reportable = [
-        Gap(epochs[i], epochs[i + 1], d)
-        for i, d in enumerate(deltas)
-        if median and d > GAP_FACTOR * median
-    ]
-    top = sorted(reportable, key=lambda g: g.days, reverse=True)[:GAPS_CAP]
-    return HistoryStats(
-        count=len(epochs),
-        first=epochs[0] if epochs else None,
-        last=epochs[-1] if epochs else None,
-        elset_first=elset_first,
-        elset_last=elset_last,
-        largest_gap_days=largest,
-        largest_gap_at=largest_at,
-        median_spacing_days=median,
-        gaps=tuple(sorted(top, key=lambda g: g.start)),
-        gap_count=len(reportable),
-    )
+    return analyze_epochs(epochs, elsets)
 
 
 def _copy_spans(spans: list[tuple[Path, int, int]], out) -> None:

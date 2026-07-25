@@ -621,16 +621,21 @@ class TestImportGuard:
 
     def test_extract_verify_submodule_imports_are_pinned_and_sgp4_free(self):
         """Pins the exact ``verify`` submodules ``extract`` is allowed to
-        import — ``{checks, epoch, records}`` — so a future ``from
-        lintle.verify import orbit`` (or ``from lintle.verify.orbit import
-        ...``) in ``extract.py`` fails this assertion instead of silently
-        passing the coarse closure walk above. Then, for each of those
-        submodule files, checks their own module-level imports directly for
-        ``sgp4`` (name or from-import), the same detector the coarse walk
-        uses but applied one level deeper than that walk can reach."""
+        import — ``{checks, records}`` — so a future ``from lintle.verify
+        import orbit`` (or ``from lintle.verify.orbit import ...``) in
+        ``extract.py`` fails this assertion instead of silently passing the
+        coarse closure walk above. ``epoch`` dropped out of this set when the
+        history reduction (and its ``parse_epoch`` use) moved into the shared,
+        pure ``lintle.history`` — ``extract`` still reaches ``verify.epoch``
+        transitively via ``history``, which the coarse closure walk above
+        still covers (it descends into ``history.py``'s own imports). Then,
+        for each of the submodules ``extract`` imports directly, checks their
+        own module-level imports for ``sgp4`` (name or from-import), the same
+        detector the coarse walk uses but applied one level deeper than that
+        walk can reach."""
         src = Path(lintle.__file__).parent
         extract_submodules = self._verify_submodules_imported(src / "extract.py")
-        assert extract_submodules == {"checks", "epoch", "records"}
+        assert extract_submodules == {"checks", "records"}
         for name in extract_submodules:
             mod_path = src / "verify" / f"{name}.py"
             assert mod_path.is_file(), f"missing lintle/verify/{name}.py"
