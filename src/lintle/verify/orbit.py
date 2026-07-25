@@ -26,6 +26,7 @@ import statistics
 
 from sgp4.api import Satrec
 
+from lintle import cli_progress
 from lintle.verify import grouping, records
 from lintle.verify.records import CleanedRecord
 from lintle.verify.report import Suspect, SuspectSink, VerifyRule
@@ -308,17 +309,22 @@ def run_orbit_pass(
     follow-up (issue #144)."""
     sampled = sample_catalogs(population, sample, all_sats, oversample)
     sorter = grouping.ExternalSorter()
-    for stem in stems:
-        for rec in records.iter_file(out_dir, stem):
-            if rec.catalog in sampled:
-                sorter.add(rec)
+    with cli_progress.phase_bar("orbit: sampling", len(stems)) as progress:
+        for stem in stems:
+            progress(description=f"orbit: sampling {stem}")
+            for rec in records.iter_file(out_dir, stem):
+                if rec.catalog in sampled:
+                    sorter.add(rec)
+            progress(advance=1)
 
     n_pairs = n_tracks = 0
-    for _, track in grouping.grouped(sorter.sorted_records(), key=_by_catalog):
-        found, pairs = _track_suspects(track, sensitivity)
-        sink.add_all(found)
-        n_pairs += pairs
-        n_tracks += 1
+    with cli_progress.phase_bar("orbit: propagating", len(sampled)) as progress:
+        for _, track in grouping.grouped(sorter.sorted_records(), key=_by_catalog):
+            found, pairs = _track_suspects(track, sensitivity)
+            sink.add_all(found)
+            n_pairs += pairs
+            n_tracks += 1
+            progress(advance=1)
 
     return {
         "orbit_population": len(population),

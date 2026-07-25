@@ -25,7 +25,15 @@ import json
 from collections.abc import Iterator
 from pathlib import Path
 
-from lintle import CLEANED_DIRNAME, DEDUP_DIRNAME, chunking, fsutil, history, term
+from lintle import (
+    CLEANED_DIRNAME,
+    DEDUP_DIRNAME,
+    chunking,
+    cli_progress,
+    fsutil,
+    history,
+    term,
+)
 from lintle.chunking import CHUNK_RECORDS_DEFAULT
 from lintle.verify import checks, grouping, records
 from lintle.verify.records import CleanedRecord
@@ -220,13 +228,19 @@ def run(out_dir: str, chunk_records: int = CHUNK_RECORDS_DEFAULT) -> int:
     hard = _load_hard_positions(out_dir)
     sorter = grouping.ExternalSorter()
     n_read = n_excluded = 0
-    for stem in stems:
-        for rec in records.iter_file(out_dir, stem):
-            n_read += 1
-            if (rec.src_file, rec.index) in hard:
-                n_excluded += 1
-                continue
-            sorter.add(rec)
+    with cli_progress.phase_bar("reading cleaned", len(stems)) as progress:
+        for stem in stems:
+            progress(description=f"reading {stem}")
+            for rec in records.iter_file(out_dir, stem):
+                n_read += 1
+                # Sparse refresh — one `update` per record would dominate the loop.
+                if n_read % 100_000 == 0:
+                    progress(description=f"reading {stem} — {n_read:,}")
+                if (rec.src_file, rec.index) in hard:
+                    n_excluded += 1
+                    continue
+                sorter.add(rec)
+            progress(advance=1)
 
     ddir = Path(out_dir) / DEDUP_DIRNAME
     ddir.mkdir(parents=True, exist_ok=True)
@@ -244,10 +258,15 @@ def run(out_dir: str, chunk_records: int = CHUNK_RECORDS_DEFAULT) -> int:
         chunking.ChunkedWriter(
             str(ddir), NOTES_STEM, NOTES_SUFFIX, chunk_records
         ) as notes,
+        # Indeterminate total: the group count isn't known until the sorted
+        # stream is drained, so the bar reports throughput, not a fraction.
+        cli_progress.phase_bar("writing import set", None) as progress,
     ):
         for g in _groups(sorter.sorted_records()):
             imp.write_record(g.kept.line1.encode("ascii"), g.kept.line2.encode("ascii"))
             n_written += 1
+            if n_written % 10_000 == 0:  # sparse refresh, as in the read loop
+                progress(completed=n_written)
             if g.dropped:
                 notes.write(_note_bytes(g))
                 n_collapsed += 1
