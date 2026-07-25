@@ -1100,3 +1100,43 @@ class TestReconstructChecksumFlag:
         assert rc == 0
         cleaned = (out / CLEANED_DIRNAME / "tle2099.00001.cleaned.txt").read_text()
         assert cleaned == line1 + "\n" + line2 + "\n"
+
+
+class TestCancelBackstop:
+    """Ctrl-C during any subcommand exits 130 with one line, never a traceback
+    (the postrun consumers run single-process, so nothing catches KI for them)."""
+
+    def _cleaned_out_dir(self, tmp_path, line1, line2):
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "tle2099.txt").write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
+        out = tmp_path / "out"
+        assert cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"]) == 0
+        return out
+
+    def test_verify_interrupt_returns_130(self, tmp_path, line1, line2, monkeypatch):
+        out = self._cleaned_out_dir(tmp_path, line1, line2)
+        from lintle import verify
+
+        def _interrupt(*_args, **_kwargs):
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(verify.records, "cleaned_stems", _interrupt)
+        assert cli.main(["verify", str(out), "--no-source-diff"]) == 130
+
+    def test_dedup_interrupt_releases_the_out_dir_lock(
+        self, tmp_path, line1, line2, monkeypatch
+    ):
+        from lintle import dedup, fsutil
+
+        out = self._cleaned_out_dir(tmp_path, line1, line2)
+
+        def _interrupt(*_args, **_kwargs):
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(dedup.records, "cleaned_stems", _interrupt)
+        assert cli.main(["dedup", str(out)]) == 130
+        # The lock is advisory-flock held for the whole consumer run; a cancel
+        # that leaked it would wedge every later command on this out-dir.
+        with fsutil.out_dir_lock(str(out)):
+            pass

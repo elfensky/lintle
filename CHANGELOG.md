@@ -4,6 +4,26 @@ All notable changes to this project are documented in this file. The format is b
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **Progress display for the post-run commands.** `verify`, `verify --orbit`,
+  and `dedup` were silent for the whole run — often many minutes on a
+  corpus-scale tree — and only spoke at the end. They now drive a
+  `cli_progress.phase_bar`: a per-stem bar with a running record count while
+  streaming `01-cleaned/`, plus spinners over the sort/contradiction pass and
+  the subtree write. Disabled off a TTY, so piped and CI runs stay silent.
+
+### Fixed
+
+- **Ctrl-C during `verify`/`dedup`/`extract` printed a traceback.** Only
+  `clean` handled `SIGINT` (inside its worker pool); the single-process
+  consumers had nothing catching it. `cli.main` now wraps the whole dispatch
+  in a `KeyboardInterrupt` backstop — one `cancelled.` line, exit `130`, out-dir
+  lock released, and no partially-committed subtree (those are written
+  atomically at the end of the run).
+
 ## [0.12.0] - 2026-07-25
 
 ### Added
