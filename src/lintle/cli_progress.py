@@ -66,6 +66,27 @@ def status(message):
     return contextlib.nullcontext()
 
 
+@contextlib.contextmanager
+def phase_bar(description, total):
+    """A single-task ``rich`` bar on stderr for the single-process post-run
+    phases (``verify``/``dedup`` streaming their stems), yielding an ``update``
+    callable — ``update(advance=1)``, ``update(description=...)``. Disabled off a
+    TTY so nothing leaks into a pipe, and transient so the finished run leaves
+    only its verdict line. Like :func:`status` it wraps ``rich.live.Live`` and so
+    must not nest inside another live block."""
+    with Progress(
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        MofNCompleteColumn(),
+        TimeRemainingColumn(),
+        console=term.stderr_console,
+        transient=True,
+        disable=not term.stderr_console.is_terminal,
+    ) as progress:
+        task = progress.add_task(description, total=total)
+        yield lambda **fields: progress.update(task, **fields)
+
+
 class ProgressDisplay:
     """Live multi-file progress for a parallel run, driven by ``rich``.
 

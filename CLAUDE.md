@@ -110,7 +110,7 @@ src/lintle/
 ├── __main__.py    # python -m lintle entry point
 ├── __init__.py    # __version__, stem() filename helper
 ├── cli.py         # argparse, globbing, top-level clean orchestration, exit codes
-├── cli_progress.py # live multi-file progress display, file roster, status spinner (rich+humanize)
+├── cli_progress.py # live multi-file progress display, file roster, status spinner, post-run phase bar (rich+humanize)
 ├── run_planning.py # clean-run preflight: disk-space guard, output scrub, resume classification, RunPlan
 ├── worker_pool.py  # process-pool dispatch, progress collection, per-file failure + checkpoint
 ├── process_control.py # worker SIGINT setup, fast pool termination, cancel/exit-code helpers
@@ -167,8 +167,11 @@ shards, the corpus `broken-noradids.ndjson`, and the shard concat) depended on b
 `pipeline` and `cli`; it imports the dataclasses and the shared `format_diagnostic`
 renderer from `report.py` — one-way, never the reverse, so no cycle. `cli_progress.py`
 is a rich+humanize presentation leaf (the live `ProgressDisplay`, the pre-run
-`render_roster`, and the `status` spinner) depended on by `cli`, `worker_pool`, and
-`output_artifacts`; it imports `pipeline`'s typed progress messages
+`render_roster`, the `status` spinner, and the `phase_bar` used by the
+single-process post-run phases) depended on by `cli`, `worker_pool`,
+`output_artifacts`, `verify`, `verify.orbit`, and `dedup` — those last three
+consume the clean path's presentation leaf, never the reverse, so the
+`sgp4`/verify wall is untouched; it imports `pipeline`'s typed progress messages
 (`FileStarted`/`FileEnded`/`FileProgress`) to drive the display and `humanize` for
 human-readable roster sizes (`naturalsize(gnu=True)`), so the chain
 `cli → worker_pool → cli_progress → pipeline` is one-way and acyclic. `fsutil.py` is a
