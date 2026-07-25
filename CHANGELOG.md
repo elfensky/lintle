@@ -4,6 +4,33 @@ All notable changes to this project are documented in this file. The format is b
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **`05-dedup/manifest.jsonl`** — a new per-satellite corpus manifest: one
+  compact JSON row per catalog (catalog-ascending), carrying record count,
+  epoch span, median spacing, largest gap, and gap count. A single plain
+  file, never chunked (unlike every other per-record output stream). The
+  `jq | shuf | xargs lintle extract` substrate for random-satellite coverage
+  queries — `lintle` itself owns no RNG.
+- **`lintle verify`'s `epoch_distribution`** — a new top-level
+  `{"YYYY-MM": count}` record-density histogram over valid records in
+  `04-verify/summary.json` (a sibling of `checked`, not nested inside it),
+  plus a matching `### Epoch distribution` section in `summary.md`.
+  Informational only — never affects `exit_code` or suspects. Named "epoch
+  distribution" / "record density," deliberately not "coverage."
+- **`cleaned_fingerprint`** — a cheap stat-only structural fingerprint of
+  `01-cleaned/` (`{"stems": [[stem, bytes], ...]}`, no file content read),
+  stored by `dedup` in `05-dedup/summary.json`. `extract` recomputes it at
+  run start and warns — never fails — when `01-cleaned/` has drifted since
+  the `dedup` run it's reading from.
+- **`lintle.history`** — the gap/median-spacing reduction shared by `extract`
+  (its `<id>.json` sidecar) and `dedup` (the new manifest) is now one pure,
+  I/O-free module (`HistoryStats`/`Gap`, `analyze_epochs`), lifted out of
+  `extract._analyze` so the two callers can never compute divergent numbers
+  for the same satellite.
+
 ## [0.11.1] - 2026-07-24
 
 ### Fixed

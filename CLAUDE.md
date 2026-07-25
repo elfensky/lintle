@@ -127,8 +127,9 @@ src/lintle/
 ├── term.py        # stderr+stdout Consoles + error/warning/note/prompt + is_interactive/prompt_yes_no (rich)
 ├── diff.py        # read-only: per-rule delta between two runs' report.jsonl (lintle diff)
 ├── explain.py     # read-only: renders rule/fix documentation (lintle explain)
-├── dedup.py       # `lintle dedup` — latest-re-issue-only import list from cleaned/ (reuses verify's sort)
+├── dedup.py       # `lintle dedup` — latest-re-issue-only import list + per-satellite manifest.jsonl from cleaned/ (reuses verify's sort)
 ├── extract.py     # `lintle extract` — one satellite's TLE history + stats sidecar from a dedup run (binary search, no index)
+├── history.py     # pure history reducer (HistoryStats/Gap, analyze_epochs) shared by extract + dedup — no I/O, no sgp4
 ├── chunking.py    # ChunkedWriter/ChunkedReader — the <stem>.NNNNN.<suffix> chunk-set layer
 ├── config.py      # optional ./.lintle.json remembering source/output dirs (stdlib JSON)
 ├── wizard.py      # interactive rich menu shown when `lintle` runs with no subcommand

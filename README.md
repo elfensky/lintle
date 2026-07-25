@@ -168,6 +168,9 @@ The suspects report is written under `<out-dir>/04-verify/` (`suspects.jsonl` +
 (a re-validation failure, an element-set contradiction, an interior mutation, or an
 `sgp4`-unphysical element set), **`2`** operational error (no cleaned output to audit).
 Orbit-residual outliers are soft (inconclusive) and never raise the exit code.
+`summary.json`/`summary.md` also carry an informational `epoch_distribution` — a
+`{"YYYY-MM": count}` record-density histogram over valid records — that never affects the
+exit code or the suspect list.
 
 ### A "latest only" import list — `lintle dedup`
 
@@ -189,8 +192,10 @@ uv run lintle dedup data/output
 ```
 
 Writes `<out-dir>/05-dedup/`: `import.NNNNN.txt` (the chunked ingest list, sorted by
-`(catalog, epoch)`), `notes.NNNNN.jsonl` (one entry per collapsed group — kept vs dropped), and
-`summary.json` (counts). This realises the output tiering **`source/` → `01-cleaned/`
+`(catalog, epoch)`), `notes.NNNNN.jsonl` (one entry per collapsed group — kept vs dropped),
+`manifest.jsonl` (one row per satellite — record count, epoch span, median spacing, largest
+gap — a single plain file, never chunked; the substrate for `jq | shuf | xargs lintle extract`
+coverage queries), and `summary.json` (counts). This realises the output tiering **`source/` → `01-cleaned/`
 (immutable archive) → `05-dedup/import.txt` (verified + deduped, ready to ingest)**. Exit codes: **`0`** clean, **`1`** a genuine
 contradiction was arbitrated (review `notes.jsonl`), **`2`** no cleaned output.
 
@@ -200,7 +205,9 @@ contradiction was arbitrated (review `notes.jsonl`), **`2`** no cleaned output.
 writes each satellite's complete deduped history as `<id>.txt` (pure TLE lines,
 epoch-ascending) plus a `<id>.json` stats sidecar. With no `--dest`, output goes to
 `<out-dir>/06-extract/` (which also gets a README); an explicit `--dest DIR` writes there
-instead and is never decorated with a README — it's the user's own directory.
+instead and is never decorated with a README — it's the user's own directory. `extract` also
+warns (never fails) if `01-cleaned/` has changed since the `dedup` run it's reading from,
+by comparing a cheap stat-only fingerprint stored in `05-dedup/summary.json`.
 
 ### Interactive wizard & remembered paths — `.lintle.json`
 
@@ -256,7 +263,7 @@ level of directories, numbered in pipeline order:
 │                        broken-noradids.ndjson                                       + README.md
 ├── 04-verify/         — `lintle verify` output (suspects.NNNNN.jsonl, summary.{json,md}) + README.md
 ├── 05-dedup/          — `lintle dedup` output (import.NNNNN.txt, notes.NNNNN.jsonl,
-│                        summary.json)                                                + README.md
+│                        manifest.jsonl, summary.json)                                + README.md
 └── 06-extract/        — `lintle extract` output (<id>.txt, <id>.json)                + README.md
 ```
 
