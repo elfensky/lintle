@@ -76,6 +76,26 @@ def cleaned_stems(out_dir: str) -> list[str]:
     return sorted(stems)
 
 
+def cleaned_fingerprint(out_dir: str) -> dict:
+    """A cheap structural fingerprint of ``01-cleaned`` — each cleaned stem and
+    its total chunk-byte size (``stat`` only, no reads). Lets a downstream run
+    (``extract``) detect that ``cleaned/`` changed since a ``dedup`` run
+    without re-hashing the ~30 GB corpus; staleness, not bit-rot, is the
+    threat this guards against. ``{"stems": []}`` if ``01-cleaned`` is absent."""
+    cdir = Path(out_dir) / CLEANED_DIRNAME
+    fp = [
+        [
+            s,
+            sum(
+                p.stat().st_size
+                for p in chunking.ChunkedReader(cdir, s, CLEANED_SUFFIX).chunk_paths()
+            ),
+        ]
+        for s in cleaned_stems(out_dir)
+    ]
+    return {"stems": sorted(fp)}
+
+
 def iter_file(out_dir: str, file_stem: str) -> Iterator[CleanedRecord]:
     """Yield the cleaned records of one file's chunk set, in on-disk (source)
     order across the whole set as one logical stream. Streams one chunk at a

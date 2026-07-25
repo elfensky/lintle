@@ -269,6 +269,7 @@ def run(out_dir: str, chunk_records: int = CHUNK_RECORDS_DEFAULT) -> int:
     code = 1 if n_conflicts else 0
     summary = {
         "schema_version": SCHEMA_VERSION,
+        "cleaned_fingerprint": records.cleaned_fingerprint(out_dir),
         "cleaned_files": len(stems),
         "records_read": n_read,
         "excluded_hard_suspects": n_excluded,

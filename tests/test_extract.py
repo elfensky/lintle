@@ -4,8 +4,9 @@ import json
 
 import pytest
 
-from lintle import cli, extract
+from lintle import CLEANED_DIRNAME, cli, dedup, extract
 from lintle.dedup import DEDUP_DIRNAME, IMPORT_STEM, IMPORT_SUFFIX
+from tests.conftest import CANONICAL_LINE1, CANONICAL_LINE2
 
 
 def l1(cat: int, yy: int = 20, day: float = 100.0, elset: int = 1) -> str:
@@ -589,3 +590,56 @@ class TestWarnConfirm:
         dest.mkdir()
         assert extract.run(str(out), [100], str(dest)) == 0
         assert "and 1 more" in capsys.readouterr().err
+
+
+def real_dedup_tree(tmp_path):
+    """Build a genuine ``01-cleaned`` tree and run ``dedup`` over it (rather
+    than ``write_import_tree``'s hand-built import chunk set), so
+    ``summary.json`` carries a real ``cleaned_fingerprint`` to check
+    staleness against."""
+    out = tmp_path / "output"
+    cdir = out / CLEANED_DIRNAME
+    cdir.mkdir(parents=True)
+    (cdir / "tle01.00001.cleaned.txt").write_text(
+        f"{CANONICAL_LINE1}\n{CANONICAL_LINE2}\n", encoding="ascii"
+    )
+    assert dedup.run(str(out)) == 0
+    return out
+
+
+class TestStalenessWarning:
+    """``extract.run`` recomputes ``01-cleaned``'s structural fingerprint at
+    run start and compares it with the one ``dedup`` stored — a mismatch
+    warns (extract's existing warn-and-proceed philosophy) but never changes
+    the exit code, which stays reserved for absent/torn dedup output."""
+
+    def test_mismatch_warns_but_exits_zero(self, tmp_path, capsys):
+        out = real_dedup_tree(tmp_path)
+        # mutate cleaned/ after dedup so the fingerprint drifts (appended
+        # record changes the stem's total chunk-byte size)
+        with (out / CLEANED_DIRNAME / "tle01.00001.cleaned.txt").open(
+            "a", encoding="ascii"
+        ) as f:
+            f.write(f"{CANONICAL_LINE1}\n{CANONICAL_LINE2}\n")
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        code = extract.run(str(out), [5], str(dest))
+        assert code == 0  # warn-and-proceed, never exit 2
+        assert "stale" in capsys.readouterr().err.lower()
+
+    def test_no_drift_is_silent(self, tmp_path, capsys):
+        out = real_dedup_tree(tmp_path)
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        assert extract.run(str(out), [5], str(dest)) == 0
+        assert "stale" not in capsys.readouterr().err.lower()
+
+    def test_no_stored_fingerprint_is_silent(self, tmp_path, capsys):
+        # write_import_tree's summary.json has no cleaned_fingerprint key
+        # (a hand-built dedup tree, or an older dedup run) -> nothing to
+        # compare against, so the check is skipped rather than warning.
+        out = write_import_tree(tmp_path, recs((100, 1.0)), 10)
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        assert extract.run(str(out), [100], str(dest)) == 0
+        assert "stale" not in capsys.readouterr().err.lower()

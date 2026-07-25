@@ -10,14 +10,14 @@ gaps or upstream-quarantined records."""
 import json
 from pathlib import Path
 
-from lintle import REPORT_DIRNAME, fsutil, term
+from lintle import CLEANED_DIRNAME, REPORT_DIRNAME, fsutil, term
 from lintle.chunking import ChunkedReader
 from lintle.dedup import DEDUP_DIRNAME, IMPORT_STEM, IMPORT_SUFFIX
 from lintle.history import HistoryStats, analyze_epochs
 from lintle.history import epoch_dt as _epoch_dt
 from lintle.history import iso as _iso
 from lintle.verify.checks import element_set
-from lintle.verify.records import catalog_of
+from lintle.verify.records import catalog_of, cleaned_fingerprint
 
 # two validated-perfect 69-char lines + two \n — guarded, not assumed
 RECORD_BYTES = 140
@@ -74,6 +74,27 @@ def _quarantined_ids(out_dir: str) -> set[int] | None:
     except json.JSONDecodeError, KeyError, TypeError, UnicodeDecodeError, OSError:
         term.warning(f"unreadable {path.name} — quarantine info unavailable")
         return None
+
+
+def _warn_if_stale(out_dir: str) -> None:
+    """Warn — never fail — if ``01-cleaned`` drifted since the ``dedup`` run
+    this extraction reads from, by comparing the stat-only structural
+    fingerprint ``dedup`` stored in ``summary.json`` against a live recompute.
+    No fingerprint stored (older run, or a hand-built dedup tree) means
+    nothing to compare against, so it's silently skipped. Matches extract's
+    existing warn-and-proceed philosophy (see :func:`_warn_and_confirm`); the
+    exit code is untouched."""
+    summary_path = Path(out_dir) / DEDUP_DIRNAME / "summary.json"
+    if not summary_path.is_file():
+        return
+    stored = json.loads(summary_path.read_text(encoding="ascii")).get(
+        "cleaned_fingerprint"
+    )
+    if stored is not None and stored != cleaned_fingerprint(out_dir):
+        term.warning(
+            f"{CLEANED_DIRNAME} changed since the last dedup run — extract results "
+            "may be stale; re-run 'lintle dedup'."
+        )
 
 
 def _catalog_at(fh, index: int) -> int:
@@ -289,6 +310,7 @@ def run(
     decorated; the cli passes True only when ``dest`` resolved to the default
     ``<out-dir>/06-extract`` (Task 3)."""
     _import_chunks(out_dir)  # raises ExtractError before any per-catalog work
+    _warn_if_stale(out_dir)
     quarantined = _quarantined_ids(out_dir)
     dest_dir = Path(dest)
     dest_dir.mkdir(parents=True, exist_ok=True)

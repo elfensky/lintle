@@ -296,6 +296,31 @@ class TestManifest:
         assert manifest_path.read_text("ascii") == manifest
 
 
+class TestFingerprint:
+    """``dedup.run`` stores a cheap structural fingerprint of ``01-cleaned``
+    (stem + total chunk-byte size, ``stat``-only) in ``summary.json`` — the
+    handle a downstream ``extract`` run uses to detect that ``cleaned/``
+    drifted since this ``dedup`` run, without re-hashing the corpus."""
+
+    def test_fingerprint_in_summary_and_matches_recompute(self, tmp_path):
+        out = tmp_path / "output"
+        out_dir = build_tree(tmp_path, [(L1, L2)])
+        assert dedup.run(out_dir) == 0
+        summary = read_summary(out)
+        assert "cleaned_fingerprint" in summary
+        from lintle.verify.records import cleaned_fingerprint
+
+        assert cleaned_fingerprint(out_dir) == summary["cleaned_fingerprint"]
+
+    def test_fingerprint_stable_across_reruns(self, tmp_path):
+        out = tmp_path / "output"
+        out_dir = build_tree(tmp_path, [(L1, L2)])
+        dedup.run(out_dir)
+        first = read_summary(out)["cleaned_fingerprint"]
+        dedup.run(out_dir)
+        assert read_summary(out)["cleaned_fingerprint"] == first
+
+
 class TestReadme:
     """``dedup.run`` drops a static ``README.md`` beside its ``summary.json``
     in ``05-dedup/``, deterministic across runs."""
