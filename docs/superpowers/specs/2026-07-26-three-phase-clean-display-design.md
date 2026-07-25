@@ -152,6 +152,41 @@ Roughly 90 lines changed in `cli_progress.py`, ~50 new in `summary.py`, ~17 dele
 zero in `pipeline.py`. Feature-sized and multi-file: `feature/three-phase-clean-display`
 in a worktree, landing via rebase-and-merge per CONTRIBUTING.md.
 
+## Consistency across commands
+
+`clean` is not the only long-running command, and the three phases are meant to be the
+*house vocabulary*, not a `clean` private detail. `verify`, `verify --orbit`, and `dedup`
+gained their first progress display separately (`cli_progress.phase_bar`, a single-task
+bar per streaming phase, plus `status` spinners over the sort and write passes). That
+landed first because those commands had *no* display at all and answered Ctrl-C with a
+traceback; it is deliberately phase 2 only.
+
+The invariants both displays already share, and which any new one must keep:
+
+- Every live region is bounded and disabled off a TTY. Only static prints survive a pipe.
+- Nothing live nests: `Live` cannot nest, so a phase owns the terminal or yields it.
+- Progress labels name the unit being streamed (a source file for `clean`, a cleaned
+  stem for `verify`/`dedup`), so a label always maps to one row of the discovery view.
+- Counters refresh sparsely. `clean` is driven by the worker progress protocol; the
+  post-run phases self-throttle (every 100k records read, 10k groups written), because
+  one `update` per record costs more than the checks it is reporting on.
+
+Two gaps are left open for whoever implements this spec, to be closed in the same idiom
+rather than reinvented:
+
+- **Discovery for the post-run commands.** `verify`/`dedup` know their stems and sizes
+  before they start and print nothing. They should get the same roster treatment
+  (`render_roster` already takes names + sizes), printed unconditionally like phase 1.
+- **Results for the post-run commands.** `verify` ends on one verdict line; its natural
+  phase 3 is a per-stem table (records checked, suspects found), driven from
+  `04-verify/summary.json` the way `render_files` is driven from the run envelope — so
+  the read-only re-render gets it for free, exactly as `lintle report` does.
+
+Deliberately *not* unified: byte-based bars with MB/s and ETA. `clean` streams source
+bytes and can measure both; the post-run commands stream a record count whose total is
+unknown until the stream ends. Forcing a fake denominator to make the two look alike
+would make the ETA a lie.
+
 ## Rejected alternatives
 
 - **All 29 rows live for the whole run.** Fails at terminal height 24 and shreds the
