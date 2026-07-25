@@ -635,18 +635,20 @@ class TestImportGuard:
             frontier |= self._module_level_imports(mod_path) - seen
 
     def test_extract_closure_never_imports_sgp4(self):
-        """``lintle.extract`` reaches into ``verify.{checks,epoch,records}``
-        for the shared catalog/epoch parsers — that edge is expected and
-        fine — but it must never drag in ``sgp4`` itself, which stays the
-        sole province of ``verify/orbit.py`` under the lazy ``--orbit``
-        gate. Same walk as the clean-path test, seeded at ``extract``.
-        NOTE: ``_module_level_imports`` collapses any ``lintle.verify.X``
-        import to the single name ``"verify"`` (there is no ``verify.py``
-        file to descend into, only the ``verify/`` package), so this walk
-        alone cannot see past that collapse into the ``verify`` submodules
-        — it would not notice ``extract`` reaching ``verify.orbit``. See
-        ``test_extract_verify_submodule_imports_are_pinned_and_sgp4_free``
-        for the leg that actually enforces the submodule boundary."""
+        """``lintle.extract`` reaches into ``verify.{checks,records}``
+        directly for the shared catalog/element-set parsers (and reaches
+        ``verify.epoch`` transitively via ``lintle.history``, which owns the
+        epoch-datetime reduction shared with ``dedup``) — those edges are
+        expected and fine — but it must never drag in ``sgp4`` itself, which
+        stays the sole province of ``verify/orbit.py`` under the lazy
+        ``--orbit`` gate. Same walk as the clean-path test, seeded at
+        ``extract``. NOTE: ``_module_level_imports`` collapses any
+        ``lintle.verify.X`` import to the single name ``"verify"`` (there is
+        no ``verify.py`` file to descend into, only the ``verify/`` package),
+        so this walk alone cannot see past that collapse into the ``verify``
+        submodules — it would not notice ``extract`` reaching ``verify.orbit``.
+        See ``test_verify_submodules_are_sgp4_free_except_orbit`` for the leg
+        that actually enforces the submodule boundary."""
         src = Path(lintle.__file__).parent
         seen: set[str] = set()
         frontier = {"extract"}
