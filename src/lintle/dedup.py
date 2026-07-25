@@ -20,11 +20,12 @@ one ``(catalog, epoch)`` group is held at a time. Output bytes are deterministic
 passes agree, byte-for-byte, on 'same orbit' and 'which is latest'."""
 
 import dataclasses
+import datetime as _dt
 import json
 from collections.abc import Iterator
 from pathlib import Path
 
-from lintle import CLEANED_DIRNAME, DEDUP_DIRNAME, chunking, fsutil, term
+from lintle import CLEANED_DIRNAME, DEDUP_DIRNAME, chunking, fsutil, history, term
 from lintle.chunking import CHUNK_RECORDS_DEFAULT
 from lintle.verify import checks, grouping, records
 from lintle.verify.records import CleanedRecord
@@ -34,6 +35,8 @@ IMPORT_SUFFIX = ".txt"
 IMPORT_STEM = "import"
 NOTES_SUFFIX = ".jsonl"
 NOTES_STEM = "notes"
+MANIFEST_STEM = "manifest"
+MANIFEST_SUFFIX = ".jsonl"
 SUMMARY_NAME = "summary.json"
 SCHEMA_VERSION = "1"
 
@@ -45,6 +48,8 @@ _README = """\
   latest element-set.
 - `notes.NNNNN.jsonl` — one note per collapsed group (the kept and dropped
   cards, and whether it was a genuine same-epoch conflict).
+- `manifest.jsonl` — one row per satellite (catalog-ascending): record
+  count, epoch span, median spacing, and largest gap — see `history.py`.
 - `summary.json` — dedup tallies and verdict.
 
 Regenerate with `lintle dedup`.
@@ -143,6 +148,60 @@ def _note_bytes(g: Group) -> bytes:
     )
 
 
+def _manifest_row(catalog: int, hs: history.HistoryStats) -> bytes:
+    """One compact ASCII JSON manifest row for a satellite — fixed key order so
+    reruns are byte-identical. ``median_spacing_days`` is null for <3 records
+    (the trivially-gapless case the row's ``records`` field lets a query
+    exclude). Gap math comes solely from ``history.analyze_epochs`` — the one
+    reduction ``extract`` shares, never recomputed here."""
+    span = (hs.last - hs.first).total_seconds() / 86400.0 if hs.count else 0.0
+    row = {
+        "norad_id": catalog,
+        "records": hs.count,
+        "first_epoch": history.iso(hs.first) if hs.first else None,
+        "last_epoch": history.iso(hs.last) if hs.last else None,
+        "span_days": round(span, 6),
+        "median_spacing_days": (
+            round(hs.median_spacing_days, 6)
+            if hs.median_spacing_days is not None
+            else None
+        ),
+        "largest_gap_days": round(hs.largest_gap_days, 6),
+        "gap_count": hs.gap_count,
+    }
+    return (json.dumps(row, ensure_ascii=True, separators=(",", ":")) + "\n").encode(
+        "ascii"
+    )
+
+
+class _ManifestBuilder:
+    """Accumulates one satellite's epoch/element-set lists at a time and
+    flushes a manifest row on each catalog boundary — memory-bounded to a
+    single satellite's history (Critical Rule #3), never the whole corpus.
+    ``flush`` must also be called once after the final ``add`` to emit the
+    last catalog's row."""
+
+    def __init__(self) -> None:
+        self._catalog: int | None = None
+        self._epochs: list[_dt.datetime] = []
+        self._elsets: list[int | None] = []
+        self.body = bytearray()
+
+    def add(self, catalog: int, epoch: _dt.datetime, elset: int | None) -> None:
+        if catalog != self._catalog:
+            self.flush()
+            self._catalog = catalog
+            self._epochs = []
+            self._elsets = []
+        self._epochs.append(epoch)
+        self._elsets.append(elset)
+
+    def flush(self) -> None:
+        if self._catalog is not None:
+            hs = history.analyze_epochs(self._epochs, self._elsets)
+            self.body.extend(_manifest_row(self._catalog, hs))
+
+
 def run(out_dir: str, chunk_records: int = CHUNK_RECORDS_DEFAULT) -> int:
     """De-duplicate a clean run's ``<out-dir>/01-cleaned`` into the chunked
     ``<out-dir>/05-dedup/import.NNNNN.txt`` set (+ ``notes.NNNNN.jsonl`` and
@@ -172,9 +231,12 @@ def run(out_dir: str, chunk_records: int = CHUNK_RECORDS_DEFAULT) -> int:
     ddir = Path(out_dir) / DEDUP_DIRNAME
     ddir.mkdir(parents=True, exist_ok=True)
     n_written = n_dropped = n_collapsed = n_conflicts = 0
+    manifest = _ManifestBuilder()
     # Stream both outputs in sorted (catalog, epoch) order into fixed-count chunk
     # sets — constant memory even when import is corpus-scale (28.7 GB). import is
-    # a 2-line-record stream; notes is one JSON line per collapsed group.
+    # a 2-line-record stream; notes is one JSON line per collapsed group. The
+    # manifest accumulates one catalog's epochs/elsets at a time, flushing a row
+    # on each catalog boundary (and once more below, for the final catalog).
     with (
         chunking.ChunkedWriter(
             str(ddir), IMPORT_STEM, IMPORT_SUFFIX, chunk_records
@@ -192,10 +254,22 @@ def run(out_dir: str, chunk_records: int = CHUNK_RECORDS_DEFAULT) -> int:
                 n_dropped += len(g.dropped)
                 if g.conflict:
                     n_conflicts += 1
+            manifest.add(
+                g.kept.catalog,
+                history.epoch_dt(g.kept.line1),
+                checks.element_set(g.kept.line1),
+            )
+    manifest.flush()
+    fsutil.durable_write_text(
+        str(ddir / f"{MANIFEST_STEM}{MANIFEST_SUFFIX}"),
+        manifest.body.decode("ascii"),
+        encoding="ascii",
+    )
 
     code = 1 if n_conflicts else 0
     summary = {
         "schema_version": SCHEMA_VERSION,
+        "cleaned_fingerprint": records.cleaned_fingerprint(out_dir),
         "cleaned_files": len(stems),
         "records_read": n_read,
         "excluded_hard_suspects": n_excluded,

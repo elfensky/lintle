@@ -118,14 +118,22 @@ def _tally(suspects: list[Suspect]) -> Counter[str]:
 
 
 def _summary_json_bytes(
-    counts: dict[str, int], hard: int, total: int, *, checked: dict[str, int]
+    counts: dict[str, int],
+    hard: int,
+    total: int,
+    *,
+    checked: dict[str, int],
+    epoch_distribution: dict[str, int],
 ) -> bytes:
     """The ``summary.json`` bytes from a per-rule tally and the hard/total counts —
     ``sort_keys=True`` makes it independent of ``counts`` insertion order, so the
-    list path and the sink's running ``Counter`` render identically."""
+    list path and the sink's running ``Counter`` render identically.
+    ``epoch_distribution`` (the per-month record-density histogram) is a sibling
+    of ``checked``, not nested inside it — ``checked`` stays scalar tallies."""
     envelope = {
         "schema_version": SCHEMA_VERSION,
         "checked": dict(sorted(checked.items())),
+        "epoch_distribution": dict(sorted(epoch_distribution.items())),
         "counts": dict(counts),
         "hard": hard,
         "soft": total - hard,
@@ -137,13 +145,24 @@ def _summary_json_bytes(
 
 
 def _summary_md_str(
-    counts: dict[str, int], hard: int, total: int, *, checked: dict[str, int]
+    counts: dict[str, int],
+    hard: int,
+    total: int,
+    *,
+    checked: dict[str, int],
+    epoch_distribution: dict[str, int],
 ) -> str:
     """The ``summary.md`` text from a tally + counts. Rules are emitted in
-    ``sorted`` order so the sink's Counter and the list path's tally agree."""
+    ``sorted`` order so the sink's Counter and the list path's tally agree.
+    The epoch distribution (record density per ``YYYY-MM``, honest naming — this
+    is not corpus coverage) gets its own short section, separate from ``Checked``."""
     out = ["# lintle verify\n", "## Checked\n"]
     for k, v in sorted(checked.items()):
         out.append(f"- {k}: {v}")
+    if epoch_distribution:
+        out.append("\n### Epoch distribution\n")
+        for month, n in sorted(epoch_distribution.items()):
+            out.append(f"- {month}  {n}")
     out.append("\n## Findings\n")
     if counts:
         out.append("| Rule | Count | Severity |")
@@ -158,18 +177,42 @@ def _summary_md_str(
     return "\n".join(out)
 
 
-def render_summary_json(suspects: list[Suspect], *, checked: dict[str, int]) -> bytes:
+def render_summary_json(
+    suspects: list[Suspect],
+    *,
+    checked: dict[str, int],
+    epoch_distribution: dict[str, int] = {},  # noqa: B006 — read-only, never mutated
+) -> bytes:
     """Machine-readable roll-up: schema version, per-rule counts, hard/soft
-    totals, and the caller-supplied ``checked`` census (records/files/etc.)."""
+    totals, the caller-supplied ``checked`` census (records/files/etc.), and the
+    ``epoch_distribution`` record-density histogram (a sibling key, empty by
+    default)."""
     hard = sum(1 for s in suspects if s.severity == "hard")
-    return _summary_json_bytes(_tally(suspects), hard, len(suspects), checked=checked)
+    return _summary_json_bytes(
+        _tally(suspects),
+        hard,
+        len(suspects),
+        checked=checked,
+        epoch_distribution=epoch_distribution,
+    )
 
 
-def render_summary_md(suspects: list[Suspect], *, checked: dict[str, int]) -> str:
-    """A short human summary — the census, then a per-rule table, then the
-    verdict line."""
+def render_summary_md(
+    suspects: list[Suspect],
+    *,
+    checked: dict[str, int],
+    epoch_distribution: dict[str, int] = {},  # noqa: B006 — read-only, never mutated
+) -> str:
+    """A short human summary — the census, the epoch distribution (when
+    non-empty), then a per-rule table, then the verdict line."""
     hard = sum(1 for s in suspects if s.severity == "hard")
-    return _summary_md_str(_tally(suspects), hard, len(suspects), checked=checked)
+    return _summary_md_str(
+        _tally(suspects),
+        hard,
+        len(suspects),
+        checked=checked,
+        epoch_distribution=epoch_distribution,
+    )
 
 
 def _encode_spill(s: Suspect) -> str:
@@ -235,12 +278,14 @@ class SuspectSink:
         out_dir: str,
         *,
         checked: dict[str, int],
+        epoch_distribution: dict[str, int] = {},  # noqa: B006 — read-only, never mutated
         chunk_records: int = CHUNK_RECORDS_DEFAULT,
     ) -> Path:
         """Write ``<out-dir>/04-verify/{suspects.NNNNN.jsonl,summary.json,summary.md}``
         and return the verify directory. Consumes the sink (drains the temp runs);
         deterministic bytes, overwrites in place. The suspects stream is chunked
-        into a ``suspects.NNNNN.jsonl`` set."""
+        into a ``suspects.NNNNN.jsonl`` set. ``epoch_distribution`` is the
+        per-month record-density histogram (informational, empty by default)."""
         vdir = Path(out_dir) / VERIFY_DIRNAME
         vdir.mkdir(parents=True, exist_ok=True)
         handles = [p.open(encoding="ascii") for p in self._runs]
@@ -265,7 +310,11 @@ class SuspectSink:
         fsutil.durable_write_text(
             str(vdir / SUMMARY_JSON),
             _summary_json_bytes(
-                self.counts, self.hard, self.total, checked=checked
+                self.counts,
+                self.hard,
+                self.total,
+                checked=checked,
+                epoch_distribution=epoch_distribution,
             ).decode("ascii"),
             encoding="ascii",
         )
@@ -273,7 +322,13 @@ class SuspectSink:
         # ASCII-deterministic structured pair above.
         fsutil.durable_write_text(
             str(vdir / SUMMARY_MD),
-            _summary_md_str(self.counts, self.hard, self.total, checked=checked),
+            _summary_md_str(
+                self.counts,
+                self.hard,
+                self.total,
+                checked=checked,
+                epoch_distribution=epoch_distribution,
+            ),
         )
         fsutil.durable_write_text(str(vdir / "README.md"), _README, encoding="utf-8")
         return vdir

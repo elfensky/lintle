@@ -71,8 +71,8 @@ cli.py ──▶ pipeline.py ──▶ repair.py ──▶ tle.py
   ├──▶ summary.py       (aggregate-panel renderer + read-only `lintle report` over report.json; → term)
   ├──▶ term.py          (stderr+stdout rich Consoles + error/warning/note/prompt + is_interactive/prompt_yes_no)
   ├──▶ verify/          (`lintle verify` auditor — own package; → tle, term; cli edge lazy, never in the clean path)
-  ├──▶ dedup.py ──▶ verify/  (`lintle dedup` — latest-re-issue import list; → verify.{checks,grouping,records}, fsutil, term; cli edge lazy)
-  ├──▶ extract.py ──▶ dedup.py, verify/  (`lintle extract` — per-satellite TLE history; → dedup naming constants, verify.{checks,epoch,records}, chunking, fsutil, term; cli edge lazy)
+  ├──▶ dedup.py ──▶ verify/, history.py  (`lintle dedup` — latest-re-issue import list + per-satellite manifest; → verify.{checks,grouping,records}, history, chunking, fsutil, term; cli edge lazy)
+  ├──▶ extract.py ──▶ dedup.py, verify/, history.py  (`lintle extract` — per-satellite TLE history; → dedup naming constants, verify.{checks,records}, history, chunking, fsutil, term; cli edge lazy)
   └──▶ wizard.py ──▶ config.py   (no-subcommand TTY menu; cli.main is injected — wizard never imports cli)
 
 verify/   (lintle verify — Increment-1 core + opt-in --orbit physics pass; cli ──▶ verify, never the reverse)
@@ -84,6 +84,9 @@ verify/   (lintle verify — Increment-1 core + opt-in --orbit physics pass; cli
 fsutil.py    stdlib-only I/O leaf — durable_replace + out_dir_lock
 diagnostics.py, categories.py, explain_examples.py    pure-data leaves (no I/O)
 config.py    stdlib-JSON leaf — ./.lintle.json load/save (no internal deps)
+history.py   pure history-reduction leaf — HistoryStats/Gap + analyze_epochs (gap/median
+             math), lifted out of extract._analyze so extract and dedup share one
+             definition; no I/O, no sgp4; imports only stdlib + verify.epoch.parse_epoch
 ```
 
 | Module | Owns |
@@ -111,9 +114,10 @@ config.py    stdlib-JSON leaf — ./.lintle.json load/save (no internal deps)
 | `term.py` | Two shared `rich` Consoles — `stderr_console` for status/errors, `stdout_console` for the `report` result view — the `error:` / `warning:` / `note` / `prompt` emitters, and the `is_interactive` / `prompt_yes_no` stdin helpers. |
 | `cli.py` | argparse, globbing, and top-level `clean` orchestration: delegates preflight to `run_planning`, dispatch to `worker_pool`, signal/shutdown to `process_control`, the quality-gate exit policy to `thresholds`, run finalization to `output_artifacts`, and the aggregate panel / `report` render to `summary`; owns the resulting process exit code. |
 | `cli_progress.py` | Rich presentation leaf for `clean`: the live `ProgressDisplay`, the pre-run `render_roster`, and the `status` spinner. Consumes `pipeline`'s typed progress messages. Imports `humanize` for human-readable roster sizes (`naturalsize(gnu=True)`). |
-| `verify/` | The `lintle verify` post-run auditor (own package): `epoch` (epoch-key parsing), `records` (the `CleanedRecord` dataclass + cleaned-tree readers), `grouping` (the spill-to-disk `ExternalSorter` for the constant-memory contradiction pass), `checks` (`revalidate` / `find_conflicts` — both routing the #158 same-epoch clash through the one `_is_clash` predicate `has_epoch_clash` also uses — / the `SourceAligner` byte-diff: a null object built via `SourceAligner.open`, inert when a stem has no source, whose `feed(rec, revalidated=...)` internalizes the revalidate-skip policy so `run`'s loop carries no aligner guards), `report` (`VerifyRule`, `Suspect`, and the `SuspectSink` (which owns the exit-code rule) — an external merge-sort that streams suspects to disk and renders `suspects.jsonl` + `summary.{json,md}` at flat peak memory, byte-identical to its list renderers; #156), `__init__.run` (orchestration), and `orbit` (Increment 2 — the opt-in sampled `sgp4` orbit-consistency pass: adjacent-pair position residuals, soft `VRFY-ORBIT-OUTLIER` outliers, deterministic 0.1 km quantum; refined in #163 with regime-aware gap gates (GEO 7-day vs LEO/MEO 3-day), a windowed local-median threshold term, leave-one-out culprit isolation for lone interior spikes, a `--sensitivity {sensitive,strict}` dial, and dup-epoch stratified oversampling of the satellite sample). A pure *consumer* of `tle` (its sole validity authority) and `term`; `orbit` is the package's **only** `sgp4` importer, lazily imported by `run` only under `--orbit` so the default path stays `sgp4`-free. |
-| `dedup.py` | The `lintle dedup` pass: reads `01-cleaned/` (never mutating it), excludes hard suspects from a prior `verify` run's `suspects.jsonl`, groups by `(catalog, epoch)` through `verify`'s `ExternalSorter`, and writes `<out-dir>/05-dedup/{import.txt,notes.jsonl,summary.json}` — one card per group, the latest re-issue kept, benign re-issues (including refined orbits under a new element-set) collapsed and genuine same-element-set contradictions kept-latest-but-flagged. Reuses `verify.checks.orbital_state`/`element_set` and the shared `has_epoch_clash` #158 predicate (one definition of "same orbit" / "latest" / "same-epoch clash" — #164). Constant memory; deterministic bytes. |
-| `extract.py` | The `lintle extract` pass: reads a prior `dedup` run's sorted fixed-width `import.*` chunk set (140 bytes/record — guarded, never assumed) and binary-searches one catalog's contiguous run into `<dest>/<id>.txt` (verbatim byte slice, epoch-ascending) plus a deterministic `<id>.json` stats sidecar (schema v2: median spacing, the 10 largest reportable gaps — delta > 10× the satellite's median spacing — and a tri-state quarantine flag from `03-report/broken-noradids.ndjson`); warns and, on a TTY, asks y/n before exporting a gappy or quarantine-affected history (non-TTY: warn + proceed; decline = skip, not an error), where `<dest>` defaults to `<out-dir>/06-extract` (with its own README) and only an explicit `--dest` overrides it, undecorated. Read-only, local, no index artifact; reuses `verify`'s `catalog_of`/`parse_epoch`/`element_set` so catalog and epoch keep one definition. |
+| `verify/` | The `lintle verify` post-run auditor (own package): `epoch` (epoch-key parsing), `records` (the `CleanedRecord` dataclass + cleaned-tree readers), `grouping` (the spill-to-disk `ExternalSorter` for the constant-memory contradiction pass), `checks` (`revalidate` / `find_conflicts` — both routing the #158 same-epoch clash through the one `_is_clash` predicate `has_epoch_clash` also uses — / the `SourceAligner` byte-diff: a null object built via `SourceAligner.open`, inert when a stem has no source, whose `feed(rec, revalidated=...)` internalizes the revalidate-skip policy so `run`'s loop carries no aligner guards), `report` (`VerifyRule`, `Suspect`, and the `SuspectSink` (which owns the exit-code rule) — an external merge-sort that streams suspects to disk and renders `suspects.jsonl` + `summary.{json,md}` at flat peak memory, byte-identical to its list renderers; #156), a `collections.Counter`-based `epoch_distribution` record-density histogram (`{"YYYY-MM": count}` over revalidated records only — a sibling of `checked` in `summary.json`, plus an `### Epoch distribution` section in `summary.md` — purely informational, never feeding `counts`/`hard`/`exit_code`), `__init__.run` (orchestration), and `orbit` (Increment 2 — the opt-in sampled `sgp4` orbit-consistency pass: adjacent-pair position residuals, soft `VRFY-ORBIT-OUTLIER` outliers, deterministic 0.1 km quantum; refined in #163 with regime-aware gap gates (GEO 7-day vs LEO/MEO 3-day), a windowed local-median threshold term, leave-one-out culprit isolation for lone interior spikes, a `--sensitivity {sensitive,strict}` dial, and dup-epoch stratified oversampling of the satellite sample). A pure *consumer* of `tle` (its sole validity authority) and `term`; `orbit` is the package's **only** `sgp4` importer, lazily imported by `run` only under `--orbit` so the default path stays `sgp4`-free. |
+| `dedup.py` | The `lintle dedup` pass: reads `01-cleaned/` (never mutating it), excludes hard suspects from a prior `verify` run's `suspects.jsonl`, groups by `(catalog, epoch)` through `verify`'s `ExternalSorter`, and writes `<out-dir>/05-dedup/{import.txt,notes.jsonl,manifest.jsonl,summary.json}` — one card per group, the latest re-issue kept, benign re-issues (including refined orbits under a new element-set) collapsed and genuine same-element-set contradictions kept-latest-but-flagged. Reuses `verify.checks.orbital_state`/`element_set` and the shared `has_epoch_clash` #158 predicate (one definition of "same orbit" / "latest" / "same-epoch clash" — #164). Also streams each kept card's catalog/epoch/element-set into `history.analyze_epochs`, flushing one `manifest.jsonl` row per satellite on each catalog boundary (a single plain file, never chunked — see §6), and stores a stat-only `cleaned_fingerprint` of `01-cleaned/` in `summary.json` for `extract`'s staleness check. Constant memory; deterministic bytes. |
+| `extract.py` | The `lintle extract` pass: reads a prior `dedup` run's sorted fixed-width `import.*` chunk set (140 bytes/record — guarded, never assumed) and binary-searches one catalog's contiguous run into `<dest>/<id>.txt` (verbatim byte slice, epoch-ascending) plus a deterministic `<id>.json` stats sidecar (schema v2: median spacing, the 10 largest reportable gaps — delta > 10× the satellite's median spacing, via the shared `history.analyze_epochs` — and a tri-state quarantine flag from `03-report/broken-noradids.ndjson`); warns and, on a TTY, asks y/n before exporting a gappy or quarantine-affected history (non-TTY: warn + proceed; decline = skip, not an error), where `<dest>` defaults to `<out-dir>/06-extract` (with its own README) and only an explicit `--dest` overrides it, undecorated. Also recomputes `verify.records.cleaned_fingerprint` at run start and warns (never fails) when it disagrees with the one `dedup` stored in `summary.json` — `01-cleaned/` drifted since that `dedup` run. Read-only, local, no index artifact; reuses `verify`'s `catalog_of`/`element_set` (epoch/gap math now behind `history.py`) so catalog, epoch, and gap definitions each stay singular. |
+| `history.py` | Pure history reduction shared by `extract` (the `<id>.json` sidecar) and `dedup` (`manifest.jsonl`): `analyze_epochs(epochs, elsets) -> HistoryStats` given one satellite's epoch datetimes and element-set numbers in stream order — count, span, median spacing, and the `GAPS_CAP` (10) largest reportable gaps (delta > `GAP_FACTOR` (10) × median spacing), plus the `epoch_dt`/`iso` helpers. No I/O, no `sgp4`; imports only stdlib + `verify.epoch.parse_epoch`. Lifted out of `extract._analyze` so the two callers cannot compute divergent numbers for the same satellite. |
 | `config.py` | Optional `./.lintle.json` project config: stdlib-JSON `load`/`save` of the two remembered keys (`source`, `output`). Never an authority over an explicit CLI arg. No internal deps. |
 | `wizard.py` | The interactive rich menu shown when `lintle` runs with no subcommand on a TTY (configure / clean / verify / report / quit). A thin front-end that builds an argv and calls `cli.main`, reimplementing no orchestration; imports `config` + `term`. |
 
@@ -129,12 +133,19 @@ path (`pipeline`, `repair`, `tle`, `cli`'s clean path) never imports `lintle.ver
 enforces the wall (see §7). `dedup.py` is a second read-only consumer of the same package —
 `cli ──▶ dedup ──▶ verify.{checks, grouping, records}` (+ `term`), one-way, and equally barred
 from the clean path — so it reuses `verify`'s one definition of "same orbit" / "latest re-issue"
-rather than spawning a divergent second one. `extract.py` is a third read-only consumer, one
-hop further downstream — `cli ──▶ extract ──▶ dedup` (naming constants only) `+ verify.{checks,
-epoch, records}` (+ `chunking`, `fsutil`, `term`), also one-way and lazily dispatched, also
-barred from the clean path, and also equally barred from ever reaching `sgp4` — the import-graph
-test walks its closure and additionally pins the exact `verify` submodules `extract` may import
-(`{checks, epoch, records}`), asserting none of them imports `sgp4` (see §7). The `cli ↔ wizard` cycle — `cli` launches the menu,
+rather than spawning a divergent second one. `dedup.py` also imports `history.py` (the shared
+gap/median reducer) to build `manifest.jsonl` — a fourth acyclic leaf, no new edge back into
+`verify` or the clean path. `extract.py` is a third read-only consumer, one hop further
+downstream — `cli ──▶ extract ──▶ dedup` (naming constants only) `+ verify.{checks, records}`
+`+ history` (+ `chunking`, `fsutil`, `term`), also one-way and lazily dispatched, also barred
+from the clean path, and also equally barred from ever reaching `sgp4`. `extract` no longer
+imports `verify.epoch` directly — the epoch/gap reduction moved behind `lintle.history`, which
+itself imports only `verify.epoch.parse_epoch` — so the import-graph closure test walks
+`extract`'s transitive imports (reaching `history` and, through it, `verify`) and separately
+`test_verify_submodules_are_sgp4_free_except_orbit` sweeps every `verify/*.py` module except
+`orbit.py` (`checks`, `epoch`, `grouping`, `records`, `report`, `__init__`) for `sgp4`-freedom
+unconditionally — so `epoch.py`'s own `sgp4`-freedom is checked independent of which caller
+imports it, rather than being pinned to one caller's import list (see §7). The `cli ↔ wizard` cycle — `cli` launches the menu,
 the menu re-enters `cli.main` — is broken by a lazy import on *both* sides (`cli` imports
 `wizard` only inside the no-subcommand TTY branch; `wizard` imports `cli` only inside its
 dispatch), so `wizard ──▶ config`/`term` are the only module-load-time edges.
@@ -374,7 +385,7 @@ retired):
 │                        broken-noradids.ndjson                    + README.md
 ├── 04-verify/         — suspects.NNNNN.jsonl · summary.{json,md}  + README.md
 ├── 05-dedup/          — import.NNNNN.txt · notes.NNNNN.jsonl ·
-│                        summary.json                              + README.md
+│                        manifest.jsonl · summary.json              + README.md
 └── 06-extract/        — <id>.txt · <id>.json                      + README.md
 ```
 
@@ -400,7 +411,9 @@ old single file — the invariant that keeps Critical Rules #1/#2 intact. The si
 (`chunking.py`): per-stream counting never global; always-index (no rename-on-roll); concat-identity;
 atomic commit per chunk; stale-chunk scrub on (re)run/resume; constant memory. Aggregate *summary*
 documents (`report.md`, `report.json`, `04-verify/summary.*`, `05-dedup/summary.json`,
-`broken-noradids.ndjson`) are not streams and stay single files.
+`broken-noradids.ndjson`) are not streams and stay single files. `05-dedup/manifest.jsonl` is a
+partial exception: it is one row per satellite (a genuine per-record-family stream, not an
+aggregate summary), yet it is written as a **single plain file, never chunked** — see below.
 
 Transient run state lives alongside and is removed on success: `.shards/` (per-worker
 `report.jsonl` shards — kept whole intermediates, concatenated into the chunked `report.NNNNN.jsonl`
@@ -672,6 +685,51 @@ non-empty, carries no `.lintle-output` marker, no checkpoint (`.clean-state.json
 stale-checkpoint archive — indicating it is not a lintle output directory and may contain
 user-owned content (issue #93). Effectively-empty out-dirs (only the lock file present) are
 always safe to use.
+
+### `05-dedup/manifest.jsonl` — the per-satellite corpus manifest
+
+`dedup` also writes `<out-dir>/05-dedup/manifest.jsonl`: one compact ASCII JSON row per
+satellite, catalog-ascending, built by feeding each kept card's catalog/epoch/element-set into
+`history.analyze_epochs` as `dedup`'s external sort emits them in `(catalog, epoch)` order —
+`_ManifestBuilder` holds one satellite's epoch/element-set lists at a time and flushes a row on
+every catalog boundary (Critical Rule #3: bounded to one satellite's history, never the whole
+corpus). Unlike every other per-record output stream, it is a **single plain file, never
+chunked** — tens of thousands of satellites, not billions of records, so the chunk-set
+machinery buys nothing here. Row shape (fixed key order, one line):
+
+```json
+{"norad_id":25544,"records":1234,"first_epoch":"2017-01-01T00:00:00Z","last_epoch":"2026-07-01T00:00:00Z","span_days":3468.0,"median_spacing_days":0.72,"largest_gap_days":41.3,"gap_count":2}
+```
+
+`median_spacing_days` is `null` below 3 records (the trivially-gapless case). This is the
+corpus-coverage substrate: a query like `jq | shuf | xargs lintle extract` picks a random
+well-covered (or gappy) satellite for spot-checking — `lintle` itself owns no RNG, so `shuf`
+supplies the randomness.
+
+### `epoch_distribution` — verify's record-density histogram
+
+`lintle verify` tallies a `{"YYYY-MM": count}` histogram of every revalidated record's epoch
+month while it revalidates (a `collections.Counter`, converted to a plain `dict` — sorted by
+key — at the output boundary), and writes it as a new top-level `epoch_distribution` key in
+`04-verify/summary.json` — a **sibling of `checked`, not nested inside it** — plus a matching
+`### Epoch distribution` Markdown section in `summary.md` (one `- YYYY-MM  N` line per month,
+emitted only when non-empty). Only records that pass revalidation are binned; a month with no
+valid records is simply an absent key, never a zero. Deliberately named "epoch distribution" /
+"record density," not "coverage" — it says nothing about gaps or completeness, only where
+records cluster in time (`history.py`'s gap analysis is the coverage-shaped signal). It is
+purely informational: it never feeds `counts`, `hard`, `soft`, or `exit_code`.
+
+### `cleaned_fingerprint` — the dedup/extract staleness guard
+
+`dedup` computes a stat-only structural fingerprint of `01-cleaned/` —
+`{"stems": [[stem, total_chunk_bytes], ...]}`, sorted, built entirely from `Path.stat().st_size`
+calls (no file content ever read) — and stores it as `cleaned_fingerprint` in
+`05-dedup/summary.json`. `extract` recomputes the same fingerprint at run start and **warns,
+never fails,** when it disagrees with the stored one: `01-cleaned/` changed since the `dedup`
+run `extract` is reading from, so its results may be stale (re-run `lintle dedup`). Cheap enough
+to run on every `extract` invocation — a handful of `stat` calls, not a hash over ~30 GB — so it
+catches drift (a `clean --resume` filling in more records, say) without re-hashing the corpus;
+it detects staleness, not bit-rot.
 
 ---
 

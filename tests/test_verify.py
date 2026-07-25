@@ -78,6 +78,31 @@ def build_tree_with_source(tmp_path, cleaned_pairs, source_lines=None, stem="tle
     return str(out), str(src)
 
 
+def _epoch_record(catalog: int, year: int, day: int) -> tuple[str, str]:
+    """A valid ``(line1, line2)`` pair for ``catalog`` at day-of-year ``day``
+    in ``year`` — the L1/L2 template with the catalog and epoch-year/day
+    columns overwritten and the checksum recomputed."""
+    yy = f"{year % 100:02d}"
+    l1 = fix(L1[:2] + f"{catalog:05d}" + L1[7:18] + yy + f"{day:03d}" + L1[23:])
+    l2 = fix(L2[:2] + f"{catalog:05d}" + L2[7:])
+    return l1, l2
+
+
+def _build_cleaned(out: str, catalogs: dict[int, list[tuple[int, int]]]) -> None:
+    """Write a minimal ``01-cleaned`` tree (no source dir): one valid record per
+    ``(year, day_of_year)`` epoch, for each catalog in ``catalogs``."""
+    pairs = [
+        _epoch_record(catalog, year, day)
+        for catalog, epochs in catalogs.items()
+        for year, day in epochs
+    ]
+    cleaned_dir = Path(out) / CLEANED_DIRNAME
+    cleaned_dir.mkdir(parents=True, exist_ok=True)
+    (cleaned_dir / "tle01.00001.cleaned.txt").write_text(
+        "".join(f"{a}\n{b}\n" for a, b in pairs), encoding="ascii"
+    )
+
+
 class TestEpoch:
     def with_year(self, yy):
         return fix(L1[:18] + yy + L1[20:])
@@ -495,6 +520,44 @@ class TestEndToEnd:
         assert summary["checked"]["source_diff"] == "skipped"
 
 
+class TestEpochHistogram:
+    """The epoch record-density histogram: a sibling top-level key in
+    ``summary.json``, binned only from records that survive ``revalidate``."""
+
+    def test_summary_bins_records_by_month(self, tmp_path):
+        # 3 records in 2017-01, 0 in Feb/Mar, 2 in 2017-04 (doy 91/92 ~ Apr 1/2)
+        out = str(tmp_path)
+        _build_cleaned(
+            out, {100: [(2017, 15), (2017, 16), (2017, 17), (2017, 91), (2017, 92)]}
+        )
+        run(out, source_dir=None)
+        summary = json.loads((tmp_path / VERIFY_DIRNAME / "summary.json").read_text())
+        hist = summary["epoch_distribution"]
+        assert hist["2017-01"] == 3
+        assert hist["2017-04"] == 2
+        assert "2017-02" not in hist  # the hole reads as an absent bin
+
+    def test_broken_records_are_not_binned(self, tmp_path):
+        # a revalidate-failing record (bad checksum) must not contribute a bin
+        out = str(tmp_path)
+        _build_cleaned(out, {100: [(2017, 15)]})
+        good_l1, good_l2 = _epoch_record(100, 2017, 15)
+        broken_l2 = good_l2[:-1] + str((int(good_l2[-1]) + 1) % 10)
+        cleaned = Path(out) / CLEANED_DIRNAME / "tle01.00001.cleaned.txt"
+        cleaned.write_text(f"{good_l1}\n{broken_l2}\n", encoding="ascii")
+        run(out, source_dir=None)
+        summary = json.loads((tmp_path / VERIFY_DIRNAME / "summary.json").read_text())
+        assert summary["epoch_distribution"] == {}
+
+    def test_epoch_distribution_is_sibling_of_checked(self, tmp_path):
+        out = str(tmp_path)
+        _build_cleaned(out, {100: [(2017, 15)]})
+        run(out, source_dir=None)
+        summary = json.loads((tmp_path / VERIFY_DIRNAME / "summary.json").read_text())
+        assert "epoch_distribution" not in summary["checked"]
+        assert "2017-01" in summary["epoch_distribution"]
+
+
 class TestCLI:
     def test_verify_subcommand_dispatches(self, tmp_path):
         out, src = build_tree_with_source(tmp_path, [(L1, L2)], source_lines=[L1, L2])
@@ -572,18 +635,20 @@ class TestImportGuard:
             frontier |= self._module_level_imports(mod_path) - seen
 
     def test_extract_closure_never_imports_sgp4(self):
-        """``lintle.extract`` reaches into ``verify.{checks,epoch,records}``
-        for the shared catalog/epoch parsers — that edge is expected and
-        fine — but it must never drag in ``sgp4`` itself, which stays the
-        sole province of ``verify/orbit.py`` under the lazy ``--orbit``
-        gate. Same walk as the clean-path test, seeded at ``extract``.
-        NOTE: ``_module_level_imports`` collapses any ``lintle.verify.X``
-        import to the single name ``"verify"`` (there is no ``verify.py``
-        file to descend into, only the ``verify/`` package), so this walk
-        alone cannot see past that collapse into the ``verify`` submodules
-        — it would not notice ``extract`` reaching ``verify.orbit``. See
-        ``test_extract_verify_submodule_imports_are_pinned_and_sgp4_free``
-        for the leg that actually enforces the submodule boundary."""
+        """``lintle.extract`` reaches into ``verify.{checks,records}``
+        directly for the shared catalog/element-set parsers (and reaches
+        ``verify.epoch`` transitively via ``lintle.history``, which owns the
+        epoch-datetime reduction shared with ``dedup``) — those edges are
+        expected and fine — but it must never drag in ``sgp4`` itself, which
+        stays the sole province of ``verify/orbit.py`` under the lazy
+        ``--orbit`` gate. Same walk as the clean-path test, seeded at
+        ``extract``. NOTE: ``_module_level_imports`` collapses any
+        ``lintle.verify.X`` import to the single name ``"verify"`` (there is
+        no ``verify.py`` file to descend into, only the ``verify/`` package),
+        so this walk alone cannot see past that collapse into the ``verify``
+        submodules — it would not notice ``extract`` reaching ``verify.orbit``.
+        See ``test_verify_submodules_are_sgp4_free_except_orbit`` for the leg
+        that actually enforces the submodule boundary."""
         src = Path(lintle.__file__).parent
         seen: set[str] = set()
         frontier = {"extract"}
@@ -596,43 +661,26 @@ class TestImportGuard:
                 continue  # a package attribute (constant/function), not a module
             frontier |= self._module_level_imports(mod_path) - seen
 
-    @staticmethod
-    def _verify_submodules_imported(path):
-        """Names of ``lintle.verify.*`` submodules imported at module level
-        by ``path`` — both ``from lintle.verify.X import ...`` and
-        ``from lintle.verify import X, Y`` spellings. This is the fine-grained
-        counterpart to ``_module_level_imports``, which collapses either
-        spelling to the single opaque name ``"verify"``."""
-        names = set()
-        for node in ast.parse(path.read_text(encoding="utf-8")).body:
-            match node:
-                case ast.Import(names=aliases):
-                    for a in aliases:
-                        parts = a.name.split(".")
-                        if parts[:2] == ["lintle", "verify"] and len(parts) > 2:
-                            names.add(parts[2])
-                case ast.ImportFrom(module="lintle.verify", names=aliases):
-                    names.update(a.name for a in aliases)
-                case ast.ImportFrom(module=mod, names=aliases) if (
-                    mod and mod.startswith("lintle.verify.")
-                ):
-                    names.add(mod.split(".")[2])
-        return names
-
-    def test_extract_verify_submodule_imports_are_pinned_and_sgp4_free(self):
-        """Pins the exact ``verify`` submodules ``extract`` is allowed to
-        import — ``{checks, epoch, records}`` — so a future ``from
-        lintle.verify import orbit`` (or ``from lintle.verify.orbit import
-        ...``) in ``extract.py`` fails this assertion instead of silently
-        passing the coarse closure walk above. Then, for each of those
-        submodule files, checks their own module-level imports directly for
-        ``sgp4`` (name or from-import), the same detector the coarse walk
-        uses but applied one level deeper than that walk can reach."""
-        src = Path(lintle.__file__).parent
-        extract_submodules = self._verify_submodules_imported(src / "extract.py")
-        assert extract_submodules == {"checks", "epoch", "records"}
-        for name in extract_submodules:
-            mod_path = src / "verify" / f"{name}.py"
-            assert mod_path.is_file(), f"missing lintle/verify/{name}.py"
+    def test_verify_submodules_are_sgp4_free_except_orbit(self):
+        """Sweeps every ``lintle.verify.*`` module except ``orbit.py`` (the
+        sanctioned sole ``sgp4`` importer) and asserts none of them import
+        ``sgp4`` at module level, using the same ``_module_level_imports``
+        detector the coarse closure walks above use. This is deliberately
+        independent of which submodules any particular caller (``extract``,
+        the shared ``history`` reducer, the future ``dedup`` manifest) happens
+        to import directly: pinning the checked set to one caller's import
+        list is fragile — it silently drops a submodule's own sgp4-freedom
+        check the moment that caller stops importing it, which is exactly
+        what happened when ``extract`` stopped importing ``verify.epoch``
+        directly after the history reduction moved behind ``lintle.history``;
+        nothing else was then checking ``epoch.py`` itself. Sweeping the whole
+        ``verify/`` package unconditionally means new callers (or new
+        indirection) can never quietly remove a module from coverage."""
+        verify_dir = Path(lintle.__file__).parent / "verify"
+        modules = sorted(p for p in verify_dir.glob("*.py") if p.stem != "orbit")
+        assert modules, "expected to find verify submodules to sweep"
+        for mod_path in modules:
             imports = self._module_level_imports(mod_path)
-            assert "sgp4" not in imports, f"verify.{name} imports sgp4 directly"
+            assert "sgp4" not in imports, (
+                f"verify.{mod_path.stem} imports sgp4 directly"
+            )
