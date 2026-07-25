@@ -1,7 +1,7 @@
 # Three-phase `clean` display: discovery → progress → results
 
 **Date:** 2026-07-26
-**Status:** design approved, not yet implemented
+**Status:** implemented (2026-07-26) — see `cli_progress.ProgressDisplay` (phase 2) and `summary.render_files` (phase 3)
 
 ## Problem
 

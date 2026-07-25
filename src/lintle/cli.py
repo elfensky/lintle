@@ -519,11 +519,14 @@ def _finalize_run(
     run_monotonic_start,
     threshold_mode,
     quarantine_threshold,
+    resumed_names=frozenset(),
 ):
     """Finish a non-interrupted run: sort stats, write the clean-run artifacts,
     emit the text/JSON summary, tear down resumable state on success, and return
     the process exit code. Split out of :func:`main` so the orchestration there
-    stays at the level of phases (check inputs -> plan -> dispatch -> finalize)."""
+    stays at the level of phases (check inputs -> plan -> dispatch -> finalize).
+    ``resumed_names`` is the basenames carried over from a previous run, dimmed
+    in the phase-3 table because their numbers came from that earlier run."""
     all_stats.sort(key=lambda stats: stats.src_name)
 
     # Build the run envelope once, unconditionally — even an all-failed run
@@ -565,10 +568,15 @@ def _finalize_run(
     if args.report == "json":
         print(json.dumps(envelope, indent=2))
     elif all_stats:
-        # The human aggregate panel goes to stderr (styled ephemera), replacing
-        # the old per-file stdout dump; per-file detail lives in report.md. Off
-        # a TTY it degrades to a plain ASCII block. Text-mode stdout stays empty
-        # so a pipe sees nothing the report.json artifact doesn't already carry.
+        # Phase 3 of the display: the per-file results table, then the human
+        # aggregate panel. Both go to stderr (styled ephemera) — per-file detail
+        # also lives durably in report.md. Off a TTY they degrade to plain ASCII.
+        # Text-mode stdout stays empty so a pipe sees nothing the report.json
+        # artifact doesn't already carry. This revisits the old "no per-file
+        # dump" rule deliberately: that rule was about polluting *stdout*.
+        summary.render_files(
+            envelope, console=term.stderr_console, resumed=resumed_names
+        )
         summary.render(envelope, console=term.stderr_console, command_label="clean")
 
     # A fully successful clean run leaves no resumable state behind. The
@@ -931,6 +939,7 @@ def _dispatch(argv=None):
             run_monotonic_start=run_monotonic_start,
             threshold_mode=threshold_mode,
             quarantine_threshold=quarantine_threshold,
+            resumed_names=frozenset(s.src_name for s in plan.reused_stats),
         )
     except Exception as exc:
         # Issue #89: catch-all backstop — any unhandled exception in the clean

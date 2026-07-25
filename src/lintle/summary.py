@@ -62,6 +62,35 @@ def _pick_tier(*, is_terminal, width, unicode_ok):
     return "medium" if width < 100 else "wide"
 
 
+def display_tier(width):
+    """Return the column tier — ``"narrow"``, ``"medium"``, or ``"wide"`` — for
+    the two per-file tables (``clean``'s live phase-2 display and the phase-3
+    results table). The boundaries partition every width with no gap, and the
+    tiers are cumulative: narrow drops what medium drops *and* more. Shared so
+    the two phases can never disagree about where a column stops fitting; which
+    columns each tier drops is the caller's business."""
+    if width < 80:
+        return "narrow"
+    return "medium" if width < 100 else "wide"
+
+
+def format_clock(seconds):
+    """Render an elapsed duration as ``M:SS`` (or ``H:MM:SS`` past an hour) — the
+    compact column form, as opposed to :func:`_humanize_duration`'s prose form
+    for the aggregate panel. Shared with ``cli_progress`` so a duration reads the
+    same in the live display and in the results table."""
+    hours, rem = divmod(int(seconds), 3600)
+    minutes, secs = divmod(rem, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+    return f"{minutes}:{secs:02d}"
+
+
+def format_size(n_bytes):
+    """Render a byte count compactly (e.g. ``"3.0G"``) via humanize's gnu units."""
+    return humanize.naturalsize(n_bytes, gnu=True)
+
+
 def _bar(part, whole, *, width, use_unicode):
     """Return a fixed-``width`` progress-bar string for ``part / whole``."""
     fill_char = "█" if use_unicode else "#"
@@ -182,6 +211,92 @@ def _render_sections(console, label, run, s, *, bars):
         console.print(t)
 
 
+def _file_rows(envelope, resumed):
+    """Return the phase-3 rows as ``(name, entry_or_None, style)`` triples sorted
+    by basename — the same ordering the discovery roster and ``report.md`` use.
+    A ``None`` entry is a file that failed to process: it has no ``FileStats``,
+    only a ``run.failed_files`` record, and renders as an all-dashes red row."""
+    failed = {e["file"] for e in envelope["run"].get("failed_files", [])}
+    rows = [
+        (entry["src_name"], entry, "dim" if entry["src_name"] in resumed else "")
+        for entry in envelope.get("files", [])
+    ]
+    rows += [(name, None, "red") for name in failed]
+    rows.sort(key=lambda row: row[0])
+    return rows
+
+
+def render_files(envelope, *, console, resumed=frozenset()):
+    """Print the phase-3 per-file results table — one row per file with its
+    records, clean/quarantined counts, repairs, and duration, plus a total row.
+
+    Envelope-driven, so ``clean``'s end-of-run render and the read-only
+    ``lintle report`` show the same table from the same numbers. Printed
+    statically (no ``Live``), so terminal height and resize cannot touch it, and
+    unconditionally, matching the discovery roster — it is stderr for ``clean``
+    and stdout for ``report``, never structured output. ``resumed`` is the set of
+    ``src_name``s carried over from a previous run (``plan.reused_stats``), dimmed
+    because their numbers were measured by that earlier run; it is empty for
+    ``report``, which re-reads a ``report.json`` that does not record resumption.
+    The total row's time is the run's wall clock, never the sum of the column —
+    under parallel workers those legitimately differ.
+    """
+    rows = _file_rows(envelope, resumed)
+    if not rows:
+        return
+    tier = display_tier(console.width)
+    dash = "—" if _can_encode(console.encoding, "—") else "-"
+    table = Table(box=box.SIMPLE, pad_edge=False)
+    table.add_column("#", justify="right", style="dim")
+    table.add_column("file")
+    if tier != "narrow":
+        table.add_column("size", justify="right")
+    table.add_column("records", justify="right")
+    table.add_column("clean", justify="right")
+    table.add_column("quarantined", justify="right")
+    if tier == "wide":
+        table.add_column("repaired", justify="right")
+        table.add_column("time", justify="right")
+
+    totals = {"bytes": 0, "paired_records": 0, "clean": 0, "quarantined": 0, "fixes": 0}
+    for index, (name, entry, style) in enumerate(rows, start=1):
+        if entry is None:
+            cells = [dash] * (3 if tier == "narrow" else 4)
+            if tier == "wide":
+                cells += [dash, dash]
+        else:
+            repaired = sum(entry["fix_counts"].values())
+            totals["bytes"] += entry["bytes"]
+            totals["paired_records"] += entry["paired_records"]
+            totals["clean"] += entry["clean_count"]
+            totals["quarantined"] += entry["quarantined_count"]
+            totals["fixes"] += repaired
+            cells = [] if tier == "narrow" else [format_size(entry["bytes"])]
+            cells += [
+                f"{entry['paired_records']:,}",
+                f"{entry['clean_count']:,}",
+                f"{entry['quarantined_count']:,}",
+            ]
+            if tier == "wide":
+                cells += [f"{repaired:,}", format_clock(entry["elapsed_seconds"])]
+        table.add_row(str(index), Text(name), *cells, style=style or None)
+
+    table.add_section()
+    total_cells = [] if tier == "narrow" else [format_size(totals["bytes"])]
+    total_cells += [
+        f"{totals['paired_records']:,}",
+        f"{totals['clean']:,}",
+        f"{totals['quarantined']:,}",
+    ]
+    if tier == "wide":
+        total_cells += [
+            f"{totals['fixes']:,}",
+            format_clock(envelope["run"]["elapsed_seconds"]),
+        ]
+    table.add_row("", "total", *total_cells)
+    console.print(table)
+
+
 def render(envelope, *, console, command_label="clean"):
     """Render the run envelope as a responsive aggregate panel to ``console``."""
     run = envelope["run"]
@@ -238,6 +353,10 @@ def run(out_dir, fmt):
     if fmt == "json":
         print(raw, end="")
         return 0
+    # The same phase-3 table `clean` prints at the end of a run — free here,
+    # since both are driven by the one envelope shape. `resumed` is empty:
+    # report.json does not record which files a run carried over.
+    render_files(envelope, console=term.stdout_console)
     render(envelope, console=term.stdout_console, command_label="report")
     return 0
 

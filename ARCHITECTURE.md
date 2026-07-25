@@ -59,7 +59,7 @@ cli.py ──▶ pipeline.py ──▶ repair.py ──▶ tle.py
   │             ├──▶ report.py ──▶ report_aggregation.py
   │             └──▶ report_writers.py ──┘ (imports report.py one-way)
   │
-  ├──▶ cli_progress.py  (rich live progress + roster; imports pipeline's progress messages)
+  ├──▶ cli_progress.py  (rich live progress + roster; → pipeline's progress messages, summary's shared formatters)
   ├──▶ resume.py        (single-run checkpoint + run-stamp/output-size helpers; → __version__, fsutil, stem, naming-constants)
   ├──▶ run_planning.py  (disk-space guard + output scrub + resume/fresh-run decision; CleanConfig + RunPlan; → fsutil, report, resume, term)
   ├──▶ worker_pool.py   (process-pool dispatch + progress collection; → pipeline, cli_progress, process_control, report, resume, run_planning, term + stdlib futures/mp/signal)
@@ -105,7 +105,7 @@ history.py   pure history-reduction leaf — HistoryStats/Gap + analyze_epochs (
 | `chunking.py` | Fixed-count output chunking: `ChunkedWriter` splits every record/line output stream into `<stem>.NNNNN.<suffix>` chunks of `--chunk-records` units (default 1,000,000), committing each chunk via `durable_replace` the instant it fills and scrubbing a stem's prior set on first open (invariant 5); `ChunkedReader` reassembles a stem's set in index order as one logical stream. Concatenating a set == the pre-chunking single file. Stdlib-only leaf; imports only `fsutil`; never `sgp4`. Depended on by `pipeline`, `report_writers`, `resume`, `verify/records`, `verify/report`, `dedup`, and `diff`. |
 | `diff.py` | Read-only: per-rule delta between two runs' `report.jsonl` (`lintle diff`). |
 | `explain.py` | Read-only: renders rule/fix documentation (`lintle explain`). |
-| `summary.py` | Responsive aggregate-panel renderer over the `build_run_envelope` dict (plain/medium/wide tiers + ASCII-bar fallback), keyed off the target Console; backs `clean`'s end-of-run stderr panel and the read-only `lintle report` (renders `<out-dir>/report.json`: text → panel on stdout, json → file bytes verbatim). Imports `humanize` for human-readable panel durations (`precisedelta`). Styled UI, not byte-bound. |
+| `summary.py` | Responsive aggregate-panel renderer over the `build_run_envelope` dict (plain/medium/wide tiers + ASCII-bar fallback), keyed off the target Console; backs `clean`'s end-of-run stderr panel and the read-only `lintle report` (renders `<out-dir>/report.json`: text → panel on stdout, json → file bytes verbatim). Also owns the phase-3 `render_files` per-file results table and the formatters both per-file tables share — `display_tier` (the narrow/medium/wide width boundaries), `format_clock` (M:SS durations), `format_size` (gnu byte units). Imports `humanize` for those and for human-readable panel durations (`precisedelta`). Styled UI, not byte-bound. |
 | `diagnostics.py` | Stable `RuleID` registry + structured `Diagnostic` dataclass + `RepairTier`. Pure data. |
 | `categories.py` | `FixClass` enum + `FixSpec` registry — the repair taxonomy. Pure data. |
 | `explain_examples.py` | Validator-verified examples + citations backing `explain`. Pure data. |
@@ -113,7 +113,7 @@ history.py   pure history-reduction leaf — HistoryStats/Gap + analyze_epochs (
 | `process_control.py` | Signal/worker shutdown helpers (SIGINT setup, fast pool termination, cancel/exit-code) used by `cli.py` and `worker_pool.py`. |
 | `term.py` | Two shared `rich` Consoles — `stderr_console` for status/errors, `stdout_console` for the `report` result view — the `error:` / `warning:` / `note` / `prompt` emitters, and the `is_interactive` / `prompt_yes_no` stdin helpers. |
 | `cli.py` | argparse, globbing, and top-level `clean` orchestration: delegates preflight to `run_planning`, dispatch to `worker_pool`, signal/shutdown to `process_control`, the quality-gate exit policy to `thresholds`, run finalization to `output_artifacts`, and the aggregate panel / `report` render to `summary`; owns the resulting process exit code. |
-| `cli_progress.py` | Rich presentation leaf: `clean`'s live `ProgressDisplay`, the pre-run `render_roster`, the `status` spinner, and `phase_bar` — the single-task bar the single-process post-run phases (`verify`, `verify --orbit`, `dedup`) drive as they stream their stems. Consumes `pipeline`'s typed progress messages. Imports `humanize` for human-readable roster sizes (`naturalsize(gnu=True)`). Every live block is disabled off a TTY, so a piped run stays silent. |
+| `cli_progress.py` | Rich presentation leaf: the phase-1 `render_roster`, the phase-2 live `ProgressDisplay` (a `rich.live.Live` over a `rich.table.Table` — in-flight rows plus a pinned summary row, bounded so terminal height and resize cannot strand or crop it), the `status` spinner, and `phase_bar` for the single-process post-run phases (`verify`, `dedup`). Consumes `pipeline`'s typed progress messages and `summary`'s shared tier/duration/size formatters, so phases 2 and 3 cannot disagree about a boundary or a format. Every live block is disabled off a TTY. |
 | `verify/` | The `lintle verify` post-run auditor (own package): `epoch` (epoch-key parsing), `records` (the `CleanedRecord` dataclass + cleaned-tree readers), `grouping` (the spill-to-disk `ExternalSorter` for the constant-memory contradiction pass), `checks` (`revalidate` / `find_conflicts` — both routing the #158 same-epoch clash through the one `_is_clash` predicate `has_epoch_clash` also uses — / the `SourceAligner` byte-diff: a null object built via `SourceAligner.open`, inert when a stem has no source, whose `feed(rec, revalidated=...)` internalizes the revalidate-skip policy so `run`'s loop carries no aligner guards), `report` (`VerifyRule`, `Suspect`, and the `SuspectSink` (which owns the exit-code rule) — an external merge-sort that streams suspects to disk and renders `suspects.jsonl` + `summary.{json,md}` at flat peak memory, byte-identical to its list renderers; #156), a `collections.Counter`-based `epoch_distribution` record-density histogram (`{"YYYY-MM": count}` over revalidated records only — a sibling of `checked` in `summary.json`, plus an `### Epoch distribution` section in `summary.md` — purely informational, never feeding `counts`/`hard`/`exit_code`), `__init__.run` (orchestration), and `orbit` (Increment 2 — the opt-in sampled `sgp4` orbit-consistency pass: adjacent-pair position residuals, soft `VRFY-ORBIT-OUTLIER` outliers, deterministic 0.1 km quantum; refined in #163 with regime-aware gap gates (GEO 7-day vs LEO/MEO 3-day), a windowed local-median threshold term, leave-one-out culprit isolation for lone interior spikes, a `--sensitivity {sensitive,strict}` dial, and dup-epoch stratified oversampling of the satellite sample). A pure *consumer* of `tle` (its sole validity authority) and `term`; `orbit` is the package's **only** `sgp4` importer, lazily imported by `run` only under `--orbit` so the default path stays `sgp4`-free. |
 | `dedup.py` | The `lintle dedup` pass: reads `01-cleaned/` (never mutating it), excludes hard suspects from a prior `verify` run's `suspects.jsonl`, groups by `(catalog, epoch)` through `verify`'s `ExternalSorter`, and writes `<out-dir>/05-dedup/{import.txt,notes.jsonl,manifest.jsonl,summary.json}` — one card per group, the latest re-issue kept, benign re-issues (including refined orbits under a new element-set) collapsed and genuine same-element-set contradictions kept-latest-but-flagged. Reuses `verify.checks.orbital_state`/`element_set` and the shared `has_epoch_clash` #158 predicate (one definition of "same orbit" / "latest" / "same-epoch clash" — #164). Also streams each kept card's catalog/epoch/element-set into `history.analyze_epochs`, flushing one `manifest.jsonl` row per satellite on each catalog boundary (a single plain file, never chunked — see §6), and stores a stat-only `cleaned_fingerprint` of `01-cleaned/` in `summary.json` for `extract`'s staleness check. Constant memory; deterministic bytes. |
 | `extract.py` | The `lintle extract` pass: reads a prior `dedup` run's sorted fixed-width `import.*` chunk set (140 bytes/record — guarded, never assumed) and binary-searches one catalog's contiguous run into `<dest>/<id>.txt` (verbatim byte slice, epoch-ascending) plus a deterministic `<id>.json` stats sidecar (schema v2: median spacing, the 10 largest reportable gaps — delta > 10× the satellite's median spacing, via the shared `history.analyze_epochs` — and a tri-state quarantine flag from `03-report/broken-noradids.ndjson`); warns and, on a TTY, asks y/n before exporting a gappy or quarantine-affected history (non-TTY: warn + proceed; decline = skip, not an error), where `<dest>` defaults to `<out-dir>/06-extract` (with its own README) and only an explicit `--dest` overrides it, undecorated. Also recomputes `verify.records.cleaned_fingerprint` at run start and warns (never fails) when it disagrees with the one `dedup` stored in `summary.json` — `01-cleaned/` drifted since that `dedup` run. Read-only, local, no index artifact; reuses `verify`'s `catalog_of`/`element_set` (epoch/gap math now behind `history.py`) so catalog, epoch, and gap definitions each stay singular. |
@@ -436,10 +436,35 @@ A hard channel rule, so output is safely pipeable:
   envelope (byte-identical to the persisted `report.json`). In text mode, `clean` stdout is
   **empty** — the human aggregate panel goes to stderr and the per-file detail lives in
   `report.md` / `report.json`. Never styled.
-- **`clean` stderr** = the live `rich` UI (roster, progress block), `processing…` notices, the
-  end-of-run aggregate panel (text mode), and `error:` / `warning:` lines.
-- **`report` stdout** = the rendered result view: `report` text renders the aggregate panel to
-  stdout (via `term.stdout_console`); `report --report json` echoes `report.json` verbatim.
+- **`clean` stderr** = the three-phase live `rich` UI, `processing…` notices, the end-of-run
+  aggregate panel (text mode), and `error:` / `warning:` lines.
+- **`report` stdout** = the rendered result view: `report` text renders the phase-3 per-file
+  table and the aggregate panel to stdout (via `term.stdout_console`); `report --report json`
+  echoes `report.json` verbatim.
+
+### The three-phase `clean` display
+
+Long runs render in three named phases on stderr, bookended by the same file rows
+(`docs/superpowers/specs/2026-07-26-three-phase-clean-display-design.md`):
+
+| Phase | Renders | Lifetime |
+|---|---|---|
+| 1. Discovery (`cli_progress.render_roster`) | every file, size, total | printed once, before dispatch |
+| 2. Progress (`cli_progress.ProgressDisplay`) | in-flight files + a pinned summary row | live, redrawn in place |
+| 3. Results (`summary.render_files`) | every file with its outcome + a total row | printed once, after the run |
+
+Phase 2 is deliberately **bounded** to in-flight rows: a `rich.live.Live` region cannot
+scroll, so a table holding every file breaks at terminal height 24 and strands rows on
+resize. Correctness there is therefore independent of terminal height, and the complete
+picture lives in the static phase-3 print, which no `Live` can crop. The `#` and `size`
+columns are the identity link between phases — all three orderings are the sorted basename.
+
+Both per-file tables select columns by width through the one `summary.display_tier`
+(narrow < 80 ≤ medium < 100 ≤ wide); columns disappear whole, values are never truncated, and
+phase-2 widths are pinned from pre-dispatch bounds so no column reflows mid-run. Phase 3's
+total row is the run's wall clock, never the sum of the per-file `time` column — under
+parallel workers those legitimately differ. Off a TTY phases 1 and 3 degrade to plain text
+and phase 2 is suppressed, leaving the per-file completion lines as the only progress record.
 - rich styling on either Console is applied only when that stream is a TTY; off a TTY (pipe,
   `capsys`, `NO_COLOR`) it degrades to plain literal text, so even the panels stay readable.
 - The structured output **files** and the `--report json` stdout bytes are never routed through
