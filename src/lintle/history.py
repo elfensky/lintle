@@ -64,6 +64,9 @@ def analyze_epochs(
     largest = max(deltas, default=0.0)
     largest_at = epochs[deltas.index(largest) + 1] if deltas else None
     median = statistics.median(deltas) if len(deltas) >= 2 else None
+    # `median and ...`: 0 is intentionally excluded here — a zero median
+    # would otherwise flag every record as a gap (d > 10*0 is always true
+    # for d > 0), and deltas are strictly positive post-dedup anyway.
     reportable = [
         Gap(epochs[i], epochs[i + 1], d)
         for i, d in enumerate(deltas)

@@ -596,48 +596,26 @@ class TestImportGuard:
                 continue  # a package attribute (constant/function), not a module
             frontier |= self._module_level_imports(mod_path) - seen
 
-    @staticmethod
-    def _verify_submodules_imported(path):
-        """Names of ``lintle.verify.*`` submodules imported at module level
-        by ``path`` — both ``from lintle.verify.X import ...`` and
-        ``from lintle.verify import X, Y`` spellings. This is the fine-grained
-        counterpart to ``_module_level_imports``, which collapses either
-        spelling to the single opaque name ``"verify"``."""
-        names = set()
-        for node in ast.parse(path.read_text(encoding="utf-8")).body:
-            match node:
-                case ast.Import(names=aliases):
-                    for a in aliases:
-                        parts = a.name.split(".")
-                        if parts[:2] == ["lintle", "verify"] and len(parts) > 2:
-                            names.add(parts[2])
-                case ast.ImportFrom(module="lintle.verify", names=aliases):
-                    names.update(a.name for a in aliases)
-                case ast.ImportFrom(module=mod, names=aliases) if (
-                    mod and mod.startswith("lintle.verify.")
-                ):
-                    names.add(mod.split(".")[2])
-        return names
-
-    def test_extract_verify_submodule_imports_are_pinned_and_sgp4_free(self):
-        """Pins the exact ``verify`` submodules ``extract`` is allowed to
-        import — ``{checks, records}`` — so a future ``from lintle.verify
-        import orbit`` (or ``from lintle.verify.orbit import ...``) in
-        ``extract.py`` fails this assertion instead of silently passing the
-        coarse closure walk above. ``epoch`` dropped out of this set when the
-        history reduction (and its ``parse_epoch`` use) moved into the shared,
-        pure ``lintle.history`` — ``extract`` still reaches ``verify.epoch``
-        transitively via ``history``, which the coarse closure walk above
-        still covers (it descends into ``history.py``'s own imports). Then,
-        for each of the submodules ``extract`` imports directly, checks their
-        own module-level imports for ``sgp4`` (name or from-import), the same
-        detector the coarse walk uses but applied one level deeper than that
-        walk can reach."""
-        src = Path(lintle.__file__).parent
-        extract_submodules = self._verify_submodules_imported(src / "extract.py")
-        assert extract_submodules == {"checks", "records"}
-        for name in extract_submodules:
-            mod_path = src / "verify" / f"{name}.py"
-            assert mod_path.is_file(), f"missing lintle/verify/{name}.py"
+    def test_verify_submodules_are_sgp4_free_except_orbit(self):
+        """Sweeps every ``lintle.verify.*`` module except ``orbit.py`` (the
+        sanctioned sole ``sgp4`` importer) and asserts none of them import
+        ``sgp4`` at module level, using the same ``_module_level_imports``
+        detector the coarse closure walks above use. This is deliberately
+        independent of which submodules any particular caller (``extract``,
+        the shared ``history`` reducer, the future ``dedup`` manifest) happens
+        to import directly: pinning the checked set to one caller's import
+        list is fragile — it silently drops a submodule's own sgp4-freedom
+        check the moment that caller stops importing it, which is exactly
+        what happened when ``extract`` stopped importing ``verify.epoch``
+        directly after the history reduction moved behind ``lintle.history``;
+        nothing else was then checking ``epoch.py`` itself. Sweeping the whole
+        ``verify/`` package unconditionally means new callers (or new
+        indirection) can never quietly remove a module from coverage."""
+        verify_dir = Path(lintle.__file__).parent / "verify"
+        modules = sorted(p for p in verify_dir.glob("*.py") if p.stem != "orbit")
+        assert modules, "expected to find verify submodules to sweep"
+        for mod_path in modules:
             imports = self._module_level_imports(mod_path)
-            assert "sgp4" not in imports, f"verify.{name} imports sgp4 directly"
+            assert "sgp4" not in imports, (
+                f"verify.{mod_path.stem} imports sgp4 directly"
+            )
