@@ -43,6 +43,14 @@ def other_catalog(n: int) -> str:
     return fix(L1[:2] + f"{n:05d}" + L1[7:])
 
 
+def epoch_l1(catalog: int, day: int) -> str:
+    """L1 for ``catalog`` at day-of-year ``day`` of year 2000 (cols 19-32),
+    checksum fixed — lets manifest tests build a satellite with a chosen
+    epoch spacing."""
+    line = other_catalog(catalog)
+    return fix(line[:20] + f"{day:03d}.00000000" + line[32:])
+
+
 def build_tree(tmp_path, cleaned_pairs, *, suspects=None, stem="tle01"):
     """Write a minimal clean-run output tree (cleaned/ + optional verify/
     suspects.00001.jsonl chunk); return the out-dir as a string."""
@@ -261,6 +269,31 @@ class TestCLI:
     def test_dedup_subcommand_dispatches(self, tmp_path):
         out_dir = build_tree(tmp_path, [(L1, L2)])
         assert cli.main(["dedup", out_dir]) == 0
+
+
+class TestManifest:
+    """``dedup.run`` also emits a per-satellite ``manifest.jsonl`` — one compact
+    JSON row per catalog, catalog-ascending, gap math sourced solely from
+    ``history.analyze_epochs``."""
+
+    def test_one_row_per_catalog_deterministic(self, tmp_path):
+        # catalog 100: 5 daily epochs (gap-free, well-sampled); catalog 200: 1
+        pairs = [(epoch_l1(100, day), L2) for day in range(1, 6)]
+        pairs.append((epoch_l1(200, 1), L2))
+        out_dir = build_tree(tmp_path, pairs)
+        assert dedup.run(out_dir) == 0
+        manifest_path = Path(out_dir) / DEDUP_DIRNAME / "manifest.jsonl"
+        manifest = manifest_path.read_text("ascii")
+        rows = [json.loads(line) for line in manifest.splitlines()]
+        assert [r["norad_id"] for r in rows] == [100, 200]  # catalog-ascending
+        assert rows[0]["records"] == 5 and rows[0]["gap_count"] == 0
+        # trivial-gapless footgun stays visible: 1 record => gap_count 0 but records 1
+        assert rows[1]["records"] == 1
+        assert rows[1]["gap_count"] == 0
+        assert rows[1]["median_spacing_days"] is None
+        # byte-determinism: a second run produces identical bytes
+        dedup.run(out_dir)
+        assert manifest_path.read_text("ascii") == manifest
 
 
 class TestReadme:
