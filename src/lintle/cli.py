@@ -5,6 +5,7 @@ import contextlib
 import json
 import os
 import shutil
+import signal
 import sys
 import time
 import traceback
@@ -653,7 +654,23 @@ def _debug_traceback() -> None:
 
 
 def main(argv=None):
-    """Entry point for the ``lintle`` console script.
+    """Entry point for the ``lintle`` console script — :func:`_dispatch` under a
+    Ctrl-C backstop, so *every* subcommand exits 130 with one cancellation line
+    instead of a traceback. ``clean`` normally catches its own SIGINT inside the
+    worker pool and reports resume guidance there; this covers the windows
+    outside it and the single-process consumers (``verify``/``dedup``/
+    ``extract``), whose subtrees are committed only through atomic durable
+    writes at the end — cancelling one leaves the prior tree intact, and the
+    out-dir lock is released on the way out."""
+    try:
+        return _dispatch(argv)
+    except KeyboardInterrupt:
+        term.warning("cancelled.")
+        return process_control.signal_exit_code(signal.SIGINT)
+
+
+def _dispatch(argv=None):
+    """The CLI body: parse, dispatch the subcommand, orchestrate ``clean``.
 
     Returns the process exit code: ``0`` = quarantine count (or rate) is at
     or below ``--max-quarantined``; ``1`` = quarantine threshold exceeded
