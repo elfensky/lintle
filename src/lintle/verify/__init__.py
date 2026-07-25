@@ -12,11 +12,14 @@ source tree, and writes only under ``<out-dir>/04-verify``. It reuses
 ``tle.py`` for every validity judgment and never re-defines what a valid TLE
 is."""
 
+import datetime as _dt
+from collections import Counter
 from pathlib import Path
 
 from lintle import CLEANED_DIRNAME, term
 from lintle.chunking import CHUNK_RECORDS_DEFAULT
 from lintle.verify import checks, grouping, records
+from lintle.verify.epoch import parse_epoch
 from lintle.verify.report import SuspectSink
 
 
@@ -50,6 +53,7 @@ def run(
     population: set[int] = set()  # distinct catalogs, for the orbit sample
     n_records = 0
     missing_source = 0
+    histogram: Counter[str] = Counter()  # epoch record density, YYYY-MM -> count
 
     for file_stem in stems:
         # Null-object seam: always constructed, inert when the stem has no
@@ -68,6 +72,11 @@ def run(
                     aligner.feed(rec, revalidated=False)
                     continue  # and don't sort it either
                 sorter.add(rec)
+                # Only records that survive revalidate are binned — a broken
+                # record has no trustworthy epoch (informational, sgp4-free).
+                year, day = parse_epoch(rec.line1)
+                month = (_dt.datetime(year, 1, 1) + _dt.timedelta(days=day - 1)).month
+                histogram[f"{year}-{month:02d}"] += 1
                 if orbit and rec.catalog != -1:
                     population.add(rec.catalog)
                 mutated = aligner.feed(rec)
@@ -108,7 +117,12 @@ def run(
         )
         checked.update(orbit_census)
 
-    vdir = sink.write(out_dir, checked=checked, chunk_records=chunk_records)
+    vdir = sink.write(
+        out_dir,
+        checked=checked,
+        epoch_distribution=dict(sorted(histogram.items())),
+        chunk_records=chunk_records,
+    )
 
     code = sink.exit_code
     hard = sink.hard

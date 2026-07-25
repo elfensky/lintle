@@ -78,6 +78,31 @@ def build_tree_with_source(tmp_path, cleaned_pairs, source_lines=None, stem="tle
     return str(out), str(src)
 
 
+def _epoch_record(catalog: int, year: int, day: int) -> tuple[str, str]:
+    """A valid ``(line1, line2)`` pair for ``catalog`` at day-of-year ``day``
+    in ``year`` — the L1/L2 template with the catalog and epoch-year/day
+    columns overwritten and the checksum recomputed."""
+    yy = f"{year % 100:02d}"
+    l1 = fix(L1[:2] + f"{catalog:05d}" + L1[7:18] + yy + f"{day:03d}" + L1[23:])
+    l2 = fix(L2[:2] + f"{catalog:05d}" + L2[7:])
+    return l1, l2
+
+
+def _build_cleaned(out: str, catalogs: dict[int, list[tuple[int, int]]]) -> None:
+    """Write a minimal ``01-cleaned`` tree (no source dir): one valid record per
+    ``(year, day_of_year)`` epoch, for each catalog in ``catalogs``."""
+    pairs = [
+        _epoch_record(catalog, year, day)
+        for catalog, epochs in catalogs.items()
+        for year, day in epochs
+    ]
+    cleaned_dir = Path(out) / CLEANED_DIRNAME
+    cleaned_dir.mkdir(parents=True, exist_ok=True)
+    (cleaned_dir / "tle01.00001.cleaned.txt").write_text(
+        "".join(f"{a}\n{b}\n" for a, b in pairs), encoding="ascii"
+    )
+
+
 class TestEpoch:
     def with_year(self, yy):
         return fix(L1[:18] + yy + L1[20:])
@@ -493,6 +518,44 @@ class TestEndToEnd:
             (tmp_path / "output" / VERIFY_DIRNAME / "summary.json").read_text()
         )
         assert summary["checked"]["source_diff"] == "skipped"
+
+
+class TestEpochHistogram:
+    """The epoch record-density histogram: a sibling top-level key in
+    ``summary.json``, binned only from records that survive ``revalidate``."""
+
+    def test_summary_bins_records_by_month(self, tmp_path):
+        # 3 records in 2017-01, 0 in Feb/Mar, 2 in 2017-04 (doy 91/92 ~ Apr 1/2)
+        out = str(tmp_path)
+        _build_cleaned(
+            out, {100: [(2017, 15), (2017, 16), (2017, 17), (2017, 91), (2017, 92)]}
+        )
+        run(out, source_dir=None)
+        summary = json.loads((tmp_path / VERIFY_DIRNAME / "summary.json").read_text())
+        hist = summary["epoch_distribution"]
+        assert hist["2017-01"] == 3
+        assert hist["2017-04"] == 2
+        assert "2017-02" not in hist  # the hole reads as an absent bin
+
+    def test_broken_records_are_not_binned(self, tmp_path):
+        # a revalidate-failing record (bad checksum) must not contribute a bin
+        out = str(tmp_path)
+        _build_cleaned(out, {100: [(2017, 15)]})
+        good_l1, good_l2 = _epoch_record(100, 2017, 15)
+        broken_l2 = good_l2[:-1] + str((int(good_l2[-1]) + 1) % 10)
+        cleaned = Path(out) / CLEANED_DIRNAME / "tle01.00001.cleaned.txt"
+        cleaned.write_text(f"{good_l1}\n{broken_l2}\n", encoding="ascii")
+        run(out, source_dir=None)
+        summary = json.loads((tmp_path / VERIFY_DIRNAME / "summary.json").read_text())
+        assert summary["epoch_distribution"] == {}
+
+    def test_epoch_distribution_is_sibling_of_checked(self, tmp_path):
+        out = str(tmp_path)
+        _build_cleaned(out, {100: [(2017, 15)]})
+        run(out, source_dir=None)
+        summary = json.loads((tmp_path / VERIFY_DIRNAME / "summary.json").read_text())
+        assert "epoch_distribution" not in summary["checked"]
+        assert "2017-01" in summary["epoch_distribution"]
 
 
 class TestCLI:
