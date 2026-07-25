@@ -8,6 +8,22 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Added
 
+- **Three-phase `clean` display.** The run now renders as *discovery →
+  progress → results*. Phase 2 replaces the disconnected progress bars with a
+  live table whose rows carry the roster's `#` and `size` columns — the
+  identity link back to phase 1 — plus a byte bar, percent, records, MB/s and
+  ETA, and a pinned summary row (files done/total, corpus size, overall
+  percent, total records, aggregate rate, elapsed). It stays bounded to
+  in-flight files: a live region cannot scroll, so an all-files table breaks at
+  terminal height 24 and strands rows on resize. Phase 3 is a new static
+  per-file results table (`summary.render_files`) printed before the aggregate
+  panel — records, clean, quarantined, repaired, time per file, with resumed
+  files dimmed, failed files dashed-and-red, and a total row whose time is the
+  run's wall clock (never the sum of the column). `lintle report` renders the
+  same table from `report.json`. Both tables drop columns whole by width
+  through one shared tier (narrow < 80 ≤ medium < 100 ≤ wide); values are never
+  truncated.
+
 - **Progress display for the post-run commands.** `verify`, `verify --orbit`,
   and `dedup` were silent for the whole run — often many minutes on a
   corpus-scale tree — and only spoke at the end. They now drive a

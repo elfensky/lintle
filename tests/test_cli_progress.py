@@ -130,14 +130,6 @@ class TestProgressDisplayDrain:
         assert "7" in out and "2" in out
 
 
-class TestFormatElapsed:
-    def test_format_elapsed_renders_minutes_and_hours(self):
-        assert cli_progress._format_elapsed(0) == "0:00"
-        assert cli_progress._format_elapsed(9) == "0:09"
-        assert cli_progress._format_elapsed(75) == "1:15"
-        assert cli_progress._format_elapsed(3661) == "1:01:01"
-
-
 class TestProgressDisplayRendering:
     """_ProgressDisplay output and TTY/non-TTY modes (issue #53)."""
 
@@ -181,64 +173,12 @@ class TestProgressDisplayRendering:
             q.put(pipeline.FileStarted("a"))
             q.put(pipeline.FileProgress("a", 200, 9))
             disp._drain()
-            assert "a" in disp._tasks
+            assert "a" in disp._rows
             assert disp._records == 9
 
             q.put(pipeline.FileEnded("a"))
             disp._drain()
-            assert "a" not in disp._tasks
-
-
-class TestProgressColumns:
-    """Per-file ETA + throughput and an overall files-done/total counter, gated
-    by task ``kind`` so byte-only columns never render on the file-count overall
-    row and the count-only column never renders raw bytes on a per-file row."""
-
-    class _Inner:
-        def render(self, task):
-            from rich.text import Text
-
-            return Text("INNER")
-
-    def test_for_kind_renders_inner_only_for_the_matching_kind(self):
-        col = cli_progress._ForKind("file", self._Inner())
-
-        class _Task:
-            def __init__(self, kind):
-                self.fields = {"kind": kind}
-
-        assert col.render(_Task("file")).plain == "INNER"
-        assert col.render(_Task("overall")).plain == ""
-
-    def test_overall_and_per_file_tasks_are_kind_tagged(self):
-        q = queue.Queue()
-        console = Console(file=io.StringIO(), force_terminal=True, width=120)
-        disp = cli_progress.ProgressDisplay(1, q, console, sizes={"a": 1000})
-        with disp:
-            disp._stop.set()
-            disp._thread.join()
-            assert {t.fields.get("kind") for t in disp._progress.tasks} == {"overall"}
-            q.put(pipeline.FileStarted("a"))
-            disp._drain()
-            assert {t.fields.get("kind") for t in disp._progress.tasks} == {
-                "overall",
-                "file",
-            }
-
-    def test_progress_wires_speed_eta_per_file_and_mofn_overall(self):
-        console = Console(file=io.StringIO(), force_terminal=True, width=120)
-        disp = cli_progress.ProgressDisplay(1, queue.Queue(), console, sizes={})
-        with disp:
-            disp._stop.set()
-            disp._thread.join()
-            wrapped = {
-                (c._kind, type(c._inner).__name__)
-                for c in disp._progress.columns
-                if isinstance(c, cli_progress._ForKind)
-            }
-        assert ("file", "TransferSpeedColumn") in wrapped
-        assert ("file", "TimeRemainingColumn") in wrapped
-        assert ("overall", "MofNCompleteColumn") in wrapped
+            assert "a" not in disp._rows
 
 
 class TestStatusSpinner:
@@ -409,7 +349,7 @@ class TestBracketedFilenamesDoNotCrash:
             disp._stop.set()
             disp._thread.join()
             disp._drain()
-            disp._progress.refresh()
+            disp._refresh()
             # markup=False: the brackets render verbatim instead of being
             # parsed (and silently eaten, or raising MarkupError). Assert
             # inside the `with` — the transient display is erased on exit.
@@ -448,3 +388,80 @@ class TestPhaseBar:
         )
         with cli_progress.phase_bar("writing", None) as progress:
             progress(completed=10_000)
+
+
+class TestPhaseTwoTable:
+    """Phase 2 renders in-flight files plus a pinned summary row in one table,
+    bounded so terminal height and resize can never strand or crop it."""
+
+    @staticmethod
+    def _display(width, *, sizes, total_files=3, done=0):
+        console = Console(file=io.StringIO(), force_terminal=True, width=width)
+        return cli_progress.ProgressDisplay(
+            total_files, queue.Queue(), console, sizes, already_done=done
+        )
+
+    @staticmethod
+    def _render(disp, table):
+        buf = io.StringIO()
+        Console(file=buf, force_terminal=True, width=disp._console.width).print(table)
+        return buf.getvalue()
+
+    def test_row_carries_index_size_and_records(self):
+        disp = self._display(120, sizes={"a.txt": 1000, "b.txt": 2000})
+        disp._rows["b.txt"] = cli_progress._InFlight(
+            index=2, name="b.txt", total=2000, started=0.0, done=500, records=42
+        )
+        out = self._render(disp, disp._table())
+        # index and size are the identity link back to the phase-1 roster row.
+        assert "b.txt" in out and "2.0K" in out and "42" in out
+        assert "25%" in out  # 500 of 2000 bytes
+
+    def test_summary_row_is_pinned_and_counts_files(self):
+        disp = self._display(120, sizes={"a.txt": 1000}, total_files=29, done=3)
+        out = self._render(disp, disp._table())
+        assert "3/29 files" in out
+
+    def test_height_is_bounded_by_in_flight_count(self):
+        # The invariant that makes phase 2 safe at terminal height 24: rows
+        # never exceed the in-flight files plus the one summary row, however
+        # many files the run has.
+        sizes = {f"f{i}.txt": 1000 for i in range(29)}
+        disp = self._display(120, sizes=sizes, total_files=29)
+        for i in range(4):  # four workers in flight
+            name = f"f{i}.txt"
+            disp._rows[name] = cli_progress._InFlight(
+                index=i + 1, name=name, total=1000, started=0.0
+            )
+        assert disp._table().row_count == 5
+
+    def test_narrow_drops_size_and_medium_drops_rate_columns(self):
+        sizes = {"a.txt": 1000}
+        wide = self._display(120, sizes=sizes)._table()
+        medium = self._display(90, sizes=sizes)._table()
+        narrow = self._display(70, sizes=sizes)._table()
+        headers = lambda t: [c.header for c in t.columns]  # noqa: E731
+        assert headers(wide) == [
+            "#",
+            "file",
+            "size",
+            "progress",
+            "%",
+            "records",
+            "MB/s",
+            "ETA",
+        ]
+        assert headers(medium) == ["#", "file", "size", "progress", "%", "records"]
+        assert headers(narrow) == ["#", "file", "progress", "%", "records"]
+
+    def test_drain_folds_bytes_into_the_overall_row(self):
+        q = queue.Queue()
+        disp = self._display(120, sizes={"a.txt": 1000})
+        disp._rows["a.txt"] = cli_progress._InFlight(
+            index=1, name="a.txt", total=1000, started=0.0
+        )
+        q.put(pipeline.FileProgress("a.txt", 400, 7))
+        disp._queue = q
+        disp._drain()
+        assert disp._bytes_done == 400
+        assert disp._rows["a.txt"].done == 400 and disp._rows["a.txt"].records == 7

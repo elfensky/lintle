@@ -4,55 +4,26 @@ worker progress protocol. ``rich``-only rendering, split out of ``cli`` so the
 composition root keeps a single responsibility (issue #53)."""
 
 import contextlib
+import dataclasses
 import queue
 import threading
 import time
 from pathlib import Path
 
-import humanize
 from rich import box
+from rich.live import Live
 from rich.progress import (
     BarColumn,
     MofNCompleteColumn,
     Progress,
-    ProgressColumn,
-    TaskProgressColumn,
     TextColumn,
     TimeRemainingColumn,
-    TransferSpeedColumn,
 )
+from rich.progress_bar import ProgressBar
 from rich.table import Table
 from rich.text import Text
 
-from lintle import pipeline, term
-
-
-def _format_elapsed(seconds):
-    """Render an elapsed duration as ``M:SS`` (or ``H:MM:SS`` past an hour)."""
-    hours, rem = divmod(int(seconds), 3600)
-    minutes, secs = divmod(rem, 60)
-    if hours:
-        return f"{hours}:{minutes:02d}:{secs:02d}"
-    return f"{minutes}:{secs:02d}"
-
-
-class _ForKind(ProgressColumn):
-    """Render the wrapped column only for tasks of a given ``kind``; every other
-    task gets an empty cell. One ``Progress`` drives two task shapes — the
-    overall row (``total`` = file count) and the per-file rows (``total`` =
-    bytes) — so a byte column (speed, ETA) would render a misleading value on the
-    count row, and the files-done/total counter would render raw byte numbers on
-    a per-file row. Gating by ``kind`` keeps each column on the rows it fits."""
-
-    def __init__(self, kind, inner):
-        super().__init__()
-        self._kind = kind
-        self._inner = inner
-
-    def render(self, task):
-        if task.fields.get("kind") == self._kind:
-            return self._inner.render(task)
-        return Text("")
+from lintle import pipeline, summary, term
 
 
 def status(message):
@@ -87,16 +58,41 @@ def phase_bar(description, total):
         yield lambda **fields: progress.update(task, **fields)
 
 
-class ProgressDisplay:
-    """Live multi-file progress for a parallel run, driven by ``rich``.
+@dataclasses.dataclass(slots=True)
+class _InFlight:
+    """One file currently being processed — the phase-2 row state. ``total`` is
+    the stat'd input size (the bar denominator); ``done`` and ``records`` are the
+    running deltas folded in from the worker progress protocol."""
 
-    On a TTY a ``rich.progress.Progress`` shows an overall line (files done /
-    total, elapsed, total records, rec/s) plus one row per in-flight file (a
-    byte-progress bar + that file's running record count). Off a TTY the live
-    block is suppressed and one plain line — with exact clean/quarantined
-    counts — is printed per completed file. A daemon thread drains the worker
-    progress queue; ``rich`` owns all terminal control (cursor, resize,
-    ``NO_COLOR``, clear-on-exit). Used as a context manager.
+    index: int
+    name: str
+    total: int
+    started: float
+    done: int = 0
+    records: int = 0
+
+
+class ProgressDisplay:
+    """Phase 2 of the three-phase ``clean`` display: live progress, bounded.
+
+    On a TTY a ``rich.live.Live`` redraws a ``rich.table.Table`` holding one row
+    per *in-flight* file — index, basename, size, byte bar, percent, records,
+    MB/s, ETA — plus a pinned summary row (files done/total, corpus size, overall
+    percent, total records, aggregate rate, elapsed). The index and size columns
+    are the identity link back to the phase-1 roster, which is ordered by the
+    same sorted basename.
+
+    Bounded on purpose: a live region cannot scroll, so a table holding every
+    file breaks at terminal height 24 and strands rows on resize. In-flight rows
+    are capped by the worker count, so correctness here is independent of
+    terminal height; the full picture is the static phase-3 results table.
+
+    Off a TTY the live block is suppressed and one plain line — with exact
+    clean/quarantined counts — is printed per completed file; those lines print
+    above the live block on a TTY too, as the durable scrollback record of
+    completion order. A daemon thread drains the worker progress queue; ``rich``
+    owns all terminal control (cursor, resize, ``NO_COLOR``, clear-on-exit).
+    Used as a context manager.
     """
 
     _REFRESH = 0.1  # seconds between queue drains
@@ -108,47 +104,51 @@ class ProgressDisplay:
         self._sizes = sizes
         self._live = console.is_terminal
         self._records = 0
+        self._bytes_done = 0
         self._files_done = already_done
         self._start = time.monotonic()
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._file_records = {}  # name -> running record count
-        self._tasks = {}  # name -> rich TaskID (live mode only)
-        self._progress = None
-        self._overall = None
+        self._rows = {}  # name -> _InFlight (live mode only)
+        self._display = None
+        # Roster order is the identity link: `sizes` is the same ordered map the
+        # phase-1 roster was rendered from, so index N means the same file in
+        # both. Column widths are pinned from these pre-dispatch bounds — with
+        # auto-width the `#` and count columns visibly reflow mid-run, which
+        # re-lays out the table under the row being read.
+        self._index = {name: i for i, name in enumerate(sizes, start=1)}
+        self._corpus_bytes = sum(sizes.values())
+        self._w_index = len(str(max(total_files, 1)))
+        # The pinned name width must also hold the summary row's own label, or
+        # the no-wrap column truncates it.
+        widest_label = len(f"{total_files}/{total_files} files")
+        self._w_name = max(max((len(n) for n in sizes), default=4), widest_label)
+        self._w_size = max((len(_format_size(s)) for s in sizes.values()), default=4)
+        # The record count has no pre-dispatch bound, so it is pinned wide
+        # enough for a billion-record file rather than allowed to reflow.
+        self._w_records = 13
 
     def __enter__(self):
         if self._live:
-            self._progress = Progress(
-                TextColumn("{task.fields[label]}", markup=False),
-                BarColumn(bar_width=None),
-                TaskProgressColumn(),
-                # Overall row: files done / total. Per-file rows: byte
-                # throughput + ETA, computed from the byte total set per task.
-                _ForKind("overall", MofNCompleteColumn()),
-                _ForKind("file", TransferSpeedColumn()),
-                _ForKind("file", TimeRemainingColumn(compact=True)),
-                TextColumn("{task.fields[detail]}", markup=False),
+            # auto_refresh off: every frame is driven by _drain, so a redraw
+            # only happens when the state it renders actually changed.
+            self._display = Live(
+                self._table(),
                 console=self._console,
                 transient=True,
+                auto_refresh=False,
             )
-            self._progress.start()
-            self._overall = self._progress.add_task(
-                "overall",
-                label="overall",
-                kind="overall",
-                total=self._total_files,
-                detail="",
-            )
+            self._display.start()
         self._thread.start()
         return self
 
     def __exit__(self, *_exc):
         self._stop.set()
         self._thread.join()
-        if self._progress is not None:
-            self._progress.stop()
+        if self._display is not None:
+            self._display.stop()
         return False
 
     def file_done(self, stats):
@@ -163,14 +163,12 @@ class ProgressDisplay:
         """Count a file that could not be processed and print the error."""
         self._complete(f"error processing {path}: {exc!r}")
 
-    def _complete(self, summary):
+    def _complete(self, line):
         with self._lock:
             self._files_done += 1
             done = self._files_done
-            if self._live:
-                self._progress.update(self._overall, completed=self._files_done)
-        target = self._progress.console if self._live else self._console
-        target.print(f"[{done}/{self._total_files}] {summary}", markup=False)
+        self._console.print(f"[{done}/{self._total_files}] {line}", markup=False)
+        self._refresh()
 
     def _run(self):
         # The display is cosmetic: render errors must never kill this thread
@@ -204,46 +202,113 @@ class ProgressDisplay:
                 match msg:
                     case pipeline.FileProgress():
                         self._records += msg.records_delta
+                        self._bytes_done += msg.bytes_delta
                         self._file_records[msg.name] = (
                             self._file_records.get(msg.name, 0) + msg.records_delta
                         )
-                        if self._live and msg.name in self._tasks:
-                            self._progress.update(
-                                self._tasks[msg.name],
-                                advance=msg.bytes_delta,
-                                detail=f"{self._file_records[msg.name]:,} rec",
-                            )
+                        if (row := self._rows.get(msg.name)) is not None:
+                            row.done += msg.bytes_delta
+                            row.records = self._file_records[msg.name]
                     case pipeline.FileStarted():
                         self._file_records.setdefault(msg.name, 0)
                         if self._live:
-                            self._tasks[msg.name] = self._progress.add_task(
-                                msg.name,
-                                label=msg.name,
-                                kind="file",
-                                total=self._sizes.get(msg.name),
-                                detail="0 rec",
+                            self._rows[msg.name] = _InFlight(
+                                index=self._index.get(msg.name, 0),
+                                name=msg.name,
+                                total=self._sizes.get(msg.name, 0),
+                                started=time.monotonic(),
                             )
                     case pipeline.FileEnded():
-                        if self._live and msg.name in self._tasks:
-                            self._progress.remove_task(self._tasks.pop(msg.name))
+                        self._rows.pop(msg.name, None)
                         self._file_records.pop(msg.name, None)
-            if self._live:
-                self._update_overall()
+        self._refresh()
 
-    def _update_overall(self):
+    def _refresh(self):
+        """Redraw the live table. A render failure is cosmetic — the drain loop's
+        handler keeps the queue draining regardless."""
+        if self._display is not None:
+            self._display.update(self._table(), refresh=True)
+
+    def _table(self):
+        """Build the current frame: the in-flight rows plus the pinned summary
+        row, with columns selected for the console's width."""
+        tier = summary.display_tier(self._console.width)
+        table = Table(box=box.SIMPLE, pad_edge=False, expand=True)
+        table.add_column("#", justify="right", style="dim", width=self._w_index)
+        table.add_column("file", width=self._w_name, no_wrap=True)
+        if tier != "narrow":
+            table.add_column("size", justify="right", width=self._w_size)
+        table.add_column("progress", ratio=1)
+        table.add_column("%", justify="right", width=4)
+        table.add_column("records", justify="right", width=self._w_records)
+        if tier == "wide":
+            table.add_column("MB/s", justify="right", width=9)
+            table.add_column("ETA", justify="right", width=7)
+
         elapsed = time.monotonic() - self._start
-        rps = int(self._records / elapsed) if elapsed >= 1.0 else 0
-        self._progress.update(
-            self._overall,
-            completed=self._files_done,
-            detail=f"{_format_elapsed(elapsed)} · {self._records:,} rec · {rps:,}/s",
-        )
+        with self._lock:
+            rows = sorted(self._rows.values(), key=lambda r: r.index)
+            for row in rows:
+                cells = [] if tier == "narrow" else [_format_size(row.total)]
+                cells += [
+                    ProgressBar(total=max(row.total, 1), completed=row.done),
+                    _percent(row.done, row.total),
+                    f"{row.records:,}",
+                ]
+                if tier == "wide":
+                    rate = _rate(row.done, time.monotonic() - row.started)
+                    cells += [_format_rate(rate), _eta(row.total - row.done, rate)]
+                table.add_row(str(row.index), Text(row.name), *cells)
+
+            table.add_section()
+            cells = [] if tier == "narrow" else [_format_size(self._corpus_bytes)]
+            cells += [
+                ProgressBar(
+                    total=max(self._corpus_bytes, 1), completed=self._bytes_done
+                ),
+                _percent(self._bytes_done, self._corpus_bytes),
+                f"{self._records:,}",
+            ]
+            if tier == "wide":
+                # The summary row's last cell is elapsed, not an ETA: the run's
+                # remaining time is the slowest worker's, not a corpus average.
+                cells += [
+                    _format_rate(_rate(self._bytes_done, elapsed)),
+                    summary.format_clock(elapsed),
+                ]
+            table.add_row(
+                "",
+                f"{self._files_done}/{self._total_files} files",
+                *cells,
+                style="bold",
+            )
+        return table
+
+
+def _percent(part, whole):
+    """Render ``part / whole`` as a whole-number percentage cell."""
+    return f"{int(100 * part / whole)}%" if whole > 0 else "—"
+
+
+def _rate(n_bytes, seconds):
+    """Bytes per second, or ``0`` before a second of evidence has accumulated."""
+    return n_bytes / seconds if seconds >= 1.0 else 0
+
+
+def _format_rate(rate):
+    """Render a byte rate in the same gnu units the size column uses."""
+    return "—" if rate <= 0 else f"{_format_size(rate)}/s"
+
+
+def _eta(remaining, rate):
+    """Render the time to finish ``remaining`` bytes at ``rate``."""
+    return "—" if rate <= 0 else summary.format_clock(remaining / rate)
 
 
 def _format_size(n_bytes):
     """Render a byte count compactly for the roster (e.g. ``"3.0G"``), via
     humanize's gnu units — fixes the prior binary-math/decimal-label mismatch."""
-    return humanize.naturalsize(n_bytes, gnu=True)
+    return summary.format_size(n_bytes)
 
 
 def render_roster(console, file_sizes):

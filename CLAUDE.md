@@ -37,7 +37,7 @@ commit + advisory-flock out-dir lock. The canonical rule and the considered/defe
 archived under `docs/superpowers/archive/specs/2026-05-28-runtime-dependency-policy-design.md`.
 **Current runtime deps: `rich>=15,<16`** (terminal rendering for `clean`),
 **`humanize>=4,<5`** (human-readable durations + sizes in the human display; confined to
-`summary.py` and `cli_progress.py` — never structured output), and **`sgp4>=2.25,<3`**
+`summary.py`, which `cli_progress.py` calls for the shared formatters — never structured output), and **`sgp4>=2.25,<3`**
 (the physics engine for `lintle verify --orbit`; imported only by `verify/orbit.py`). A 2026-06-07 relaxed-bar
 re-audit re-confirmed all other candidates as rejected or deferred. `pytest` is dev-only.
 **`sgp4` is a physics engine, not a validity authority.** The clean/validate/repair path
@@ -110,7 +110,7 @@ src/lintle/
 ├── __main__.py    # python -m lintle entry point
 ├── __init__.py    # __version__, stem() filename helper
 ├── cli.py         # argparse, globbing, top-level clean orchestration, exit codes
-├── cli_progress.py # live multi-file progress display, file roster, status spinner, post-run phase bar (rich+humanize)
+├── cli_progress.py # three-phase clean display: roster (1), live in-flight table (2), status spinner, post-run phase bar (rich)
 ├── run_planning.py # clean-run preflight: disk-space guard, output scrub, resume classification, RunPlan
 ├── worker_pool.py  # process-pool dispatch, progress collection, per-file failure + checkpoint
 ├── process_control.py # worker SIGINT setup, fast pool termination, cancel/exit-code helpers
@@ -123,7 +123,7 @@ src/lintle/
 ├── report_writers.py # structured-file writers: .broken.txt sidecar, report.jsonl findings, broken-noradids.ndjson, shard concat
 ├── resume.py      # single-run checkpoint for `clean --resume` (#56); run-stamp + output-size helpers
 ├── fsutil.py      # durable_replace — the one atomic+fsync commit path (issue #58)
-├── summary.py     # responsive aggregate-panel renderer + read-only `lintle report` (rich+humanize)
+├── summary.py     # aggregate panel + phase-3 per-file results table + shared tier/clock/size formatters + `lintle report` (rich+humanize)
 ├── term.py        # stderr+stdout Consoles + error/warning/note/prompt + is_interactive/prompt_yes_no (rich)
 ├── diff.py        # read-only: per-rule delta between two runs' report.jsonl (lintle diff)
 ├── explain.py     # read-only: renders rule/fix documentation (lintle explain)
@@ -166,19 +166,23 @@ structured-file writers leaf (the `.broken.txt` sidecar, the `report.jsonl` find
 shards, the corpus `broken-noradids.ndjson`, and the shard concat) depended on by
 `pipeline` and `cli`; it imports the dataclasses and the shared `format_diagnostic`
 renderer from `report.py` — one-way, never the reverse, so no cycle. `cli_progress.py`
-is a rich+humanize presentation leaf (the live `ProgressDisplay`, the pre-run
-`render_roster`, the `status` spinner, and the `phase_bar` used by the
+is a rich presentation leaf (the phase-1 `render_roster`, the phase-2 live
+`ProgressDisplay`, the `status` spinner, and the `phase_bar` used by the
 single-process post-run phases) depended on by `cli`, `worker_pool`,
 `output_artifacts`, `verify`, `verify.orbit`, and `dedup` — those last three
 consume the clean path's presentation leaf, never the reverse, so the
-`sgp4`/verify wall is untouched; it imports `pipeline`'s typed progress messages
-(`FileStarted`/`FileEnded`/`FileProgress`) to drive the display and `humanize` for
-human-readable roster sizes (`naturalsize(gnu=True)`), so the chain
-`cli → worker_pool → cli_progress → pipeline` is one-way and acyclic. `fsutil.py` is a
+`sgp4`/verify wall is untouched; it imports `summary`'s shared
+tier/clock/size formatters (one definition across phases 2 and 3),
+`pipeline`'s typed progress messages
+(`FileStarted`/`FileEnded`/`FileProgress`) to drive the display, so the chains
+`cli → worker_pool → cli_progress → pipeline` and `cli_progress → summary → term`
+are one-way and acyclic. `fsutil.py` is a
 stdlib-only I/O leaf (the durable-commit helper) depended on by `pipeline`, `report`,
 `report_writers`, and `resume`. `summary.py` is a rich+humanize presentation leaf (the
-responsive aggregate-panel renderer and the read-only `lintle report` entry that reads
-`<out-dir>/report.json`) depended on by `cli`; it imports the two shared Consoles from
+responsive aggregate-panel renderer, the phase-3 `render_files` per-file results
+table, the shared `display_tier`/`format_clock`/`format_size` formatters, and the
+read-only `lintle report` entry that reads `<out-dir>/report.json`) depended on by
+`cli` and `cli_progress`; it imports the two shared Consoles from
 `term`, `humanize` for human-readable panel durations (`precisedelta`), and consumes the
 `build_run_envelope` dict shape, so `cli → summary → term` is one-way and acyclic. `term.py` is a rich-only terminal-IO leaf (the two shared
 Consoles — `stderr_console` for status/errors, `stdout_console` for the report view —
