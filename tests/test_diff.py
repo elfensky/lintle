@@ -6,9 +6,11 @@ Fixtures are built through the real producer serializer
 """
 
 import collections
+import io
 import json
 
 import pytest
+from rich.console import Console
 
 from lintle import REPORT_DIRNAME, cli, diff, report, report_writers
 from lintle.diagnostics import RuleID, diagnostic
@@ -664,3 +666,27 @@ class TestDiffCliPerFile:
         assert "Per-file changes" in out
         assert "tle2024.txt" in out  # CHK 2 -> 1
         assert "tle2025.txt" in out  # only in run B
+
+
+class TestTableRendering:
+    """diff renders tables on a TTY and the byte-exact plain text off one — the
+    piped contract is the plain path, which the rest of this module locks."""
+
+    def _delta(self):
+        return diff.compute_delta(
+            collections.Counter({"TLE-CHK-001": 2}),
+            collections.Counter({"TLE-CHK-001": 5, "TLE-COL-001": 1}),
+        )
+
+    def test_tty_render_uses_the_shared_table_chrome(self):
+        console = Console(file=io.StringIO(), force_terminal=True, width=120)
+        diff.render_tables(self._delta(), (), run_a="a", run_b="b", console=console)
+        out = console.file.getvalue()
+        assert "rule" in out and "change" in out
+        assert "TLE-CHK-001" in out and "+3" in out  # 2 -> 5
+        assert "TLE-COL-001" in out and "+1" in out  # new in B
+
+    def test_one_sided_file_shows_a_bare_count_never_a_false_zero(self):
+        rd = diff.RuleDelta("TLE-CHK-001", 4, 0)
+        assert diff._file_rule_change(diff._A_ONLY, rd) == "4"
+        assert diff._file_rule_change(diff._B_ONLY, diff.RuleDelta("X", 0, 7)) == "7"

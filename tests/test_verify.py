@@ -720,3 +720,48 @@ class TestProgressLabels:
             "verifying a — 100,000 records",
             "verifying b — 100,000 records",
         ]
+
+
+class TestThreePhaseDisplay:
+    """verify's discovery roster and results table — the phase-1 and phase-3
+    bookends around the progress bar."""
+
+    def _run_on_a_tree(self, tmp_path, monkeypatch, pairs, width=120):
+        import io
+
+        from rich.console import Console
+
+        from lintle import term
+
+        out, _src = build_tree_with_source(tmp_path, pairs)
+        console = Console(file=io.StringIO(), force_terminal=True, width=width)
+        monkeypatch.setattr(term, "stderr_console", console)
+        code = run(out, None)
+        return code, console.file.getvalue()
+
+    def test_roster_lists_every_stem_with_its_size(self, tmp_path, monkeypatch):
+        _code, out = self._run_on_a_tree(tmp_path, monkeypatch, [(L1, L2)])
+        # Phase 1: the stem and a non-zero size, before any checking happens.
+        assert "tle01" in out
+        assert out.index("tle01") < out.index("hard")  # roster precedes results
+
+    def test_results_row_carries_records_and_suspects(self, tmp_path, monkeypatch):
+        broken = (
+            "1 00005U 58002B   00179.78495062  .00000023  00000-0  28098-4 0  475X",
+            L2,
+        )
+        _code, out = self._run_on_a_tree(tmp_path, monkeypatch, [(L1, L2), broken])
+        assert "records" in out and "hard" in out and "soft" in out
+        assert "total" in out
+
+    def test_suspect_columns_sum_to_the_verdict(self, tmp_path, monkeypatch):
+        # Two records for one satellite at the same epoch with different bytes:
+        # a contradiction, raised AFTER the streaming pass. It must still be
+        # attributed to its stem, or the table would under-count the verdict.
+        a = _epoch_record(25544, 2020, 100)
+        b = (_epoch_record(25544, 2020, 100)[0], mutated_l2())
+        out_dir, _src = build_tree_with_source(tmp_path, [a, b])
+        sink = report.SuspectSink()
+        sink.add(Suspect(VerifyRule.EPOCH_CONFLICT, 25544, 1.0, "tle01", 1, "clash"))
+        assert sink.hard_by_stem["tle01"] == 1
+        assert sum(sink.hard_by_stem.values()) == sink.hard

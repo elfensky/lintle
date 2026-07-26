@@ -19,6 +19,7 @@ from pathlib import Path
 from lintle import CLEANED_DIRNAME, cli_progress, term
 from lintle.chunking import CHUNK_RECORDS_DEFAULT
 from lintle.verify import checks, grouping, records
+from lintle.verify import report as vreport
 from lintle.verify.epoch import parse_epoch
 from lintle.verify.report import SuspectSink
 
@@ -48,11 +49,18 @@ def run(
         )
         return 2
 
+    # Phase 1 — discovery. The stat-only fingerprint the staleness check already
+    # computes doubles as the roster's name -> size map, so what is announced and
+    # what is then streamed cannot disagree.
+    stem_sizes = dict(records.cleaned_fingerprint(out_dir)["stems"])
+    cli_progress.render_roster(term.stderr_console, stem_sizes)
+
     sink = SuspectSink()  # external-sorts suspects to disk (#156): flat peak memory
     sorter = grouping.ExternalSorter()
     population: set[int] = set()  # distinct catalogs, for the orbit sample
     n_records = 0
     missing_source = 0
+    records_by_stem: Counter[str] = Counter()  # phase-3 rows
     histogram: Counter[str] = Counter()  # epoch record density, YYYY-MM -> count
 
     with cli_progress.phase_bar("verifying", len(stems)) as progress:
@@ -100,6 +108,7 @@ def run(
                         sink.add(mutated)
             finally:
                 aligner.close()
+            records_by_stem[file_stem] = file_records
             progress(advance=1)
 
     # Contradiction pass over the fully sorted stream (goal 3b): same-epoch
@@ -142,6 +151,11 @@ def run(
             epoch_distribution=dict(sorted(histogram.items())),
             chunk_records=chunk_records,
         )
+
+    # Phase 3 — results: the per-stem breakdown the verdict line summarises.
+    vreport.render_results(
+        stem_sizes, records_by_stem, sink, console=term.stderr_console
+    )
 
     code = sink.exit_code
     hard = sink.hard

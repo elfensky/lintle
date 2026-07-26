@@ -46,8 +46,9 @@ def _format_pct_plain(part, whole):
     return _format_pct(part, whole, zero_marker="-")
 
 
-def _can_encode(encoding, sample):
-    """Return ``True`` if ``sample`` encodes without error under ``encoding``."""
+def can_encode(encoding, sample):
+    """Return ``True`` if ``sample`` encodes without error under ``encoding`` —
+    the ASCII-fallback test every table's dash and bar characters go through."""
     try:
         sample.encode(encoding or "utf-8")
     except UnicodeEncodeError, LookupError:
@@ -211,6 +212,23 @@ def _render_sections(console, label, run, s, *, bars):
         console.print(t)
 
 
+def results_table(*headers):
+    """Build a phase-3 results table with the house chrome, shared by every
+    command so their tables cannot drift apart: a ``SIMPLE`` box, no edge
+    padding, a dim right-justified index column, a left-justified name column,
+    and every remaining column right-justified. The convention is positional —
+    ``headers[0]`` indexes, ``headers[1]`` names, the rest are numbers — which
+    is the shape all four results tables have."""
+    table = Table(box=box.SIMPLE, pad_edge=False)
+    for position, header in enumerate(headers):
+        table.add_column(
+            header,
+            justify="left" if position == 1 else "right",
+            style="dim" if position == 0 else None,
+        )
+    return table
+
+
 def _file_rows(envelope, resumed):
     """Return the phase-3 rows as ``(name, entry_or_None, style)`` triples sorted
     by basename — the same ordering the discovery roster and ``report.md`` use.
@@ -245,18 +263,14 @@ def render_files(envelope, *, console, resumed=frozenset()):
     if not rows:
         return
     tier = display_tier(console.width)
-    dash = "—" if _can_encode(console.encoding, "—") else "-"
-    table = Table(box=box.SIMPLE, pad_edge=False)
-    table.add_column("#", justify="right", style="dim")
-    table.add_column("file")
+    dash = "—" if can_encode(console.encoding, "—") else "-"
+    headers = ["#", "file"]
     if tier != "narrow":
-        table.add_column("size", justify="right")
-    table.add_column("records", justify="right")
-    table.add_column("clean", justify="right")
-    table.add_column("quarantined", justify="right")
+        headers.append("size")
+    headers += ["records", "clean", "quarantined"]
     if tier == "wide":
-        table.add_column("repaired", justify="right")
-        table.add_column("time", justify="right")
+        headers += ["repaired", "time"]
+    table = results_table(*headers)
 
     totals = {"bytes": 0, "paired_records": 0, "clean": 0, "quarantined": 0, "fixes": 0}
     for index, (name, entry, style) in enumerate(rows, start=1):
@@ -301,7 +315,7 @@ def render(envelope, *, console, command_label="clean"):
     """Render the run envelope as a responsive aggregate panel to ``console``."""
     run = envelope["run"]
     s = envelope["summary"]
-    unicode_ok = _can_encode(console.encoding, "█─·")
+    unicode_ok = can_encode(console.encoding, "█─·")
     tier = _pick_tier(
         is_terminal=console.is_terminal, width=console.width, unicode_ok=unicode_ok
     )

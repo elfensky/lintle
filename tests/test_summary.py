@@ -74,9 +74,9 @@ class TestHelpers:
         assert summary._format_pct(5, 0) == "—"
 
     def test_can_encode(self):
-        assert summary._can_encode("utf-8", "█") is True
-        assert summary._can_encode(None, "█") is True
-        assert summary._can_encode("ascii", "█") is False
+        assert summary.can_encode("utf-8", "█") is True
+        assert summary.can_encode(None, "█") is True
+        assert summary.can_encode("ascii", "█") is False
 
     def test_pick_tier(self):
         pt = summary._pick_tier
@@ -521,3 +521,22 @@ class TestRenderFiles:
 
     def test_empty_run_prints_nothing(self):
         assert self._render(_demo_envelope()) == ""
+
+
+class TestResultsTable:
+    """summary.results_table — the chrome every phase-3 table shares, so no two
+    commands' results can drift apart visually."""
+
+    def test_index_is_dim_and_right_justified_name_is_left_rest_are_right(self):
+        table = summary.results_table("#", "file", "records", "hard")
+        assert [c.justify for c in table.columns] == ["right", "left", "right", "right"]
+        assert table.columns[0].style == "dim"
+        assert not any(c.style for c in table.columns[1:])  # only # is dim
+
+    def test_render_files_uses_the_shared_chrome(self):
+        env = _demo_envelope()
+        env["files"] = [_file_entry("a.txt")]
+        console = _console(120, terminal=True)
+        summary.render_files(env, console=console)
+        out = console.file.getvalue()
+        assert " # " in out and "a.txt" in out

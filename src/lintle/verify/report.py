@@ -17,7 +17,9 @@ from collections.abc import Iterable
 from enum import StrEnum
 from pathlib import Path
 
-from lintle import VERIFY_DIRNAME, chunking, fsutil
+from rich.text import Text
+
+from lintle import VERIFY_DIRNAME, chunking, fsutil, summary
 from lintle.chunking import CHUNK_RECORDS_DEFAULT
 
 SUSPECTS_STEM = "suspects"
@@ -77,6 +79,44 @@ class Suspect:
     @property
     def severity(self) -> str:
         return "hard" if self.rule in _HARD else "soft"
+
+
+def render_results(stem_sizes, records_by_stem, sink, *, console) -> None:
+    """Print ``verify``'s phase-3 results table: one row per cleaned stem with
+    its size, records checked, and hard/soft suspect counts, then a total row.
+    Every suspect carries the stem it came from — including the contradiction
+    and orbit findings raised after the streaming pass — so the two suspect
+    columns sum to exactly the totals the verdict line reports. Medium consoles
+    drop ``size``; narrow ones also drop ``records``."""
+    tier = summary.display_tier(console.width)
+    headers = ["#", "file"]
+    if tier == "wide":
+        headers.append("size")
+    if tier != "narrow":
+        headers.append("records")
+    headers += ["hard", "soft"]
+    table = summary.results_table(*headers)
+    total_bytes = total_records = 0
+    for index, stem in enumerate(sorted(records_by_stem), start=1):
+        size = stem_sizes.get(stem, 0)
+        total_bytes += size
+        total_records += records_by_stem[stem]
+        cells = [summary.format_size(size)] if tier == "wide" else []
+        if tier != "narrow":
+            cells.append(f"{records_by_stem[stem]:,}")
+        table.add_row(
+            str(index),
+            Text(stem),
+            *cells,
+            f"{sink.hard_by_stem[stem]:,}",
+            f"{sink.soft_by_stem[stem]:,}",
+        )
+    table.add_section()
+    cells = [summary.format_size(total_bytes)] if tier == "wide" else []
+    if tier != "narrow":
+        cells.append(f"{total_records:,}")
+    table.add_row("", "total", *cells, f"{sink.hard:,}", f"{sink.total - sink.hard:,}")
+    console.print(table)
 
 
 def _sort_key(s: Suspect) -> tuple[str, int, float, str, int]:
@@ -245,6 +285,12 @@ class SuspectSink:
         self._runs: list[Path] = []
         self._tmpdir = tempfile.TemporaryDirectory(prefix="lintle-verify-suspects-")
         self.counts: Counter[str] = Counter()
+        # Per-stem tallies for the phase-3 results table. Keyed by the stem each
+        # suspect names, so findings raised after the streaming pass (the
+        # contradiction and orbit passes) are attributed too, and the columns
+        # sum to `hard`/`total`. One entry per cleaned stem — not per record.
+        self.hard_by_stem: Counter[str] = Counter()
+        self.soft_by_stem: Counter[str] = Counter()
         self.hard = 0
         self.total = 0
 
@@ -253,6 +299,9 @@ class SuspectSink:
         self.counts[s.rule.value] += 1
         if s.severity == "hard":
             self.hard += 1
+            self.hard_by_stem[s.src_file] += 1
+        else:
+            self.soft_by_stem[s.src_file] += 1
         self.total += 1
         if len(self._buf) >= self._chunk_size:
             self._spill()
