@@ -6,6 +6,20 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Changed
+
+- **`clean` renders one live table instead of three printed blocks.** Every
+  discovered file has a row from the first frame — that frame is the roster —
+  and work updates rows in place: the bar fills, then the same row switches to
+  its final records / clean / quarantined / time. The final frame stays on
+  screen as the results view with the aggregate panel under it, so a run adds
+  no new lines as it goes. When the rows outnumber the terminal height the
+  table windows around the active files with an `… N more` marker (a live
+  region cannot scroll), and the complete static results table is printed
+  afterwards so nothing the window hid is lost. Per-file completion lines now
+  print only off a TTY, where there is no table to update; failures still print
+  their error everywhere.
+
 ### Added
 
 - **The post-run commands join the three-phase display.** `verify` and `dedup`

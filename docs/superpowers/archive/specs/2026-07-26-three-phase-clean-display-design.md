@@ -1,7 +1,11 @@
 # Three-phase `clean` display: discovery → progress → results
 
 **Date:** 2026-07-26
-**Status:** implemented (2026-07-26) — see `cli_progress.ProgressDisplay` (phase 2) and `summary.render_files` (phase 3)
+**Status:** implemented (2026-07-26), then **superseded the same day** — phases 1-3 for
+`clean` are now one live table updated in place rather than three printed blocks (see
+`ARCHITECTURE.md` § The `clean` display). The phase vocabulary and the bounded-live-region
+evidence below still stand; what changed is that the roster, the progress rows, and the
+results are one table's lifecycle, windowed when it outgrows the terminal.
 
 ## Problem
 

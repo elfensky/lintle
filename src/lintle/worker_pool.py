@@ -34,6 +34,10 @@ class WorkerRunResult:
     interrupted: bool
     interrupted_signo: int
     operational_error: Exception | None
+    # True when the live table could not fit every row in the terminal and had
+    # to window them — the caller then prints the complete static results table,
+    # since the frame left on screen shows only the window.
+    display_windowed: bool = False
 
 
 def _failure_detail(exc: Exception) -> str:
@@ -58,6 +62,7 @@ def run_workers(
     all_stats = list(plan.reused_stats)
     failed_files = []
     interrupted = False
+    display = None  # the live table, kept past its `with` for the window flag
     interrupted_signo = signal.SIGINT
     operational_error: Exception | None = None
     with multiprocessing.Manager() as manager:
@@ -98,6 +103,7 @@ def run_workers(
                 sizes,
                 already_done=len(plan.completed),
             ) as progress:
+                display = progress  # kept past the `with` for its window flag
                 for future in concurrent.futures.as_completed(futures):
                     path = futures[future]
                     try:
@@ -164,4 +170,7 @@ def run_workers(
         interrupted=interrupted,
         interrupted_signo=interrupted_signo,
         operational_error=operational_error,
+        # A windowed live table showed only part of the roster, so the caller
+        # still owes the operator the complete results table.
+        display_windowed=display is not None and display.windowed,
     )

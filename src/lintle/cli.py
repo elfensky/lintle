@@ -520,13 +520,17 @@ def _finalize_run(
     threshold_mode,
     quarantine_threshold,
     resumed_names=frozenset(),
+    print_results=True,
 ):
     """Finish a non-interrupted run: sort stats, write the clean-run artifacts,
     emit the text/JSON summary, tear down resumable state on success, and return
     the process exit code. Split out of :func:`main` so the orchestration there
     stays at the level of phases (check inputs -> plan -> dispatch -> finalize).
     ``resumed_names`` is the basenames carried over from a previous run, dimmed
-    in the phase-3 table because their numbers came from that earlier run."""
+    in the results table because their numbers came from that earlier run.
+    ``print_results`` prints that table; the live display already ends on the
+    same per-file numbers, so the caller suppresses it unless the table was
+    windowed or never rendered."""
     all_stats.sort(key=lambda stats: stats.src_name)
 
     # Build the run envelope once, unconditionally — even an all-failed run
@@ -574,9 +578,10 @@ def _finalize_run(
         # Text-mode stdout stays empty so a pipe sees nothing the report.json
         # artifact doesn't already carry. This revisits the old "no per-file
         # dump" rule deliberately: that rule was about polluting *stdout*.
-        summary.render_files(
-            envelope, console=term.stderr_console, resumed=resumed_names
-        )
+        if print_results:
+            summary.render_files(
+                envelope, console=term.stderr_console, resumed=resumed_names
+            )
         summary.render(envelope, console=term.stderr_console, command_label="clean")
 
     # A fully successful clean run leaves no resumable state behind. The
@@ -895,9 +900,14 @@ def _dispatch(argv=None):
         # no pre-read of the corpus.
         console = term.stderr_console
         sizes = {Path(p).name: file_sizes[p] for p in plan.files_to_process}
-        cli_progress.render_roster(
-            console, {p: file_sizes[p] for p in plan.files_to_process}
-        )
+        # On a TTY the live table opens on the same rows and fills them in, so
+        # printing a separate roster first would be the same list twice. Off a
+        # TTY there is no live table, and this static roster is the only
+        # discovery view a piped run gets.
+        if not console.is_terminal:
+            cli_progress.render_roster(
+                console, {p: file_sizes[p] for p in plan.files_to_process}
+            )
 
         if not plan.reused_stats:
             term.note(
@@ -940,6 +950,9 @@ def _dispatch(argv=None):
             threshold_mode=threshold_mode,
             quarantine_threshold=quarantine_threshold,
             resumed_names=frozenset(s.src_name for s in plan.reused_stats),
+            # The live table already ended on the per-file results, unless it
+            # had to window them away or never ran at all (off a TTY).
+            print_results=result.display_windowed or not console.is_terminal,
         )
     except Exception as exc:
         # Issue #89: catch-all backstop — any unhandled exception in the clean
