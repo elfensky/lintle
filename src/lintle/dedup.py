@@ -231,11 +231,15 @@ def run(out_dir: str, chunk_records: int = CHUNK_RECORDS_DEFAULT) -> int:
     with cli_progress.phase_bar("reading cleaned", len(stems)) as progress:
         for stem in stems:
             progress(description=f"reading {stem}")
+            # Per-stem, like verify's: a corpus total next to one stem's name
+            # would read as that stem's own count.
+            file_records = 0
             for rec in records.iter_file(out_dir, stem):
                 n_read += 1
+                file_records += 1
                 # Sparse refresh — one `update` per record would dominate the loop.
-                if n_read % 100_000 == 0:
-                    progress(description=f"reading {stem} — {n_read:,}")
+                if file_records % 100_000 == 0:
+                    progress(description=f"reading {stem} — {file_records:,} records")
                 if (rec.src_file, rec.index) in hard:
                     n_excluded += 1
                     continue
@@ -278,6 +282,9 @@ def run(out_dir: str, chunk_records: int = CHUNK_RECORDS_DEFAULT) -> int:
                 history.epoch_dt(g.kept.line1),
                 checks.element_set(g.kept.line1),
             )
+        # One last update so the finished bar shows the true count: a run that
+        # writes fewer than the refresh interval would otherwise read "0".
+        progress(completed=n_written)
     manifest.flush()
     fsutil.durable_write_text(
         str(ddir / f"{MANIFEST_STEM}{MANIFEST_SUFFIX}"),

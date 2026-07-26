@@ -684,3 +684,39 @@ class TestImportGuard:
             assert "sgp4" not in imports, (
                 f"verify.{mod_path.stem} imports sgp4 directly"
             )
+
+
+class TestProgressLabels:
+    """The phase-2 bar label must describe the stem it names: the record count
+    beside a stem is that stem's own, not a running corpus total."""
+
+    def test_record_count_in_the_label_resets_per_stem(self, tmp_path, monkeypatch):
+        import contextlib
+
+        from lintle import cli_progress, verify
+
+        seen = []
+
+        @contextlib.contextmanager
+        def _capture(description, total):
+            def update(**fields):
+                if "description" in fields:
+                    seen.append(fields["description"])
+
+            yield update
+
+        monkeypatch.setattr(cli_progress, "phase_bar", _capture)
+        # Two stems of 100k records each: with a corpus-cumulative counter the
+        # second stem's label would read 200,000.
+        monkeypatch.setattr(verify.records, "cleaned_stems", lambda _d: ["a", "b"])
+        sample = rec()
+        monkeypatch.setattr(
+            verify.records, "iter_file", lambda _d, _s: (sample for _ in range(100_000))
+        )
+        verify.run(str(tmp_path), None)
+
+        counted = [d for d in seen if "records" in d]
+        assert counted == [
+            "verifying a — 100,000 records",
+            "verifying b — 100,000 records",
+        ]

@@ -58,6 +58,9 @@ def run(
     with cli_progress.phase_bar("verifying", len(stems)) as progress:
         for file_stem in stems:
             progress(description=f"verifying {file_stem}")
+            # Per-stem, not corpus-cumulative: the count sits next to one stem's
+            # name, so a running corpus total there would read as that stem's.
+            file_records = 0
             # Null-object seam: always constructed, inert when the stem has no
             # source — no `is not None` guards, no caller-side skip contract.
             aligner = checks.SourceAligner.open(source_dir, file_stem)
@@ -66,10 +69,15 @@ def run(
             try:
                 for rec in records.iter_file(out_dir, file_stem):
                     n_records += 1
+                    file_records += 1
                     # Refresh the record counter sparsely — one `update` per
                     # record would cost more than the checks themselves.
-                    if n_records % 100_000 == 0:
-                        progress(description=f"verifying {file_stem} — {n_records:,}")
+                    if file_records % 100_000 == 0:
+                        progress(
+                            description=(
+                                f"verifying {file_stem} — {file_records:,} records"
+                            )
+                        )
                     bad = checks.revalidate(rec)
                     if bad is not None:
                         sink.add(bad)
