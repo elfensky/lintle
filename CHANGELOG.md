@@ -6,7 +6,21 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Changed
+
+- **`verify` and `dedup` rows show a real progress bar, and the summary row a
+  heartbeat.** Their progress column held a percentage *string* where `clean`
+  had a bar, so a row that sat on the same number for a minute read as frozen.
+  Both now use the same `ProgressBar` renderable, and the summary row carries a
+  spinner advanced by *work* — one step per redraw, and redraws only happen
+  when records move — so a cycling glyph means progress and a frozen one means
+  a genuine stall. Absent from the final frame and from piped output.
+
 ### Fixed
+
+- **`UnitTable(drop=...)` crashed when omitted.** The parameter defaulted to an
+  empty tuple but is used as a per-tier mapping; every current caller passes
+  one, so it never fired in practice.
 
 - **`verify`'s contradiction pass showed no progress.** The external merge over
   every cleaned record is the run's long tail — the better part of an hour on a

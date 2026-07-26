@@ -355,6 +355,16 @@ class ProgressDisplay:
         return cells
 
 
+_SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+
+def bar(completed, total):
+    """A progress bar cell for a results-table row — the same renderable the
+    ``clean`` display uses, so a filling bar means the same thing everywhere. A
+    percentage alone reads as static text on a file that takes minutes."""
+    return ProgressBar(total=max(total, 1), completed=min(completed, total))
+
+
 def window(rows, height, chrome_lines):
     """Return the rows a frame of ``height`` lines can show, plus the number it
     cannot.
@@ -407,14 +417,16 @@ class UnitTable:
 
     _CHROME_LINES = 8
 
-    def __init__(self, names, headers, *, console, unit="files", drop=()):
+    def __init__(self, names, headers, *, console, unit="files", drop=None):
         self._console = console
         self._live_mode = console.is_terminal
         self._headers = list(headers)
         self._unit = unit
         # Columns this console is too narrow for, by tier — dropped whole, never
         # truncated, exactly as the clean table does it.
-        self._drop = frozenset(drop.get(summary.display_tier(console.width), ()))
+        self._drop = frozenset(
+            (drop or {}).get(summary.display_tier(console.width), ())
+        )
         self._rows = [
             _UnitRow(index=i, name=name) for i, name in enumerate(names, start=1)
         ]
@@ -423,6 +435,8 @@ class UnitTable:
         self._label = None
         self._totals = {}
         self._display = None
+        self._tick = 0
+        self._finished = False
         self.windowed = False
 
     def __enter__(self):
@@ -439,6 +453,7 @@ class UnitTable:
         return self
 
     def __exit__(self, *_exc):
+        self._finished = True
         if self._display is not None:
             self._refresh()
             self._display.stop()
@@ -484,6 +499,7 @@ class UnitTable:
 
     def _refresh(self):
         if self._display is not None:
+            self._tick += 1
             self._display.update(self._table(), refresh=True)
 
     def _table(self, *, complete=False):
@@ -502,7 +518,9 @@ class UnitTable:
             table.add_row(
                 str(row.index),
                 Text(row.name),
-                *(str(row.cells.get(h, "")) for h in headers[2:]),
+                # Cells pass through as given: a string, or a renderable such as
+                # a ProgressBar, which a str() would flatten to its repr.
+                *(row.cells.get(h, "") for h in headers[2:]),
                 style="dim" if row.state == "pending" else None,
             )
         if hidden:
@@ -510,11 +528,23 @@ class UnitTable:
         table.add_section()
         table.add_row(
             "",
-            self._label or f"{self._done}/{len(self._rows)} {self._unit}",
-            *(str(self._totals.get(h, "")) for h in headers[2:]),
+            self._heartbeat(complete)
+            + (self._label or f"{self._done}/{len(self._rows)} {self._unit}"),
+            *(self._totals.get(h, "") for h in headers[2:]),
             style="bold",
         )
         return table
+
+    def _heartbeat(self, complete):
+        """A spinner frame for the summary row, advanced by *work* rather than
+        by a timer: every frame is drawn because something changed, so the
+        glyph moves while the run moves and stops dead if it stalls — which is
+        the question a static label cannot answer. Absent from the final frame
+        and from the static off-a-TTY prints, so finished output is stable
+        text."""
+        if complete or self._finished or not self._live_mode:
+            return ""
+        return _SPINNER[self._tick % len(_SPINNER)] + " "
 
 
 def _percent(part, whole):

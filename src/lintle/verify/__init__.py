@@ -115,7 +115,7 @@ def run(
             table.finish(
                 file_stem,
                 size=summary.format_size(size),
-                progress=_BAR_FULL,
+                progress=cli_progress.bar(size, size),
                 records=f"{file_records:,}",
                 hard=f"{sink.hard_by_stem[file_stem]:,}",
                 soft=f"{sink.soft_by_stem[file_stem]:,}",
@@ -154,21 +154,15 @@ def run(
     return code
 
 
-# A finished row's progress cell. The stems are streamed record by record, not
-# byte by byte, so the cell is a state marker rather than a measured fraction.
-_BAR_FULL = "100%"
-
-
 def _row_cells(file_records, size, sink, stem):
     """The cells of a stem's row mid-stream. Progress is the share of the stem's
     stat'd bytes its records account for: every cleaned record is exactly two
     69-column lines plus newlines, so the count converts to bytes exactly.
     Clamped, because a truncated final chunk would otherwise read past 100%."""
-    seen = file_records * _RECORD_BYTES
-    pct = min(100, int(100 * seen / size)) if size else 0
+    seen = min(file_records * _RECORD_BYTES, size)
     return {
         "size": summary.format_size(size),
-        "progress": f"{pct}%",
+        "progress": cli_progress.bar(seen, size),
         "records": f"{file_records:,}",
         "hard": f"{sink.hard_by_stem[stem]:,}",
         "soft": f"{sink.soft_by_stem[stem]:,}",
