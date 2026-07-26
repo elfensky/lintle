@@ -726,3 +726,72 @@ class TestLiveTable:
         sink.add(Suspect(VerifyRule.EPOCH_CONFLICT, 25544, 1.0, "tle01", 1, "clash"))
         assert sink.hard_by_stem["tle01"] == 1
         assert sum(sink.hard_by_stem.values()) == sink.hard
+
+
+class TestSortStageProgress:
+    """The contradiction pass is the run's long tail — an external merge over
+    every record. It reports how far it has got, or it is indistinguishable
+    from a hang."""
+
+    class _Table:
+        def __init__(self):
+            self.labels = []
+
+        def phase(self, label):
+            self.labels.append(label)
+
+    def test_counts_through_the_sorted_stream(self):
+        from lintle import verify
+
+        table = self._Table()
+        stream = iter(range(600_000))
+        assert list(verify._counted(stream, table, 600_000)) == list(range(600_000))
+        # Opens with the stage name, then reports progress against the known
+        # total — an exact fraction, since every record passes through.
+        assert table.labels[0].startswith("sorting records and checking")
+        assert "250,000/600,000 (41%)" in table.labels[1]
+        assert "500,000/600,000 (83%)" in table.labels[2]
+
+    def test_unknown_total_still_counts(self):
+        from lintle import verify
+
+        table = self._Table()
+        list(verify._counted(iter(range(250_000)), table, 0))
+        assert table.labels[-1].endswith("250,000")
+
+
+class TestOrbitPassDoesNotNestLive:
+    """--orbit runs inside the results table's live region, which cannot nest —
+    so the pass reports through that table rather than opening its own."""
+
+    def test_orbit_module_owns_no_progress_region(self):
+        import inspect
+
+        from lintle.verify import orbit
+
+        src = inspect.getsource(orbit)
+        assert "phase_bar" not in src
+        assert "cli_progress" not in src
+
+    def test_pass_reports_through_the_table(self, tmp_path, monkeypatch):
+        from lintle.verify import orbit as orbit_pass
+        from lintle.verify.report import SuspectSink
+
+        labels = []
+
+        class _Table:
+            def phase(self, label):
+                labels.append(label)
+
+        monkeypatch.setattr(orbit_pass.records, "iter_file", lambda _d, _s: iter(()))
+        census = orbit_pass.run_orbit_pass(
+            str(tmp_path),
+            ["tle01"],
+            set(),
+            SuspectSink(),
+            sample=None,
+            all_sats=False,
+            table=_Table(),
+        )
+        assert labels and "orbit: sampling tle01" in labels[0]
+        assert census["orbit_population"] == 0

@@ -178,6 +178,23 @@ def _row_cells(file_records, size, sink, stem):
 _RECORD_BYTES = 140  # two 69-column lines + two newlines
 
 
+def _counted(stream, table, total):
+    """Yield the sorted stream, reporting how much of it the contradiction pass
+    has consumed. This is the run's long tail — an external merge over every
+    record, minutes of it on a corpus — and without a counter the stage is
+    indistinguishable from a hang. Every record passes through here and the
+    total is already known, so the fraction is exact, not an estimate."""
+    table.phase("sorting records and checking contradictions…")
+    for seen, rec in enumerate(stream, start=1):
+        # Sparse, like every other counter here: the merge yields far faster
+        # than a terminal can redraw.
+        if seen % 250_000 == 0:
+            done = f"{seen:,}/{total:,}" if total else f"{seen:,}"
+            pct = f" ({int(100 * seen / total)}%)" if total else ""
+            table.phase(f"sorting and checking contradictions — {done}{pct}")
+        yield rec
+
+
 def _finish_run(
     out_dir,
     table,
@@ -207,9 +224,8 @@ def _finish_run(
     # Contradiction pass over the fully sorted stream (goal 3b): same-epoch
     # re-issues are counted (a census); only a same-element-set clash is hard.
     # Under --orbit, also collect the dup-epoch catalogs for the #2 sample stratum.
-    table.phase("sorting records and checking contradictions…")
     conflicts, epoch_reissues, dup_epoch_catalogs = checks.find_conflicts(
-        sorter.sorted_records(), orbit=orbit
+        _counted(sorter.sorted_records(), table, n_records), orbit=orbit
     )
     sink.add_all(conflicts)
 
@@ -231,6 +247,7 @@ def _finish_run(
             stems,
             population,
             sink,
+            table=table,
             sample=sample,
             all_sats=all_sats,
             sensitivity=orbit_pass.TIERS[sensitivity],

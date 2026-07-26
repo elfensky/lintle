@@ -4,6 +4,21 @@ All notable changes to this project are documented in this file. The format is b
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- **`verify`'s contradiction pass showed no progress.** The external merge over
+  every cleaned record is the run's long tail — the better part of an hour on a
+  200M-record corpus — and the summary row sat on a static label throughout,
+  indistinguishable from a hang. It now counts the sorted stream against the
+  known record total, so the label carries an exact fraction rather than a
+  guess.
+- **`verify --orbit` nested two live regions.** The orbit pass opened its own
+  progress bar inside the results table's `rich.live.Live`, which cannot nest.
+  It now reports through that table's summary row like every other post-stream
+  stage.
+
 ## [0.13.0] - 2026-07-26
 
 ### Added
