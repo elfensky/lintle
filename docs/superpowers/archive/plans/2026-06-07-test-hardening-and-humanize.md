@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.14 · uv · pytest · hypothesis · pytest-xdist (dev) · humanize, rich (runtime) · ruff.
 
-**Spec:** `docs/superpowers/specs/2026-06-07-test-hardening-and-humanize-design.md`
+**Spec:** `docs/superpowers/archive/specs/2026-06-07-test-hardening-and-humanize-design.md`
 
 **Execution setup (do once, before Task 1):**
 - Create an isolated worktree off `develop` (via `superpowers:using-git-worktrees`):

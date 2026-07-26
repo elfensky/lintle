@@ -4,7 +4,7 @@
 
 **Goal:** Retire the `data/` grouping for a flat, pipeline-ordered out-dir (`01-cleaned` … `06-extract`), give every dir a README, and default `extract` into `06-extract/`.
 
-**Architecture:** Directory-level rename driven entirely through the naming constants in `lintle/__init__.py` (the one authority); chunk formats, stems, and suffixes untouched. Spec: `docs/superpowers/specs/2026-07-23-flat-numbered-output-layout-design.md` — read it first; it is the requirements authority for every task.
+**Architecture:** Directory-level rename driven entirely through the naming constants in `lintle/__init__.py` (the one authority); chunk formats, stems, and suffixes untouched. Spec: `docs/superpowers/archive/specs/2026-07-23-flat-numbered-output-layout-design.md` — read it first; it is the requirements authority for every task.
 
 **Tech Stack:** stdlib only; pytest; existing `fsutil.durable_write_text` for READMEs.
 

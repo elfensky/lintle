@@ -4,7 +4,7 @@
 
 **Goal:** `lintle extract <noradID>…` writes `<id>.txt` (a satellite's complete deduped TLE history) + `<id>.json` (stats sidecar) by binary-searching the sorted fixed-width `dedup/import.*` chunk set.
 
-**Architecture:** One new read-only leaf `src/lintle/extract.py` (cli → extract → {chunking, fsutil, term, dedup constants, verify.records/epoch/checks parsers}), lazily imported by `cli`'s dispatch. No index artifact: every import record is exactly 140 bytes and the stream is sorted by `(catalog, epoch)`, so span location is seek + bisect. Spec: `docs/superpowers/specs/2026-07-23-extract-satellite-history-design.md`.
+**Architecture:** One new read-only leaf `src/lintle/extract.py` (cli → extract → {chunking, fsutil, term, dedup constants, verify.records/epoch/checks parsers}), lazily imported by `cli`'s dispatch. No index artifact: every import record is exactly 140 bytes and the stream is sorted by `(catalog, epoch)`, so span location is seek + bisect. Spec: `docs/superpowers/archive/specs/2026-07-23-extract-satellite-history-design.md`.
 
 **Tech Stack:** Python 3.14 stdlib only (no new deps). pytest. Existing helpers: `ChunkedReader.chunk_paths()`, `fsutil.durable_replace`/`durable_write_text`/`PARTIAL_SUFFIX`, `verify.records.catalog_of`, `verify.epoch.parse_epoch`, `verify.checks.element_set`.
 
@@ -562,7 +562,7 @@ git commit -m "feat(cli): lintle extract subcommand — wiring, lock, config def
 git add -A
 git commit -m "docs(extract): architecture row, changelog, import-graph wall test"
 git push -u origin feature/extract-satellite-history
-gh pr create --base develop --title "feat: lintle extract — per-satellite TLE history" --body "Implements docs/superpowers/specs/2026-07-23-extract-satellite-history-design.md"
+gh pr create --base develop --title "feat: lintle extract — per-satellite TLE history" --body "Implements docs/superpowers/archive/specs/2026-07-23-extract-satellite-history-design.md"
 ```
 
 - [ ] **Step 5: Acceptance on the real corpus** — from the main checkout: `~/Downloads/tle/.venv-0.10.3/... no — use the worktree: `uv run lintle extract 25544 20580 5 --out-dir ~/Downloads/tle/output --dest /tmp/sat-test` → expect `25544.txt` (ISS), `20580.txt` (Hubble), `5.txt` (Vanguard 1, space-padded catalog) + sidecars; spot-check `25544.json`'s epoch range spans the corpus years and every line in `25544.txt` is 69 chars.
