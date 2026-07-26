@@ -26,7 +26,6 @@ import statistics
 
 from sgp4.api import Satrec
 
-from lintle import cli_progress
 from lintle.verify import grouping, records
 from lintle.verify.records import CleanedRecord
 from lintle.verify.report import Suspect, SuspectSink, VerifyRule
@@ -297,6 +296,7 @@ def run_orbit_pass(
     all_sats: bool,
     sensitivity: Sensitivity = SENSITIVE,
     oversample: frozenset[int] | set[int] = frozenset(),
+    table=None,
 ) -> dict:
     """The sampled orbit-consistency pass. Streams the sampled satellites' cleaned
     records through the external sort, then per epoch-sorted track flags hard
@@ -309,22 +309,24 @@ def run_orbit_pass(
     follow-up (issue #144)."""
     sampled = sample_catalogs(population, sample, all_sats, oversample)
     sorter = grouping.ExternalSorter()
-    with cli_progress.phase_bar("orbit: sampling", len(stems)) as progress:
-        for stem in stems:
-            progress(description=f"orbit: sampling {stem}")
-            for rec in records.iter_file(out_dir, stem):
-                if rec.catalog in sampled:
-                    sorter.add(rec)
-            progress(advance=1)
+    # Reports through the caller's live table rather than opening a progress
+    # region of its own: this runs inside that table's `rich.live.Live`, and a
+    # live region cannot nest.
+    say = table.phase if table is not None else lambda _label: None
+    for index, stem in enumerate(stems, start=1):
+        say(f"orbit: sampling {stem} ({index}/{len(stems)})")
+        for rec in records.iter_file(out_dir, stem):
+            if rec.catalog in sampled:
+                sorter.add(rec)
 
     n_pairs = n_tracks = 0
-    with cli_progress.phase_bar("orbit: propagating", len(sampled)) as progress:
-        for _, track in grouping.grouped(sorter.sorted_records(), key=_by_catalog):
-            found, pairs = _track_suspects(track, sensitivity)
-            sink.add_all(found)
-            n_pairs += pairs
-            n_tracks += 1
-            progress(advance=1)
+    for _, track in grouping.grouped(sorter.sorted_records(), key=_by_catalog):
+        found, pairs = _track_suspects(track, sensitivity)
+        sink.add_all(found)
+        n_pairs += pairs
+        n_tracks += 1
+        if n_tracks % 500 == 0:
+            say(f"orbit: propagating — {n_tracks:,}/{len(sampled):,} satellites")
 
     return {
         "orbit_population": len(population),
