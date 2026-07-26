@@ -445,7 +445,7 @@ A hard channel rule, so output is safely pipeable:
 ### The three-phase `clean` display
 
 Long runs render in three named phases on stderr, bookended by the same file rows
-(`docs/superpowers/specs/2026-07-26-three-phase-clean-display-design.md`):
+(`docs/superpowers/archive/specs/2026-07-26-three-phase-clean-display-design.md`):
 
 | Phase | Renders | Lifetime |
 |---|---|---|
