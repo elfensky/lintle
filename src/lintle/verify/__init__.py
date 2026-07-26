@@ -16,10 +16,9 @@ import datetime as _dt
 from collections import Counter
 from pathlib import Path
 
-from lintle import CLEANED_DIRNAME, cli_progress, term
+from lintle import CLEANED_DIRNAME, cli_progress, summary, term
 from lintle.chunking import CHUNK_RECORDS_DEFAULT
 from lintle.verify import checks, grouping, records
-from lintle.verify import report as vreport
 from lintle.verify.epoch import parse_epoch
 from lintle.verify.report import SuspectSink
 
@@ -49,25 +48,30 @@ def run(
         )
         return 2
 
-    # Phase 1 — discovery. The stat-only fingerprint the staleness check already
-    # computes doubles as the roster's name -> size map, so what is announced and
-    # what is then streamed cannot disagree.
+    # One live table for the whole run: every stem has a row before any work
+    # starts (so the first frame is the roster), each row fills in as its stem
+    # streams, and the finished table is the results view. The stat-only
+    # fingerprint supplies the sizes, so what is announced and what is then
+    # streamed cannot disagree.
     stem_sizes = dict(records.cleaned_fingerprint(out_dir)["stems"])
-    cli_progress.render_roster(term.stderr_console, stem_sizes)
-
     sink = SuspectSink()  # external-sorts suspects to disk (#156): flat peak memory
     sorter = grouping.ExternalSorter()
     population: set[int] = set()  # distinct catalogs, for the orbit sample
     n_records = 0
     missing_source = 0
-    records_by_stem: Counter[str] = Counter()  # phase-3 rows
     histogram: Counter[str] = Counter()  # epoch record density, YYYY-MM -> count
 
-    with cli_progress.phase_bar("verifying", len(stems)) as progress:
+    with cli_progress.UnitTable(
+        stems,
+        ("#", "file", "size", "progress", "records", "hard", "soft"),
+        console=term.stderr_console,
+        drop={"medium": ("size",), "narrow": ("size", "progress")},
+    ) as table:
         for file_stem in stems:
-            progress(description=f"verifying {file_stem}")
-            # Per-stem, not corpus-cumulative: the count sits next to one stem's
-            # name, so a running corpus total there would read as that stem's.
+            table.start(file_stem)
+            size = stem_sizes.get(file_stem, 0)
+            # Per-stem, not corpus-cumulative: the count sits in one stem's row,
+            # so a running corpus total there would read as that stem's.
             file_records = 0
             # Null-object seam: always constructed, inert when the stem has no
             # source — no `is not None` guards, no caller-side skip contract.
@@ -78,14 +82,14 @@ def run(
                 for rec in records.iter_file(out_dir, file_stem):
                     n_records += 1
                     file_records += 1
-                    # Refresh the record counter sparsely — one `update` per
-                    # record would cost more than the checks themselves.
-                    if file_records % 100_000 == 0:
-                        progress(
-                            description=(
-                                f"verifying {file_stem} — {file_records:,} records"
-                            )
+                    # Refresh sparsely — one update per record would cost more
+                    # than the checks themselves.
+                    if file_records % 50_000 == 0:
+                        table.update(
+                            file_stem,
+                            **_row_cells(file_records, size, sink, file_stem),
                         )
+                        table.totals(records=f"{n_records:,}")
                     bad = checks.revalidate(rec)
                     if bad is not None:
                         sink.add(bad)
@@ -108,16 +112,105 @@ def run(
                         sink.add(mutated)
             finally:
                 aligner.close()
-            records_by_stem[file_stem] = file_records
-            progress(advance=1)
+            table.finish(
+                file_stem,
+                size=summary.format_size(size),
+                progress=_BAR_FULL,
+                records=f"{file_records:,}",
+                hard=f"{sink.hard_by_stem[file_stem]:,}",
+                soft=f"{sink.soft_by_stem[file_stem]:,}",
+            )
+            table.totals(
+                size=summary.format_size(sum(stem_sizes.values())),
+                records=f"{n_records:,}",
+                hard=f"{sink.hard:,}",
+                soft=f"{sink.total - sink.hard:,}",
+            )
 
+        code, verdict, vdir = _finish_run(
+            out_dir,
+            table,
+            sink=sink,
+            sorter=sorter,
+            stems=stems,
+            stem_sizes=stem_sizes,
+            population=population,
+            histogram=histogram,
+            n_records=n_records,
+            missing_source=missing_source,
+            source_dir=source_dir,
+            orbit=orbit,
+            sample=sample,
+            all_sats=all_sats,
+            sensitivity=sensitivity,
+            chunk_records=chunk_records,
+        )
+    # After the table closes, so the verdict is the last line rather than a
+    # print above a live region.
+    if code:
+        term.error(f"verify: FAIL — {verdict}\n  see {vdir / 'summary.md'!s}")
+    else:
+        term.note(f"verify: PASS — {verdict}\n  see {vdir / 'summary.md'!s}")
+    return code
+
+
+# A finished row's progress cell. The stems are streamed record by record, not
+# byte by byte, so the cell is a state marker rather than a measured fraction.
+_BAR_FULL = "100%"
+
+
+def _row_cells(file_records, size, sink, stem):
+    """The cells of a stem's row mid-stream. Progress is the share of the stem's
+    stat'd bytes its records account for: every cleaned record is exactly two
+    69-column lines plus newlines, so the count converts to bytes exactly.
+    Clamped, because a truncated final chunk would otherwise read past 100%."""
+    seen = file_records * _RECORD_BYTES
+    pct = min(100, int(100 * seen / size)) if size else 0
+    return {
+        "size": summary.format_size(size),
+        "progress": f"{pct}%",
+        "records": f"{file_records:,}",
+        "hard": f"{sink.hard_by_stem[stem]:,}",
+        "soft": f"{sink.soft_by_stem[stem]:,}",
+    }
+
+
+_RECORD_BYTES = 140  # two 69-column lines + two newlines
+
+
+def _finish_run(
+    out_dir,
+    table,
+    *,
+    sink,
+    sorter,
+    stems,
+    stem_sizes,
+    population,
+    histogram,
+    n_records,
+    missing_source,
+    source_dir,
+    orbit,
+    sample,
+    all_sats,
+    sensitivity,
+    chunk_records,
+):
+    """Run the stages that follow the per-stem stream — the contradiction pass,
+    the optional orbit pass, and the write — reporting each through the live
+    table's summary label rather than a spinner, so the table stays put and the
+    per-stem suspect columns are complete before the frame freezes. Returns the
+    exit code, the verdict text, and the output directory — the caller prints
+    the verdict once the table has closed, so it lands under the results rather
+    than above the live region."""
     # Contradiction pass over the fully sorted stream (goal 3b): same-epoch
     # re-issues are counted (a census); only a same-element-set clash is hard.
     # Under --orbit, also collect the dup-epoch catalogs for the #2 sample stratum.
-    with cli_progress.status("sorting records and checking contradictions..."):
-        conflicts, epoch_reissues, dup_epoch_catalogs = checks.find_conflicts(
-            sorter.sorted_records(), orbit=orbit
-        )
+    table.phase("sorting records and checking contradictions…")
+    conflicts, epoch_reissues, dup_epoch_catalogs = checks.find_conflicts(
+        sorter.sorted_records(), orbit=orbit
+    )
     sink.add_all(conflicts)
 
     checked = {
@@ -132,6 +225,7 @@ def run(
         # Lazy import keeps the default (non-orbit) verify path sgp4-free.
         from lintle.verify import orbit as orbit_pass
 
+        table.phase("propagating sampled orbits…")
         orbit_census = orbit_pass.run_orbit_pass(
             out_dir,
             stems,
@@ -144,25 +238,27 @@ def run(
         )
         checked.update(orbit_census)
 
-    with cli_progress.status("writing 04-verify..."):
-        vdir = sink.write(
-            out_dir,
-            checked=checked,
-            epoch_distribution=dict(sorted(histogram.items())),
-            chunk_records=chunk_records,
-        )
-
-    # Phase 3 — results: the per-stem breakdown the verdict line summarises.
-    vreport.render_results(
-        stem_sizes, records_by_stem, sink, console=term.stderr_console
+    table.phase("writing 04-verify…")
+    vdir = sink.write(
+        out_dir,
+        checked=checked,
+        epoch_distribution=dict(sorted(histogram.items())),
+        chunk_records=chunk_records,
     )
 
-    code = sink.exit_code
+    # The suspect columns are only final now: the contradiction and orbit passes
+    # attribute findings to stems after the stream. Rewrite every row's counts,
+    # then hand the summary row back its files-done label.
+    for stem in stems:
+        table.update(
+            stem,
+            hard=f"{sink.hard_by_stem[stem]:,}",
+            soft=f"{sink.soft_by_stem[stem]:,}",
+        )
+    table.totals(hard=f"{sink.hard:,}", soft=f"{sink.total - sink.hard:,}")
+    table.phase(None)
+
     hard = sink.hard
     soft = sink.total - sink.hard
     verdict = f"{hard} hard, {soft} soft suspect(s) across {n_records} records"
-    if code:
-        term.error(f"verify: FAIL — {verdict}\n  see {vdir / 'summary.md'!s}")
-    else:
-        term.note(f"verify: PASS — {verdict}\n  see {vdir / 'summary.md'!s}")
-    return code
+    return sink.exit_code, verdict, vdir

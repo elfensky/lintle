@@ -470,17 +470,23 @@ they are a piped run's only progress record; a *failure* prints its error on eve
 stream, since a row cannot carry the reason. Off a TTY the run degrades to the static
 roster, those completion lines, and the static results table.
 
-The post-run commands run the same three phases against their own unit of work:
-`verify` and `dedup` roster the cleaned stems (from the stat-only
-`records.cleaned_fingerprint`, so the roster and the stream it announces cannot
-disagree), stream them under `cli_progress.phase_bar`, and close with a per-stem results
-table — records and hard/soft suspects for `verify`, records read and hard-suspect
-exclusions for `dedup`. `extract` rosters the requested NORAD ids (only for 2+ ids) and
-closes with a per-id table of records, span, gaps, and outcome, rendered from the `<id>.json`
-sidecars it just committed rather than recomputed. Their phase 2 stays a bar rather than a
-table: single-process commands never have more than one unit in flight, and a one-row table
-is a table for its own sake. `diff` renders its two deltas as tables on a TTY and its
-byte-exact plain text off one, because piped `diff` output is a grep target.
+`verify` and `dedup` render the same way, over their own unit of work: every cleaned stem
+has a row before any work starts, the row fills in as that stem streams (size, progress,
+records, and the command's own result columns — hard/soft suspects for `verify`, records
+read and hard-suspect exclusions for `dedup`), and the finished table is the results view.
+The stages that follow the per-stem loop — the contradiction pass, the optional orbit
+pass, the write — report themselves by relabelling the pinned summary row, so they need
+no spinner and print no line; `verify` rewrites every row's suspect columns before the
+frame freezes, since contradiction and orbit findings are attributed to their stems only
+after the stream. The verdict line prints after the table closes, so it lands under the
+results rather than above a live region. Per-stem progress is exact rather than estimated:
+a cleaned record is two 69-column lines plus newlines, so a record count converts to bytes
+(clamped, in case a chunk is ever short).
+
+`extract` keeps a static roster and results table instead: each id is a sub-second binary
+search, and it prompts y/n mid-run for a gappy history — a live region would fight the
+prompt. `diff` renders its two deltas as tables on a TTY and its byte-exact plain text off
+one, because piped `diff` output is a grep target.
 
 Every results table is built by `summary.results_table`, which fixes the chrome — `SIMPLE`
 box, dim right-justified index, left-justified name, right-justified numbers — so no two

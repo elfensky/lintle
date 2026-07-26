@@ -110,7 +110,7 @@ src/lintle/
 ├── __main__.py    # python -m lintle entry point
 ├── __init__.py    # __version__, stem() filename helper
 ├── cli.py         # argparse, globbing, top-level clean orchestration, exit codes
-├── cli_progress.py # the one live clean table (roster → progress → results, windowed), status spinner, post-run phase bar (rich)
+├── cli_progress.py # the live tables: ProgressDisplay (clean) + UnitTable (verify/dedup), windowed; roster, status spinner, phase bar (rich)
 ├── run_planning.py # clean-run preflight: disk-space guard, output scrub, resume classification, RunPlan
 ├── worker_pool.py  # process-pool dispatch, progress collection, per-file failure + checkpoint
 ├── process_control.py # worker SIGINT setup, fast pool termination, cancel/exit-code helpers

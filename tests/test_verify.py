@@ -686,47 +686,11 @@ class TestImportGuard:
             )
 
 
-class TestProgressLabels:
-    """The phase-2 bar label must describe the stem it names: the record count
-    beside a stem is that stem's own, not a running corpus total."""
+class TestLiveTable:
+    """verify renders one table: a row per stem from the first frame, filled in
+    as each stem streams, and the finished table is the results view."""
 
-    def test_record_count_in_the_label_resets_per_stem(self, tmp_path, monkeypatch):
-        import contextlib
-
-        from lintle import cli_progress, verify
-
-        seen = []
-
-        @contextlib.contextmanager
-        def _capture(description, total):
-            def update(**fields):
-                if "description" in fields:
-                    seen.append(fields["description"])
-
-            yield update
-
-        monkeypatch.setattr(cli_progress, "phase_bar", _capture)
-        # Two stems of 100k records each: with a corpus-cumulative counter the
-        # second stem's label would read 200,000.
-        monkeypatch.setattr(verify.records, "cleaned_stems", lambda _d: ["a", "b"])
-        sample = rec()
-        monkeypatch.setattr(
-            verify.records, "iter_file", lambda _d, _s: (sample for _ in range(100_000))
-        )
-        verify.run(str(tmp_path), None)
-
-        counted = [d for d in seen if "records" in d]
-        assert counted == [
-            "verifying a — 100,000 records",
-            "verifying b — 100,000 records",
-        ]
-
-
-class TestThreePhaseDisplay:
-    """verify's discovery roster and results table — the phase-1 and phase-3
-    bookends around the progress bar."""
-
-    def _run_on_a_tree(self, tmp_path, monkeypatch, pairs, width=120):
+    def _run_on_a_tree(self, tmp_path, monkeypatch, pairs, width=120, height=40):
         import io
 
         from rich.console import Console
@@ -734,33 +698,30 @@ class TestThreePhaseDisplay:
         from lintle import term
 
         out, _src = build_tree_with_source(tmp_path, pairs)
-        console = Console(file=io.StringIO(), force_terminal=True, width=width)
+        console = Console(
+            file=io.StringIO(), force_terminal=True, width=width, height=height
+        )
         monkeypatch.setattr(term, "stderr_console", console)
         code = run(out, None)
         return code, console.file.getvalue()
 
-    def test_roster_lists_every_stem_with_its_size(self, tmp_path, monkeypatch):
+    def test_row_per_stem_with_size_records_and_suspects(self, tmp_path, monkeypatch):
         _code, out = self._run_on_a_tree(tmp_path, monkeypatch, [(L1, L2)])
-        # Phase 1: the stem and a non-zero size, before any checking happens.
         assert "tle01" in out
-        assert out.index("tle01") < out.index("hard")  # roster precedes results
+        for header in ("size", "records", "hard", "soft"):
+            assert header in out
 
-    def test_results_row_carries_records_and_suspects(self, tmp_path, monkeypatch):
-        broken = (
-            "1 00005U 58002B   00179.78495062  .00000023  00000-0  28098-4 0  475X",
-            L2,
-        )
-        _code, out = self._run_on_a_tree(tmp_path, monkeypatch, [(L1, L2), broken])
-        assert "records" in out and "hard" in out and "soft" in out
-        assert "total" in out
+    def test_suspects_are_attributed_to_their_stem(self, tmp_path, monkeypatch):
+        broken = (L1[:68] + "X", L2)  # a cleaned record that no longer validates
+        code, out = self._run_on_a_tree(tmp_path, monkeypatch, [(L1, L2), broken])
+        assert code == 1  # a hard suspect
+        rows = [line for line in out.splitlines() if "tle01" in line]
+        assert rows and "1" in rows[-1]
 
-    def test_suspect_columns_sum_to_the_verdict(self, tmp_path, monkeypatch):
-        # Two records for one satellite at the same epoch with different bytes:
-        # a contradiction, raised AFTER the streaming pass. It must still be
-        # attributed to its stem, or the table would under-count the verdict.
-        a = _epoch_record(25544, 2020, 100)
-        b = (_epoch_record(25544, 2020, 100)[0], mutated_l2())
-        out_dir, _src = build_tree_with_source(tmp_path, [a, b])
+    def test_columns_are_final_after_the_contradiction_pass(self, tmp_path):
+        # A contradiction is raised after the per-stem stream, so the row it
+        # belongs to must be rewritten before the frame freezes; the sink's
+        # per-stem counters are what the table reads.
         sink = report.SuspectSink()
         sink.add(Suspect(VerifyRule.EPOCH_CONFLICT, 25544, 1.0, "tle01", 1, "clash"))
         assert sink.hard_by_stem["tle01"] == 1

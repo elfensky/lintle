@@ -262,22 +262,12 @@ class ProgressDisplay:
             self._display.update(self._table(), refresh=True)
 
     def _visible(self, rows):
-        """Return the rows this frame can show, plus the number it cannot.
-
-        All of them when they fit the terminal. When they do not, a window that
-        follows the work: it starts at the first unfinished row so the active
-        files and everything still to come stay on screen, and slides no further
-        than the end of the list. Rows outside the window keep their state and
-        come back into it as the window moves — the alternative, a live region
-        taller than the viewport, cannot scroll and strands its overflow."""
-        budget = self._console.size.height - self._CHROME_LINES
-        if budget < 1 or len(rows) <= budget:
-            return rows, 0
-        self.windowed = True
-        active = [i for i, r in enumerate(rows) if r.state in ("pending", "running")]
-        start = min(active) if active else len(rows) - budget
-        start = max(0, min(start, len(rows) - budget))
-        return rows[start : start + budget], len(rows) - budget
+        """The rows this frame can show, plus the number it cannot — see
+        :func:`window`. Records that windowing happened so the caller knows the
+        final frame is partial."""
+        visible, hidden = window(rows, self._console.size.height, self._CHROME_LINES)
+        self.windowed = self.windowed or bool(hidden)
+        return visible, hidden
 
     def _table(self):
         """Build the current frame: a row per discovered file (windowed to the
@@ -363,6 +353,168 @@ class ProgressDisplay:
         if tier == "wide":
             cells.append(summary.format_clock(row.elapsed) if row.elapsed else "")
         return cells
+
+
+def window(rows, height, chrome_lines):
+    """Return the rows a frame of ``height`` lines can show, plus the number it
+    cannot.
+
+    All of them when they fit. When they do not, a window that follows the work:
+    it starts at the first unfinished row so the active unit and everything
+    still to come stay on screen, and slides no further than the end of the
+    list. Rows outside the window keep their state and come back into it as the
+    window moves — the alternative, a live region taller than the viewport,
+    cannot scroll and strands its overflow."""
+    budget = height - chrome_lines
+    if budget < 1 or len(rows) <= budget:
+        return rows, 0
+    active = [i for i, r in enumerate(rows) if r.state in ("pending", "running")]
+    start = min(active) if active else len(rows) - budget
+    start = max(0, min(start, len(rows) - budget))
+    return rows[start : start + budget], len(rows) - budget
+
+
+@dataclasses.dataclass(slots=True)
+class _UnitRow:
+    """One unit's row in a :class:`UnitTable` — its state plus whatever cells the
+    command has filled in so far, keyed by column header."""
+
+    index: int
+    name: str
+    state: str = "pending"
+    cells: dict = dataclasses.field(default_factory=dict)
+
+
+class UnitTable:
+    """The one live table a single-process command renders, updated in place.
+
+    The post-run commands (``verify``, ``dedup``) know their units — the cleaned
+    stems — before they start, so every unit gets a row up front and the first
+    frame is the roster. Work then fills cells in place: :meth:`start` marks a
+    unit running, :meth:`update` merges cells as it streams, :meth:`finish`
+    writes its final numbers. :meth:`phase` relabels the pinned summary row for
+    the stages that follow the per-unit loop (sorting, writing), so those
+    stages need no spinner and no new line.
+
+    Same rules as the ``clean`` display, for the same reasons: the frame windows
+    when the rows outnumber the terminal (a live region cannot scroll), it is
+    not transient so the finished table is the results view, and off a TTY it
+    degrades to two static prints — the roster on entry, the results on exit.
+    A windowed frame is followed by the complete static table, so no row the
+    window hid is lost. ``headers[0]`` indexes and ``headers[1]`` names, matching
+    ``summary.results_table``; the rest are the command's own columns.
+    """
+
+    _CHROME_LINES = 8
+
+    def __init__(self, names, headers, *, console, unit="files", drop=()):
+        self._console = console
+        self._live_mode = console.is_terminal
+        self._headers = list(headers)
+        self._unit = unit
+        # Columns this console is too narrow for, by tier — dropped whole, never
+        # truncated, exactly as the clean table does it.
+        self._drop = frozenset(drop.get(summary.display_tier(console.width), ()))
+        self._rows = [
+            _UnitRow(index=i, name=name) for i, name in enumerate(names, start=1)
+        ]
+        self._by_name = {r.name: r for r in self._rows}
+        self._done = 0
+        self._label = None
+        self._totals = {}
+        self._display = None
+        self.windowed = False
+
+    def __enter__(self):
+        if self._live_mode:
+            self._display = Live(
+                self._table(),
+                console=self._console,
+                transient=False,
+                auto_refresh=False,
+            )
+            self._display.start()
+        else:
+            self._console.print(self._table())  # the roster, statically
+        return self
+
+    def __exit__(self, *_exc):
+        if self._display is not None:
+            self._refresh()
+            self._display.stop()
+        if not self._live_mode or self.windowed:
+            # Off a TTY there was no live frame to end on; a windowed frame
+            # ended on only part of the table. Either way the complete results
+            # are still owed.
+            self._console.print(self._table(complete=True))
+        return False
+
+    def start(self, name):
+        """Mark a unit as the one being worked."""
+        if (row := self._by_name.get(name)) is not None:
+            row.state = "running"
+        self._refresh()
+
+    def update(self, name, **cells):
+        """Merge cells into a running unit's row. Callers throttle this — one
+        update per record would cost more than the work being reported."""
+        if (row := self._by_name.get(name)) is not None:
+            row.cells.update(cells)
+        self._refresh()
+
+    def finish(self, name, **cells):
+        """Write a unit's final cells and count it done."""
+        if (row := self._by_name.get(name)) is not None:
+            row.state = "done"
+            row.cells.update(cells)
+            self._done += 1
+        self._refresh()
+
+    def phase(self, label):
+        """Relabel the summary row for a stage that is not per-unit (sorting the
+        stream, writing the output tree). The table stays put and keeps every
+        row it has — the stage reports itself without printing a line."""
+        self._label = label
+        self._refresh()
+
+    def totals(self, **cells):
+        """Set the summary row's cells."""
+        self._totals.update(cells)
+        self._refresh()
+
+    def _refresh(self):
+        if self._display is not None:
+            self._display.update(self._table(), refresh=True)
+
+    def _table(self, *, complete=False):
+        """Build the current frame. ``complete`` renders every row regardless of
+        the terminal's height — the static fallback for a windowed run."""
+        headers = [h for h in self._headers if h not in self._drop]
+        table = summary.results_table(*headers)
+        if complete:
+            visible, hidden = self._rows, 0
+        else:
+            visible, hidden = window(
+                self._rows, self._console.size.height, self._CHROME_LINES
+            )
+            self.windowed = self.windowed or bool(hidden)
+        for row in visible:
+            table.add_row(
+                str(row.index),
+                Text(row.name),
+                *(str(row.cells.get(h, "")) for h in headers[2:]),
+                style="dim" if row.state == "pending" else None,
+            )
+        if hidden:
+            table.add_row("", f"… {hidden} more", style="dim")
+        table.add_section()
+        table.add_row(
+            "",
+            self._label or f"{self._done}/{len(self._rows)} {self._unit}",
+            *(str(self._totals.get(h, "")) for h in headers[2:]),
+            style="bold",
+        )
+        return table
 
 
 def _percent(part, whole):

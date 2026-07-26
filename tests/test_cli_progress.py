@@ -554,3 +554,77 @@ class TestLiveTable:
         disp.file_failed("/src/a.txt", RuntimeError("boom"))
         out = console.file.getvalue()
         assert "boom" in out and disp._rows["a.txt"].state == "failed"
+
+
+class TestUnitTable:
+    """The post-run commands' live table: rows exist from the first frame, work
+    fills them in place, and the finished table is the results view."""
+
+    HEADERS = ("#", "file", "size", "progress", "records", "hard")
+
+    def _table(self, names, *, terminal=True, width=120, height=40, drop=None):
+        console = Console(
+            file=io.StringIO(), force_terminal=terminal, width=width, height=height
+        )
+        return cli_progress.UnitTable(
+            names, self.HEADERS, console=console, drop=drop or {}
+        )
+
+    def test_first_frame_is_the_roster(self):
+        table = self._table(["a", "b", "c"])
+        with table:
+            rendered = self._render(table)
+        assert "a" in rendered and "c" in rendered
+        assert "0/3 files" in rendered
+
+    @staticmethod
+    def _render(table):
+        buf = io.StringIO()
+        Console(file=buf, force_terminal=True, width=table._console.width).print(
+            table._table()
+        )
+        return buf.getvalue()
+
+    def test_cells_update_in_place_never_appending_a_row(self):
+        table = self._table(["a", "b"])
+        with table:
+            table.start("a")
+            table.update("a", records="1,000")
+            table.finish("a", records="2,000", hard="1")
+            rendered = self._render(table)
+        assert rendered.count("a ") >= 1
+        assert "2,000" in rendered and "1,000" not in rendered
+        assert "1/2 files" in rendered
+
+    def test_phase_relabels_the_summary_row(self):
+        # The stages after the per-unit loop report themselves in the table
+        # rather than by printing a line.
+        table = self._table(["a"])
+        with table:
+            table.phase("sorting…")
+            assert "sorting…" in self._render(table)
+            table.phase(None)
+            assert "0/1 files" in self._render(table)
+
+    def test_window_marks_what_it_cannot_show(self):
+        table = self._table([f"f{i}" for i in range(30)], height=20)
+        with table:
+            table.finish("f0", records="1")
+            rendered = self._render(table)
+        assert "more" in rendered
+        assert table.windowed is True
+
+    def test_off_a_tty_prints_the_roster_then_the_results(self):
+        table = self._table(["a", "b"], terminal=False)
+        with table:
+            table.finish("a", records="7")
+            table.finish("b", records="9")
+        out = table._console.file.getvalue()
+        # Two static prints, no live frames: the roster, then the results.
+        assert out.count("records") == 2
+        assert "7" in out and "9" in out
+
+    def test_tier_drops_columns_whole(self):
+        table = self._table(["a"], width=70, drop={"narrow": ("size", "progress")})
+        headers = [c.header for c in table._table().columns]
+        assert headers == ["#", "file", "records", "hard"]
