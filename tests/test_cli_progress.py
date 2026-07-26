@@ -628,3 +628,62 @@ class TestUnitTable:
         table = self._table(["a"], width=70, drop={"narrow": ("size", "progress")})
         headers = [c.header for c in table._table().columns]
         assert headers == ["#", "file", "records", "hard"]
+
+
+class TestHeartbeat:
+    """A number that changes is not motion. The summary row carries a spinner
+    advanced by work — so it moves while the run moves and stops if it stalls."""
+
+    def _table(self, terminal=True):
+        console = Console(
+            file=io.StringIO(), force_terminal=terminal, width=100, height=40
+        )
+        return cli_progress.UnitTable(
+            ["a", "b"], ("#", "file", "records"), console=console
+        )
+
+    def test_spinner_advances_on_every_refresh(self):
+        table = self._table()
+        with table:
+            frames = []
+            for _ in range(4):
+                table.update("a", records="1")
+                frames.append(table._table().columns[1]._cells[-1][0])
+        assert len(set(frames)) == 4  # a different glyph each time work landed
+
+    def test_no_spinner_once_the_run_is_over(self):
+        table = self._table()
+        with table:
+            table.finish("a", records="1")
+        assert table._table().columns[1]._cells[-1][0] not in cli_progress._SPINNER
+
+    def test_no_spinner_off_a_tty(self):
+        # Piped output must stay stable text — a spinner glyph would be noise.
+        table = self._table(terminal=False)
+        with table:
+            table.update("a", records="1")
+            assert table._table().columns[1]._cells[-1][0] not in cli_progress._SPINNER
+
+
+class TestBarCell:
+    """cli_progress.bar — the same renderable clean's rows use, so a filling bar
+    means the same thing in every command."""
+
+    def test_bar_is_clamped_to_its_total(self):
+        from rich.progress_bar import ProgressBar
+
+        b = cli_progress.bar(500, 1000)
+        assert isinstance(b, ProgressBar) and b.completed == 500 and b.total == 1000
+        assert cli_progress.bar(2000, 1000).completed == 1000  # never past 100%
+
+    def test_renderable_cells_survive_the_table(self):
+        # Cells are passed through, not str()'d — a str() would render a repr.
+        console = Console(file=io.StringIO(), force_terminal=True, width=100)
+        table = cli_progress.UnitTable(
+            ["a"], ("#", "file", "progress"), console=console
+        )
+        table.update("a", progress=cli_progress.bar(1, 2))
+        buf = io.StringIO()
+        Console(file=buf, force_terminal=True, width=100).print(table._table())
+        assert "ProgressBar" not in buf.getvalue()
+        assert "━" in buf.getvalue()

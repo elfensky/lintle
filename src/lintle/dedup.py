@@ -256,7 +256,7 @@ def run(out_dir: str, chunk_records: int = CHUNK_RECORDS_DEFAULT) -> int:
                     table.update(
                         stem,
                         size=summary.format_size(size),
-                        progress=_progress_pct(file_records, size),
+                        progress=_progress_bar(file_records, size),
                         records=f"{file_records:,}",
                         excluded=f"{excluded_by_stem[stem]:,}",
                     )
@@ -269,7 +269,7 @@ def run(out_dir: str, chunk_records: int = CHUNK_RECORDS_DEFAULT) -> int:
             table.finish(
                 stem,
                 size=summary.format_size(size),
-                progress="100%",
+                progress=cli_progress.bar(size, size),
                 records=f"{file_records:,}",
                 excluded=f"{excluded_by_stem[stem]:,}",
             )
@@ -294,13 +294,13 @@ def run(out_dir: str, chunk_records: int = CHUNK_RECORDS_DEFAULT) -> int:
     return code
 
 
-def _progress_pct(records_seen, size):
-    """A stem's share of its stat'd bytes, from the record count: a cleaned
-    record is exactly two 69-column lines plus newlines, so the count converts
-    to bytes exactly. Clamped — a truncated final chunk would read past 100%."""
+def _progress_bar(records_seen, size):
+    """A stem's progress bar, from the record count: a cleaned record is exactly
+    two 69-column lines plus newlines, so the count converts to bytes exactly.
+    Clamped — a truncated final chunk would read past 100%."""
     if not size:
         return ""
-    return f"{min(100, int(100 * records_seen * _RECORD_BYTES / size))}%"
+    return cli_progress.bar(records_seen * _RECORD_BYTES, size)
 
 
 _RECORD_BYTES = 140  # two 69-column lines + two newlines
