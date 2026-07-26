@@ -22,8 +22,11 @@ passes agree, byte-for-byte, on 'same orbit' and 'which is latest'."""
 import dataclasses
 import datetime as _dt
 import json
+from collections import Counter
 from collections.abc import Iterator
 from pathlib import Path
+
+from rich.text import Text
 
 from lintle import (
     CLEANED_DIRNAME,
@@ -32,6 +35,7 @@ from lintle import (
     cli_progress,
     fsutil,
     history,
+    summary,
     term,
 )
 from lintle.chunking import CHUNK_RECORDS_DEFAULT
@@ -210,6 +214,38 @@ class _ManifestBuilder:
             self.body.extend(_manifest_row(self._catalog, hs))
 
 
+def _render_results(stem_sizes, read_by_stem, excluded_by_stem) -> None:
+    """Print ``dedup``'s phase-3 results table: one row per cleaned stem with its
+    size, records read, and records excluded as a prior ``verify`` run's hard
+    suspects, then a total row. Medium consoles drop ``size``; narrow ones also
+    drop ``records``."""
+    console = term.stderr_console
+    tier = summary.display_tier(console.width)
+    headers = ["#", "file"]
+    if tier == "wide":
+        headers.append("size")
+    if tier != "narrow":
+        headers.append("records")
+    headers.append("excluded")
+    table = summary.results_table(*headers)
+    total_bytes = total_read = total_excluded = 0
+    for index, stem in enumerate(sorted(read_by_stem), start=1):
+        size = stem_sizes.get(stem, 0)
+        total_bytes += size
+        total_read += read_by_stem[stem]
+        total_excluded += excluded_by_stem[stem]
+        cells = [summary.format_size(size)] if tier == "wide" else []
+        if tier != "narrow":
+            cells.append(f"{read_by_stem[stem]:,}")
+        table.add_row(str(index), Text(stem), *cells, f"{excluded_by_stem[stem]:,}")
+    table.add_section()
+    cells = [summary.format_size(total_bytes)] if tier == "wide" else []
+    if tier != "narrow":
+        cells.append(f"{total_read:,}")
+    table.add_row("", "total", *cells, f"{total_excluded:,}")
+    console.print(table)
+
+
 def run(out_dir: str, chunk_records: int = CHUNK_RECORDS_DEFAULT) -> int:
     """De-duplicate a clean run's ``<out-dir>/01-cleaned`` into the chunked
     ``<out-dir>/05-dedup/import.NNNNN.txt`` set (+ ``notes.NNNNN.jsonl`` and
@@ -225,9 +261,16 @@ def run(out_dir: str, chunk_records: int = CHUNK_RECORDS_DEFAULT) -> int:
         )
         return 2
 
+    # Phase 1 — discovery, from the same stat-only fingerprint `verify` uses, so
+    # the roster and the stream it announces cannot disagree.
+    stem_sizes = dict(records.cleaned_fingerprint(out_dir)["stems"])
+    cli_progress.render_roster(term.stderr_console, stem_sizes)
+
     hard = _load_hard_positions(out_dir)
     sorter = grouping.ExternalSorter()
     n_read = n_excluded = 0
+    read_by_stem: Counter[str] = Counter()  # phase-3 rows
+    excluded_by_stem: Counter[str] = Counter()
     with cli_progress.phase_bar("reading cleaned", len(stems)) as progress:
         for stem in stems:
             progress(description=f"reading {stem}")
@@ -242,8 +285,10 @@ def run(out_dir: str, chunk_records: int = CHUNK_RECORDS_DEFAULT) -> int:
                     progress(description=f"reading {stem} — {file_records:,} records")
                 if (rec.src_file, rec.index) in hard:
                     n_excluded += 1
+                    excluded_by_stem[stem] += 1
                     continue
                 sorter.add(rec)
+            read_by_stem[stem] = file_records
             progress(advance=1)
 
     ddir = Path(out_dir) / DEDUP_DIRNAME
@@ -309,6 +354,11 @@ def run(out_dir: str, chunk_records: int = CHUNK_RECORDS_DEFAULT) -> int:
     # Structured artifact — commit through the one sanctioned durable path.
     fsutil.durable_write_text(str(ddir / SUMMARY_NAME), body, encoding="ascii")
     fsutil.durable_write_text(str(ddir / "README.md"), _README, encoding="utf-8")
+
+    # Phase 3 — results. Rows are stems, the unit phases 1 and 2 use; the
+    # group-level numbers stay in the verdict because a collapsed group is a
+    # property of the sorted stream, not of any one stem.
+    _render_results(stem_sizes, read_by_stem, excluded_by_stem)
 
     verdict = (
         f"{n_written} records written, {n_dropped} re-issue duplicate(s) collapsed"

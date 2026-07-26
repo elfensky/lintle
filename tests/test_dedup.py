@@ -341,3 +341,40 @@ class TestReadme:
         first = (Path(out_dir) / DEDUP_DIRNAME / "README.md").read_bytes()
         dedup.run(out_dir)
         assert (Path(out_dir) / DEDUP_DIRNAME / "README.md").read_bytes() == first
+
+
+class TestThreePhaseDisplay:
+    """dedup's discovery roster and results table — the phase-1 and phase-3
+    bookends around its two progress bars."""
+
+    def _run(self, tmp_path, monkeypatch, pairs, *, suspects=None, width=120):
+        import io
+
+        from rich.console import Console
+
+        from lintle import term
+
+        out = build_tree(tmp_path, pairs, suspects=suspects)
+        console = Console(file=io.StringIO(), force_terminal=True, width=width)
+        monkeypatch.setattr(term, "stderr_console", console)
+        dedup.run(out)
+        return console.file.getvalue()
+
+    def test_roster_precedes_the_results_table(self, tmp_path, monkeypatch):
+        out = self._run(tmp_path, monkeypatch, [(L1, L2)])
+        assert "tle01" in out and "excluded" in out
+        assert out.index("tle01") < out.index("excluded")
+
+    def test_excluded_column_counts_hard_suspects_per_stem(self, tmp_path, monkeypatch):
+        # One hard suspect at index 0 excludes exactly one record from tle01.
+        suspects = [
+            {
+                "rule": "VRFY-REVALIDATE-FAIL",
+                "severity": "hard",
+                "src_file": "tle01",
+                "index": 0,
+            }
+        ]
+        out = self._run(tmp_path, monkeypatch, [(L1, L2), (L1, L2)], suspects=suspects)
+        rows = [line for line in out.splitlines() if "tle01" in line]
+        assert rows and rows[-1].split()[-1] == "1"  # excluded cell

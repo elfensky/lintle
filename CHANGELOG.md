@@ -8,6 +8,19 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Added
 
+- **The post-run commands join the three-phase display.** `verify` and `dedup`
+  now open with the same discovery roster `clean` uses (cleaned stems and their
+  sizes, from the stat-only fingerprint, so the roster cannot disagree with the
+  stream that follows) and close with a per-stem results table — records
+  checked plus hard/soft suspects for `verify`, records read plus hard-suspect
+  exclusions for `dedup`. Every suspect is attributed to the stem it came from,
+  including the contradiction and orbit findings raised after the streaming
+  pass, so the columns sum to the verdict line. `extract` rosters the requested
+  ids (2+ only) and closes with a per-id table of records, span, gaps, and
+  outcome, rendered from the sidecars it just wrote. `diff` renders its deltas
+  as tables on a TTY, keeping its byte-exact plain text for pipes. All results
+  tables share one `summary.results_table` chrome and the existing width tiers.
+
 - **Three-phase `clean` display.** The run now renders as *discovery →
   progress → results*. Phase 2 replaces the disconnected progress bars with a
   live table whose rows carry the roster's `#` and `size` columns — the

@@ -643,3 +643,42 @@ class TestStalenessWarning:
         dest.mkdir()
         assert extract.run(str(out), [100], str(dest)) == 0
         assert "stale" not in capsys.readouterr().err.lower()
+
+
+class TestThreePhaseDisplay:
+    """extract's roster (2+ ids only) and its per-id results table, rendered
+    from the sidecars it just committed."""
+
+    def _run(self, tmp_path, monkeypatch, catalogs, width=120):
+        import io
+
+        from rich.console import Console
+
+        from lintle import term
+
+        out = write_import_tree(tmp_path, recs((200, 1.0), (200, 2.5), (300, 1.0)), 2)
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        console = Console(file=io.StringIO(), force_terminal=True, width=width)
+        monkeypatch.setattr(term, "stderr_console", console)
+        code = extract.run(str(out), catalogs, str(dest))
+        return code, console.file.getvalue()
+
+    def test_single_id_gets_results_but_no_roster(self, tmp_path, monkeypatch):
+        code, out = self._run(tmp_path, monkeypatch, [200])
+        assert code == 0
+        assert "norad id" in out and "status" in out
+        # A one-row roster above a one-row table is noise: only one table here.
+        assert out.count("norad id") == 1
+
+    def test_multiple_ids_get_a_roster_and_a_row_each(self, tmp_path, monkeypatch):
+        code, out = self._run(tmp_path, monkeypatch, [200, 300])
+        assert code == 0
+        assert out.count("norad id") == 2  # roster + results
+        assert "written" in out
+
+    def test_absent_id_renders_dashes_not_invented_numbers(self, tmp_path, monkeypatch):
+        code, out = self._run(tmp_path, monkeypatch, [200, 999])
+        assert code == 2  # an absent id is an operational error
+        rows = [line for line in out.splitlines() if "999" in line]
+        assert rows and "absent" in rows[-1] and "—" in rows[-1]

@@ -23,7 +23,9 @@ import dataclasses
 import json
 from pathlib import Path
 
-from lintle import REPORT_DIRNAME, chunking, term
+from rich.text import Text
+
+from lintle import REPORT_DIRNAME, chunking, summary, term
 from lintle.diagnostics import RULES, RuleID
 
 _SCHEMA_VERSION = "1"
@@ -301,6 +303,58 @@ def _file_rule_line(presence, rd):
     return f"{rd.rule_id}  {cell}  {_title(rd.rule_id)}".rstrip()
 
 
+def render_tables(delta, file_deltas, *, run_a, run_b, console):
+    """Render the two deltas as tables through the shared results chrome — the
+    TTY path. The plain-text renderers above stay the contract for pipes: `diff`
+    output is meant to be grepped, and their bytes are locked by tests."""
+    console.rule(f"lintle diff · {run_a} -> {run_b}")
+    table = summary.results_table("#", "rule", "count", "change")
+    rows = [
+        *((rd, "new", f"+{rd.count_b}") for rd in delta.new),
+        *((rd, "fixed", f"-{rd.count_a}") for rd in delta.fixed),
+        *((rd, "changed", _signed(rd.delta)) for rd in delta.changed),
+    ]
+    if not rows:
+        console.print("No rule-level change between the two runs.")
+    else:
+        for index, (rd, kind, change) in enumerate(rows, start=1):
+            count = rd.count_b if kind != "fixed" else rd.count_a
+            table.add_row(str(index), Text(rd.rule_id), f"{count:,}", change)
+        console.print(table)
+    console.print(
+        f"Summary: {len(delta.new)} new, {len(delta.fixed)} fixed, "
+        f"{len(delta.changed)} changed, {len(delta.unchanged)} unchanged."
+    )
+
+    if not file_deltas:
+        return
+    files = summary.results_table("#", "file", "rule", "change")
+    index = 0
+    for fd in file_deltas:
+        label = fd.file + _PRESENCE_LABEL[fd.presence]
+        for rd in fd.rules:
+            index += 1
+            files.add_row(
+                str(index),
+                Text(label),
+                Text(rd.rule_id),
+                _file_rule_change(fd.presence, rd),
+            )
+            label = ""  # one file heading per group of its rules
+    console.print(files)
+
+
+def _file_rule_change(presence, rd):
+    """The per-file change cell: a signed delta for a file in both runs, the
+    bare count for a one-sided file (never a ``-> 0`` that would falsely imply
+    the file went clean rather than being removed or renamed)."""
+    if presence == _A_ONLY:
+        return str(rd.count_a)
+    if presence == _B_ONLY:
+        return str(rd.count_b)
+    return f"{rd.count_a} -> {rd.count_b} ({_signed(rd.delta)})"
+
+
 def run(run_a, run_b):
     """Read both runs' ``report.jsonl``, compute the corpus and per-file deltas,
     print them, and return a process exit code: ``0`` on success, ``2`` if
@@ -315,6 +369,11 @@ def run(run_a, run_b):
         return 2
     delta = compute_delta(_totals(by_file_a), _totals(by_file_b))
     file_deltas = compute_file_delta(by_file_a, by_file_b)
+    if term.stdout_console.is_terminal:
+        render_tables(
+            delta, file_deltas, run_a=run_a, run_b=run_b, console=term.stdout_console
+        )
+        return 0
     print(format_text(delta, run_a=run_a, run_b=run_b))
     print()
     print(format_file_deltas(file_deltas))

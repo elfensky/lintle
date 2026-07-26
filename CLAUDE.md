@@ -123,9 +123,9 @@ src/lintle/
 ├── report_writers.py # structured-file writers: .broken.txt sidecar, report.jsonl findings, broken-noradids.ndjson, shard concat
 ├── resume.py      # single-run checkpoint for `clean --resume` (#56); run-stamp + output-size helpers
 ├── fsutil.py      # durable_replace — the one atomic+fsync commit path (issue #58)
-├── summary.py     # aggregate panel + phase-3 per-file results table + shared tier/clock/size formatters + `lintle report` (rich+humanize)
+├── summary.py     # aggregate panel + phase-3 results tables + the shared results_table chrome/tier/clock/size formatters + `lintle report` (rich+humanize)
 ├── term.py        # stderr+stdout Consoles + error/warning/note/prompt + is_interactive/prompt_yes_no (rich)
-├── diff.py        # read-only: per-rule delta between two runs' report.jsonl (lintle diff)
+├── diff.py        # read-only: per-rule delta between two runs' report.jsonl — tables on a TTY, byte-exact text off one (lintle diff)
 ├── explain.py     # read-only: renders rule/fix documentation (lintle explain)
 ├── dedup.py       # `lintle dedup` — latest-re-issue-only import list + per-satellite manifest.jsonl from cleaned/ (reuses verify's sort)
 ├── extract.py     # `lintle extract` — one satellite's TLE history + stats sidecar from a dedup run (binary search, no index)
@@ -180,9 +180,11 @@ are one-way and acyclic. `fsutil.py` is a
 stdlib-only I/O leaf (the durable-commit helper) depended on by `pipeline`, `report`,
 `report_writers`, and `resume`. `summary.py` is a rich+humanize presentation leaf (the
 responsive aggregate-panel renderer, the phase-3 `render_files` per-file results
-table, the shared `display_tier`/`format_clock`/`format_size` formatters, and the
-read-only `lintle report` entry that reads `<out-dir>/report.json`) depended on by
-`cli` and `cli_progress`; it imports the two shared Consoles from
+table, the shared `results_table` chrome plus the
+`display_tier`/`format_clock`/`format_size`/`can_encode` helpers every command's
+results table goes through, and the read-only `lintle report` entry that reads
+`<out-dir>/report.json`) depended on by `cli`, `cli_progress`, `diff`, `dedup`,
+`extract`, and `verify.report`; it imports the two shared Consoles from
 `term`, `humanize` for human-readable panel durations (`precisedelta`), and consumes the
 `build_run_envelope` dict shape, so `cli → summary → term` is one-way and acyclic. `term.py` is a rich-only terminal-IO leaf (the two shared
 Consoles — `stderr_console` for status/errors, `stdout_console` for the report view —

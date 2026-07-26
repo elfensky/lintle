@@ -459,6 +459,22 @@ resize. Correctness there is therefore independent of terminal height, and the c
 picture lives in the static phase-3 print, which no `Live` can crop. The `#` and `size`
 columns are the identity link between phases — all three orderings are the sorted basename.
 
+The post-run commands run the same three phases against their own unit of work:
+`verify` and `dedup` roster the cleaned stems (from the stat-only
+`records.cleaned_fingerprint`, so the roster and the stream it announces cannot
+disagree), stream them under `cli_progress.phase_bar`, and close with a per-stem results
+table — records and hard/soft suspects for `verify`, records read and hard-suspect
+exclusions for `dedup`. `extract` rosters the requested NORAD ids (only for 2+ ids) and
+closes with a per-id table of records, span, gaps, and outcome, rendered from the `<id>.json`
+sidecars it just committed rather than recomputed. Their phase 2 stays a bar rather than a
+table: single-process commands never have more than one unit in flight, and a one-row table
+is a table for its own sake. `diff` renders its two deltas as tables on a TTY and its
+byte-exact plain text off one, because piped `diff` output is a grep target.
+
+Every results table is built by `summary.results_table`, which fixes the chrome — `SIMPLE`
+box, dim right-justified index, left-justified name, right-justified numbers — so no two
+commands' results can drift apart.
+
 Both per-file tables select columns by width through the one `summary.display_tier`
 (narrow < 80 ≤ medium < 100 ≤ wide); columns disappear whole, values are never truncated, and
 phase-2 widths are pinned from pre-dispatch bounds so no column reflows mid-run. Phase 3's
