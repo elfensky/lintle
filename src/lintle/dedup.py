@@ -26,8 +26,6 @@ from collections import Counter
 from collections.abc import Iterator
 from pathlib import Path
 
-from rich.text import Text
-
 from lintle import (
     CLEANED_DIRNAME,
     DEDUP_DIRNAME,
@@ -214,38 +212,6 @@ class _ManifestBuilder:
             self.body.extend(_manifest_row(self._catalog, hs))
 
 
-def _render_results(stem_sizes, read_by_stem, excluded_by_stem) -> None:
-    """Print ``dedup``'s phase-3 results table: one row per cleaned stem with its
-    size, records read, and records excluded as a prior ``verify`` run's hard
-    suspects, then a total row. Medium consoles drop ``size``; narrow ones also
-    drop ``records``."""
-    console = term.stderr_console
-    tier = summary.display_tier(console.width)
-    headers = ["#", "file"]
-    if tier == "wide":
-        headers.append("size")
-    if tier != "narrow":
-        headers.append("records")
-    headers.append("excluded")
-    table = summary.results_table(*headers)
-    total_bytes = total_read = total_excluded = 0
-    for index, stem in enumerate(sorted(read_by_stem), start=1):
-        size = stem_sizes.get(stem, 0)
-        total_bytes += size
-        total_read += read_by_stem[stem]
-        total_excluded += excluded_by_stem[stem]
-        cells = [summary.format_size(size)] if tier == "wide" else []
-        if tier != "narrow":
-            cells.append(f"{read_by_stem[stem]:,}")
-        table.add_row(str(index), Text(stem), *cells, f"{excluded_by_stem[stem]:,}")
-    table.add_section()
-    cells = [summary.format_size(total_bytes)] if tier == "wide" else []
-    if tier != "narrow":
-        cells.append(f"{total_read:,}")
-    table.add_row("", "total", *cells, f"{total_excluded:,}")
-    console.print(table)
-
-
 def run(out_dir: str, chunk_records: int = CHUNK_RECORDS_DEFAULT) -> int:
     """De-duplicate a clean run's ``<out-dir>/01-cleaned`` into the chunked
     ``<out-dir>/05-dedup/import.NNNNN.txt`` set (+ ``notes.NNNNN.jsonl`` and
@@ -261,36 +227,93 @@ def run(out_dir: str, chunk_records: int = CHUNK_RECORDS_DEFAULT) -> int:
         )
         return 2
 
-    # Phase 1 — discovery, from the same stat-only fingerprint `verify` uses, so
-    # the roster and the stream it announces cannot disagree.
+    # One live table for the whole run — a row per stem before any work starts,
+    # filled in as each streams. Sizes come from the same stat-only fingerprint
+    # `verify` uses, so the roster and the stream it announces cannot disagree.
     stem_sizes = dict(records.cleaned_fingerprint(out_dir)["stems"])
-    cli_progress.render_roster(term.stderr_console, stem_sizes)
-
     hard = _load_hard_positions(out_dir)
     sorter = grouping.ExternalSorter()
     n_read = n_excluded = 0
-    read_by_stem: Counter[str] = Counter()  # phase-3 rows
     excluded_by_stem: Counter[str] = Counter()
-    with cli_progress.phase_bar("reading cleaned", len(stems)) as progress:
+    table = cli_progress.UnitTable(
+        stems,
+        ("#", "file", "size", "progress", "records", "excluded"),
+        console=term.stderr_console,
+        drop={"medium": ("size",), "narrow": ("size", "progress")},
+    )
+    with table:
         for stem in stems:
-            progress(description=f"reading {stem}")
-            # Per-stem, like verify's: a corpus total next to one stem's name
-            # would read as that stem's own count.
+            table.start(stem)
+            size = stem_sizes.get(stem, 0)
+            # Per-stem, like verify's: a corpus total in one stem's row would
+            # read as that stem's own count.
             file_records = 0
             for rec in records.iter_file(out_dir, stem):
                 n_read += 1
                 file_records += 1
-                # Sparse refresh — one `update` per record would dominate the loop.
-                if file_records % 100_000 == 0:
-                    progress(description=f"reading {stem} — {file_records:,} records")
+                # Sparse refresh — one update per record would dominate the loop.
+                if file_records % 50_000 == 0:
+                    table.update(
+                        stem,
+                        size=summary.format_size(size),
+                        progress=_progress_pct(file_records, size),
+                        records=f"{file_records:,}",
+                        excluded=f"{excluded_by_stem[stem]:,}",
+                    )
+                    table.totals(records=f"{n_read:,}")
                 if (rec.src_file, rec.index) in hard:
                     n_excluded += 1
                     excluded_by_stem[stem] += 1
                     continue
                 sorter.add(rec)
-            read_by_stem[stem] = file_records
-            progress(advance=1)
+            table.finish(
+                stem,
+                size=summary.format_size(size),
+                progress="100%",
+                records=f"{file_records:,}",
+                excluded=f"{excluded_by_stem[stem]:,}",
+            )
+            table.totals(
+                size=summary.format_size(sum(stem_sizes.values())),
+                records=f"{n_read:,}",
+                excluded=f"{n_excluded:,}",
+            )
 
+        code, verdict, ddir, n_conflicts = _write_import_set(
+            out_dir, table, sorter, n_read, n_excluded, len(stems), chunk_records
+        )
+    # After the table closes, so the verdict lands under the results rather than
+    # as a print above a live region.
+    if code:
+        term.error(
+            f"dedup: {n_conflicts} genuine contradiction(s) arbitrated — review "
+            f"{ddir / 'notes.*.jsonl'!s}\n  {verdict}"
+        )
+    else:
+        term.note(f"dedup: PASS — {verdict}\n  see {ddir / 'import.*.txt'!s}")
+    return code
+
+
+def _progress_pct(records_seen, size):
+    """A stem's share of its stat'd bytes, from the record count: a cleaned
+    record is exactly two 69-column lines plus newlines, so the count converts
+    to bytes exactly. Clamped — a truncated final chunk would read past 100%."""
+    if not size:
+        return ""
+    return f"{min(100, int(100 * records_seen * _RECORD_BYTES / size))}%"
+
+
+_RECORD_BYTES = 140  # two 69-column lines + two newlines
+
+
+def _write_import_set(
+    out_dir, table, sorter, n_read, n_excluded, n_stems, chunk_records
+):
+    """Collapse the sorted stream into the import set, reporting through the
+    live table's summary label so the stage needs no spinner and no new line.
+    Returns the exit code, the verdict text, the output directory, and the
+    conflict count — the caller prints the verdict once the table has closed."""
+    table.phase("collapsing re-issues and writing 05-dedup…")
     ddir = Path(out_dir) / DEDUP_DIRNAME
     ddir.mkdir(parents=True, exist_ok=True)
     n_written = n_dropped = n_collapsed = n_conflicts = 0
@@ -307,15 +330,12 @@ def run(out_dir: str, chunk_records: int = CHUNK_RECORDS_DEFAULT) -> int:
         chunking.ChunkedWriter(
             str(ddir), NOTES_STEM, NOTES_SUFFIX, chunk_records
         ) as notes,
-        # Indeterminate total: the group count isn't known until the sorted
-        # stream is drained, so the bar reports throughput, not a fraction.
-        cli_progress.phase_bar("writing import set", None) as progress,
     ):
         for g in _groups(sorter.sorted_records()):
             imp.write_record(g.kept.line1.encode("ascii"), g.kept.line2.encode("ascii"))
             n_written += 1
             if n_written % 10_000 == 0:  # sparse refresh, as in the read loop
-                progress(completed=n_written)
+                table.phase(f"writing 05-dedup — {n_written:,} records…")
             if g.dropped:
                 notes.write(_note_bytes(g))
                 n_collapsed += 1
@@ -327,9 +347,6 @@ def run(out_dir: str, chunk_records: int = CHUNK_RECORDS_DEFAULT) -> int:
                 history.epoch_dt(g.kept.line1),
                 checks.element_set(g.kept.line1),
             )
-        # One last update so the finished bar shows the true count: a run that
-        # writes fewer than the refresh interval would otherwise read "0".
-        progress(completed=n_written)
     manifest.flush()
     fsutil.durable_write_text(
         str(ddir / f"{MANIFEST_STEM}{MANIFEST_SUFFIX}"),
@@ -341,7 +358,7 @@ def run(out_dir: str, chunk_records: int = CHUNK_RECORDS_DEFAULT) -> int:
     summary = {
         "schema_version": SCHEMA_VERSION,
         "cleaned_fingerprint": records.cleaned_fingerprint(out_dir),
-        "cleaned_files": len(stems),
+        "cleaned_files": n_stems,
         "records_read": n_read,
         "excluded_hard_suspects": n_excluded,
         "records_written": n_written,
@@ -355,19 +372,11 @@ def run(out_dir: str, chunk_records: int = CHUNK_RECORDS_DEFAULT) -> int:
     fsutil.durable_write_text(str(ddir / SUMMARY_NAME), body, encoding="ascii")
     fsutil.durable_write_text(str(ddir / "README.md"), _README, encoding="utf-8")
 
-    # Phase 3 — results. Rows are stems, the unit phases 1 and 2 use; the
-    # group-level numbers stay in the verdict because a collapsed group is a
-    # property of the sorted stream, not of any one stem.
-    _render_results(stem_sizes, read_by_stem, excluded_by_stem)
+    # The per-stem rows are already final; the group-level numbers belong to the
+    # sorted stream, not to any one stem, so they close the run in the verdict.
+    table.phase(None)
 
     verdict = (
         f"{n_written} records written, {n_dropped} re-issue duplicate(s) collapsed"
     )
-    if code:
-        term.error(
-            f"dedup: {n_conflicts} genuine contradiction(s) arbitrated — review "
-            f"{ddir / 'notes.*.jsonl'!s}\n  {verdict}"
-        )
-    else:
-        term.note(f"dedup: PASS — {verdict}\n  see {ddir / 'import.*.txt'!s}")
-    return code
+    return code, verdict, ddir, n_conflicts

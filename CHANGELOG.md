@@ -8,6 +8,16 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Changed
 
+- **`verify` and `dedup` render one live table too.** Every cleaned stem has a
+  row before any work starts, the row fills in as that stem streams (size,
+  progress, records, plus hard/soft suspects for `verify` or exclusions for
+  `dedup`), and the finished table is the results view — replacing the
+  roster + bar + separate results table with one view that updates in place.
+  The stages after the per-stem loop (contradiction pass, orbit pass, write)
+  relabel the summary row instead of printing spinners, and the verdict line
+  now prints after the table rather than above the live region. Per-stem
+  progress is exact, derived from the fixed 140-byte cleaned record.
+
 - **`clean` renders one live table instead of three printed blocks.** Every
   discovered file has a row from the first frame — that frame is the roster —
   and work updates rows in place: the bar fills, then the same row switches to
