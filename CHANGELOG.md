@@ -4,35 +4,6 @@ All notable changes to this project are documented in this file. The format is b
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
-
-### Changed
-
-- **`verify` and `dedup` rows show a real progress bar, and the summary row a
-  heartbeat.** Their progress column held a percentage *string* where `clean`
-  had a bar, so a row that sat on the same number for a minute read as frozen.
-  Both now use the same `ProgressBar` renderable, and the summary row carries a
-  spinner advanced by *work* — one step per redraw, and redraws only happen
-  when records move — so a cycling glyph means progress and a frozen one means
-  a genuine stall. Absent from the final frame and from piped output.
-
-### Fixed
-
-- **`UnitTable(drop=...)` crashed when omitted.** The parameter defaulted to an
-  empty tuple but is used as a per-tier mapping; every current caller passes
-  one, so it never fired in practice.
-
-- **`verify`'s contradiction pass showed no progress.** The external merge over
-  every cleaned record is the run's long tail — the better part of an hour on a
-  200M-record corpus — and the summary row sat on a static label throughout,
-  indistinguishable from a hang. It now counts the sorted stream against the
-  known record total, so the label carries an exact fraction rather than a
-  guess.
-- **`verify --orbit` nested two live regions.** The orbit pass opened its own
-  progress bar inside the results table's `rich.live.Live`, which cannot nest.
-  It now reports through that table's summary row like every other post-stream
-  stage.
-
 ## [0.13.0] - 2026-07-26
 
 ### Added
@@ -70,8 +41,31 @@ All notable changes to this project are documented in this file. The format is b
   (narrow < 80 ≤ medium < 100 ≤ wide); columns drop whole, values are never
   truncated.
 
+### Changed
+
+- **`verify` and `dedup` rows show a real progress bar, and the summary row a
+  heartbeat.** Their progress column held a percentage *string* where `clean`
+  had a bar, so a row that sat on the same number for a minute read as frozen.
+  Both now use the same `ProgressBar` renderable, and the summary row carries a
+  spinner advanced by *work* — one step per redraw, and redraws only happen
+  when records move — so a cycling glyph means progress and a frozen one means
+  a genuine stall. Absent from the final frame and from piped output.
+
 ### Fixed
 
+- **`UnitTable(drop=...)` crashed when omitted.** The parameter defaulted to an
+  empty tuple but is used as a per-tier mapping; every current caller passes
+  one, so it never fired in practice.
+- **`verify`'s contradiction pass showed no progress.** The external merge over
+  every cleaned record is the run's long tail — the better part of an hour on a
+  200M-record corpus — and the summary row sat on a static label throughout,
+  indistinguishable from a hang. It now counts the sorted stream against the
+  known record total, so the label carries an exact fraction rather than a
+  guess.
+- **`verify --orbit` nested two live regions.** The orbit pass opened its own
+  progress bar inside the results table's `rich.live.Live`, which cannot nest.
+  It now reports through that table's summary row like every other post-stream
+  stage.
 - **Ctrl-C during `verify`, `dedup` or `extract` printed a traceback.** Only
   `clean` handled `SIGINT`, inside its worker pool; the single-process consumers
   had nothing catching it. `cli.main` now wraps the whole dispatch in a
