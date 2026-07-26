@@ -4,78 +4,51 @@ All notable changes to this project are documented in this file. The format is b
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
-
-### Changed
-
-- **`verify` and `dedup` render one live table too.** Every cleaned stem has a
-  row before any work starts, the row fills in as that stem streams (size,
-  progress, records, plus hard/soft suspects for `verify` or exclusions for
-  `dedup`), and the finished table is the results view — replacing the
-  roster + bar + separate results table with one view that updates in place.
-  The stages after the per-stem loop (contradiction pass, orbit pass, write)
-  relabel the summary row instead of printing spinners, and the verdict line
-  now prints after the table rather than above the live region. Per-stem
-  progress is exact, derived from the fixed 140-byte cleaned record.
-
-- **`clean` renders one live table instead of three printed blocks.** Every
-  discovered file has a row from the first frame — that frame is the roster —
-  and work updates rows in place: the bar fills, then the same row switches to
-  its final records / clean / quarantined / time. The final frame stays on
-  screen as the results view with the aggregate panel under it, so a run adds
-  no new lines as it goes. When the rows outnumber the terminal height the
-  table windows around the active files with an `… N more` marker (a live
-  region cannot scroll), and the complete static results table is printed
-  afterwards so nothing the window hid is lost. Per-file completion lines now
-  print only off a TTY, where there is no table to update; failures still print
-  their error everywhere.
+## [0.13.0] - 2026-07-26
 
 ### Added
 
-- **The post-run commands join the three-phase display.** `verify` and `dedup`
-  now open with the same discovery roster `clean` uses (cleaned stems and their
-  sizes, from the stat-only fingerprint, so the roster cannot disagree with the
-  stream that follows) and close with a per-stem results table — records
-  checked plus hard/soft suspects for `verify`, records read plus hard-suspect
-  exclusions for `dedup`. Every suspect is attributed to the stem it came from,
-  including the contradiction and orbit findings raised after the streaming
-  pass, so the columns sum to the verdict line. `extract` rosters the requested
-  ids (2+ only) and closes with a per-id table of records, span, gaps, and
-  outcome, rendered from the sidecars it just wrote. `diff` renders its deltas
-  as tables on a TTY, keeping its byte-exact plain text for pipes. All results
-  tables share one `summary.results_table` chrome and the existing width tiers.
+- **`clean` renders one live table, from discovery to results.** Every
+  discovered file has a row before any work starts, so the first frame is the
+  roster (index, file, size); work then updates rows in place — the byte bar
+  fills, then the same row switches to its final records / clean / quarantined
+  / time — and the finished table stays on screen as the results view with the
+  aggregate panel under it. A run no longer prints new blocks as it goes. When
+  the rows outnumber the terminal height the table windows around the active
+  files with an `… N more` marker (a `rich` live region cannot scroll), and the
+  complete static results table is printed afterwards so nothing the window hid
+  is lost. Per-file completion lines print only off a TTY, where there is no
+  table to update; failures print their error everywhere.
 
-- **Three-phase `clean` display.** The run now renders as *discovery →
-  progress → results*. Phase 2 replaces the disconnected progress bars with a
-  live table whose rows carry the roster's `#` and `size` columns — the
-  identity link back to phase 1 — plus a byte bar, percent, records, MB/s and
-  ETA, and a pinned summary row (files done/total, corpus size, overall
-  percent, total records, aggregate rate, elapsed). It stays bounded to
-  in-flight files: a live region cannot scroll, so an all-files table breaks at
-  terminal height 24 and strands rows on resize. Phase 3 is a new static
-  per-file results table (`summary.render_files`) printed before the aggregate
-  panel — records, clean, quarantined, repaired, time per file, with resumed
-  files dimmed, failed files dashed-and-red, and a total row whose time is the
-  run's wall clock (never the sum of the column). `lintle report` renders the
-  same table from `report.json`. Both tables drop columns whole by width
-  through one shared tier (narrow < 80 ≤ medium < 100 ≤ wide); values are never
+- **`verify` and `dedup` render the same live table**, over cleaned stems: size,
+  progress, records, and each command's own result columns (hard/soft suspects
+  for `verify`, records read and hard-suspect exclusions for `dedup`). Both were
+  previously silent for the whole run — many minutes on a corpus-scale tree —
+  and spoke only at the end. Every suspect is attributed to the stem it came
+  from, including the contradiction and orbit findings raised after the
+  streaming pass, so the columns sum to the verdict line. The stages after the
+  per-stem loop relabel the pinned summary row rather than printing spinners,
+  and the verdict prints under the finished table.
+
+- **Per-file and per-id results tables elsewhere.** `clean` and `lintle report`
+  render a per-file results table from the run envelope (records, clean,
+  quarantined, repairs, time; resumed files dimmed, failed files dashed, and a
+  total row whose time is the run's wall clock, never the column's sum).
+  `extract` rosters the requested ids and closes with a per-id table of records,
+  span, gaps and outcome, rendered from the sidecars it just wrote. `diff`
+  renders its deltas as tables on a TTY while keeping its byte-exact plain text
+  for pipes. All of them share one table chrome and one set of width tiers
+  (narrow < 80 ≤ medium < 100 ≤ wide); columns drop whole, values are never
   truncated.
-
-- **Progress display for the post-run commands.** `verify`, `verify --orbit`,
-  and `dedup` were silent for the whole run — often many minutes on a
-  corpus-scale tree — and only spoke at the end. They now drive a
-  `cli_progress.phase_bar`: a per-stem bar with a running record count while
-  streaming `01-cleaned/`, plus spinners over the sort/contradiction pass and
-  the subtree write. Disabled off a TTY, so piped and CI runs stay silent.
 
 ### Fixed
 
-- **Ctrl-C during `verify`/`dedup`/`extract` printed a traceback.** Only
-  `clean` handled `SIGINT` (inside its worker pool); the single-process
-  consumers had nothing catching it. `cli.main` now wraps the whole dispatch
-  in a `KeyboardInterrupt` backstop — one `cancelled.` line, exit `130`, out-dir
-  lock released, and no partially-committed subtree (those are written
-  atomically at the end of the run).
+- **Ctrl-C during `verify`, `dedup` or `extract` printed a traceback.** Only
+  `clean` handled `SIGINT`, inside its worker pool; the single-process consumers
+  had nothing catching it. `cli.main` now wraps the whole dispatch in a
+  `KeyboardInterrupt` backstop — one `cancelled.` line, exit `130`, the out-dir
+  lock released, and no partially-committed subtree, since those are written
+  atomically at the end of a run.
 
 ## [0.12.0] - 2026-07-25
 
