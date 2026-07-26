@@ -442,22 +442,33 @@ A hard channel rule, so output is safely pipeable:
   table and the aggregate panel to stdout (via `term.stdout_console`); `report --report json`
   echoes `report.json` verbatim.
 
-### The three-phase `clean` display
+### The `clean` display: one table, updated in place
 
-Long runs render in three named phases on stderr, bookended by the same file rows
-(`docs/superpowers/archive/specs/2026-07-26-three-phase-clean-display-design.md`):
+A `clean` run renders **one** live table on stderr, from discovery to results. Every
+discovered file has a row from the first frame, so that frame *is* the roster — index,
+basename, size, and empty progress cells. Work then updates rows in place: a file starts,
+its bar fills, and on completion the same row switches to its final records / clean /
+quarantined / time. Nothing is appended while the run proceeds, and the final frame stays
+on screen (`transient=False`) as the results view, with the aggregate panel printed under
+it. One column set serves every row state — a pending row is blank rather than zeroed, a
+running row carries its bar, a finished row its counts — so a row never changes shape
+under the reader.
 
-| Phase | Renders | Lifetime |
-|---|---|---|
-| 1. Discovery (`cli_progress.render_roster`) | every file, size, total | printed once, before dispatch |
-| 2. Progress (`cli_progress.ProgressDisplay`) | in-flight files + a pinned summary row | live, redrawn in place |
-| 3. Results (`summary.render_files`) | every file with its outcome + a total row | printed once, after the run |
+A `rich.live.Live` region cannot scroll: it only moves the cursor up within the viewport,
+so a table taller than the terminal strands its overflow (measured: 467 stranded rows,
+and 114 lines plus 8 duplicate headers after a resize). The table therefore **windows**
+when the rows outnumber the terminal height: it shows a run of rows starting at the first
+unfinished one — the active files and everything still to come — plus an `… N more`
+marker. Rows outside the window keep their state and slide back in; they are not dropped.
+`ProgressDisplay.windowed` records that this happened, and the caller then prints the
+complete static results table (`summary.render_files`) after the run, so nothing the
+window could not show is lost. When every row fits, that table is redundant and is
+skipped.
 
-Phase 2 is deliberately **bounded** to in-flight rows: a `rich.live.Live` region cannot
-scroll, so a table holding every file breaks at terminal height 24 and strands rows on
-resize. Correctness there is therefore independent of terminal height, and the complete
-picture lives in the static phase-3 print, which no `Live` can crop. The `#` and `size`
-columns are the identity link between phases — all three orderings are the sorted basename.
+Per-file completion lines print only off a TTY, where there is no table to update and
+they are a piped run's only progress record; a *failure* prints its error on every
+stream, since a row cannot carry the reason. Off a TTY the run degrades to the static
+roster, those completion lines, and the static results table.
 
 The post-run commands run the same three phases against their own unit of work:
 `verify` and `dedup` roster the cleaned stems (from the stat-only
@@ -475,12 +486,12 @@ Every results table is built by `summary.results_table`, which fixes the chrome 
 box, dim right-justified index, left-justified name, right-justified numbers — so no two
 commands' results can drift apart.
 
-Both per-file tables select columns by width through the one `summary.display_tier`
-(narrow < 80 ≤ medium < 100 ≤ wide); columns disappear whole, values are never truncated, and
-phase-2 widths are pinned from pre-dispatch bounds so no column reflows mid-run. Phase 3's
-total row is the run's wall clock, never the sum of the per-file `time` column — under
-parallel workers those legitimately differ. Off a TTY phases 1 and 3 degrade to plain text
-and phase 2 is suppressed, leaving the per-file completion lines as the only progress record.
+Column tiers go through the one `summary.display_tier` (narrow < 80 ≤ medium < 100 ≤
+wide): wide carries size, bar, %, records, clean, quarantined, time; medium drops size and
+time; narrow also drops the bar, keeping the percentage and the result columns. Columns
+disappear whole, values are never truncated, and widths are pinned from pre-dispatch
+bounds so no column reflows mid-run.
+
 - rich styling on either Console is applied only when that stream is a TTY; off a TTY (pipe,
   `capsys`, `NO_COLOR`) it degrades to plain literal text, so even the panels stay readable.
 - The structured output **files** and the `--report json` stdout bytes are never routed through

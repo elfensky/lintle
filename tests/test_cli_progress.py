@@ -85,7 +85,7 @@ class TestProgressDisplayDrain:
             q.put(msg)
         disp._drain()
         assert disp._records == 8
-        assert disp._file_records["a"] == 8
+        assert disp._rows["a"].records == 8
 
     def test_records_sum_across_files(self):
         q = queue.Queue()
@@ -99,9 +99,12 @@ class TestProgressDisplayDrain:
             q.put(msg)
         disp._drain()
         assert disp._records == 10
-        assert disp._file_records == {"a": 4, "b": 6}
+        assert disp._rows["a"].records == 4
+        assert disp._rows["b"].records == 6
 
-    def test_end_clears_per_file_state_but_keeps_overall(self):
+    def test_end_keeps_the_row_and_the_overall_tally(self):
+        # The row is not removed — it stays for the rest of the run, and its
+        # exact counts arrive later with the worker's FileStats.
         q = queue.Queue()
         disp = self._display(q)
         for msg in [
@@ -111,8 +114,22 @@ class TestProgressDisplayDrain:
         ]:
             q.put(msg)
         disp._drain()
-        assert "a" not in disp._file_records
+        assert disp._rows["a"].records == 4
         assert disp._records == 4  # overall tally survives the file ending
+
+    def test_late_deltas_never_inflate_a_finished_row(self):
+        # A worker's last progress message can arrive after its future
+        # resolved; adding it on top would push the row past its own totals.
+        q = queue.Queue()
+        disp = self._display(q)
+        stats = report.FileStats(src_name="a")
+        stats.paired_records, stats.clean_count = 40, 40
+        disp.file_done(stats)
+        q.put(pipeline.FileProgress("a", 500, 15))
+        disp._drain()
+        assert disp._rows["a"].records == 40  # not 55
+        assert disp._rows["a"].bytes_done == disp._rows["a"].size
+        assert disp._records == 15  # the corpus tally still counts every delta
 
     def test_file_done_counts_and_logs_in_non_tty(self):
         q = queue.Queue()
@@ -159,26 +176,28 @@ class TestProgressDisplayRendering:
         assert "\x1b[" not in out  # no ANSI escapes
         assert "a — 1 clean, 0 quarantined" in out
 
-    def test_live_mode_tracks_per_file_tasks(self):
-        # On a (forced) TTY, entering starts the rich live block; a per-file
-        # task appears on FileStarted, advances on FileProgress, and is removed
-        # on FileEnded. The drain thread is halted so assertions are deterministic.
+    def test_live_mode_moves_a_row_through_its_states(self):
+        # On a (forced) TTY, entering starts the rich live block. The row exists
+        # from construction and changes state in place — pending, running, and
+        # (via file_done) done. The drain thread is halted for determinism.
         q = queue.Queue()
         console = Console(file=io.StringIO(), force_terminal=True, width=100)
         disp = cli_progress.ProgressDisplay(1, q, console, sizes={"a": 1000})
         with disp:
             disp._stop.set()  # halt the drain thread; drive _drain ourselves
             disp._thread.join()
+            assert disp._rows["a"].state == "pending"
 
             q.put(pipeline.FileStarted("a"))
             q.put(pipeline.FileProgress("a", 200, 9))
             disp._drain()
-            assert "a" in disp._rows
+            assert disp._rows["a"].state == "running"
             assert disp._records == 9
 
-            q.put(pipeline.FileEnded("a"))
-            disp._drain()
-            assert "a" not in disp._rows
+            stats = report.FileStats(src_name="a")
+            stats.paired_records, stats.clean_count = 9, 9
+            disp.file_done(stats)
+            assert disp._rows["a"].state == "done"
 
 
 class TestStatusSpinner:
@@ -390,13 +409,15 @@ class TestPhaseBar:
             progress(completed=10_000)
 
 
-class TestPhaseTwoTable:
-    """Phase 2 renders in-flight files plus a pinned summary row in one table,
-    bounded so terminal height and resize can never strand or crop it."""
+class TestLiveTable:
+    """The one live table: every discovered file has a row from the first frame,
+    work updates rows in place, and the frame never outgrows the terminal."""
 
     @staticmethod
-    def _display(width, *, sizes, total_files=3, done=0):
-        console = Console(file=io.StringIO(), force_terminal=True, width=width)
+    def _display(width, *, sizes, total_files=3, done=0, height=40):
+        console = Console(
+            file=io.StringIO(), force_terminal=True, width=width, height=height
+        )
         return cli_progress.ProgressDisplay(
             total_files, queue.Queue(), console, sizes, already_done=done
         )
@@ -407,61 +428,129 @@ class TestPhaseTwoTable:
         Console(file=buf, force_terminal=True, width=disp._console.width).print(table)
         return buf.getvalue()
 
-    def test_row_carries_index_size_and_records(self):
-        disp = self._display(120, sizes={"a.txt": 1000, "b.txt": 2000})
-        disp._rows["b.txt"] = cli_progress._InFlight(
-            index=2, name="b.txt", total=2000, started=0.0, done=500, records=42
-        )
+    def test_first_frame_is_the_roster(self):
+        # Before any work: a row per discovered file with its size, and no
+        # invented zeroes in the columns nothing has measured yet.
+        disp = self._display(120, sizes={"a.txt": 1024, "b.txt": 2048})
         out = self._render(disp, disp._table())
-        # index and size are the identity link back to the phase-1 roster row.
-        assert "b.txt" in out and "2.0K" in out and "42" in out
-        assert "25%" in out  # 500 of 2000 bytes
+        assert "a.txt" in out and "b.txt" in out
+        assert "1.0K" in out and "2.0K" in out  # sizes, humanized
+        # Pending rows are blank, not zeroed: only the summary row shows 0%.
+        assert out.count("0%") == 1
+
+    def test_row_updates_in_place_through_its_states(self):
+        disp = self._display(120, sizes={"a.txt": 1000, "b.txt": 2000})
+        row = disp._rows["b.txt"]
+        row.state, row.bytes_done, row.records = "running", 500, 42
+        out = self._render(disp, disp._table())
+        assert "b.txt" in out and "25%" in out and "42" in out
+        assert out.count("b.txt") == 1  # updated, never duplicated
+
+        row.state, row.records, row.clean, row.quarantined = "done", 90, 88, 2
+        row.bytes_done, row.elapsed = 2000, 75.0
+        out = self._render(disp, disp._table())
+        assert "100%" in out and "88" in out and "1:15" in out
+        assert out.count("b.txt") == 1
+
+    def test_failed_row_says_so_without_inventing_counts(self):
+        disp = self._display(120, sizes={"a.txt": 1000})
+        disp._rows["a.txt"].state = "failed"
+        assert "failed" in self._render(disp, disp._table())
 
     def test_summary_row_is_pinned_and_counts_files(self):
         disp = self._display(120, sizes={"a.txt": 1000}, total_files=29, done=3)
-        out = self._render(disp, disp._table())
-        assert "3/29 files" in out
+        assert "3/29 files" in self._render(disp, disp._table())
 
-    def test_height_is_bounded_by_in_flight_count(self):
-        # The invariant that makes phase 2 safe at terminal height 24: rows
-        # never exceed the in-flight files plus the one summary row, however
-        # many files the run has.
+    def test_all_rows_show_when_they_fit(self):
+        sizes = {f"f{i}.txt": 1000 for i in range(10)}
+        disp = self._display(120, sizes=sizes, total_files=10, height=40)
+        # 10 rows + summary row; nothing hidden, so no ellipsis marker.
+        assert disp._table().row_count == 11
+        assert disp.windowed is False
+
+    def test_window_follows_the_work_when_rows_exceed_the_height(self):
         sizes = {f"f{i}.txt": 1000 for i in range(29)}
-        disp = self._display(120, sizes=sizes, total_files=29)
-        for i in range(4):  # four workers in flight
-            name = f"f{i}.txt"
-            disp._rows[name] = cli_progress._InFlight(
-                index=i + 1, name=name, total=1000, started=0.0
-            )
-        assert disp._table().row_count == 5
+        disp = self._display(120, sizes=sizes, total_files=29, height=24)
+        for i in range(5):  # first five finished
+            disp._rows[f"f{i}.txt"].state = "done"
+        disp._rows["f5.txt"].state = "running"
+        out = self._render(disp, disp._table())
+        assert disp.windowed is True
+        # The window starts at the first unfinished row and carries the marker.
+        assert "f5.txt" in out and "more" in out
+        assert "f0.txt" not in out  # scrolled out, not dropped
+        # Bounded by the terminal: rows + ellipsis + summary fit the height.
+        assert (
+            disp._table().row_count
+            <= 24 - cli_progress.ProgressDisplay._CHROME_LINES + 2
+        )
 
-    def test_narrow_drops_size_and_medium_drops_rate_columns(self):
+    def test_window_never_slides_past_the_end(self):
+        sizes = {f"f{i}.txt": 1000 for i in range(29)}
+        disp = self._display(120, sizes=sizes, total_files=29, height=24)
+        for row in disp._rows.values():  # everything finished
+            row.state = "done"
+        out = self._render(disp, disp._table())
+        assert "f28.txt" in out  # the last row is visible at the end of a run
+
+    def test_tiers_drop_columns_whole(self):
         sizes = {"a.txt": 1000}
-        wide = self._display(120, sizes=sizes)._table()
-        medium = self._display(90, sizes=sizes)._table()
-        narrow = self._display(70, sizes=sizes)._table()
         headers = lambda t: [c.header for c in t.columns]  # noqa: E731
-        assert headers(wide) == [
+        assert headers(self._display(120, sizes=sizes)._table()) == [
             "#",
             "file",
             "size",
             "progress",
             "%",
             "records",
-            "MB/s",
-            "ETA",
+            "clean",
+            "quarantined",
+            "time",
         ]
-        assert headers(medium) == ["#", "file", "size", "progress", "%", "records"]
-        assert headers(narrow) == ["#", "file", "progress", "%", "records"]
+        assert headers(self._display(90, sizes=sizes)._table()) == [
+            "#",
+            "file",
+            "progress",
+            "%",
+            "records",
+            "clean",
+            "quarantined",
+        ]
+        # Narrow keeps the results and drops the bar — the percent carries it.
+        assert headers(self._display(70, sizes=sizes)._table()) == [
+            "#",
+            "file",
+            "%",
+            "records",
+            "clean",
+            "quarantined",
+        ]
 
-    def test_drain_folds_bytes_into_the_overall_row(self):
+    def test_drain_folds_bytes_into_the_row_and_the_overall(self):
         q = queue.Queue()
         disp = self._display(120, sizes={"a.txt": 1000})
-        disp._rows["a.txt"] = cli_progress._InFlight(
-            index=1, name="a.txt", total=1000, started=0.0
-        )
-        q.put(pipeline.FileProgress("a.txt", 400, 7))
         disp._queue = q
+        q.put(pipeline.FileStarted("a.txt"))
+        q.put(pipeline.FileProgress("a.txt", 400, 7))
         disp._drain()
         assert disp._bytes_done == 400
-        assert disp._rows["a.txt"].done == 400 and disp._rows["a.txt"].records == 7
+        assert disp._rows["a.txt"].bytes_done == 400
+        assert disp._rows["a.txt"].records == 7
+
+    def test_no_completion_line_on_a_tty(self):
+        # The row carries the outcome; a printed line would be the new output
+        # the single-table model exists to avoid.
+        console = Console(file=io.StringIO(), force_terminal=True, width=120)
+        disp = cli_progress.ProgressDisplay(1, queue.Queue(), console, {"a.txt": 10})
+        stats = report.FileStats(src_name="a.txt")
+        stats.clean_count, stats.paired_records = 5, 5
+        disp.file_done(stats)
+        assert "5 clean" not in console.file.getvalue()
+
+    def test_failure_still_prints_its_error_on_a_tty(self):
+        # A failure is not routine progress and the row cannot carry the reason.
+        console = Console(file=io.StringIO(), force_terminal=True, width=120)
+        disp = cli_progress.ProgressDisplay(1, queue.Queue(), console, {"a.txt": 10})
+        disp.file_failed("/src/a.txt", RuntimeError("boom"))
+        out = console.file.getvalue()
+        assert "boom" in out and disp._rows["a.txt"].state == "failed"
