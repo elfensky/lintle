@@ -341,3 +341,43 @@ class TestReadme:
         first = (Path(out_dir) / DEDUP_DIRNAME / "README.md").read_bytes()
         dedup.run(out_dir)
         assert (Path(out_dir) / DEDUP_DIRNAME / "README.md").read_bytes() == first
+
+
+class TestLiveTable:
+    """dedup renders one table: a row per stem from the first frame, filled in
+    as each streams, and the finished table is the results view."""
+
+    def _run(self, tmp_path, monkeypatch, pairs, *, suspects=None, width=120):
+        import io
+
+        from rich.console import Console
+
+        from lintle import term
+
+        out = build_tree(tmp_path, pairs, suspects=suspects)
+        console = Console(file=io.StringIO(), force_terminal=True, width=width)
+        monkeypatch.setattr(term, "stderr_console", console)
+        dedup.run(out)
+        return console.file.getvalue()
+
+    def test_one_table_carries_the_stem_and_its_columns(self, tmp_path, monkeypatch):
+        # Roster and results are the same table's first and last frames now, so
+        # the stem appears with its columns rather than twice in two blocks.
+        out = self._run(tmp_path, monkeypatch, [(L1, L2)])
+        assert "tle01" in out
+        for header in ("size", "records", "excluded"):
+            assert header in out
+
+    def test_excluded_column_counts_hard_suspects_per_stem(self, tmp_path, monkeypatch):
+        # One hard suspect at index 0 excludes exactly one record from tle01.
+        suspects = [
+            {
+                "rule": "VRFY-REVALIDATE-FAIL",
+                "severity": "hard",
+                "src_file": "tle01",
+                "index": 0,
+            }
+        ]
+        out = self._run(tmp_path, monkeypatch, [(L1, L2), (L1, L2)], suspects=suspects)
+        rows = [line for line in out.splitlines() if "tle01" in line]
+        assert rows and rows[-1].split()[-1] == "1"  # excluded cell

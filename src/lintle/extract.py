@@ -10,7 +10,9 @@ gaps or upstream-quarantined records."""
 import json
 from pathlib import Path
 
-from lintle import CLEANED_DIRNAME, REPORT_DIRNAME, fsutil, term
+from rich.text import Text
+
+from lintle import CLEANED_DIRNAME, REPORT_DIRNAME, fsutil, summary, term
 from lintle.chunking import ChunkedReader
 from lintle.dedup import DEDUP_DIRNAME, IMPORT_STEM, IMPORT_SUFFIX
 from lintle.history import HistoryStats, analyze_epochs
@@ -297,6 +299,68 @@ def _extract_one(
     return "written"
 
 
+def _render_roster(catalogs: list[int]) -> None:
+    """Print the phase-1 roster of requested NORAD ids — the same chrome as
+    every other roster, minus a size column, because nothing is known about a
+    satellite's history until its span has been located."""
+    table = summary.results_table("#", "norad id")
+    for index, catalog in enumerate(catalogs, start=1):
+        table.add_row(str(index), Text(str(catalog)))
+    term.stderr_console.print(table)
+
+
+def _render_results(outcomes: list[tuple[int, str]], dest_dir: Path) -> None:
+    """Print ``extract``'s phase-3 results table: one row per requested id with
+    its records, epoch span, gap count, and outcome, then a total row over the
+    ids actually written. Numbers come from the ``<id>.json`` sidecar each write
+    just committed — a render of the artifact, never a second computation — so a
+    skipped, absent, or failed id shows dashes rather than invented figures."""
+    if not outcomes:
+        return
+    console = term.stderr_console
+    tier = summary.display_tier(console.width)
+    dash = "—" if summary.can_encode(console.encoding, "—") else "-"
+    headers = ["#", "norad id", "records"]
+    if tier == "wide":
+        headers.append("span")
+    if tier != "narrow":
+        headers.append("gaps")
+    headers.append("status")
+    table = summary.results_table(*headers)
+    total_records = total_gaps = 0
+    for index, (catalog, status) in enumerate(outcomes, start=1):
+        doc = _read_sidecar(dest_dir, catalog) if status == "written" else None
+        if doc is None:
+            cells = [dash] * (len(headers) - 3)
+            table.add_row(str(index), Text(str(catalog)), dash, *cells, status)
+            continue
+        total_records += doc["records"]
+        total_gaps += doc["gap_count"]
+        cells = [f"{doc['records']:,}"]
+        if tier == "wide":
+            cells.append(f"{doc['span_days'] / 365.25:.1f}y")
+        if tier != "narrow":
+            cells.append(f"{doc['gap_count']:,}")
+        table.add_row(str(index), Text(str(catalog)), *cells, status)
+    table.add_section()
+    cells = [f"{total_records:,}"]
+    if tier == "wide":
+        cells.append("")
+    if tier != "narrow":
+        cells.append(f"{total_gaps:,}")
+    table.add_row("", "total", *cells, "")
+    console.print(table)
+
+
+def _read_sidecar(dest_dir: Path, catalog: int) -> dict | None:
+    """Return the just-written ``<id>.json`` as a dict, or ``None`` if it cannot
+    be read — the results table is cosmetic and must never fail a good run."""
+    try:
+        return json.loads((dest_dir / f"{catalog}.json").read_text(encoding="ascii"))
+    except OSError, ValueError:
+        return None
+
+
 def run(
     out_dir: str, catalogs: list[int], dest: str, *, write_readme: bool = False
 ) -> int:
@@ -318,14 +382,22 @@ def run(
         fsutil.durable_write_text(
             str(dest_dir / "README.md"), _README, encoding="utf-8"
         )
+    # Phase 1 — discovery, only when there is something to orient: a one-row
+    # roster above a one-row result table is noise, not orientation.
+    if len(catalogs) > 1:
+        _render_roster(catalogs)
+
     missing = []
+    outcomes: list[tuple[int, str]] = []
     for catalog in catalogs:
         try:
             outcome = _extract_one(out_dir, catalog, dest_dir, quarantined)
         except Exception as exc:
             term.error(f"extraction failed for catalog {catalog}: {exc}")
             missing.append(catalog)
+            outcomes.append((catalog, "failed"))
             continue
+        outcomes.append((catalog, outcome))
         match outcome:
             case "written":
                 term.note(f"wrote {dest_dir / f'{catalog}.txt'}")
@@ -339,4 +411,7 @@ def run(
                 )
             case _:  # pragma: no cover — outcome set is closed
                 raise AssertionError(f"unknown outcome {outcome!r}")
+    # Phase 3 — results, rendered from the sidecars just committed rather than
+    # recomputed, so the table cannot disagree with the artifacts on disk.
+    _render_results(outcomes, dest_dir)
     return 2 if missing else 0

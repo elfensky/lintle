@@ -245,6 +245,12 @@ class SuspectSink:
         self._runs: list[Path] = []
         self._tmpdir = tempfile.TemporaryDirectory(prefix="lintle-verify-suspects-")
         self.counts: Counter[str] = Counter()
+        # Per-stem tallies for the phase-3 results table. Keyed by the stem each
+        # suspect names, so findings raised after the streaming pass (the
+        # contradiction and orbit passes) are attributed too, and the columns
+        # sum to `hard`/`total`. One entry per cleaned stem — not per record.
+        self.hard_by_stem: Counter[str] = Counter()
+        self.soft_by_stem: Counter[str] = Counter()
         self.hard = 0
         self.total = 0
 
@@ -253,6 +259,9 @@ class SuspectSink:
         self.counts[s.rule.value] += 1
         if s.severity == "hard":
             self.hard += 1
+            self.hard_by_stem[s.src_file] += 1
+        else:
+            self.soft_by_stem[s.src_file] += 1
         self.total += 1
         if len(self._buf) >= self._chunk_size:
             self._spill()

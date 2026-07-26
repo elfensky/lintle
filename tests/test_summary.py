@@ -74,9 +74,9 @@ class TestHelpers:
         assert summary._format_pct(5, 0) == "—"
 
     def test_can_encode(self):
-        assert summary._can_encode("utf-8", "█") is True
-        assert summary._can_encode(None, "█") is True
-        assert summary._can_encode("ascii", "█") is False
+        assert summary.can_encode("utf-8", "█") is True
+        assert summary.can_encode(None, "█") is True
+        assert summary.can_encode("ascii", "█") is False
 
     def test_pick_tier(self):
         pt = summary._pick_tier
@@ -425,3 +425,118 @@ class TestEdgeCases:
         out = con.file.getvalue()
         assert "clean" in out  # totals still render
         assert "—" in out  # honest pct for the 0/0 case
+
+
+def _file_entry(name, **over):
+    """One `files[]` entry in the envelope shape `summary_dict` produces."""
+    entry = {
+        "src_name": name,
+        "elapsed_seconds": 75.0,
+        "bytes": 2048,
+        "records_per_sec": 100.0,
+        "paired_records": 1000,
+        "orphan_entries": 0,
+        "input_lines_seen": 2000,
+        "clean_count": 990,
+        "quarantined_count": 10,
+        "fix_counts": {"crlf": 4},
+        "quarantine_counts": {},
+    }
+    return entry | over
+
+
+class TestFormatClock:
+    """summary.format_clock — the compact column duration shared with the live
+    phase-2 display, as opposed to the panel's prose _humanize_duration."""
+
+    def test_renders_minutes_and_hours(self):
+        assert summary.format_clock(0) == "0:00"
+        assert summary.format_clock(9) == "0:09"
+        assert summary.format_clock(75) == "1:15"
+        assert summary.format_clock(3661) == "1:01:01"
+
+
+class TestDisplayTier:
+    """summary.display_tier — the shared phase-2/phase-3 column boundaries; the
+    three bands must partition every width with no gap."""
+
+    def test_boundaries(self):
+        assert summary.display_tier(79) == "narrow"
+        assert summary.display_tier(80) == "medium"
+        assert summary.display_tier(99) == "medium"
+        assert summary.display_tier(100) == "wide"
+
+
+class TestRenderFiles:
+    """Phase 3 — the per-file results table printed after a run and by `report`."""
+
+    def _render(self, envelope, *, width=120, **kwargs):
+        console = _console(width, terminal=True)
+        summary.render_files(envelope, console=console, **kwargs)
+        return console.file.getvalue()
+
+    def test_row_per_file_with_counts_and_total(self):
+        env = _demo_envelope()
+        env["files"] = [_file_entry("a.txt"), _file_entry("b.txt", clean_count=5)]
+        out = self._render(env)
+        assert "a.txt" in out and "b.txt" in out
+        assert "total" in out
+        assert "2,000" in out  # summed records across the two files
+
+    def test_total_time_is_wall_clock_not_the_column_sum(self):
+        # Two files at 75s each under parallel workers finished in 124s wall
+        # clock; summing the column would claim 150s (CLAUDE.md forbids it).
+        env = _demo_envelope()
+        env["files"] = [_file_entry("a.txt"), _file_entry("b.txt")]
+        out = self._render(env)
+        assert "2:04" in out  # run.elapsed_seconds = 124.0
+        assert "2:30" not in out
+
+    def test_failed_file_row_is_all_dashes(self):
+        env = _demo_envelope()
+        env["files"] = [_file_entry("a.txt")]
+        env["run"]["failed_files"] = [{"file": "bad.txt", "error": "boom"}]
+        out = self._render(env)
+        assert "bad.txt" in out
+        # The failed row contributes no numbers — the total still reflects a.txt.
+        assert "—" in out
+
+    def test_resumed_files_are_marked_dim(self):
+        env = _demo_envelope()
+        env["files"] = [_file_entry("old.txt"), _file_entry("new.txt")]
+        console = Console(file=io.StringIO(), width=120, force_terminal=True)
+        summary.render_files(env, console=console, resumed=frozenset({"old.txt"}))
+        out = console.file.getvalue()
+        assert "\x1b[2m" in out  # dim style emitted for the carried-over row
+
+    def test_tiers_drop_columns_whole(self):
+        env = _demo_envelope()
+        env["files"] = [_file_entry("a.txt")]
+        wide = self._render(env, width=120)
+        medium = self._render(env, width=90)
+        narrow = self._render(env, width=70)
+        assert "repaired" in wide and "time" in wide and "size" in wide
+        assert "repaired" not in medium and "size" in medium
+        assert "size" not in narrow and "records" in narrow
+
+    def test_empty_run_prints_nothing(self):
+        assert self._render(_demo_envelope()) == ""
+
+
+class TestResultsTable:
+    """summary.results_table — the chrome every phase-3 table shares, so no two
+    commands' results can drift apart visually."""
+
+    def test_index_is_dim_and_right_justified_name_is_left_rest_are_right(self):
+        table = summary.results_table("#", "file", "records", "hard")
+        assert [c.justify for c in table.columns] == ["right", "left", "right", "right"]
+        assert table.columns[0].style == "dim"
+        assert not any(c.style for c in table.columns[1:])  # only # is dim
+
+    def test_render_files_uses_the_shared_chrome(self):
+        env = _demo_envelope()
+        env["files"] = [_file_entry("a.txt")]
+        console = _console(120, terminal=True)
+        summary.render_files(env, console=console)
+        out = console.file.getvalue()
+        assert " # " in out and "a.txt" in out

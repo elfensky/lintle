@@ -684,3 +684,114 @@ class TestImportGuard:
             assert "sgp4" not in imports, (
                 f"verify.{mod_path.stem} imports sgp4 directly"
             )
+
+
+class TestLiveTable:
+    """verify renders one table: a row per stem from the first frame, filled in
+    as each stem streams, and the finished table is the results view."""
+
+    def _run_on_a_tree(self, tmp_path, monkeypatch, pairs, width=120, height=40):
+        import io
+
+        from rich.console import Console
+
+        from lintle import term
+
+        out, _src = build_tree_with_source(tmp_path, pairs)
+        console = Console(
+            file=io.StringIO(), force_terminal=True, width=width, height=height
+        )
+        monkeypatch.setattr(term, "stderr_console", console)
+        code = run(out, None)
+        return code, console.file.getvalue()
+
+    def test_row_per_stem_with_size_records_and_suspects(self, tmp_path, monkeypatch):
+        _code, out = self._run_on_a_tree(tmp_path, monkeypatch, [(L1, L2)])
+        assert "tle01" in out
+        for header in ("size", "records", "hard", "soft"):
+            assert header in out
+
+    def test_suspects_are_attributed_to_their_stem(self, tmp_path, monkeypatch):
+        broken = (L1[:68] + "X", L2)  # a cleaned record that no longer validates
+        code, out = self._run_on_a_tree(tmp_path, monkeypatch, [(L1, L2), broken])
+        assert code == 1  # a hard suspect
+        rows = [line for line in out.splitlines() if "tle01" in line]
+        assert rows and "1" in rows[-1]
+
+    def test_columns_are_final_after_the_contradiction_pass(self, tmp_path):
+        # A contradiction is raised after the per-stem stream, so the row it
+        # belongs to must be rewritten before the frame freezes; the sink's
+        # per-stem counters are what the table reads.
+        sink = report.SuspectSink()
+        sink.add(Suspect(VerifyRule.EPOCH_CONFLICT, 25544, 1.0, "tle01", 1, "clash"))
+        assert sink.hard_by_stem["tle01"] == 1
+        assert sum(sink.hard_by_stem.values()) == sink.hard
+
+
+class TestSortStageProgress:
+    """The contradiction pass is the run's long tail — an external merge over
+    every record. It reports how far it has got, or it is indistinguishable
+    from a hang."""
+
+    class _Table:
+        def __init__(self):
+            self.labels = []
+
+        def phase(self, label):
+            self.labels.append(label)
+
+    def test_counts_through_the_sorted_stream(self):
+        from lintle import verify
+
+        table = self._Table()
+        stream = iter(range(600_000))
+        assert list(verify._counted(stream, table, 600_000)) == list(range(600_000))
+        # Opens with the stage name, then reports progress against the known
+        # total — an exact fraction, since every record passes through.
+        assert table.labels[0].startswith("sorting records and checking")
+        assert "250,000/600,000 (41%)" in table.labels[1]
+        assert "500,000/600,000 (83%)" in table.labels[2]
+
+    def test_unknown_total_still_counts(self):
+        from lintle import verify
+
+        table = self._Table()
+        list(verify._counted(iter(range(250_000)), table, 0))
+        assert table.labels[-1].endswith("250,000")
+
+
+class TestOrbitPassDoesNotNestLive:
+    """--orbit runs inside the results table's live region, which cannot nest —
+    so the pass reports through that table rather than opening its own."""
+
+    def test_orbit_module_owns_no_progress_region(self):
+        import inspect
+
+        from lintle.verify import orbit
+
+        src = inspect.getsource(orbit)
+        assert "phase_bar" not in src
+        assert "cli_progress" not in src
+
+    def test_pass_reports_through_the_table(self, tmp_path, monkeypatch):
+        from lintle.verify import orbit as orbit_pass
+        from lintle.verify.report import SuspectSink
+
+        labels = []
+
+        class _Table:
+            def phase(self, label):
+                labels.append(label)
+
+        monkeypatch.setattr(orbit_pass.records, "iter_file", lambda _d, _s: iter(()))
+        census = orbit_pass.run_orbit_pass(
+            str(tmp_path),
+            ["tle01"],
+            set(),
+            SuspectSink(),
+            sample=None,
+            all_sats=False,
+            table=_Table(),
+        )
+        assert labels and "orbit: sampling tle01" in labels[0]
+        assert census["orbit_population"] == 0

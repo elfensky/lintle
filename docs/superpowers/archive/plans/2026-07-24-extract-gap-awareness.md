@@ -4,7 +4,7 @@
 
 **Goal:** `lintle extract` warns when a satellite's history has temporal gaps or upstream-quarantined records, shows the gaps, and asks y/n before exporting.
 
-**Architecture:** Untangle `_extract_one`'s copy-and-compute loop into a pure pass-1 `_analyze` (epochs → median spacing, reportable gaps, stats) and a dumb pass-2 `_copy_spans`. Between the passes: warn + confirm. Sidecar bumps to schema v2 with the gap fields. Spec: `docs/superpowers/specs/2026-07-24-extract-gap-awareness-design.md`.
+**Architecture:** Untangle `_extract_one`'s copy-and-compute loop into a pure pass-1 `_analyze` (epochs → median spacing, reportable gaps, stats) and a dumb pass-2 `_copy_spans`. Between the passes: warn + confirm. Sidecar bumps to schema v2 with the gap fields. Spec: `docs/superpowers/archive/specs/2026-07-24-extract-gap-awareness-design.md`.
 
 **Tech Stack:** Python 3.14, stdlib only (`statistics.median` is the one new import). No new dependencies.
 
@@ -801,7 +801,7 @@ git add src/lintle/extract.py ARCHITECTURE.md CHANGELOG.md
 git commit -m "docs(extract): gap-awareness — architecture row, changelog, extract README"
 git push -u origin feature/extract-gap-awareness
 gh pr create --base develop --title "feat(extract): gap awareness — warn, show gaps, confirm before export" --body "$(cat <<'EOF'
-Implements docs/superpowers/specs/2026-07-24-extract-gap-awareness-design.md:
+Implements docs/superpowers/archive/specs/2026-07-24-extract-gap-awareness-design.md:
 pass-1 analyze / pass-2 copy split, sidecar schema v2 (median spacing, 10
 largest gaps, tri-state quarantine flag), warn + y/n confirm (non-TTY: warn +
 proceed; decline = skip, exit 0).

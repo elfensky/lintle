@@ -4,6 +4,75 @@ All notable changes to this project are documented in this file. The format is b
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.13.0] - 2026-07-26
+
+### Added
+
+- **`clean` renders one live table, from discovery to results.** Every
+  discovered file has a row before any work starts, so the first frame is the
+  roster (index, file, size); work then updates rows in place — the byte bar
+  fills, then the same row switches to its final records / clean / quarantined
+  / time — and the finished table stays on screen as the results view with the
+  aggregate panel under it. A run no longer prints new blocks as it goes. When
+  the rows outnumber the terminal height the table windows around the active
+  files with an `… N more` marker (a `rich` live region cannot scroll), and the
+  complete static results table is printed afterwards so nothing the window hid
+  is lost. Per-file completion lines print only off a TTY, where there is no
+  table to update; failures print their error everywhere.
+
+- **`verify` and `dedup` render the same live table**, over cleaned stems: size,
+  progress, records, and each command's own result columns (hard/soft suspects
+  for `verify`, records read and hard-suspect exclusions for `dedup`). Both were
+  previously silent for the whole run — many minutes on a corpus-scale tree —
+  and spoke only at the end. Every suspect is attributed to the stem it came
+  from, including the contradiction and orbit findings raised after the
+  streaming pass, so the columns sum to the verdict line. The stages after the
+  per-stem loop relabel the pinned summary row rather than printing spinners,
+  and the verdict prints under the finished table.
+
+- **Per-file and per-id results tables elsewhere.** `clean` and `lintle report`
+  render a per-file results table from the run envelope (records, clean,
+  quarantined, repairs, time; resumed files dimmed, failed files dashed, and a
+  total row whose time is the run's wall clock, never the column's sum).
+  `extract` rosters the requested ids and closes with a per-id table of records,
+  span, gaps and outcome, rendered from the sidecars it just wrote. `diff`
+  renders its deltas as tables on a TTY while keeping its byte-exact plain text
+  for pipes. All of them share one table chrome and one set of width tiers
+  (narrow < 80 ≤ medium < 100 ≤ wide); columns drop whole, values are never
+  truncated.
+
+### Changed
+
+- **`verify` and `dedup` rows show a real progress bar, and the summary row a
+  heartbeat.** Their progress column held a percentage *string* where `clean`
+  had a bar, so a row that sat on the same number for a minute read as frozen.
+  Both now use the same `ProgressBar` renderable, and the summary row carries a
+  spinner advanced by *work* — one step per redraw, and redraws only happen
+  when records move — so a cycling glyph means progress and a frozen one means
+  a genuine stall. Absent from the final frame and from piped output.
+
+### Fixed
+
+- **`UnitTable(drop=...)` crashed when omitted.** The parameter defaulted to an
+  empty tuple but is used as a per-tier mapping; every current caller passes
+  one, so it never fired in practice.
+- **`verify`'s contradiction pass showed no progress.** The external merge over
+  every cleaned record is the run's long tail — the better part of an hour on a
+  200M-record corpus — and the summary row sat on a static label throughout,
+  indistinguishable from a hang. It now counts the sorted stream against the
+  known record total, so the label carries an exact fraction rather than a
+  guess.
+- **`verify --orbit` nested two live regions.** The orbit pass opened its own
+  progress bar inside the results table's `rich.live.Live`, which cannot nest.
+  It now reports through that table's summary row like every other post-stream
+  stage.
+- **Ctrl-C during `verify`, `dedup` or `extract` printed a traceback.** Only
+  `clean` handled `SIGINT`, inside its worker pool; the single-process consumers
+  had nothing catching it. `cli.main` now wraps the whole dispatch in a
+  `KeyboardInterrupt` backstop — one `cancelled.` line, exit `130`, the out-dir
+  lock released, and no partially-committed subtree, since those are written
+  atomically at the end of a run.
+
 ## [0.12.0] - 2026-07-25
 
 ### Added
