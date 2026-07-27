@@ -266,10 +266,13 @@ def _extract_one(
     mismatched txt/json pair can never remain — even if that means removing a
     prior run's still-good pair on a failed re-run. Returns "written",
     "declined" (operator declined), or "absent" (no records)."""
-    spans = find_spans(out_dir, catalog)
-    if not spans:
-        return "absent"
-    with cli_progress.status(f"analyzing {catalog}"):
+    # One spinner over the locate and the read, not two: the bisect and the
+    # analysis are the same silent stretch to anyone watching, and two
+    # consecutive spinners would only flicker.
+    with cli_progress.status(f"analyzing {catalog}…"):
+        spans = find_spans(out_dir, catalog)
+        if not spans:
+            return "absent"
         hs = _analyze(spans)
     had_quarantined = None if quarantined is None else catalog in quarantined
     if (hs.gap_count or had_quarantined) and not _warn_and_confirm(
@@ -281,7 +284,7 @@ def _extract_one(
     sidecar_partial = str(dest / f"{catalog}.json") + fsutil.PARTIAL_SUFFIX
     committed = False
     try:
-        with cli_progress.status(f"writing {catalog}"):
+        with cli_progress.status(f"writing {catalog}…"):
             with open(tmp, "wb") as out:
                 _copy_spans(spans, out)
             fsutil.durable_replace(tmp, str(txt))
@@ -377,7 +380,10 @@ def run(
     ``<out-dir>/06-extract`` (Task 3)."""
     _import_chunks(out_dir)  # raises ExtractError before any per-catalog work
     _warn_if_stale(out_dir)
-    quarantined = _quarantined_ids(out_dir)
+    # Spinner: reads and parses the whole broken-noradids.ndjson before any
+    # per-catalog work, which on a corpus run is far from instant.
+    with cli_progress.status("reading quarantine info…"):
+        quarantined = _quarantined_ids(out_dir)
     dest_dir = Path(dest)
     dest_dir.mkdir(parents=True, exist_ok=True)
     if write_readme:

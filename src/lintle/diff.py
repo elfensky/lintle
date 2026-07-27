@@ -368,7 +368,7 @@ def run(run_a, run_b):
     CLI). Reads each run once, deriving corpus totals from the per-file counts
     so the two sections cannot disagree."""
     try:
-        with cli_progress.status("aggregating per-file findings..."):
+        with cli_progress.status("aggregating per-file findings…"):
             by_file_a = aggregate_by_file(run_a)
             by_file_b = aggregate_by_file(run_b)
     except DiffError as exc:

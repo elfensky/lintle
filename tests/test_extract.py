@@ -597,6 +597,7 @@ class TestWarnConfirm:
         dest.mkdir()
         events: list[str] = []
         active_status = 0
+        real_find_spans = extract.find_spans
         real_analyze = extract._analyze
         real_copy_spans = extract._copy_spans
         real_durable_replace = extract.fsutil.durable_replace
@@ -619,6 +620,10 @@ class TestWarnConfirm:
             events.append(f"status:{message}")
             return _Status()
 
+        def traced_find_spans(out_dir, catalog):
+            events.append(f"find_spans:{active_status}")
+            return real_find_spans(out_dir, catalog)
+
         def traced_analyze(spans):
             events.append(f"analyze:{active_status}")
             return real_analyze(spans)
@@ -640,6 +645,7 @@ class TestWarnConfirm:
             return real_durable_write_text(path, text, encoding=encoding)
 
         monkeypatch.setattr(extract.cli_progress, "status", fake_status)
+        monkeypatch.setattr(extract, "find_spans", traced_find_spans)
         monkeypatch.setattr(extract, "_analyze", traced_analyze)
         monkeypatch.setattr(extract, "_warn_and_confirm", traced_warn)
         monkeypatch.setattr(extract, "_copy_spans", traced_copy)
@@ -647,22 +653,31 @@ class TestWarnConfirm:
         monkeypatch.setattr(extract.fsutil, "durable_write_text", traced_write_text)
 
         assert extract.run(str(out), [100], str(dest)) == 0
-        assert events[:5] == [
-            "status:analyzing 100",
+        # Anchor on the per-catalog work rather than absolute positions: the
+        # run opens other spinners before the loop, and this test is about the
+        # prompt never sitting inside one, not about how many precede it.
+        start = events.index("status:analyzing 100…")
+        assert events[start : start + 6] == [
+            "status:analyzing 100…",
             "status-enter",
+            "find_spans:1",
             "analyze:1",
             "status-exit",
             "warn:0",
         ]
-        assert events[5] == "status:writing 100"
-        assert events[6] == "status-enter"
-        assert "copy:1" in events[7:-1]
-        assert "write:1" in events[7:-1]
+        assert events[start + 6] == "status:writing 100…"
+        assert events[start + 7] == "status-enter"
+        assert "copy:1" in events[start + 8 : -1]
+        assert "write:1" in events[start + 8 : -1]
         assert events[-1] == "status-exit"
         assert all(
             event.endswith(":1")
-            for event in events[7:-1]
+            for event in events[start + 8 : -1]
             if ":" in event and not event.startswith("status")
+        )
+        # Nothing before the loop may leave a spinner open either.
+        assert "warn:0" in events and not any(
+            event.startswith("warn:") and not event.endswith(":0") for event in events
         )
 
 

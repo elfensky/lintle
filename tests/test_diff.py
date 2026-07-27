@@ -751,8 +751,8 @@ class TestRunStatus:
         assert diff.run("run-a", "run-b") == 0
         capsys.readouterr()
         assert events == [
-            ("enter", "aggregating per-file findings..."),
+            ("enter", "aggregating per-file findings…"),
             ("aggregate", "run-a"),
             ("aggregate", "run-b"),
-            ("exit", "aggregating per-file findings..."),
+            ("exit", "aggregating per-file findings…"),
         ]
