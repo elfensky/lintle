@@ -4,6 +4,43 @@ All notable changes to this project are documented in this file. The format is b
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.13.1] - 2026-07-28
+
+### Added
+
+- **`extract` and `diff` show they are working.** Both ran silent — `extract`
+  through a binary search and a verbatim byte copy per satellite, `diff` through
+  two full streaming passes over each run's `report.jsonl` chunk set — and a
+  long one was indistinguishable from a hang. Each now shows a spinner on
+  stderr while it works: `extract` around the history analysis and around the
+  copy/commit, `diff` around the per-file aggregation. `extract`'s spinner
+  deliberately stops short of the gap-confirmation prompt, so the gap detail
+  you need in order to answer still prints plainly and the prompt is never
+  hidden behind a live region.
+
+### Changed
+
+- **One width-breakpoint policy instead of two.** The per-file tables broke at
+  80 and 100 columns while the aggregate summary broke at 72 and 100, so a
+  single terminal could show a narrow file table above a medium summary block.
+  Both now share the one number line. **Terminals 72–79 columns wide now render
+  the aggregate summary in its plain tier**, where they previously got the
+  medium one.
+
+- **Text columns read as text.** `extract`'s `status` and `diff`'s per-file
+  `rule` and `change` columns were right-justified as if they held numbers,
+  because the shared results-table chrome assumed everything past the name
+  column was numeric. It now takes a per-column override, and those three are
+  left-justified. Every other table is byte-identical to before.
+
+### Fixed
+
+- Removed `phase_bar`, an unused progress primitive with no call sites —
+  `verify` and `dedup` grew live tables instead and never came back to it. The
+  module docs that still described it, and `term`'s claim that stdout carried
+  only the `report` view (`diff` has been a second consumer for a while), have
+  been corrected to match the code.
+
 ## [0.13.0] - 2026-07-26
 
 ### Added
