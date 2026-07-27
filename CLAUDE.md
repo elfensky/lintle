@@ -110,7 +110,7 @@ src/lintle/
 ├── __main__.py    # python -m lintle entry point
 ├── __init__.py    # __version__, stem() filename helper
 ├── cli.py         # argparse, globbing, top-level clean orchestration, exit codes
-├── cli_progress.py # the live tables: ProgressDisplay (clean) + UnitTable (verify/dedup), windowed; roster, status spinner, phase bar (rich)
+├── cli_progress.py # the live tables: ProgressDisplay (clean) + UnitTable (verify/dedup), windowed; roster, status spinner (rich)
 ├── run_planning.py # clean-run preflight: disk-space guard, output scrub, resume classification, RunPlan
 ├── worker_pool.py  # process-pool dispatch, progress collection, per-file failure + checkpoint
 ├── process_control.py # worker SIGINT setup, fast pool termination, cancel/exit-code helpers
@@ -167,9 +167,9 @@ shards, the corpus `broken-noradids.ndjson`, and the shard concat) depended on b
 `pipeline` and `cli`; it imports the dataclasses and the shared `format_diagnostic`
 renderer from `report.py` — one-way, never the reverse, so no cycle. `cli_progress.py`
 is a rich presentation leaf (the phase-1 `render_roster`, the phase-2 live
-`ProgressDisplay`, the `status` spinner, and the `phase_bar` used by the
-single-process post-run phases) depended on by `cli`, `worker_pool`,
-`output_artifacts`, `verify`, `verify.orbit`, and `dedup` — those last three
+`ProgressDisplay`, and the `status` spinner used by the single-process
+post-run phases) depended on by `cli`, `worker_pool`,
+`output_artifacts`, `verify`, `verify.orbit`, `dedup`, `extract`, and `diff` — those
 consume the clean path's presentation leaf, never the reverse, so the
 `sgp4`/verify wall is untouched; it imports `summary`'s shared
 tier/clock/size formatters (one definition across phases 2 and 3),

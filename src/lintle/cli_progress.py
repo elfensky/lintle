@@ -12,13 +12,6 @@ from pathlib import Path
 
 from rich import box
 from rich.live import Live
-from rich.progress import (
-    BarColumn,
-    MofNCompleteColumn,
-    Progress,
-    TextColumn,
-    TimeRemainingColumn,
-)
 from rich.progress_bar import ProgressBar
 from rich.table import Table
 from rich.text import Text
@@ -35,27 +28,6 @@ def status(message):
     if term.stderr_console.is_terminal:
         return term.stderr_console.status(message)
     return contextlib.nullcontext()
-
-
-@contextlib.contextmanager
-def phase_bar(description, total):
-    """A single-task ``rich`` bar on stderr for the single-process post-run
-    phases (``verify``/``dedup`` streaming their stems), yielding an ``update``
-    callable — ``update(advance=1)``, ``update(description=...)``. Disabled off a
-    TTY so nothing leaks into a pipe, and transient so the finished run leaves
-    only its verdict line. Like :func:`status` it wraps ``rich.live.Live`` and so
-    must not nest inside another live block."""
-    with Progress(
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        MofNCompleteColumn(),
-        TimeRemainingColumn(),
-        console=term.stderr_console,
-        transient=True,
-        disable=not term.stderr_console.is_terminal,
-    ) as progress:
-        task = progress.add_task(description, total=total)
-        yield lambda **fields: progress.update(task, **fields)
 
 
 @dataclasses.dataclass(slots=True)
@@ -417,7 +389,9 @@ class UnitTable:
 
     _CHROME_LINES = 8
 
-    def __init__(self, names, headers, *, console, unit="files", drop=None):
+    def __init__(
+        self, names, headers, *, console, unit="files", drop=None, justify=None
+    ):
         self._console = console
         self._live_mode = console.is_terminal
         self._headers = list(headers)
@@ -427,6 +401,7 @@ class UnitTable:
         self._drop = frozenset(
             (drop or {}).get(summary.display_tier(console.width), ())
         )
+        self._justify = dict(justify or {})
         self._rows = [
             _UnitRow(index=i, name=name) for i, name in enumerate(names, start=1)
         ]
@@ -506,7 +481,7 @@ class UnitTable:
         """Build the current frame. ``complete`` renders every row regardless of
         the terminal's height — the static fallback for a windowed run."""
         headers = [h for h in self._headers if h not in self._drop]
-        table = summary.results_table(*headers)
+        table = summary.results_table(*headers, justify=self._justify)
         if complete:
             visible, hidden = self._rows, 0
         else:

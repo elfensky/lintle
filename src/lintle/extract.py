@@ -12,7 +12,7 @@ from pathlib import Path
 
 from rich.text import Text
 
-from lintle import CLEANED_DIRNAME, REPORT_DIRNAME, fsutil, summary, term
+from lintle import CLEANED_DIRNAME, REPORT_DIRNAME, cli_progress, fsutil, summary, term
 from lintle.chunking import ChunkedReader
 from lintle.dedup import DEDUP_DIRNAME, IMPORT_STEM, IMPORT_SUFFIX
 from lintle.history import HistoryStats, analyze_epochs
@@ -269,7 +269,8 @@ def _extract_one(
     spans = find_spans(out_dir, catalog)
     if not spans:
         return "absent"
-    hs = _analyze(spans)
+    with cli_progress.status(f"analyzing {catalog}"):
+        hs = _analyze(spans)
     had_quarantined = None if quarantined is None else catalog in quarantined
     if (hs.gap_count or had_quarantined) and not _warn_and_confirm(
         catalog, hs, had_quarantined
@@ -280,15 +281,16 @@ def _extract_one(
     sidecar_partial = str(dest / f"{catalog}.json") + fsutil.PARTIAL_SUFFIX
     committed = False
     try:
-        with open(tmp, "wb") as out:
-            _copy_spans(spans, out)
-        fsutil.durable_replace(tmp, str(txt))
-        committed = True
-        fsutil.durable_write_text(
-            str(dest / f"{catalog}.json"),
-            _sidecar(out_dir, catalog, hs, had_quarantined),
-            encoding="ascii",
-        )
+        with cli_progress.status(f"writing {catalog}"):
+            with open(tmp, "wb") as out:
+                _copy_spans(spans, out)
+            fsutil.durable_replace(tmp, str(txt))
+            committed = True
+            fsutil.durable_write_text(
+                str(dest / f"{catalog}.json"),
+                _sidecar(out_dir, catalog, hs, had_quarantined),
+                encoding="ascii",
+            )
     except Exception:
         Path(tmp).unlink(missing_ok=True)
         Path(sidecar_partial).unlink(missing_ok=True)
@@ -326,7 +328,7 @@ def _render_results(outcomes: list[tuple[int, str]], dest_dir: Path) -> None:
     if tier != "narrow":
         headers.append("gaps")
     headers.append("status")
-    table = summary.results_table(*headers)
+    table = summary.results_table(*headers, justify={"status": "left"})
     total_records = total_gaps = 0
     for index, (catalog, status) in enumerate(outcomes, start=1):
         doc = _read_sidecar(dest_dir, catalog) if status == "written" else None

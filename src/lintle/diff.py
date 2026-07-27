@@ -25,7 +25,7 @@ from pathlib import Path
 
 from rich.text import Text
 
-from lintle import REPORT_DIRNAME, chunking, summary, term
+from lintle import REPORT_DIRNAME, chunking, cli_progress, summary, term
 from lintle.diagnostics import RULES, RuleID
 
 _SCHEMA_VERSION = "1"
@@ -328,7 +328,13 @@ def render_tables(delta, file_deltas, *, run_a, run_b, console):
 
     if not file_deltas:
         return
-    files = summary.results_table("#", "file", "rule", "change")
+    files = summary.results_table(
+        "#",
+        "file",
+        "rule",
+        "change",
+        justify={"rule": "left", "change": "left"},
+    )
     index = 0
     for fd in file_deltas:
         label = fd.file + _PRESENCE_LABEL[fd.presence]
@@ -362,8 +368,9 @@ def run(run_a, run_b):
     CLI). Reads each run once, deriving corpus totals from the per-file counts
     so the two sections cannot disagree."""
     try:
-        by_file_a = aggregate_by_file(run_a)
-        by_file_b = aggregate_by_file(run_b)
+        with cli_progress.status("aggregating per-file findings..."):
+            by_file_a = aggregate_by_file(run_a)
+            by_file_b = aggregate_by_file(run_b)
     except DiffError as exc:
         term.error(str(exc))
         return 2

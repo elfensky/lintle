@@ -770,7 +770,6 @@ class TestOrbitPassDoesNotNestLive:
         from lintle.verify import orbit
 
         src = inspect.getsource(orbit)
-        assert "phase_bar" not in src
         assert "cli_progress" not in src
 
     def test_pass_reports_through_the_table(self, tmp_path, monkeypatch):

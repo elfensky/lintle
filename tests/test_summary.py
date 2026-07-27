@@ -392,10 +392,10 @@ class TestFailedFilesRendering:
 
 
 class TestEdgeCases:
-    def test_pick_tier_boundary_72(self):
+    def test_pick_tier_boundary_80(self):
         pt = summary._pick_tier
-        assert pt(is_terminal=True, width=71, unicode_ok=True) == "plain"
-        assert pt(is_terminal=True, width=72, unicode_ok=True) == "medium"
+        assert pt(is_terminal=True, width=79, unicode_ok=True) == "plain"
+        assert pt(is_terminal=True, width=80, unicode_ok=True) == "medium"
 
     def test_zero_records_run_renders_without_sections(self):
         env = {
@@ -540,3 +540,14 @@ class TestResultsTable:
         summary.render_files(env, console=console)
         out = console.file.getvalue()
         assert " # " in out and "a.txt" in out
+
+    def test_optional_justify_overrides_selected_columns(self):
+        table = summary.results_table(
+            "#",
+            "file",
+            "rule",
+            "change",
+            justify={"rule": "left", "change": "left"},
+        )
+        assert [c.justify for c in table.columns] == ["right", "left", "left", "left"]
+        assert table.columns[0].style == "dim"
