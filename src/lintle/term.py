@@ -1,17 +1,18 @@
 """Shared terminal-output helpers: the two shared ``Console`` instances
 (``stderr_console`` for status/errors; ``stdout_console`` for the ``report``
-command's rendered view) and the styled ``error:`` / ``warning:`` emitters
-used across the CLI surface.
+command's rendered view and ``diff``'s TTY tables) and the styled ``error:`` /
+``warning:`` emitters used across the CLI surface.
 
 ``stderr_console`` carries all status/error ephemera; ``stdout_console`` carries
-only the styled ``report`` result view. rich styling on each is confined to a
-TTY; off a TTY (pipes, ``capsys``, ``NO_COLOR``) the Console strips styling and
-the output is plain, so machine-readable output stays literal. The structured
-output files and the ``--report json`` stdout bytes are never routed through
-either Console — those go through plain ``json``/file writers for
-byte-determinism. The module-level Consoles are built before argument parsing so
-the earliest sites share them; rich reads ``sys.stderr`` / ``sys.stdout`` lazily,
-so a replaced stream (tests, redirection) is honoured at print time.
+only the styled ``report`` result view and ``diff``'s TTY tables. rich styling
+on each is confined to a TTY; off a TTY (pipes, ``capsys``, ``NO_COLOR``) the
+Console strips styling and the output is plain, so machine-readable output
+stays literal. The structured output files and the ``--report json`` stdout
+bytes are never routed through either Console — those go through plain
+``json``/file writers for byte-determinism. The module-level Consoles are
+built before argument parsing so the earliest sites share them; rich reads
+``sys.stderr`` / ``sys.stdout`` lazily, so a replaced stream (tests,
+redirection) is honoured at print time.
 """
 
 import enum

@@ -591,6 +591,80 @@ class TestWarnConfirm:
         assert extract.run(str(out), [100], str(dest)) == 0
         assert "and 1 more" in capsys.readouterr().err
 
+    def test_spinner_scopes_exclude_warn_and_confirm(self, tmp_path, monkeypatch):
+        out = gappy_tree(tmp_path)
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        events: list[str] = []
+        active_status = 0
+        real_analyze = extract._analyze
+        real_copy_spans = extract._copy_spans
+        real_durable_replace = extract.fsutil.durable_replace
+        real_durable_write_text = extract.fsutil.durable_write_text
+
+        class _Status:
+            def __enter__(self):
+                nonlocal active_status
+                active_status += 1
+                events.append("status-enter")
+                return None
+
+            def __exit__(self, exc_type, exc, tb):
+                nonlocal active_status
+                active_status -= 1
+                events.append("status-exit")
+                return False
+
+        def fake_status(message):
+            events.append(f"status:{message}")
+            return _Status()
+
+        def traced_analyze(spans):
+            events.append(f"analyze:{active_status}")
+            return real_analyze(spans)
+
+        def traced_warn(catalog, hs, had_quarantined):
+            events.append(f"warn:{active_status}")
+            return True
+
+        def traced_copy(spans, out_fh):
+            events.append(f"copy:{active_status}")
+            return real_copy_spans(spans, out_fh)
+
+        def traced_replace(src, dst):
+            events.append(f"replace:{active_status}")
+            return real_durable_replace(src, dst)
+
+        def traced_write_text(path, text, *, encoding):
+            events.append(f"write:{active_status}")
+            return real_durable_write_text(path, text, encoding=encoding)
+
+        monkeypatch.setattr(extract.cli_progress, "status", fake_status)
+        monkeypatch.setattr(extract, "_analyze", traced_analyze)
+        monkeypatch.setattr(extract, "_warn_and_confirm", traced_warn)
+        monkeypatch.setattr(extract, "_copy_spans", traced_copy)
+        monkeypatch.setattr(extract.fsutil, "durable_replace", traced_replace)
+        monkeypatch.setattr(extract.fsutil, "durable_write_text", traced_write_text)
+
+        assert extract.run(str(out), [100], str(dest)) == 0
+        assert events[:5] == [
+            "status:analyzing 100",
+            "status-enter",
+            "analyze:1",
+            "status-exit",
+            "warn:0",
+        ]
+        assert events[5] == "status:writing 100"
+        assert events[6] == "status-enter"
+        assert "copy:1" in events[7:-1]
+        assert "write:1" in events[7:-1]
+        assert events[-1] == "status-exit"
+        assert all(
+            event.endswith(":1")
+            for event in events[7:-1]
+            if ":" in event and not event.startswith("status")
+        )
+
 
 def real_dedup_tree(tmp_path):
     """Build a genuine ``01-cleaned`` tree and run ``dedup`` over it (rather

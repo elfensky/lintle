@@ -6,6 +6,7 @@ Fixtures are built through the real producer serializer
 """
 
 import collections
+import contextlib
 import io
 import json
 
@@ -690,3 +691,68 @@ class TestTableRendering:
         rd = diff.RuleDelta("TLE-CHK-001", 4, 0)
         assert diff._file_rule_change(diff._A_ONLY, rd) == "4"
         assert diff._file_rule_change(diff._B_ONLY, diff.RuleDelta("X", 0, 7)) == "7"
+
+    def test_tty_text_columns_override_default_justification(self, monkeypatch):
+        built = []
+        real = diff.summary.results_table
+
+        def capture(*headers, justify=None):
+            table = real(*headers, justify=justify)
+            built.append(table)
+            return table
+
+        monkeypatch.setattr(diff.summary, "results_table", capture)
+        console = Console(file=io.StringIO(), force_terminal=True, width=120)
+        file_deltas = diff.compute_file_delta(
+            {"x.txt": collections.Counter({"TLE-CHK-001": 2})},
+            {"x.txt": collections.Counter({"TLE-CHK-001": 5})},
+        )
+        diff.render_tables(
+            self._delta(), file_deltas, run_a="a", run_b="b", console=console
+        )
+        assert [c.justify for c in built[0].columns] == [
+            "right",
+            "left",
+            "right",
+            "right",
+        ]
+        assert [c.justify for c in built[1].columns] == [
+            "right",
+            "left",
+            "left",
+            "left",
+        ]
+
+
+class TestRunStatus:
+    """diff.run aggregates both runs inside one stderr-only status spinner."""
+
+    def test_run_wraps_both_aggregations_in_one_status(self, monkeypatch, capsys):
+        events = []
+
+        @contextlib.contextmanager
+        def fake_status(message):
+            events.append(("enter", message))
+            yield
+            events.append(("exit", message))
+
+        def fake_aggregate(run_dir):
+            events.append(("aggregate", run_dir))
+            return {}
+
+        monkeypatch.setattr(diff, "aggregate_by_file", fake_aggregate)
+        monkeypatch.setattr(diff.cli_progress, "status", fake_status)
+        monkeypatch.setattr(
+            diff.term,
+            "stdout_console",
+            Console(file=io.StringIO(), force_terminal=False),
+        )
+
+        assert diff.run("run-a", "run-b") == 0
+        capsys.readouterr()
+        assert events == [
+            ("enter", "aggregating per-file findings..."),
+            ("aggregate", "run-a"),
+            ("aggregate", "run-b"),
+            ("exit", "aggregating per-file findings..."),
+        ]

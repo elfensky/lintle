@@ -58,9 +58,10 @@ def can_encode(encoding, sample):
 
 def _pick_tier(*, is_terminal, width, unicode_ok):
     """Return the render tier: ``"plain"``, ``"medium"``, or ``"wide"``."""
-    if not is_terminal or width < 72 or not unicode_ok:
+    if not is_terminal or not unicode_ok:
         return "plain"
-    return "medium" if width < 100 else "wide"
+    tier = display_tier(width)
+    return "plain" if tier == "narrow" else tier
 
 
 def display_tier(width):
@@ -212,18 +213,20 @@ def _render_sections(console, label, run, s, *, bars):
         console.print(t)
 
 
-def results_table(*headers):
+def results_table(*headers, justify=None):
     """Build a phase-3 results table with the house chrome, shared by every
     command so their tables cannot drift apart: a ``SIMPLE`` box, no edge
     padding, a dim right-justified index column, a left-justified name column,
-    and every remaining column right-justified. The convention is positional —
-    ``headers[0]`` indexes, ``headers[1]`` names, the rest are numbers — which
-    is the shape all four results tables have."""
+    and every remaining column right-justified unless ``justify`` overrides a
+    named header. The default convention is positional — ``headers[0]``
+    indexes, ``headers[1]`` names, the rest are numbers — which is the shape
+    all four results tables have."""
     table = Table(box=box.SIMPLE, pad_edge=False)
+    overrides = justify or {}
     for position, header in enumerate(headers):
         table.add_column(
             header,
-            justify="left" if position == 1 else "right",
+            justify=overrides.get(header, "left" if position == 1 else "right"),
             style="dim" if position == 0 else None,
         )
     return table

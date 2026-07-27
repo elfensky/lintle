@@ -375,40 +375,6 @@ class TestBracketedFilenamesDoNotCrash:
             assert "[red]" in buf.getvalue()
 
 
-class TestPhaseBar:
-    """cli_progress.phase_bar — the single-task bar for the post-run phases."""
-
-    def test_off_tty_renders_nothing_but_still_updates(self, monkeypatch):
-        # Off a TTY the bar is disabled so nothing leaks into a pipe, yet the
-        # yielded callable must stay usable — callers advance it unconditionally.
-        buf = io.StringIO()
-        monkeypatch.setattr(
-            cli_progress.term, "stderr_console", Console(file=buf, force_terminal=False)
-        )
-        with cli_progress.phase_bar("verifying", 2) as progress:
-            progress(description="verifying tle2000")
-            progress(advance=1)
-        assert buf.getvalue() == ""
-
-    def test_on_tty_renders_the_description(self, monkeypatch):
-        buf = io.StringIO()
-        console = Console(file=buf, force_terminal=True, width=80)
-        monkeypatch.setattr(cli_progress.term, "stderr_console", console)
-        with cli_progress.phase_bar("verifying", 2) as progress:
-            progress(description="verifying tle2000", advance=1)
-            console.print()  # force a frame while the live block is open
-        assert "verifying tle2000" in buf.getvalue()
-
-    def test_indeterminate_total_is_allowed(self, monkeypatch):
-        # dedup's write phase has no known group count up front (total=None).
-        buf = io.StringIO()
-        monkeypatch.setattr(
-            cli_progress.term, "stderr_console", Console(file=buf, force_terminal=True)
-        )
-        with cli_progress.phase_bar("writing", None) as progress:
-            progress(completed=10_000)
-
-
 class TestLiveTable:
     """The one live table: every discovered file has a row from the first frame,
     work updates rows in place, and the frame never outgrows the terminal."""
@@ -562,12 +528,18 @@ class TestUnitTable:
 
     HEADERS = ("#", "file", "size", "progress", "records", "hard")
 
-    def _table(self, names, *, terminal=True, width=120, height=40, drop=None):
+    def _table(
+        self, names, *, terminal=True, width=120, height=40, drop=None, justify=None
+    ):
         console = Console(
             file=io.StringIO(), force_terminal=terminal, width=width, height=height
         )
         return cli_progress.UnitTable(
-            names, self.HEADERS, console=console, drop=drop or {}
+            names,
+            self.HEADERS,
+            console=console,
+            drop=drop or {},
+            justify=justify,
         )
 
     def test_first_frame_is_the_roster(self):
@@ -628,6 +600,17 @@ class TestUnitTable:
         table = self._table(["a"], width=70, drop={"narrow": ("size", "progress")})
         headers = [c.header for c in table._table().columns]
         assert headers == ["#", "file", "records", "hard"]
+
+    def test_can_override_column_justification(self):
+        table = self._table(["a"], justify={"progress": "left", "hard": "left"})
+        assert [c.justify for c in table._table().columns] == [
+            "right",
+            "left",
+            "right",
+            "left",
+            "right",
+            "left",
+        ]
 
 
 class TestHeartbeat:
