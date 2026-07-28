@@ -4,6 +4,27 @@ All notable changes to this project are documented in this file. The format is b
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.13.3] - 2026-07-28
+
+### Fixed
+
+- **A resumed `clean` run shows the files it carried over.** The live table
+  was built from the files left to process, so resuming a 29-file corpus with
+  two already done rendered `2/29 files` above a table with 27 rows in it — the
+  count and the rows disagreed, and the two finished files appeared nowhere.
+
+  The missing rows were the visible half. Because the display only knew about
+  the remaining files, the summary row's corpus size was the *remaining* bytes
+  rather than the corpus, and its records, clean, and quarantined counters all
+  started from zero — so the earlier run's work was absent from every total on
+  screen, not just from the roster.
+
+  Carried-over files now get their rows filled in from the checkpoint before
+  the first frame, showing the records, clean, quarantined, and time that run
+  actually measured, and their numbers join the run totals. Those rows render
+  dimmed, matching the results table, which has always carried resumed files
+  that way: complete, but measured by the earlier run rather than this one.
+
 ## [0.13.2] - 2026-07-28
 
 ### Fixed

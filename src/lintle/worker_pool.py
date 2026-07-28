@@ -101,7 +101,7 @@ def run_workers(
                 progress_queue,
                 console,
                 sizes,
-                already_done=len(plan.completed),
+                completed=plan.reused_stats,
             ) as progress:
                 display = progress  # kept past the `with` for its window flag
                 for future in concurrent.futures.as_completed(futures):
