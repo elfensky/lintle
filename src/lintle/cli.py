@@ -899,7 +899,11 @@ def _dispatch(argv=None):
         # text. Byte-bar denominators come from os.stat (issue #53 §2.1/§2.2) —
         # no pre-read of the corpus.
         console = term.stderr_console
-        sizes = {Path(p).name: file_sizes[p] for p in plan.files_to_process}
+        # Every discovered file, in input order — not just the ones left to do.
+        # On a resumed run the carried-over files still get rows (filled in from
+        # the checkpoint), so the live table is the whole corpus and its
+        # "N/M files" count matches the rows under it.
+        sizes = {Path(p).name: file_sizes[p] for p in files}
         # On a TTY the live table opens on the same rows and fills them in, so
         # printing a separate roster first would be the same list twice. Off a
         # TTY there is no live table, and this static roster is the only

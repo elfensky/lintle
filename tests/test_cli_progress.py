@@ -380,12 +380,12 @@ class TestLiveTable:
     work updates rows in place, and the frame never outgrows the terminal."""
 
     @staticmethod
-    def _display(width, *, sizes, total_files=3, done=0, height=40):
+    def _display(width, *, sizes, total_files=3, completed=(), height=40):
         console = Console(
             file=io.StringIO(), force_terminal=True, width=width, height=height
         )
         return cli_progress.ProgressDisplay(
-            total_files, queue.Queue(), console, sizes, already_done=done
+            total_files, queue.Queue(), console, sizes, completed=completed
         )
 
     @staticmethod
@@ -424,7 +424,10 @@ class TestLiveTable:
         assert "failed" in self._render(disp, disp._table())
 
     def test_summary_row_is_pinned_and_counts_files(self):
-        disp = self._display(120, sizes={"a.txt": 1000}, total_files=29, done=3)
+        carried = [report.FileStats(src_name=f"prior{i}.txt") for i in range(3)]
+        disp = self._display(
+            120, sizes={"a.txt": 1000}, total_files=29, completed=carried
+        )
         assert "3/29 files" in self._render(disp, disp._table())
 
     def test_all_rows_show_when_they_fit(self):
@@ -512,6 +515,37 @@ class TestLiveTable:
         stats.clean_count, stats.paired_records = 5, 5
         disp.file_done(stats)
         assert "5 clean" not in console.file.getvalue()
+
+    def test_resumed_files_get_complete_rows_from_the_checkpoint(self):
+        # Regression: a resumed run showed rows only for the files left to do,
+        # so the summary said "2/3 files" above a table with one row in it, and
+        # the carried-over records/clean/quarantined vanished from every total.
+        carried = report.FileStats(src_name="a.txt")
+        carried.paired_records, carried.clean_count = 900, 850
+        carried.quarantined_count, carried.elapsed_seconds = 50, 12.0
+        sizes = {"a.txt": 1000, "b.txt": 1000, "c.txt": 1000}
+        disp = self._display(120, sizes=sizes, total_files=3, completed=[carried])
+
+        row = disp._rows["a.txt"]
+        assert row.state == "resumed" and row.bytes_done == row.size
+        assert (row.records, row.clean, row.quarantined) == (900, 850, 50)
+        # Its numbers join the run totals rather than restarting from zero.
+        assert (disp._records, disp._clean, disp._quarantined) == (900, 850, 50)
+        assert disp._bytes_done == 1000 and disp._files_done == 1
+
+        out = self._render(disp, disp._table())
+        assert "a.txt" in out and "b.txt" in out and "c.txt" in out
+        assert "1/3 files" in out
+        # Complete, so it shows its counts — the pending rows stay blank.
+        assert "850" in out and "900" in out
+
+    def test_resumed_row_for_a_file_no_longer_in_the_input_set_is_ignored(self):
+        # The checkpoint can name a file the current invocation did not glob.
+        gone = report.FileStats(src_name="dropped.txt")
+        gone.paired_records = 5
+        disp = self._display(120, sizes={"a.txt": 10}, total_files=1, completed=[gone])
+        assert "dropped.txt" not in disp._rows
+        assert disp._files_done == 1 and disp._records == 0
 
     def test_failure_still_prints_its_error_on_a_tty(self):
         # A failure is not routine progress and the row cannot carry the reason.

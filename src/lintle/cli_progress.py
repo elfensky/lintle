@@ -34,7 +34,9 @@ def status(message):
 class _Row:
     """One discovered file's row — the whole run's state for that file, from
     ``pending`` through ``running`` to ``done``/``failed``. The row exists from
-    the first frame; work updates it in place rather than adding a line."""
+    the first frame; work updates it in place rather than adding a line. A
+    resumed run's carried-over files start at ``resumed``: complete like
+    ``done``, but dimmed, because an earlier run measured those numbers."""
 
     index: int
     name: str
@@ -78,7 +80,7 @@ class ProgressDisplay:
     # with the shell prompt.
     _CHROME_LINES = 8
 
-    def __init__(self, total_files, progress_queue, console, sizes, already_done=0):
+    def __init__(self, total_files, progress_queue, console, sizes, completed=()):
         self._total_files = total_files
         self._queue = progress_queue
         self._console = console
@@ -87,7 +89,7 @@ class ProgressDisplay:
         self._bytes_done = 0
         self._clean = 0
         self._quarantined = 0
-        self._files_done = already_done
+        self._files_done = len(completed)
         self._start = time.monotonic()
         self._lock = threading.Lock()
         self._stop = threading.Event()
@@ -103,6 +105,15 @@ class ProgressDisplay:
             name: _Row(index=i, name=name, size=size)
             for i, (name, size) in enumerate(sizes.items(), start=1)
         }
+        # A resumed run's already-complete files get their rows filled in from
+        # the checkpoint before the first frame, so the roster is the whole
+        # corpus and the summary row's totals cover it. Showing only the
+        # remaining files would leave the count ("2/29 files") describing a
+        # table with 27 rows in it, and would drop the earlier run's records
+        # and bytes out of every total. Matches `summary.render_files`, which
+        # already carries resumed files as dimmed rows.
+        for stats in completed:
+            self._adopt_completed(stats)
         self._corpus_bytes = sum(sizes.values())
         self._w_index = len(str(max(total_files, 1)))
         # The pinned name width must also hold the summary row's own label, or
@@ -135,6 +146,26 @@ class ProgressDisplay:
             self._refresh()  # commit the final state before the frame freezes
             self._display.stop()
         return False
+
+    def _adopt_completed(self, stats):
+        """Fill a row finished by an earlier run from its checkpointed stats, at
+        construction, so it is already complete in the first frame. Unlike
+        :meth:`file_done` this prints nothing and does not bump the done count —
+        that came from the checkpoint, and this file's completion was reported
+        when it actually happened."""
+        row = self._rows.get(stats.src_name)
+        if row is None:
+            return  # checkpointed under a name no longer in the input set
+        row.state = "resumed"
+        row.bytes_done = row.size
+        row.records = stats.paired_records
+        row.clean = stats.clean_count
+        row.quarantined = stats.quarantined_count
+        row.elapsed = stats.elapsed_seconds
+        self._records += stats.paired_records
+        self._bytes_done += row.size
+        self._clean += stats.clean_count
+        self._quarantined += stats.quarantined_count
 
     def file_done(self, stats):
         """Fold a finished file's exact counts into its row. Off a TTY — where
@@ -267,7 +298,14 @@ class ProgressDisplay:
             rows = sorted(self._rows.values(), key=lambda r: r.index)
             visible, hidden = self._visible(rows)
             for row in visible:
-                table.add_row(str(row.index), Text(row.name), *self._cells(row, tier))
+                table.add_row(
+                    str(row.index),
+                    Text(row.name),
+                    *self._cells(row, tier),
+                    # Dimmed like the results table's resumed rows: complete,
+                    # but measured by the earlier run, not this one.
+                    style="dim" if row.state == "resumed" else None,
+                )
             if hidden:
                 table.add_row("", f"… {hidden} more", style="dim")
 
@@ -317,7 +355,7 @@ class ProgressDisplay:
         if failed:
             cells += ["failed", ""]
         else:
-            done = row.state == "done"
+            done = row.state in ("done", "resumed")
             cells += [
                 f"{row.clean:,}" if done else "",
                 f"{row.quarantined:,}" if done else "",
