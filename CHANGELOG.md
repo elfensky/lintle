@@ -4,6 +4,34 @@ All notable changes to this project are documented in this file. The format is b
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.13.2] - 2026-07-28
+
+### Fixed
+
+- **The last silent stretches now show a spinner.** 0.13.1 gave `extract` and
+  `diff` in-flight feedback but missed four places that still did real I/O with
+  nothing on screen — three of them *before* a live table opens, which is the
+  worst place for it, because the command looks hung before it has said
+  anything at all.
+
+  - `clean` clears the whole prior output tree at startup — tens of GB of
+    unlinking on a corpus re-run — and did it before the roster printed.
+  - `dedup` streams and parses a prior `verify` run's entire suspects chunk set
+    before its table opens.
+  - `extract` parses all of `broken-noradids.ndjson` before any per-catalog
+    work, and its per-catalog chunk bisect sat outside the analysis spinner.
+    The bisect now shares that spinner rather than getting its own: the locate
+    and the read are one silent stretch to anyone watching, and two consecutive
+    spinners would only flicker.
+
+  `report`, `explain`, and the wizard stay bare deliberately — their work is
+  instantaneous, and a spinner that flashes for 50 ms reads worse than none.
+  `verify` needed nothing: its preflight is stat-only and every stage after the
+  per-stem loop already relabels the pinned summary row.
+
+- Spinner labels all end in an ellipsis now; `diff`'s was the one still using
+  three ASCII dots.
+
 ## [0.13.1] - 2026-07-28
 
 ### Added

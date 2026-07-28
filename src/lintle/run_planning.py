@@ -14,6 +14,7 @@ from lintle import (
     REPORT_DIRNAME,
     SHARDS_DIRNAME,
     VERIFY_DIRNAME,
+    cli_progress,
     fsutil,
     report,
     resume,
@@ -295,8 +296,11 @@ def resolve_clean_plan(config: CleanConfig, files, file_sizes):
 
     # Archive any prior checkpoint (preserves recoverability) then scrub outputs.
     resume.archive_checkpoint(config.out_dir, timestamp=resume.run_started_stamp())
-    # Issue #102: scrub also removes prior-run report artifacts.
-    scrub_outputs(config.out_dir)
+    # Issue #102: scrub also removes prior-run report artifacts. Spinner: this
+    # unlinks the whole prior output tree — tens of GB on a corpus re-run — and
+    # runs before the roster, so without it `clean` looks hung at startup.
+    with cli_progress.status("clearing previous outputs…"):
+        scrub_outputs(config.out_dir)
 
     # Issue #94: disk guard runs AFTER scrub so freed prior-output space is
     # already counted as available.

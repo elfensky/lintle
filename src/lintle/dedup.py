@@ -231,7 +231,10 @@ def run(out_dir: str, chunk_records: int = CHUNK_RECORDS_DEFAULT) -> int:
     # filled in as each streams. Sizes come from the same stat-only fingerprint
     # `verify` uses, so the roster and the stream it announces cannot disagree.
     stem_sizes = dict(records.cleaned_fingerprint(out_dir)["stems"])
-    hard = _load_hard_positions(out_dir)
+    # Spinner: this streams and parses a prior verify run's whole suspects
+    # chunk set — every severity, filtered after — before the table opens.
+    with cli_progress.status("reading verify suspects…"):
+        hard = _load_hard_positions(out_dir)
     sorter = grouping.ExternalSorter()
     n_read = n_excluded = 0
     excluded_by_stem: Counter[str] = Counter()
