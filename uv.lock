@@ -91,7 +91,7 @@ wheels = [
 
 [[package]]
 name = "lintle"
-version = "0.13.5"
+version = "0.13.6"
 source = { editable = "." }
 dependencies = [
     { name = "humanize" },

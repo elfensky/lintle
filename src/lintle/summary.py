@@ -14,6 +14,8 @@ from rich.table import Table
 from rich.text import Text
 
 from lintle import REPORT_DIRNAME, term
+from lintle.categories import FIXES, FixClass
+from lintle.diagnostics import RULES, RuleID
 
 _BAR_CELLS = 24
 
@@ -100,6 +102,19 @@ def _bar(part, whole, *, width, use_unicode):
     return fill_char * cells + " " * (width - cells)
 
 
+def _meaning(name):
+    """The short human title behind a rule ID (``TLE-COL-001``) or a fix tag
+    (``crlf``), from the same registries ``explain`` and ``diff`` read. Returns
+    ``""`` for anything not in the current vocabulary — a retired ID from an
+    older run still renders, just without a gloss."""
+    for registry, key in ((RULES, RuleID), (FIXES, FixClass)):
+        try:
+            return registry[key(name)].short_title
+        except ValueError, KeyError:
+            continue
+    return ""
+
+
 def _sorted_counts(d):
     """Return items from ``d`` sorted by descending count, then ascending key."""
     return sorted(d.items(), key=lambda kv: (-kv[1], kv[0]))
@@ -173,20 +188,26 @@ def _render_sections(console, label, run, s, *, bars):
     """Render a rich-styled section panel (medium: no bars; wide: with bars).
 
     The ``bars`` flag is forwarded only to the "Quarantined by rule" section;
-    "Fixes applied" is always rendered without bars regardless of tier. Adds a
-    "Failures" table when any files failed (issue #83)."""
+    "Fixes applied" is always rendered without bars regardless of tier. Both
+    sections carry the rule/fix gloss from the shared registries, so a panel
+    never leaves the reader holding a bare code. Adds a "Failures" table when
+    any files failed (issue #83)."""
     console.rule(f"lintle {label} · {run['timestamp']}")
     _print_totals(console, run, s)
 
     def _section(title, counts, with_bars):
         t = Table(title=title, box=box.SIMPLE, pad_edge=False, title_justify="left")
         t.add_column("name")
+        # The gloss, so a reader never has to go and look up what a code means.
+        # Long titles wrap rather than truncate — the count and share columns
+        # are fixed-width, so the meaning is the one that can afford the room.
+        t.add_column("what it means", style="dim")
         t.add_column("count", justify="right")
         if with_bars:
             t.add_column("share")
         total = sum(counts.values())
         for name, n in _sorted_counts(counts):
-            row = [name, f"{n:,}"]
+            row = [name, _meaning(name), f"{n:,}"]
             if with_bars:
                 row.append(
                     _bar(n, total, width=_BAR_CELLS, use_unicode=True)
