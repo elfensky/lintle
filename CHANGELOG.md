@@ -4,6 +4,28 @@ All notable changes to this project are documented in this file. The format is b
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.13.4] - 2026-07-28
+
+### Fixed
+
+- **`verify` and `dedup`'s heartbeat turns on the clock, not on the work.** The
+  spinner took its frame from the redraw count, and redraws only happened when
+  a unit reported — so it moved in bursts: a flurry while records streamed,
+  then nothing at all through the stages that report rarely. On a corpus run
+  that meant minutes of a frozen glyph through `verify`'s external sort, the
+  contradiction pass, and the orbit sweep, which reads as a hang — the one
+  thing a heartbeat exists to rule out.
+
+  Measured over an 8-second `verify`: the worst gap between redraws drops from
+  1.105 s to 0.155 s, and the rate goes from a bursty 3.6/s to a steady 11.8/s.
+  On the corpus the old gap is minutes, not a second.
+
+- `clean`'s display has no spinner — its motion is the filling bars — but it
+  had the same shape of bug: the queue-drain loop returned early when no
+  messages were waiting, so the summary row's wall clock froze during a stall.
+  It now redraws every cycle, which is exactly when a moving clock is worth
+  having.
+
 ## [0.13.3] - 2026-07-28
 
 ### Fixed

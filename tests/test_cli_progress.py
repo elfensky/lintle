@@ -649,7 +649,8 @@ class TestUnitTable:
 
 class TestHeartbeat:
     """A number that changes is not motion. The summary row carries a spinner
-    advanced by work — so it moves while the run moves and stops if it stalls."""
+    turned by the clock, so it keeps moving through the stages that report
+    rarely instead of freezing until the next update lands."""
 
     def _table(self, terminal=True):
         console = Console(
@@ -659,14 +660,34 @@ class TestHeartbeat:
             ["a", "b"], ("#", "file", "records"), console=console
         )
 
-    def test_spinner_advances_on_every_refresh(self):
+    @staticmethod
+    def _glyph(table):
+        return table._table().columns[1]._cells[-1][0]
+
+    def test_spinner_advances_with_the_clock_not_with_work(self, monkeypatch):
+        # The regression: deriving the frame from the redraw count meant a
+        # stage that reports once a minute showed a frozen glyph for a minute.
         table = self._table()
+        now = [table._start]
+        monkeypatch.setattr(cli_progress.time, "monotonic", lambda: now[0])
+        with table:
+            frames = []
+            for _ in range(4):  # time passes; no work is reported at all
+                now[0] += cli_progress._TICK
+                frames.append(self._glyph(table))
+        assert len(set(frames)) == 4
+
+    def test_spinner_holds_still_while_the_clock_does(self, monkeypatch):
+        # The complement: work landing does not advance it either, so the rate
+        # is the clock's and nothing else's.
+        table = self._table()
+        monkeypatch.setattr(cli_progress.time, "monotonic", lambda: table._start)
         with table:
             frames = []
             for _ in range(4):
                 table.update("a", records="1")
-                frames.append(table._table().columns[1]._cells[-1][0])
-        assert len(set(frames)) == 4  # a different glyph each time work landed
+                frames.append(self._glyph(table))
+        assert len(set(frames)) == 1
 
     def test_no_spinner_once_the_run_is_over(self):
         table = self._table()

@@ -216,6 +216,10 @@ class ProgressDisplay:
         while not self._stop.is_set():
             try:
                 self._drain()
+                # Redraw every cycle, not only when messages arrived: the
+                # summary row carries the run's wall clock, and a frozen clock
+                # during a stall is exactly when it most needs to be moving.
+                self._refresh()
             except EOFError, BrokenPipeError, ConnectionResetError, OSError:
                 break
             except Exception:  # transient render glitch — keep draining
@@ -256,7 +260,6 @@ class ProgressDisplay:
                             row.started = time.monotonic()
                     case pipeline.FileEnded():
                         pass  # the exact counts arrive with `file_done`
-        self._refresh()
 
     def _refresh(self):
         """Redraw the live table. A render failure is cosmetic — the drain loop's
@@ -367,6 +370,10 @@ class ProgressDisplay:
 
 _SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
+# One frame per tick, ten a second — the rate rich's own spinners turn at, and
+# the rate the clean display already drains its queue at.
+_TICK = 0.1
+
 
 def bar(completed, total):
     """A progress bar cell for a results-table row — the same renderable the
@@ -448,9 +455,15 @@ class UnitTable:
         self._label = None
         self._totals = {}
         self._display = None
-        self._tick = 0
         self._finished = False
         self.windowed = False
+        self._start = time.monotonic()
+        # The heartbeat has to keep moving between work reports, so a timer
+        # redraws the frame as well as the work does. That makes `_table()` a
+        # shared read across two threads, hence the lock.
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._animate, daemon=True)
 
     def __enter__(self):
         if self._live_mode:
@@ -461,12 +474,16 @@ class UnitTable:
                 auto_refresh=False,
             )
             self._display.start()
+            self._thread.start()
         else:
             self._console.print(self._table())  # the roster, statically
         return self
 
     def __exit__(self, *_exc):
         self._finished = True
+        self._stop.set()
+        if self._thread.is_alive():
+            self._thread.join()
         if self._display is not None:
             self._refresh()
             self._display.stop()
@@ -479,41 +496,55 @@ class UnitTable:
 
     def start(self, name):
         """Mark a unit as the one being worked."""
-        if (row := self._by_name.get(name)) is not None:
-            row.state = "running"
+        with self._lock:
+            if (row := self._by_name.get(name)) is not None:
+                row.state = "running"
         self._refresh()
 
     def update(self, name, **cells):
         """Merge cells into a running unit's row. Callers throttle this — one
         update per record would cost more than the work being reported."""
-        if (row := self._by_name.get(name)) is not None:
-            row.cells.update(cells)
+        with self._lock:
+            if (row := self._by_name.get(name)) is not None:
+                row.cells.update(cells)
         self._refresh()
 
     def finish(self, name, **cells):
         """Write a unit's final cells and count it done."""
-        if (row := self._by_name.get(name)) is not None:
-            row.state = "done"
-            row.cells.update(cells)
-            self._done += 1
+        with self._lock:
+            if (row := self._by_name.get(name)) is not None:
+                row.state = "done"
+                row.cells.update(cells)
+                self._done += 1
         self._refresh()
 
     def phase(self, label):
         """Relabel the summary row for a stage that is not per-unit (sorting the
         stream, writing the output tree). The table stays put and keeps every
         row it has — the stage reports itself without printing a line."""
-        self._label = label
+        with self._lock:
+            self._label = label
         self._refresh()
 
     def totals(self, **cells):
         """Set the summary row's cells."""
-        self._totals.update(cells)
+        with self._lock:
+            self._totals.update(cells)
         self._refresh()
+
+    def _animate(self):
+        """Redraw on a timer so the heartbeat keeps moving through a long
+        stretch of work that reports rarely — the sort, the orbit pass, a big
+        stem. Nothing here reads or writes row state; it only asks for the
+        frame that :meth:`_refresh` would have drawn anyway."""
+        while not self._stop.wait(_TICK):
+            self._refresh()
 
     def _refresh(self):
         if self._display is not None:
-            self._tick += 1
-            self._display.update(self._table(), refresh=True)
+            with self._lock:
+                table = self._table()
+            self._display.update(table, refresh=True)
 
     def _table(self, *, complete=False):
         """Build the current frame. ``complete`` renders every row regardless of
@@ -549,15 +580,17 @@ class UnitTable:
         return table
 
     def _heartbeat(self, complete):
-        """A spinner frame for the summary row, advanced by *work* rather than
-        by a timer: every frame is drawn because something changed, so the
-        glyph moves while the run moves and stops dead if it stalls — which is
-        the question a static label cannot answer. Absent from the final frame
-        and from the static off-a-TTY prints, so finished output is stable
-        text."""
+        """A spinner frame for the summary row, picked from the wall clock so it
+        turns at a steady rate for as long as the table is open. Deriving it
+        from the redraw count instead made it stutter along with the work —
+        smooth while records streamed, frozen through the stages that report
+        once a minute, which reads as a hang rather than as progress. Absent
+        from the final frame and from the static off-a-TTY prints, so finished
+        output is stable text."""
         if complete or self._finished or not self._live_mode:
             return ""
-        return _SPINNER[self._tick % len(_SPINNER)] + " "
+        frame = int((time.monotonic() - self._start) / _TICK) % len(_SPINNER)
+        return _SPINNER[frame] + " "
 
 
 def _percent(part, whole):
