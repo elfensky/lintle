@@ -551,3 +551,28 @@ class TestResultsTable:
         )
         assert [c.justify for c in table.columns] == ["right", "left", "left", "left"]
         assert table.columns[0].style == "dim"
+
+
+class TestRuleMeanings:
+    """The panel glosses every code it prints — a bare `TLE-COL-001` makes the
+    reader go and look it up, and the text already exists in the registries
+    `explain` and `diff` read."""
+
+    def test_meaning_covers_rules_and_fixes(self):
+        assert "69 columns" in summary._meaning("TLE-COL-001")
+        assert "checksum" in summary._meaning("TLE-CHK-001")
+        assert "carriage return" in summary._meaning("crlf")
+
+    def test_unknown_code_renders_without_a_gloss(self):
+        # A retired ID from an older run must still render, just unglossed.
+        assert summary._meaning("TLE-GONE-999") == ""
+        assert summary._meaning("") == ""
+
+    def test_panel_shows_the_gloss_next_to_the_code(self):
+        env = _demo_envelope()
+        console = _console(120, terminal=True)
+        summary.render(env, console=console)
+        out = console.file.getvalue()
+        assert "TLE-COL-004" in out and "what it means" in out
+        assert "column layout" in out  # the quarantine gloss
+        assert "trailing backslash" in out  # the fix gloss

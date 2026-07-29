@@ -4,6 +4,18 @@ All notable changes to this project are documented in this file. The format is b
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- **The summary panel glosses every code it prints.** `Fixes applied` and
+  `Quarantined by rule` gained a *what it means* column — `TLE-COL-001` now
+  reads alongside "line length after normalization is not 69 columns" —
+  sourced from the same registries `lintle explain` and `lintle diff` already
+  use, so there is still one definition of what a rule means. Unknown or
+  retired IDs render unglossed rather than failing. `report.md` already
+  carried this legend; the terminal panel did not.
+
 ## [0.13.5] - 2026-07-29
 
 ### Fixed
