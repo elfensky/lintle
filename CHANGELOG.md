@@ -4,6 +4,21 @@ All notable changes to this project are documented in this file. The format is b
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.13.5] - 2026-07-29
+
+### Fixed
+
+- **`clean`'s live table has a heartbeat now, like every other command.**
+  `verify` and `dedup` carried a turning glyph in the bottom-left of their
+  summary row; `clean` — the command that runs longest — had none, so beyond
+  the bars there was no sign it was alive. Over the same run the summary row
+  goes from 2 spinner frames in total (both from the `status()` spinners at the
+  run's edges, not from the table) to a steady frame every 0.106 s.
+
+  The heartbeat is now one shared function both tables call, so they cannot
+  drift apart again: same glyph, same rate, and the same rule about being
+  absent from the finished frame and from piped output.
+
 ## [0.13.4] - 2026-07-28
 
 ### Fixed
