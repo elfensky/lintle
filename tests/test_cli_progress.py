@@ -689,6 +689,29 @@ class TestHeartbeat:
                 frames.append(self._glyph(table))
         assert len(set(frames)) == 1
 
+    def test_clean_beats_too_and_at_the_same_rate(self, monkeypatch):
+        # clean's table went without a heartbeat while verify's and dedup's had
+        # one, which is the inconsistency the shared helper exists to prevent.
+        console = Console(file=io.StringIO(), force_terminal=True, width=120)
+        disp = cli_progress.ProgressDisplay(2, queue.Queue(), console, {"a.txt": 10})
+        now = [disp._start]
+        monkeypatch.setattr(cli_progress.time, "monotonic", lambda: now[0])
+        frames = []
+        for _ in range(4):
+            now[0] += cli_progress._TICK
+            frames.append(disp._table().columns[1]._cells[-1][0])
+        assert len(set(frames)) == 4
+        assert all(f in cli_progress._SPINNER for f in frames)
+
+    def test_clean_has_no_spinner_once_finished_or_off_a_tty(self):
+        console = Console(file=io.StringIO(), force_terminal=True, width=120)
+        disp = cli_progress.ProgressDisplay(2, queue.Queue(), console, {"a.txt": 10})
+        disp._finished = True
+        assert disp._table().columns[1]._cells[-1][0] not in cli_progress._SPINNER
+        piped = Console(file=io.StringIO(), force_terminal=False, width=120)
+        off = cli_progress.ProgressDisplay(2, queue.Queue(), piped, {"a.txt": 10})
+        assert off._table().columns[1]._cells[-1][0] not in cli_progress._SPINNER
+
     def test_no_spinner_once_the_run_is_over(self):
         table = self._table()
         with table:

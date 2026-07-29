@@ -95,6 +95,7 @@ class ProgressDisplay:
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._display = None
+        self._finished = False
         self.windowed = False
         # `sizes` is the ordered name -> size map the caller stat'd once, so row
         # N is file N everywhere. Column widths are pinned from these
@@ -118,7 +119,9 @@ class ProgressDisplay:
         self._w_index = len(str(max(total_files, 1)))
         # The pinned name width must also hold the summary row's own label, or
         # the no-wrap column truncates it.
-        widest_label = len(f"{total_files}/{total_files} files")
+        # +2 for the heartbeat glyph and its space: the column is width-pinned
+        # and no_wrap, so a label sized without it gets truncated.
+        widest_label = len(f"{total_files}/{total_files} files") + 2
         self._w_name = max(max((len(n) for n in sizes), default=4), widest_label)
         self._w_size = max((len(_format_size(s)) for s in sizes.values()), default=4)
         # The record count has no pre-dispatch bound, so it is pinned wide
@@ -142,6 +145,7 @@ class ProgressDisplay:
     def __exit__(self, *_exc):
         self._stop.set()
         self._thread.join()
+        self._finished = True  # the frozen frame carries no spinner
         if self._display is not None:
             self._refresh()  # commit the final state before the frame freezes
             self._display.stop()
@@ -330,7 +334,8 @@ class ProgressDisplay:
                 cells.append(summary.format_clock(elapsed))
             table.add_row(
                 "",
-                f"{self._files_done}/{self._total_files} files",
+                heartbeat(self._start, live=self._live, finished=self._finished)
+                + f"{self._files_done}/{self._total_files} files",
                 *cells,
                 style="bold",
             )
@@ -373,6 +378,17 @@ _SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 # One frame per tick, ten a second — the rate rich's own spinners turn at, and
 # the rate the clean display already drains its queue at.
 _TICK = 0.1
+
+
+def heartbeat(start, *, live, finished):
+    """The summary row's spinner frame, picked from the wall clock so it turns
+    at a steady rate for as long as the table is open — one definition, so
+    ``clean``'s live table and the post-run tables beat identically rather than
+    one of them sitting still. Empty once the run is over and empty off a TTY,
+    so finished and piped output stay stable text."""
+    if finished or not live:
+        return ""
+    return _SPINNER[int((time.monotonic() - start) / _TICK) % len(_SPINNER)] + " "
 
 
 def bar(completed, total):
@@ -580,17 +596,13 @@ class UnitTable:
         return table
 
     def _heartbeat(self, complete):
-        """A spinner frame for the summary row, picked from the wall clock so it
-        turns at a steady rate for as long as the table is open. Deriving it
-        from the redraw count instead made it stutter along with the work —
-        smooth while records streamed, frozen through the stages that report
-        once a minute, which reads as a hang rather than as progress. Absent
-        from the final frame and from the static off-a-TTY prints, so finished
-        output is stable text."""
-        if complete or self._finished or not self._live_mode:
-            return ""
-        frame = int((time.monotonic() - self._start) / _TICK) % len(_SPINNER)
-        return _SPINNER[frame] + " "
+        """This table's frame of the shared :func:`heartbeat`. ``complete`` is
+        the static full-table reprint, which is finished output by definition."""
+        return heartbeat(
+            self._start,
+            live=self._live_mode,
+            finished=complete or self._finished,
+        )
 
 
 def _percent(part, whole):
