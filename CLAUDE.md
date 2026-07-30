@@ -130,6 +130,7 @@ src/lintle/
 ├── dedup.py       # `lintle dedup` — latest-re-issue-only import list + per-satellite manifest.jsonl from cleaned/ (reuses verify's sort)
 ├── extract.py     # `lintle extract` — one satellite's TLE history + stats sidecar from a dedup run (binary search, no index)
 ├── history.py     # pure history reducer (HistoryStats/Gap, analyze_epochs) shared by extract + dedup — no I/O, no sgp4
+├── epoch.py       # THE definition of a record's moment in time (#199): normalized parse/key/instant/iso, stdlib-only
 ├── chunking.py    # ChunkedWriter/ChunkedReader — the <stem>.NNNNN.<suffix> chunk-set layer
 ├── config.py      # optional ./.lintle.json remembering source/output dirs (stdlib JSON)
 ├── wizard.py      # interactive rich menu shown when `lintle` runs with no subcommand
@@ -140,7 +141,6 @@ src/lintle/
 └── verify/        # `lintle verify` — post-run auditor (sole importer of sgp4, via orbit.py)
     ├── __init__.py # run() orchestration
     ├── checks.py   # revalidation, source byte-diff, contradiction rules
-    ├── epoch.py    # epoch parsing/keys
     ├── grouping.py # external merge-sort for (catalog, epoch) grouping
     ├── orbit.py    # opt-in --orbit sgp4 physics pass (lazy import)
     ├── records.py  # streams cleaned chunk sets back as records
