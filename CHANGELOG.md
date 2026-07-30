@@ -72,6 +72,24 @@ All notable changes to this project are documented in this file. The format is b
   `gap_count: 0`. The threshold now uses `statistics.median_low`; the *reported*
   `median_spacing_days` is unchanged.
 
+### Added
+
+- **Alpha-5 catalog ids are decoded, not skipped** (#203). The SATCAT passed 99,999 in 2026
+  and new ids use the Alpha-5 wire form — a letter in column 3 encoding the leading 10–33,
+  with `I` and `O` omitted so it can never be read as `1` or `0` (`E8493` = 148493, up to
+  `Z9999` = 339999). `tle.decode_catalog` now reads both spellings and is the one reader of
+  the cols 3–7 field; `verify.records.catalog_of` routes through it, so such records get a
+  real catalog instead of the `-1` sentinel and `dedup` imports them like any other satellite
+  rather than skipping them as `DEDUP-UNUSABLE-RECORD` (that arm remains, for genuinely
+  corrupt lines). `lintle extract` accepts either spelling — `extract E8493` and
+  `extract 148493` name the same satellite — and every artifact keeps speaking the decoded
+  integer (`manifest.jsonl`'s `norad_id`, the `<id>.json` sidecar, the `<id>.txt` filename);
+  exported TLE bytes stay verbatim. The decode table is pinned to space-track's own
+  documented vectors, and `sgp4.io`'s `from_alpha5` stays out of the clean path.
+  `tle.extract_norad_id` is deliberately unchanged — it feeds `broken-noradids.ndjson`'s
+  5-digit contract. The 2004–2025 corpus contains zero Alpha-5 records, so this is
+  future-proofing with no effect on current output.
+
 ### Changed
 
 - `dedup` and `verify` artifact `schema_version` bumped `"1"` → `"2"`: row shapes are
