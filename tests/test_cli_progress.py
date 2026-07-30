@@ -3,6 +3,7 @@
 import contextlib
 import io
 import queue
+import types
 
 from rich.console import Console
 
@@ -461,6 +462,26 @@ class TestLiveTable:
             row.state = "done"
         out = self._render(disp, disp._table())
         assert "f28.txt" in out  # the last row is visible at the end of a run
+
+    def test_window_still_windows_on_a_terminal_shorter_than_the_chrome(self):
+        # Height <= chrome used to invert the guard and return ALL rows — a
+        # 200-row live region rich crops from the top, with `windowed` left
+        # False so the complete results table was never printed either (#G).
+        rows = [types.SimpleNamespace(state="done") for _ in range(200)]
+        visible, hidden = cli_progress.window(rows, 8, 8)
+        assert len(visible) == 1
+        assert hidden == 199
+        visible, hidden = cli_progress.window(rows, 1, 8)
+        assert len(visible) == 1
+        assert hidden == 199
+
+    def test_short_terminal_marks_the_display_windowed(self):
+        # `windowed` drives the complete-table reprint on exit; at height 8 it
+        # must be True, so run results are still shown after the live frame.
+        sizes = {f"f{i}.txt": 1000 for i in range(20)}
+        disp = self._display(120, sizes=sizes, total_files=20, height=8)
+        self._render(disp, disp._table())
+        assert disp.windowed is True
 
     def test_tiers_drop_columns_whole(self):
         sizes = {"a.txt": 1000}

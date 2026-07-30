@@ -407,9 +407,12 @@ def window(rows, height, chrome_lines):
     still to come stay on screen, and slides no further than the end of the
     list. Rows outside the window keep their state and come back into it as the
     window moves — the alternative, a live region taller than the viewport,
-    cannot scroll and strands its overflow."""
-    budget = height - chrome_lines
-    if budget < 1 or len(rows) <= budget:
+    cannot scroll and strands its overflow. A terminal shorter than the chrome
+    still gets a one-row window, never the whole list: `budget < 1` used to
+    return every row, handing rich an uncroppable region *and* leaving
+    ``windowed`` False, which suppressed the complete-table reprint on exit."""
+    budget = max(1, height - chrome_lines)
+    if len(rows) <= budget:
         return rows, 0
     active = [i for i, r in enumerate(rows) if r.state in ("pending", "running")]
     start = min(active) if active else len(rows) - budget
