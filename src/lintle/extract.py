@@ -13,7 +13,7 @@ from pathlib import Path
 from rich.text import Text
 
 from lintle import CLEANED_DIRNAME, REPORT_DIRNAME, cli_progress, fsutil, summary, term
-from lintle.chunking import ChunkedReader
+from lintle.chunking import ChunkedReader, ChunkSetError
 from lintle.dedup import DEDUP_DIRNAME, IMPORT_STEM, IMPORT_SUFFIX
 from lintle.history import HistoryStats, analyze_epochs
 from lintle.history import epoch_dt as _epoch_dt
@@ -45,7 +45,12 @@ def _import_chunks(out_dir: str) -> list[Path]:
     140-byte records (a torn chunk must never yield sliced records — correctness
     over recovery)."""
     ddir = Path(out_dir) / DEDUP_DIRNAME
-    chunks = ChunkedReader(ddir, IMPORT_STEM, IMPORT_SUFFIX).chunk_paths()
+    try:
+        chunks = ChunkedReader(ddir, IMPORT_STEM, IMPORT_SUFFIX).complete_chunk_paths()
+    except ChunkSetError as exc:
+        # A gapped set would binary-search a silently shortened stream and
+        # export confidently truncated histories — refuse instead.
+        raise ExtractError(f"{exc}\n  re-run 'lintle dedup'.") from exc
     if not chunks:
         raise ExtractError(
             f"no dedup import set under {ddir}.\n"

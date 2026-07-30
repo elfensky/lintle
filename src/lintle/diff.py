@@ -49,7 +49,12 @@ def iter_findings(run_dir):
     — the diff refuses to count what it cannot interpret."""
     rdir = Path(run_dir) / REPORT_DIRNAME
     reader = chunking.ChunkedReader(rdir, _FINDINGS_STEM, _FINDINGS_SUFFIX)
-    paths = reader.chunk_paths()
+    try:
+        paths = reader.complete_chunk_paths()
+    except chunking.ChunkSetError as exc:
+        # A hole in the shard set would silently undercount findings and skew
+        # the whole diff verdict — refuse to count what cannot be complete.
+        raise DiffError(str(exc)) from exc
     if not paths:
         raise DiffError(
             f"cannot read {rdir / _FINDINGS_NAME}: no report.jsonl chunk "

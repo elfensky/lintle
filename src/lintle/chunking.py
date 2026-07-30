@@ -176,6 +176,13 @@ class ChunkedWriter:
         return False
 
 
+class ChunkSetError(RuntimeError):
+    """A chunk set on disk is not the contiguous ``1..N`` a :class:`ChunkedWriter`
+    commits — a chunk was deleted or never landed. Reading around the hole would
+    yield a silently truncated stream that still looks whole (and renumbers every
+    downstream record index), so read consumers refuse instead."""
+
+
 class ChunkedReader:
     """Reads a stem's chunk set as one logical stream. Globs ``{stem}.*{suffix}``,
     parses the 5-digit index, sorts by it, and yields lines across the whole set
@@ -199,10 +206,31 @@ class ChunkedReader:
         matches.sort()
         return [path for _, path in matches]
 
+    def complete_chunk_paths(self) -> list[Path]:
+        """:meth:`chunk_paths`, asserting the writer's invariant that indices run
+        ``1..N`` with no hole — raises :class:`ChunkSetError` naming the first
+        missing index. A :class:`ChunkedWriter` guarantees contiguity by
+        construction, so a gap is always external damage. Scrub paths that must
+        tolerate gaps (``_open_next``, ``discard_all``, the legacy output scrub)
+        keep using :meth:`chunk_paths`."""
+        paths = self.chunk_paths()
+        for expected, path in enumerate(paths, start=1):
+            found = int(self._rx.match(path.name).group(1))
+            if found != expected:
+                raise ChunkSetError(
+                    f"chunk set {self._stem}.*{self._suffix} under {self._dir} "
+                    f"is missing chunk {expected:05d} (found {path.name}) — a "
+                    "deleted or never-committed chunk; reading around it would "
+                    "silently truncate the stream. Regenerate the set."
+                )
+        return paths
+
     def iter_lines(self) -> Iterator[bytes]:
         """Yield each logical line as ``bytes`` (trailing ``\\n`` stripped),
-        streaming one chunk at a time (constant memory)."""
-        for path in self.chunk_paths():
+        streaming one chunk at a time (constant memory). Every ``iter_lines``
+        consumer is a read consumer, so the set's contiguity is asserted first
+        (:class:`ChunkSetError` on a hole) — never a silently shortened stream."""
+        for path in self.complete_chunk_paths():
             with open(path, "rb") as handle:
                 for line in handle:
                     yield line.rstrip(b"\n")

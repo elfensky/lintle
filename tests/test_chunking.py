@@ -16,6 +16,7 @@ from lintle.chunking import (
     MAX_CHUNK_INDEX,
     ChunkedReader,
     ChunkedWriter,
+    ChunkSetError,
 )
 
 
@@ -123,6 +124,18 @@ class TestChunkedWriterScrubExisting:
             for i in range(2):
                 w.write_record(f"1 x{i}".encode(), f"2 x{i}".encode())
         assert _names(tmp_path) == ["tle.00001.cleaned.txt", "tle.00002.cleaned.txt"]
+
+    def test_scrub_still_works_against_a_gapped_set(self, tmp_path):
+        # The scrub path must keep tolerating holes (it exists to clean up
+        # damage) even though read consumers now refuse them — regression
+        # guard for the chunk_paths / complete_chunk_paths split.
+        with ChunkedWriter(tmp_path, "tle", ".cleaned.txt", units_per_chunk=1) as w:
+            for i in range(4):
+                w.write_record(f"1 x{i}".encode(), f"2 x{i}".encode())
+        (tmp_path / "tle.00002.cleaned.txt").unlink()  # hand-punched hole
+        with ChunkedWriter(tmp_path, "tle", ".cleaned.txt", units_per_chunk=1) as w:
+            w.write_record(b"1 y", b"2 y")
+        assert _names(tmp_path) == ["tle.00001.cleaned.txt"]
 
     def test_scrub_leaves_other_stems_alone(self, tmp_path):
         with ChunkedWriter(tmp_path, "tleA", ".cleaned.txt", units_per_chunk=1) as w:
@@ -241,6 +254,42 @@ class TestChunkedReader:
             "s.00002.jsonl",
             "s.00003.jsonl",
         ]
+
+    def test_complete_chunk_paths_accepts_a_contiguous_set(self, tmp_path):
+        with ChunkedWriter(tmp_path, "s", ".jsonl", units_per_chunk=1) as w:
+            for i in range(3):
+                w.write_line(str(i))
+        reader = ChunkedReader(tmp_path, "s", ".jsonl")
+        assert reader.complete_chunk_paths() == reader.chunk_paths()
+
+    def test_complete_chunk_paths_names_a_missing_interior_chunk(self, tmp_path):
+        with ChunkedWriter(tmp_path, "s", ".jsonl", units_per_chunk=1) as w:
+            for i in range(3):
+                w.write_line(str(i))
+        (tmp_path / "s.00002.jsonl").unlink()
+        with pytest.raises(ChunkSetError, match="missing chunk 00002"):
+            ChunkedReader(tmp_path, "s", ".jsonl").complete_chunk_paths()
+
+    def test_complete_chunk_paths_names_a_missing_leading_chunk(self, tmp_path):
+        with ChunkedWriter(tmp_path, "s", ".jsonl", units_per_chunk=1) as w:
+            for i in range(2):
+                w.write_line(str(i))
+        (tmp_path / "s.00001.jsonl").unlink()
+        with pytest.raises(ChunkSetError, match="missing chunk 00001"):
+            ChunkedReader(tmp_path, "s", ".jsonl").complete_chunk_paths()
+
+    def test_iter_lines_refuses_a_gapped_set(self, tmp_path):
+        # A silent read-around would truncate the stream AND renumber every
+        # downstream record index (desyncing suspects.jsonl addresses).
+        with ChunkedWriter(tmp_path, "s", ".jsonl", units_per_chunk=1) as w:
+            for i in range(3):
+                w.write_line(str(i))
+        (tmp_path / "s.00002.jsonl").unlink()
+        with pytest.raises(ChunkSetError):
+            list(ChunkedReader(tmp_path, "s", ".jsonl").iter_lines())
+
+    def test_empty_set_is_trivially_complete(self, tmp_path):
+        assert ChunkedReader(tmp_path, "s", ".jsonl").complete_chunk_paths() == []
 
 
 class TestConcatIdentity:

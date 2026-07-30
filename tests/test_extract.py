@@ -88,6 +88,19 @@ class TestFindSpans:
         with pytest.raises(extract.ExtractError, match="lintle dedup"):
             extract.find_spans(str(tmp_path), 100)
 
+    def test_missing_interior_chunk_is_an_error_not_a_short_history(self, tmp_path):
+        # Deleting import.00002.txt used to yield exit 0 and a confidently
+        # truncated history claiming the full span with gap_count 0 — the
+        # worst failure mode of the whole set. It must refuse instead.
+        out = write_import_tree(
+            tmp_path,
+            recs((100, 1.0), (100, 2.0), (100, 3.0), (100, 4.0), (100, 5.0), (100, 6.0)),
+            2,
+        )
+        (out / DEDUP_DIRNAME / f"{IMPORT_STEM}.00002{IMPORT_SUFFIX}").unlink()
+        with pytest.raises(extract.ExtractError, match="missing chunk 00002"):
+            extract.find_spans(str(out), 100)
+
 
 class TestRun:
     def test_writes_txt_and_json(self, tmp_path, capsys):
