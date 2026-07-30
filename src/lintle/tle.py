@@ -369,6 +369,28 @@ def validate_line(line: str, lineno: int) -> list[FieldError]:
     return [err] if err else []
 
 
+# Alpha-5 letter values for column 3: A=10 … Z=33, with I and O omitted so the
+# letter can never be confused with 1 or 0. Verbatim from space-track's Alpha-5
+# documentation; a test pins the decode to that document's own vectors.
+_ALPHA5_LETTERS = "ABCDEFGHJKLMNPQRSTUVWXYZ"
+
+
+def decode_catalog(field: str) -> int | None:
+    """The integer catalog number spelled by a line-1 cols 3-7 field, or
+    ``None`` if it is neither form. Accepts the plain digits space-track pads
+    for low numbers (``'  836'`` -> 836) and, since the SATCAT passed 99,999 in
+    2026, the Alpha-5 letter-prefixed form where column 3 carries the leading
+    10-33 (``'E8493'`` -> 148493, max ``'Z9999'`` -> 339999). The one reading of
+    this field, so ``verify``'s reader and the ``extract`` CLI cannot disagree
+    about which satellite a caller means."""
+    field = field.strip()
+    if is_ascii_digits(field):
+        return int(field)
+    if len(field) == 5 and field[0] in _ALPHA5_LETTERS and is_ascii_digits(field[1:]):
+        return (_ALPHA5_LETTERS.index(field[0]) + 10) * 10000 + int(field[1:])
+    return None
+
+
 def extract_norad_id(line: str | bytes) -> int | None:
     """Return the 5-digit NORAD catalog ID from a TLE line 1, or ``None``.
 
