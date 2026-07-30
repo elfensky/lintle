@@ -274,7 +274,6 @@ class TestMain:
 
         class _FakeExecutor:
             def __init__(self, *_args, **_kwargs):
-                self._processes = {}
                 self._f = _RaisingFuture()
 
             def submit(self, fn, *args, **kwargs):
@@ -329,7 +328,6 @@ class TestMain:
 
         class _FakeExecutor:
             def __init__(self, *_args, **_kwargs):
-                self._processes = {}
                 self._f = _RaisingFuture()
 
             def submit(self, fn, *args, **kwargs):
@@ -552,10 +550,13 @@ class TestMain:
 
         class _FakeExecutor:
             def __init__(self, *_args, **_kwargs):
-                self._processes = {}  # _terminate_workers iterates this
+                self.terminated = False
 
             def submit(self, *_args, **_kwargs):
                 return _NoopFuture()
+
+            def terminate_workers(self):  # the KI path stops the pool with this
+                self.terminated = True
 
             def shutdown(self, **_kwargs):
                 pass
@@ -934,7 +935,6 @@ class TestFailedFilesInEnvelope:
 
         class _FakeExecutor:
             def __init__(self, *_args, **_kwargs):
-                self._processes = {}
                 self._f = _RaisingFuture()
 
             def submit(self, fn, *args, **kwargs):
@@ -1018,7 +1018,6 @@ class TestFailedFilesInEnvelope:
 
         class _FakeExecutor:
             def __init__(self, *_a, **_k):
-                self._processes = {}
                 self._f = _RaisingFuture()
 
             def submit(self, *a, **k):

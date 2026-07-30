@@ -149,8 +149,12 @@ def run_workers(
             signal.signal(signal.SIGHUP, signal.SIG_IGN)
             interrupted = True
             interrupted_signo = caught["signo"]
-            process_control.terminate_workers(executor)
-            executor.shutdown(wait=False, cancel_futures=True)
+            # terminate_workers() IS shutdown(wait=False, cancel_futures=True)
+            # followed by SIGTERM to every still-live worker, with the closed/
+            # exited/died-mid-loop races guarded (public API, CPython 3.14+).
+            # Never call it from the signal handler itself: it takes the
+            # executor's shutdown lock.
+            executor.terminate_workers()
             if operational_error is None:
                 term.note(
                     process_control.format_cancel_message(

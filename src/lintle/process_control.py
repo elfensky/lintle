@@ -2,8 +2,6 @@
 
 import signal
 
-from lintle import term
-
 
 def signal_exit_code(signo):
     """Conventional 128 + signal number: 130 SIGINT, 143 SIGTERM, 129 SIGHUP."""
@@ -36,18 +34,3 @@ def format_cancel_message(*, done, total):
 def ignore_sigint():
     """Worker-process initializer: ignore Ctrl-C in the worker."""
     signal.signal(signal.SIGINT, signal.SIG_IGN)
-
-
-def terminate_workers(executor):
-    """SIGTERM every pool worker so Ctrl-C need not wait on in-flight files."""
-    try:
-        processes = executor._processes
-    except AttributeError:
-        term.warning(
-            "ProcessPoolExecutor._processes unavailable; falling back to "
-            "shutdown(cancel_futures=True) — Ctrl-C may wait for in-flight tasks."
-        )
-        executor.shutdown(cancel_futures=True)
-        return
-    for proc in list(processes.values()):
-        proc.terminate()

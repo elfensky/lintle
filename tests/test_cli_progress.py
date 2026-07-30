@@ -475,6 +475,15 @@ class TestLiveTable:
         assert len(visible) == 1
         assert hidden == 199
 
+    def test_zero_denominator_dash_respects_console_encoding(self):
+        # A zero-byte corpus renders the dash cell; an ASCII-only console must
+        # get "-" (the #97 rule), never a raw em dash it cannot encode.
+        assert cli_progress._percent(0, 0, "-") == "-"
+        assert cli_progress._percent(50, 100, "-") == "50%"
+        assert cli_progress._dash(types.SimpleNamespace(encoding="ascii")) == "-"
+        assert cli_progress._dash(types.SimpleNamespace(encoding="utf-8")) == "—"
+        assert cli_progress._dash(types.SimpleNamespace(encoding=None)) == "—"
+
     def test_short_terminal_marks_the_display_windowed(self):
         # `windowed` drives the complete-table reprint on exit; at height 8 it
         # must be True, so run results are still shown after the live frame.

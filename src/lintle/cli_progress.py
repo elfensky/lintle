@@ -325,7 +325,7 @@ class ProgressDisplay:
                     )
                 )
             cells += [
-                _percent(self._bytes_done, self._corpus_bytes),
+                _percent(self._bytes_done, self._corpus_bytes, _dash(self._console)),
                 f"{self._records:,}",
                 f"{self._clean:,}",
                 f"{self._quarantined:,}",
@@ -357,7 +357,7 @@ class ProgressDisplay:
                 "" if pending else ProgressBar(total=max(row.size, 1), completed=filled)
             )
         cells += [
-            "" if pending else _percent(filled, row.size),
+            "" if pending else _percent(filled, row.size, _dash(self._console)),
             "" if pending else f"{row.records:,}",
         ]
         if failed:
@@ -608,9 +608,18 @@ class UnitTable:
         )
 
 
-def _percent(part, whole):
-    """Render ``part / whole`` as a whole-number percentage cell."""
-    return f"{int(100 * part / whole)}%" if whole > 0 else "—"
+def _percent(part, whole, dash="—"):
+    """Render ``part / whole`` as a whole-number percentage cell; ``dash`` is
+    the zero-denominator marker, chosen by the caller via :func:`_dash` so an
+    ASCII-only console never receives a raw em dash (the #97 rule — the summary
+    panel learned this; the live table had re-hard-coded it)."""
+    return f"{int(100 * part / whole)}%" if whole > 0 else dash
+
+
+def _dash(console):
+    """The em dash, or ``"-"`` when the console's encoding cannot carry it —
+    the same `summary.can_encode` decision every results table makes."""
+    return "—" if summary.can_encode(console.encoding, "—") else "-"
 
 
 def _format_size(n_bytes):
