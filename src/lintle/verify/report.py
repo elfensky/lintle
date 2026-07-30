@@ -24,7 +24,7 @@ SUSPECTS_STEM = "suspects"
 SUSPECTS_SUFFIX = ".jsonl"
 SUMMARY_JSON = "summary.json"
 SUMMARY_MD = "summary.md"
-SCHEMA_VERSION = "1"
+SCHEMA_VERSION = "2"
 
 _README = """\
 # 04-verify — independent audit of 01-cleaned
