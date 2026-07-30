@@ -92,6 +92,17 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Changed
 
+- **One external sorter, two adapters** (#204 B). `verify.report.SuspectSink` re-implemented
+  `grouping.ExternalSorter` byte-for-byte modulo renaming; the sorter is now parameterised by
+  `key`/`encode`/`decode` and the sink delegates, keeping only its tally and its render.
+  `grouping._key` is promoted to the public `record_key` — the one definition of a record's
+  `(catalog, epoch_key)` group identity — deleting the two byte-identical copies in
+  `dedup._group_key` and `checks.find_conflicts`. Every drain is now wrapped in
+  `contextlib.closing`, fixing a latent cleanup deferral all three call sites inherited: an
+  exception mid-drain used to leave the sorter's spilled temp runs on disk until the abandoned
+  generator was collected. No artifact bytes change; the tie-stability contract equal keys
+  depend on (add order preserved across a spill boundary) is now pinned by a test.
+
 - `dedup` and `verify` artifact `schema_version` bumped `"1"` → `"2"`: row shapes are
   near-identical, but epoch keys are sort keys and group identities, and their meaning
   changes at year boundaries — v1 and v2 artifacts from the same `01-cleaned/` are not
