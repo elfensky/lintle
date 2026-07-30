@@ -19,6 +19,7 @@ one ``(catalog, epoch)`` group is held at a time. Output bytes are deterministic
 ``dedup`` shares ``verify.checks.orbital_state`` / ``element_set`` so the two
 passes agree, byte-for-byte, on 'same orbit' and 'which is latest'."""
 
+import contextlib
 import dataclasses
 import datetime as _dt
 import json
@@ -100,17 +101,12 @@ def _collapse(group: list[CleanedRecord]) -> Group:
     return Group(kept, dropped, checks.has_epoch_clash(group))
 
 
-def _group_key(rec: CleanedRecord) -> tuple[int, float]:
-    """Group key for :func:`grouping.grouped`: one group per ``(catalog, epoch)``."""
-    return (rec.catalog, rec.epoch_key)
-
-
 def _groups(sorted_records: Iterator[CleanedRecord]) -> Iterator[Group]:
     """Collapse a stream sorted by ``(catalog, epoch_key)`` group by group. Holds
     one group at a time — a handful of re-issues in validated ``cleaned/`` output.
     ponytail: a pathological giant group can't occur in validated cleaned records
     (each has a parseable, unique-ish key); a corrupt tree is ``verify``'s job."""
-    for _, buf in grouping.grouped(sorted_records, key=_group_key):
+    for _, buf in grouping.grouped(sorted_records, key=grouping.record_key):
         yield _collapse(buf)
 
 
@@ -283,7 +279,7 @@ def run(out_dir: str, chunk_records: int = CHUNK_RECORDS_DEFAULT) -> int:
     # chunk set — every severity, filtered after — before the table opens.
     with cli_progress.status("reading verify suspects…"):
         hard = _load_hard_positions(out_dir)
-    sorter = grouping.ExternalSorter()
+    sorter = grouping.record_sorter()
     n_read = n_excluded = 0
     excluded_by_stem: Counter[str] = Counter()
     table = cli_progress.UnitTable(
@@ -374,7 +370,10 @@ def _write_import_set(
     # a 2-line-record stream; notes is one JSON line per collapsed group. The
     # manifest accumulates one catalog's epochs/elsets at a time, flushing a row
     # on each catalog boundary (and once more below, for the final catalog).
+    # closing() on the drain: a write failing part-way through releases the
+    # sorter's temp runs now rather than at collection time.
     with (
+        contextlib.closing(sorter.sorted_records()) as stream,
         chunking.ChunkedWriter(
             str(ddir), IMPORT_STEM, IMPORT_SUFFIX, chunk_records
         ) as imp,
@@ -382,7 +381,7 @@ def _write_import_set(
             str(ddir), NOTES_STEM, NOTES_SUFFIX, chunk_records
         ) as notes,
     ):
-        for g in _groups(sorter.sorted_records()):
+        for g in _groups(stream):
             try:
                 epoch = history.epoch_dt(g.kept.line1)
             except ValueError, IndexError:

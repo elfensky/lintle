@@ -21,6 +21,7 @@ This module is the sole ``sgp4`` importer in the package; the clean/validate/rep
 path stays walled off from it (import-graph test). Sampling unit is the satellite
 (continuity needs a contiguous track); the sample is deterministic."""
 
+import contextlib
 import dataclasses
 import math
 import statistics
@@ -337,7 +338,7 @@ def run_orbit_pass(
     ``cleaned/`` to gather the sample — a single-pass sampling optimisation is a
     follow-up (issue #144)."""
     sampled = sample_catalogs(population, sample, all_sats, oversample)
-    sorter = grouping.ExternalSorter()
+    sorter = grouping.record_sorter()
     # Reports through the caller's live table rather than opening a progress
     # region of its own: this runs inside that table's `rich.live.Live`, and a
     # live region cannot nest.
@@ -349,13 +350,16 @@ def run_orbit_pass(
                 sorter.add(rec)
 
     n_pairs = n_tracks = 0
-    for _, track in grouping.grouped(sorter.sorted_records(), key=_by_catalog):
-        found, pairs = _track_suspects(track, sensitivity)
-        sink.add_all(found)
-        n_pairs += pairs
-        n_tracks += 1
-        if n_tracks % 500 == 0:
-            say(f"orbit: propagating — {n_tracks:,}/{len(sampled):,} satellites")
+    # closing(): if a track raises part-way through, the sorter's temp runs go
+    # now rather than at collection time.
+    with contextlib.closing(sorter.sorted_records()) as stream:
+        for _, track in grouping.grouped(stream, key=_by_catalog):
+            found, pairs = _track_suspects(track, sensitivity)
+            sink.add_all(found)
+            n_pairs += pairs
+            n_tracks += 1
+            if n_tracks % 500 == 0:
+                say(f"orbit: propagating — {n_tracks:,}/{len(sampled):,} satellites")
 
     return {
         "orbit_population": len(population),

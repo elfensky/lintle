@@ -1,6 +1,7 @@
 """Tests for ``lintle verify`` (Increment 1: the exhaustive, sgp4-free core)."""
 
 import ast
+import contextlib
 import json
 from pathlib import Path
 
@@ -447,7 +448,7 @@ class TestReadme:
 
 class TestGrouping:
     def test_external_sort_orders_by_catalog_then_epoch(self):
-        sorter = grouping.ExternalSorter(chunk_size=2)  # force a spill
+        sorter = grouping.record_sorter(chunk_size=2)  # force a spill
         other = fix(L1[:2] + "00006" + L1[7:])
         later = fix(L1[:18] + "00200.50000000" + L1[32:])
         given = [
@@ -468,11 +469,24 @@ class TestGrouping:
         # the tail last — so add order survives. If this ever regressed, dedup
         # would silently pick a different "latest" record for a tied group and
         # the import set's bytes would change run to run.
-        sorter = grouping.ExternalSorter(chunk_size=2)  # 5 records -> 2 runs + tail
+        sorter = grouping.record_sorter(chunk_size=2)  # 5 records -> 2 runs + tail
         given = [rec(idx=i) for i in range(5)]  # identical key, distinct index
         for r in given:
             sorter.add(r)
         assert [r.index for r in sorter.sorted_records()] == [0, 1, 2, 3, 4]
+
+    def test_abandoned_drain_releases_temp_runs_on_close(self):
+        # The drain only cleans up in its `finally`, so a partial consume leaves
+        # the spilled runs on disk until the generator is collected. closing()
+        # (which every call site now wraps the drain in) makes that deterministic.
+        sorter = grouping.record_sorter(chunk_size=2)
+        for i in range(5):
+            sorter.add(rec(idx=i))
+        tmpdir = Path(sorter._tmpdir.name)
+        assert list(tmpdir.iterdir())  # runs spilled
+        with contextlib.closing(sorter.sorted_records()) as stream:
+            next(stream)  # consume one record, then abandon the drain
+        assert not tmpdir.exists()  # released at close, not at collection
 
 
 class TestEndToEnd:
