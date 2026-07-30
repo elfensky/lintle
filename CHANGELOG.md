@@ -4,6 +4,37 @@ All notable changes to this project are documented in this file. The format is b
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- **One epoch definition** (#199): a record's moment in time was defined three times
+  (`verify/epoch.py`'s key, `history.py`'s datetime, an inline histogram copy) and the
+  definitions disagreed at year boundaries — `tle.py` accepts day-of-year in `(0, 367)` with
+  no leap-year logic, so a clean `19/366.5` keyed as 2019 while its true instant is
+  2020-01-01. All epoch parsing now routes through the new stdlib-only `lintle/epoch.py`,
+  which normalizes rollover epochs on the decimal string (equal instants ⇒ bit-equal keys;
+  in-range keys unchanged). Consequences fixed: dedup now collapses same-instant re-issues
+  spelled across a year boundary; `manifest.jsonl` / extract-sidecar spans are never negative
+  (`first_epoch <= last_epoch`); verify's `epoch_distribution` bins rollovers into the January
+  they belong to; negative deltas no longer suppress real gaps. `verify/epoch.py` is deleted.
+- **n=3 gap dead zone**: with exactly 2 deltas, the gap threshold (10× the interpolated
+  median) was algebraically unreachable — a 3-record history with a 274-year hole reported
+  `gap_count: 0`. The threshold now uses `statistics.median_low`; the *reported*
+  `median_spacing_days` is unchanged.
+
+### Changed
+
+- `dedup` and `verify` artifact `schema_version` bumped `"1"` → `"2"`: row shapes are
+  near-identical, but epoch keys are sort keys and group identities, and their meaning
+  changes at year boundaries — v1 and v2 artifacts from the same `01-cleaned/` are not
+  byte-comparable (`import.*` order, `notes.*` keys, `suspects.*` order, histogram buckets,
+  orbit `pairs_measured`). `01-cleaned/*` and the resume checkpoint are unaffected.
+- `dedup`'s `summary.json` gains `gap_silent_satellites` — satellites with fewer than
+  `history.MIN_GAP_RECORDS` (3) records, for which gap analysis is definitionally silent
+  (one delta has no typical spacing); the per-row signal remains `records` +
+  `median_spacing_days: null`.
+
 ## [0.13.6] - 2026-07-29
 
 ### Changed

@@ -77,16 +77,21 @@ cli.py ──▶ pipeline.py ──▶ repair.py ──▶ tle.py
 
 verify/   (lintle verify — Increment-1 core + opt-in --orbit physics pass; cli ──▶ verify, never the reverse)
   __init__.py (run) ──▶ checks.py ──▶ tle.py
-                          ├──▶ grouping.py ──▶ records.py ──▶ epoch.py
-                          ├──▶ report.py          (checks ──▶ records, report; records ──▶ __init__ naming constants; __init__ ──▶ term)
+                          ├──▶ grouping.py ──▶ records.py ──▶ (top-level) epoch.py
+                          ├──▶ report.py          (checks ──▶ records, report; records ──▶ __init__ naming constants; __init__ ──▶ term, epoch)
                           └──▶ orbit.py ──▶ sgp4   (Increment 2; lazy-imported only under --orbit)
 
 fsutil.py    stdlib-only I/O leaf — durable_replace + out_dir_lock
 diagnostics.py, categories.py, explain_examples.py    pure-data leaves (no I/O)
 config.py    stdlib-JSON leaf — ./.lintle.json load/save (no internal deps)
+epoch.py     stdlib-only leaf (#199) — THE definition of a record's moment in time:
+             parse_epoch/epoch_key/epoch_dt/iso over one string-based normalizer
+             (day 366.x non-leap → next January, day 0.x → prior December), so key
+             order ≡ instant order and equal instants get bit-equal keys
 history.py   pure history-reduction leaf — HistoryStats/Gap + analyze_epochs (gap/median
              math), lifted out of extract._analyze so extract and dedup share one
-             definition; no I/O, no sgp4; imports only stdlib + verify.epoch.parse_epoch
+             definition; no I/O, no sgp4; imports only stdlib + lintle.epoch
+             (re-exporting its epoch_dt/iso for extract/dedup)
 ```
 
 | Module | Owns |
@@ -114,10 +119,11 @@ history.py   pure history-reduction leaf — HistoryStats/Gap + analyze_epochs (
 | `term.py` | Two shared `rich` Consoles — `stderr_console` for status/errors, `stdout_console` for the `report` result view — the `error:` / `warning:` / `note` / `prompt` emitters, and the `is_interactive` / `prompt_yes_no` stdin helpers. |
 | `cli.py` | argparse, globbing, and top-level `clean` orchestration: delegates preflight to `run_planning`, dispatch to `worker_pool`, signal/shutdown to `process_control`, the quality-gate exit policy to `thresholds`, run finalization to `output_artifacts`, and the aggregate panel / `report` render to `summary`; owns the resulting process exit code. |
 | `cli_progress.py` | Rich presentation leaf: the phase-1 `render_roster`, the phase-2 live `ProgressDisplay` (a `rich.live.Live` over a `rich.table.Table` — in-flight rows plus a pinned summary row, bounded so terminal height and resize cannot strand or crop it), and the `status` spinner for the single-process post-run phases (`verify`, `dedup`, `extract`, `diff`). Consumes `pipeline`'s typed progress messages and `summary`'s shared tier/duration/size formatters, so phases 2 and 3 cannot disagree about a boundary or a format. Every live block is disabled off a TTY. |
-| `verify/` | The `lintle verify` post-run auditor (own package): `epoch` (epoch-key parsing), `records` (the `CleanedRecord` dataclass + cleaned-tree readers), `grouping` (the spill-to-disk `ExternalSorter` for the constant-memory contradiction pass), `checks` (`revalidate` / `find_conflicts` — both routing the #158 same-epoch clash through the one `_is_clash` predicate `has_epoch_clash` also uses — / the `SourceAligner` byte-diff: a null object built via `SourceAligner.open`, inert when a stem has no source, whose `feed(rec, revalidated=...)` internalizes the revalidate-skip policy so `run`'s loop carries no aligner guards), `report` (`VerifyRule`, `Suspect`, and the `SuspectSink` (which owns the exit-code rule) — an external merge-sort that streams suspects to disk and renders `suspects.jsonl` + `summary.{json,md}` at flat peak memory, byte-identical to its list renderers; #156), a `collections.Counter`-based `epoch_distribution` record-density histogram (`{"YYYY-MM": count}` over revalidated records only — a sibling of `checked` in `summary.json`, plus an `### Epoch distribution` section in `summary.md` — purely informational, never feeding `counts`/`hard`/`exit_code`), `__init__.run` (orchestration), and `orbit` (Increment 2 — the opt-in sampled `sgp4` orbit-consistency pass: adjacent-pair position residuals, soft `VRFY-ORBIT-OUTLIER` outliers, deterministic 0.1 km quantum; refined in #163 with regime-aware gap gates (GEO 7-day vs LEO/MEO 3-day), a windowed local-median threshold term, leave-one-out culprit isolation for lone interior spikes, a `--sensitivity {sensitive,strict}` dial, and dup-epoch stratified oversampling of the satellite sample). A pure *consumer* of `tle` (its sole validity authority) and `term`; `orbit` is the package's **only** `sgp4` importer, lazily imported by `run` only under `--orbit` so the default path stays `sgp4`-free. |
-| `dedup.py` | The `lintle dedup` pass: reads `01-cleaned/` (never mutating it), excludes hard suspects from a prior `verify` run's `suspects.jsonl`, groups by `(catalog, epoch)` through `verify`'s `ExternalSorter`, and writes `<out-dir>/05-dedup/{import.txt,notes.jsonl,manifest.jsonl,summary.json}` — one card per group, the latest re-issue kept, benign re-issues (including refined orbits under a new element-set) collapsed and genuine same-element-set contradictions kept-latest-but-flagged. Reuses `verify.checks.orbital_state`/`element_set` and the shared `has_epoch_clash` #158 predicate (one definition of "same orbit" / "latest" / "same-epoch clash" — #164). Also streams each kept card's catalog/epoch/element-set into `history.analyze_epochs`, flushing one `manifest.jsonl` row per satellite on each catalog boundary (a single plain file, never chunked — see §6), and stores a stat-only `cleaned_fingerprint` of `01-cleaned/` in `summary.json` for `extract`'s staleness check. Constant memory; deterministic bytes. |
+| `verify/` | The `lintle verify` post-run auditor (own package): `records` (the `CleanedRecord` dataclass + cleaned-tree readers; epoch keys via the top-level `lintle.epoch`), `grouping` (the spill-to-disk `ExternalSorter` for the constant-memory contradiction pass), `checks` (`revalidate` / `find_conflicts` — both routing the #158 same-epoch clash through the one `_is_clash` predicate `has_epoch_clash` also uses — / the `SourceAligner` byte-diff: a null object built via `SourceAligner.open`, inert when a stem has no source, whose `feed(rec, revalidated=...)` internalizes the revalidate-skip policy so `run`'s loop carries no aligner guards), `report` (`VerifyRule`, `Suspect`, and the `SuspectSink` (which owns the exit-code rule) — an external merge-sort that streams suspects to disk and renders `suspects.jsonl` + `summary.{json,md}` at flat peak memory, byte-identical to its list renderers; #156), a `collections.Counter`-based `epoch_distribution` record-density histogram (`{"YYYY-MM": count}` from each revalidated record's *normalized* instant (`epoch_dt`) — year-boundary rollovers bin into the January they truly belong to — a sibling of `checked` in `summary.json`, plus an `### Epoch distribution` section in `summary.md` — purely informational, never feeding `counts`/`hard`/`exit_code`), `__init__.run` (orchestration), and `orbit` (Increment 2 — the opt-in sampled `sgp4` orbit-consistency pass: adjacent-pair position residuals, soft `VRFY-ORBIT-OUTLIER` outliers, deterministic 0.1 km quantum; refined in #163 with regime-aware gap gates (GEO 7-day vs LEO/MEO 3-day), a windowed local-median threshold term, leave-one-out culprit isolation for lone interior spikes, a `--sensitivity {sensitive,strict}` dial, and dup-epoch stratified oversampling of the satellite sample). A pure *consumer* of `tle` (its sole validity authority) and `term`; `orbit` is the package's **only** `sgp4` importer, lazily imported by `run` only under `--orbit` so the default path stays `sgp4`-free. |
+| `dedup.py` | The `lintle dedup` pass: reads `01-cleaned/` (never mutating it), excludes hard suspects from a prior `verify` run's `suspects.jsonl`, groups by `(catalog, epoch)` through `verify`'s `ExternalSorter`, and writes `<out-dir>/05-dedup/{import.txt,notes.jsonl,manifest.jsonl,summary.json}` — one card per group, the latest re-issue kept, benign re-issues (including refined orbits under a new element-set) collapsed and genuine same-element-set contradictions kept-latest-but-flagged. Reuses `verify.checks.orbital_state`/`element_set` and the shared `has_epoch_clash` #158 predicate (one definition of "same orbit" / "latest" / "same-epoch clash" — #164). Also streams each kept card's catalog/epoch/element-set into `history.analyze_epochs`, flushing one `manifest.jsonl` row per satellite on each catalog boundary (a single plain file, never chunked — see §6), and stores a stat-only `cleaned_fingerprint` of `01-cleaned/` plus a `gap_silent_satellites` tally (rows below `history.MIN_GAP_RECORDS`) in `summary.json` (`schema_version "2"` since #199 — normalized epoch keys changed group identities and sort order at year boundaries) for `extract`'s staleness check. Constant memory; deterministic bytes. |
 | `extract.py` | The `lintle extract` pass: reads a prior `dedup` run's sorted fixed-width `import.*` chunk set (140 bytes/record — guarded, never assumed) and binary-searches one catalog's contiguous run into `<dest>/<id>.txt` (verbatim byte slice, epoch-ascending) plus a deterministic `<id>.json` stats sidecar (schema v2: median spacing, the 10 largest reportable gaps — delta > 10× the satellite's median spacing, via the shared `history.analyze_epochs` — and a tri-state quarantine flag from `03-report/broken-noradids.ndjson`); warns and, on a TTY, asks y/n before exporting a gappy or quarantine-affected history (non-TTY: warn + proceed; decline = skip, not an error), where `<dest>` defaults to `<out-dir>/06-extract` (with its own README) and only an explicit `--dest` overrides it, undecorated. Also recomputes `verify.records.cleaned_fingerprint` at run start and warns (never fails) when it disagrees with the one `dedup` stored in `summary.json` — `01-cleaned/` drifted since that `dedup` run. Read-only, local, no index artifact; reuses `verify`'s `catalog_of`/`element_set` (epoch/gap math now behind `history.py`) so catalog, epoch, and gap definitions each stay singular. |
-| `history.py` | Pure history reduction shared by `extract` (the `<id>.json` sidecar) and `dedup` (`manifest.jsonl`): `analyze_epochs(epochs, elsets) -> HistoryStats` given one satellite's epoch datetimes and element-set numbers in stream order — count, span, median spacing, and the `GAPS_CAP` (10) largest reportable gaps (delta > `GAP_FACTOR` (10) × median spacing), plus the `epoch_dt`/`iso` helpers. No I/O, no `sgp4`; imports only stdlib + `verify.epoch.parse_epoch`. Lifted out of `extract._analyze` so the two callers cannot compute divergent numbers for the same satellite. |
+| `epoch.py` | The single definition of a record's moment in time (#199): `parse_epoch`/`epoch_key`/`epoch_dt`/`iso` over one private normalizer. `tle.py` accepts day-of-year anywhere in `(0, 367)` with no leap-year logic (space-track ships real rollover records), so this module rolls day 366.x of a non-leap year into the next January and day 0.x into the prior December — on the *decimal string*, never float subtraction, so equal instants produce bit-equal (`repr()`-identical) keys and in-range keys are bit-identical to the raw-column formula. Raises `ValueError` on garbage (dedup's unusable-record seam and verify's revalidate depend on it). Stdlib-only, enforced by an import-graph test leg. |
+| `history.py` | Pure history reduction shared by `extract` (the `<id>.json` sidecar) and `dedup` (`manifest.jsonl`): `analyze_epochs(epochs, elsets) -> HistoryStats` given one satellite's epoch datetimes and element-set numbers in stream order — count, span, median spacing, and the `GAPS_CAP` (10) largest reportable gaps. A gap is reportable when a delta exceeds `GAP_FACTOR` (10) × `median_low` of the deltas — the *reported* `median_spacing_days` stays the interpolated `statistics.median`, but the *threshold* uses `median_low` so the n=3 case is reachable (#199's dead zone: with 2 deltas, `d > 10·(a+d)/2` was algebraically impossible). Below `MIN_GAP_RECORDS` (3) gap analysis is definitionally silent. Re-exports `lintle.epoch`'s `epoch_dt`/`iso`. No I/O, no `sgp4`; imports only stdlib + `lintle.epoch`. Lifted out of `extract._analyze` so the two callers cannot compute divergent numbers for the same satellite. |
 | `config.py` | Optional `./.lintle.json` project config: stdlib-JSON `load`/`save` of the two remembered keys (`source`, `output`). Never an authority over an explicit CLI arg. No internal deps. |
 | `wizard.py` | The interactive rich menu shown when `lintle` runs with no subcommand on a TTY (configure / clean / verify / report / quit). A thin front-end that builds an argv and calls `cli.main`, reimplementing no orchestration; imports `config` + `term`. |
 
@@ -126,7 +132,7 @@ the reverse), so the structured writers and the renderers stay acyclic.
 
 **`verify/` and the wizard stay acyclic too.** The `verify/` package flows one way —
 `__init__ ──▶ {checks, grouping, records, report}`, `checks ──▶ tle` + `records` + `report`,
-`grouping ──▶ records ──▶ epoch`, with `records` reaching back only to `__init__`'s
+`grouping ──▶ records ──▶ lintle.epoch` (the top-level stdlib-only leaf), with `records` reaching back only to `__init__`'s
 output-naming constants — and `cli ──▶ verify`, never the reverse. The clean/validate/repair
 path (`pipeline`, `repair`, `tle`, `cli`'s clean path) never imports `lintle.verify` or
 `sgp4`, so the auditor can never become a second validity definition; an import-graph test
@@ -138,14 +144,16 @@ gap/median reducer) to build `manifest.jsonl` — a fourth acyclic leaf, no new 
 `verify` or the clean path. `extract.py` is a third read-only consumer, one hop further
 downstream — `cli ──▶ extract ──▶ dedup` (naming constants only) `+ verify.{checks, records}`
 `+ history` (+ `chunking`, `fsutil`, `term`), also one-way and lazily dispatched, also barred
-from the clean path, and also equally barred from ever reaching `sgp4`. `extract` no longer
-imports `verify.epoch` directly — the epoch/gap reduction moved behind `lintle.history`, which
-itself imports only `verify.epoch.parse_epoch` — so the import-graph closure test walks
-`extract`'s transitive imports (reaching `history` and, through it, `verify`) and separately
-`test_verify_submodules_are_sgp4_free_except_orbit` sweeps every `verify/*.py` module except
-`orbit.py` (`checks`, `epoch`, `grouping`, `records`, `report`, `__init__`) for `sgp4`-freedom
-unconditionally — so `epoch.py`'s own `sgp4`-freedom is checked independent of which caller
-imports it, rather than being pinned to one caller's import list (see §7). The `cli ↔ wizard` cycle — `cli` launches the menu,
+from the clean path, and also equally barred from ever reaching `sgp4`. Epoch parsing lives in
+the **top-level, stdlib-only `lintle.epoch`** leaf (#199 — it moved out of `verify/` so one
+definition is importable from anywhere, including, one day, `tle.py`, without crossing the
+`sgp4`/verify wall): `records`, `verify.__init__`, and `history` all import it, and `history`
+re-exports its `epoch_dt`/`iso` so `extract` needs one import for "reduce this satellite's
+timeline". The import-graph closure test walks `extract`'s transitive imports (reaching
+`history` and `verify`), `test_verify_submodules_are_sgp4_free_except_orbit` sweeps every
+`verify/*.py` module except `orbit.py` (`checks`, `grouping`, `records`, `report`,
+`__init__`) for `sgp4`-freedom unconditionally, and `test_epoch_leaf_is_stdlib_only` pins
+`lintle.epoch` to a stdlib-only closure (see §7). The `cli ↔ wizard` cycle — `cli` launches the menu,
 the menu re-enters `cli.main` — is broken by a lazy import on *both* sides (`cli` imports
 `wizard` only inside the no-subcommand TTY branch; `wizard` imports `cli` only inside its
 dispatch), so `wizard ──▶ config`/`term` are the only module-load-time edges.
@@ -172,7 +180,10 @@ surfaces first.
   fields (catalog number, international designator, epoch, derivatives, B\*, inclination, RAAN,
   eccentricity, etc.) each carry an allowed-character set.
 - **Semantic ranges.** Only checked once the column layout is sound. Epoch day-of-year in
-  `(0, 367)`; inclination in `[0, 180]`; RAAN, argument of perigee, mean anomaly in `[0, 360)`;
+  `(0, 367)` — deliberately leap-year-blind: space-track ships real rollover records (day
+  366.x in a non-leap year, day 0.x), and tightening the bound would redefine "perfect"
+  (Critical Rule #4) and quarantine them; normalizing across year boundaries is
+  `lintle.epoch`'s job, downstream. Inclination in `[0, 180]`; RAAN, argument of perigee, mean anomaly in `[0, 360)`;
   eccentricity in `[0, 1)`; mean motion strictly positive.
 - **Checksum.** Column 69 is a **mod-10 checksum** of the first 68 characters — each digit adds
   its value, each `-` adds 1, every other character adds 0, result is `sum % 10`. Checked last,
@@ -767,7 +778,12 @@ machinery buys nothing here. Row shape (fixed key order, one line):
 {"norad_id":25544,"records":1234,"first_epoch":"2017-01-01T00:00:00Z","last_epoch":"2026-07-01T00:00:00Z","span_days":3468.0,"median_spacing_days":0.72,"largest_gap_days":41.3,"gap_count":2}
 ```
 
-`median_spacing_days` is `null` below 3 records (the trivially-gapless case). This is the
+`median_spacing_days` is `null` below `MIN_GAP_RECORDS` (3) records — gap analysis is
+definitionally silent there (one delta has no typical spacing to be 10× of), and
+`summary.json`'s `gap_silent_satellites` carries the corpus-level count; the "low numbers
+bucket" is a query (`jq 'select(.records < 3)'`), not a separate artifact. Epochs arrive
+instant-ordered (keys are normalized, #199), so `span_days` is never negative and
+`first_epoch <= last_epoch` always holds. This is the
 corpus-coverage substrate: a query like `jq | shuf | xargs lintle extract` picks a random
 well-covered (or gappy) satellite for spot-checking — `lintle` itself owns no RNG, so `shuf`
 supplies the randomness.
@@ -776,7 +792,9 @@ supplies the randomness.
 
 `lintle verify` tallies a `{"YYYY-MM": count}` histogram of every revalidated record's epoch
 month while it revalidates (a `collections.Counter`, converted to a plain `dict` — sorted by
-key — at the output boundary), and writes it as a new top-level `epoch_distribution` key in
+key — at the output boundary). The bucket comes from the record's *normalized* instant
+(`lintle.epoch.epoch_dt` — year and month together, so a day-366.x rollover bins into the
+January it truly belongs to, #199), and it is written as a top-level `epoch_distribution` key in
 `04-verify/summary.json` — a **sibling of `checked`, not nested inside it** — plus a matching
 `### Epoch distribution` Markdown section in `summary.md` (one `- YYYY-MM  N` line per month,
 emitted only when non-empty). Only records that pass revalidation are binned; a month with no
