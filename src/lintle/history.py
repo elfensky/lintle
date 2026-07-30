@@ -16,6 +16,11 @@ from lintle.epoch import iso as iso
 
 GAP_FACTOR = 10
 GAPS_CAP = 10
+# Gap analysis needs at least this many records: below it there is only one
+# delta — no "typical spacing" for GAP_FACTOR to multiply — so the history is
+# definitionally gap-silent (median_spacing_days: null tells the reader why,
+# and dedup's summary tallies these as gap_silent_satellites).
+MIN_GAP_RECORDS = 3
 
 
 @dataclasses.dataclass(slots=True, frozen=True)
@@ -56,14 +61,20 @@ def analyze_epochs(
     ]
     largest = max(deltas, default=0.0)
     largest_at = epochs[deltas.index(largest) + 1] if deltas else None
-    median = statistics.median(deltas) if len(deltas) >= 2 else None
-    # `median and ...`: 0 is intentionally excluded here — a zero median
-    # would otherwise flag every record as a gap (d > 10*0 is always true
-    # for d > 0), and deltas are strictly positive post-dedup anyway.
+    enough = len(deltas) >= MIN_GAP_RECORDS - 1
+    median = statistics.median(deltas) if enough else None
+    # REPORT the interpolated median (byte-stable field) but THRESHOLD on
+    # median_low: with exactly 2 deltas the interpolated (a+d)/2 makes
+    # d > GAP_FACTOR*median algebraically impossible (#199's n=3 dead zone);
+    # the low median keeps the bar at a real observed spacing.
+    # `bar and ...`: 0 is intentionally excluded here — a zero bar would
+    # otherwise flag every record as a gap (d > 10*0 is always true for
+    # d > 0), and deltas are strictly positive post-dedup anyway.
+    bar = statistics.median_low(deltas) if enough else None
     reportable = [
         Gap(epochs[i], epochs[i + 1], d)
         for i, d in enumerate(deltas)
-        if median and d > GAP_FACTOR * median
+        if bar and d > GAP_FACTOR * bar
     ]
     top = sorted(reportable, key=lambda g: g.days, reverse=True)[:GAPS_CAP]
     return HistoryStats(

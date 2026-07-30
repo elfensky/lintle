@@ -545,6 +545,27 @@ class TestSidecarV2:
             }
         ]
 
+    def test_year_boundary_span_non_negative(self, tmp_path):
+        # The import stream is instant-ordered post-#199: Dec 31 2019 12:00Z
+        # (spelled 20/000.5) precedes Jan 1 2020 12:00Z (spelled 19/366.5),
+        # so the sidecar span is +1.0 — never the pre-fix -1.0.
+        out = write_import_tree(
+            tmp_path,
+            [
+                (l1(100, yy=20, day=0.5), l2(100)),
+                (l1(100, yy=19, day=366.5), l2(100)),
+            ],
+            10,
+        )
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        assert extract.run(str(out), [100], str(dest)) == 0
+        meta = json.loads((dest / "100.json").read_text(encoding="ascii"))
+        assert meta["span_days"] == 1.0
+        assert meta["mean_records_per_day"] == 2.0
+        assert meta["first_epoch"] == "2019-12-31T12:00:00Z"
+        assert meta["last_epoch"] == "2020-01-01T12:00:00Z"
+
 
 class TestQuarantinedIds:
     def _write_ndjson(self, tmp_path, text):

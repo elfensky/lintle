@@ -29,6 +29,24 @@ class TestAnalyzeEpochs:
         assert hs.median_spacing_days is None
         assert hs.gap_count == 0  # the trivial-gapless footgun, asserted
 
+    def test_three_record_gap_is_reachable(self):
+        # The n=3 dead zone (#199): thresholding on the interpolated median
+        # (500.5 here) can never flag anything with 2 deltas — d > 10*(a+d)/2
+        # is algebraically impossible; median_low thresholds on 1.0 instead.
+        hs = analyze_epochs(_days([0, 1, 1001]), [1, 2, 3])
+        assert hs.gap_count == 1
+        assert hs.largest_gap_days == 1000.0
+        assert hs.median_spacing_days == 500.5  # the REPORTED field unchanged
+
+    def test_three_record_uniform_cadence_still_gapless(self):
+        hs = analyze_epochs(_days([0, 1, 2]), [1, 2, 3])
+        assert hs.gap_count == 0
+
+    def test_min_gap_records_names_the_policy(self):
+        from lintle.history import MIN_GAP_RECORDS
+
+        assert MIN_GAP_RECORDS == 3
+
     def test_empty(self):
         hs = analyze_epochs([], [])
         assert hs.count == 0 and hs.first is None and hs.gap_count == 0
