@@ -12,6 +12,7 @@ source tree, and writes only under ``<out-dir>/04-verify``. It reuses
 ``tle.py`` for every validity judgment and never re-defines what a valid TLE
 is."""
 
+import contextlib
 from collections import Counter
 from pathlib import Path
 
@@ -54,7 +55,7 @@ def run(
     # streamed cannot disagree.
     stem_sizes = dict(records.cleaned_fingerprint(out_dir)["stems"])
     sink = SuspectSink()  # external-sorts suspects to disk (#156): flat peak memory
-    sorter = grouping.ExternalSorter()
+    sorter = grouping.record_sorter()
     population: set[int] = set()  # distinct catalogs, for the orbit sample
     n_records = 0
     missing_source = 0
@@ -214,9 +215,12 @@ def _finish_run(
     # Contradiction pass over the fully sorted stream (goal 3b): same-epoch
     # re-issues are counted (a census); only a same-element-set clash is hard.
     # Under --orbit, also collect the dup-epoch catalogs for the #2 sample stratum.
-    conflicts, epoch_reissues, dup_epoch_catalogs = checks.find_conflicts(
-        _counted(sorter.sorted_records(), table, n_records), orbit=orbit
-    )
+    # closing(): a check raising mid-stream releases the sorter's temp runs now
+    # rather than whenever the abandoned generator is collected.
+    with contextlib.closing(sorter.sorted_records()) as stream:
+        conflicts, epoch_reissues, dup_epoch_catalogs = checks.find_conflicts(
+            _counted(stream, table, n_records), orbit=orbit
+        )
     sink.add_all(conflicts)
 
     checked = {
