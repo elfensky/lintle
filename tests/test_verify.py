@@ -460,6 +460,20 @@ class TestGrouping:
         keys = [(r.catalog, r.epoch_key) for r in sorter.sorted_records()]
         assert keys == sorted(keys)
 
+    def test_equal_keys_keep_add_order_across_a_spill_boundary(self):
+        # The stability contract the whole design leans on: records sharing a
+        # (catalog, epoch) key must come back in ADD order even when the tie is
+        # split across spilled runs and the in-memory tail. heapq.merge breaks
+        # key ties by iterable order, and runs are merged in spill order with
+        # the tail last — so add order survives. If this ever regressed, dedup
+        # would silently pick a different "latest" record for a tied group and
+        # the import set's bytes would change run to run.
+        sorter = grouping.ExternalSorter(chunk_size=2)  # 5 records -> 2 runs + tail
+        given = [rec(idx=i) for i in range(5)]  # identical key, distinct index
+        for r in given:
+            sorter.add(r)
+        assert [r.index for r in sorter.sorted_records()] == [0, 1, 2, 3, 4]
+
 
 class TestEndToEnd:
     def test_clean_tree_passes(self, tmp_path):
