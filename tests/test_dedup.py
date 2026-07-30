@@ -58,6 +58,14 @@ def epoch_l1(catalog: int, day: int) -> str:
     return fix(line[:20] + f"{day:03d}.00000000" + line[32:])
 
 
+def epoch_l1_yy(catalog: int, yy: int, day: str) -> str:
+    """L1 for ``catalog`` at ``yy``/``day`` (a 12-char ``DDD.FFFFFFFF``
+    string), checksum fixed — lets year-boundary tests spell rollover epochs
+    (day 366.x of a non-leap year, day 0.x) exactly."""
+    line = other_catalog(catalog)
+    return fix(line[:18] + f"{yy:02d}" + day + line[32:])
+
+
 def build_tree(tmp_path, cleaned_pairs, *, suspects=None, stem="tle01"):
     """Write a minimal clean-run output tree (cleaned/ + optional verify/
     suspects.00001.jsonl chunk); return the out-dir as a string."""
@@ -134,6 +142,19 @@ class TestCollapse:
         g = dedup._collapse([base, other])
         assert g.conflict is True
         assert g.kept is other  # element-set tie -> latest source position kept
+
+    def test_same_instant_across_year_boundary_collapses(self, tmp_path):
+        # 19/365.5 and 20/000.5 spell the SAME instant (2019-12-31T12:00Z):
+        # one group, latest element-set kept — pre-#199 the two spellings got
+        # different keys and the re-issue dedup exists to collapse survived.
+        lo = with_elset(epoch_l1_yy(300, 19, "365.50000000"), 100)
+        hi = with_elset(epoch_l1_yy(300, 20, "000.50000000"), 200)
+        out = tmp_path / "output"
+        out_dir = build_tree(tmp_path, [(lo, L2), (hi, L2)])
+        assert dedup.run(out_dir) == 0
+        assert read_import(out) == f"{hi}\n{L2}\n"
+        s = read_summary(out)
+        assert s["records_written"] == 1 and s["records_dropped"] == 1
 
     def test_refined_reissue_different_orbit_is_benign(self):
         # a NEW element-set with a refined orbit is a benign re-issue, not a clash
@@ -358,6 +379,34 @@ class TestManifest:
         # byte-determinism: a second run produces identical bytes
         dedup.run(out_dir)
         assert manifest_path.read_text("ascii") == manifest
+
+    def test_year_boundary_span_non_negative(self, tmp_path):
+        # Instants 2019-12-31T12:00Z (spelled 20/000.5) and 2020-01-01T12:00Z
+        # (spelled 19/366.5): the import stream now follows the instants, so
+        # the span is +1.0 day — pre-#199 the raw keys reversed the pair and
+        # shipped span_days: -1.0 with first_epoch > last_epoch.
+        pairs = [
+            (epoch_l1_yy(300, 19, "366.50000000"), L2),
+            (epoch_l1_yy(300, 20, "000.50000000"), L2),
+        ]
+        out_dir = build_tree(tmp_path, pairs)
+        assert dedup.run(out_dir) == 0
+        manifest = Path(out_dir) / DEDUP_DIRNAME / "manifest.jsonl"
+        (row,) = [json.loads(line) for line in manifest.read_text("ascii").splitlines()]
+        assert row["records"] == 2
+        assert row["span_days"] == 1.0
+        assert row["first_epoch"] == "2019-12-31T12:00:00Z"
+        assert row["last_epoch"] == "2020-01-01T12:00:00Z"
+
+    def test_gap_silent_satellites_tally(self, tmp_path):
+        # catalog 100 has 3 records (gap analysis active); catalog 200 has 1
+        # (below MIN_GAP_RECORDS — definitionally gap-silent, tallied).
+        out = tmp_path / "output"
+        pairs = [(epoch_l1(100, d), L2) for d in (1, 2, 3)]
+        pairs.append((epoch_l1(200, 1), L2))
+        out_dir = build_tree(tmp_path, pairs)
+        assert dedup.run(out_dir) == 0
+        assert read_summary(out)["gap_silent_satellites"] == 1
 
 
 class TestFingerprint:

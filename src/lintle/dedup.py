@@ -236,6 +236,11 @@ class _ManifestBuilder:
         self._epochs: list[_dt.datetime] = []
         self._elsets: list[int | None] = []
         self.body = bytearray()
+        # Satellites with < MIN_GAP_RECORDS records: gap analysis is
+        # definitionally silent for them (one delta has no typical spacing),
+        # so the summary carries the corpus-level count — the per-row signal
+        # is already derivable from `records` + null median_spacing_days.
+        self.gap_silent = 0
 
     def add(self, catalog: int, epoch: _dt.datetime, elset: int | None) -> None:
         if catalog != self._catalog:
@@ -250,6 +255,8 @@ class _ManifestBuilder:
         if self._catalog is not None:
             hs = history.analyze_epochs(self._epochs, self._elsets)
             self.body.extend(_manifest_row(self._catalog, hs))
+            if hs.count < history.MIN_GAP_RECORDS:
+                self.gap_silent += 1
 
 
 def run(out_dir: str, chunk_records: int = CHUNK_RECORDS_DEFAULT) -> int:
@@ -415,6 +422,7 @@ def _write_import_set(
         "groups_collapsed": n_collapsed,
         "conflicts_flagged": n_conflicts,
         "unusable_records": n_unusable,
+        "gap_silent_satellites": manifest.gap_silent,
         "exit_code": code,
     }
     body = json.dumps(summary, ensure_ascii=True, indent=2, sort_keys=True) + "\n"
