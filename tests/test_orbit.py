@@ -338,7 +338,8 @@ class TestTrackVerdict:
         # Fails loudly if sgp4 adds/removes a code, so a new code is triaged by
         # a human instead of silently defaulting to soft (or auto-convicting).
         assert set(SGP4_ERRORS) == {1, 2, 3, 4, 5, 6}
-        assert orbit._HARD_SGP4_ERRORS == set(SGP4_ERRORS) - orbit._SOFT_SGP4_ERRORS
+        expected = set(SGP4_ERRORS) - orbit._SOFT_SGP4_ERRORS
+        assert expected == orbit._HARD_SGP4_ERRORS
 
 
 class TestLeaveOneOut:

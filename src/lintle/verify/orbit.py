@@ -168,7 +168,7 @@ def _track_suspects(
                     f"sgp4 cannot parse these elements: {' '.join(str(exc).split())}",
                 )
             )
-            sats.append((None, rec))  # unparseable: breaks the chain, like an init error
+            sats.append((None, rec))  # unparseable: breaks the chain, as init errors do
             continue
         if sat.error:
             if sat.error in _HARD_SGP4_ERRORS:

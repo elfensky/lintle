@@ -94,7 +94,7 @@ class TestFindSpans:
         # worst failure mode of the whole set. It must refuse instead.
         out = write_import_tree(
             tmp_path,
-            recs((100, 1.0), (100, 2.0), (100, 3.0), (100, 4.0), (100, 5.0), (100, 6.0)),
+            recs(*[(100, 1.0 + i) for i in range(6)]),
             2,
         )
         (out / DEDUP_DIRNAME / f"{IMPORT_STEM}.00002{IMPORT_SUFFIX}").unlink()
