@@ -4,6 +4,7 @@ The golden fixture is a real Vanguard (catalog 5) track pulled from the corpus;
 its adjacent-pair residuals are asserted to the 0.1 km quantum to lock the
 cross-platform determinism of the residual pipeline."""
 
+import datetime
 import json
 
 from sgp4.api import SGP4_ERRORS, Satrec
@@ -504,3 +505,75 @@ class TestCLI:
             ["verify", out, "--orbit", "--no-source-diff", "--sensitivity", "strict"]
         )
         assert code == 0
+
+
+# ---------------------------------------------------------------------------
+# #200: orbit.py measures inter-record dt from sgp4's OWN epoch fields
+# (jdsatepoch + jdsatepochF) — a second parse of the same columns, living
+# outside lintle.epoch's single definition by design (the sgp4 wall means
+# lintle.epoch must stay stdlib-only, so the two cannot be merged). The 2026-07-30
+# audit found them in exact agreement, including at the year-boundary rollovers
+# lintle.epoch normalizes. These tests pin that agreement to the INSTALLED sgp4,
+# so a future release that rolls day 366.x or day 0.x differently fails here
+# rather than silently desynchronizing orbit's dt gate from dedup's grouping.
+
+
+def epoch_at(yy: str, day: str) -> str:
+    """Canonical line 1 with its 2-digit year and ``DDD.DDDDDDDD`` day-of-year
+    spliced in and re-checksummed."""
+    return fix(TRACK[0][0][:18] + yy + day + TRACK[0][0][32:])
+
+
+def sgp4_epoch_jd(line1: str, line2: str) -> float:
+    sat = Satrec.twoline2rv(line1, line2)
+    return sat.jdsatepoch + sat.jdsatepochF
+
+
+# JD 2451545.0 == 2000-01-01T12:00Z.
+J2000_JD = 2451545.0
+J2000_DT = datetime.datetime(2000, 1, 1, 12, tzinfo=datetime.UTC)
+
+
+class TestSgp4EpochAgreement:
+    """sgp4's epoch parse vs ``lintle.epoch`` on records ``tle.py`` calls perfect."""
+
+    # (label, yy, day) covering both rollovers, both leap cases, and the 56/57 pivot.
+    EDGES = [
+        ("in-range", "00", "179.78495062"),
+        ("day 366.x non-leap -> next Jan", "01", "366.50000000"),
+        ("day 366.x leap -> in range", "00", "366.50000000"),
+        ("day 366.99999999 non-leap", "03", "366.99999999"),
+        ("day 0.x -> prior Dec", "01", "000.50000000"),
+        ("day 1.0 exactly", "01", "001.00000000"),
+        ("pivot yy=56 -> 2056", "56", "179.78495062"),
+        ("pivot yy=57 -> 1957", "57", "179.78495062"),
+        ("pivot yy=57 + 366.x rollover", "57", "366.50000000"),
+    ]
+
+    # Same instant, two legal spellings — the dt == 0 boundary where orbit's
+    # `0 < dt` gate must agree with dedup's same-epoch grouping.
+    ALIASES = [
+        (("01", "366.50000000"), ("02", "001.50000000")),
+        (("01", "000.50000000"), ("00", "366.50000000")),
+        (("02", "000.25000000"), ("01", "365.25000000")),
+    ]
+
+    def test_instants_agree_on_every_epoch_edge(self):
+        for label, yy, day in self.EDGES:
+            l1 = epoch_at(yy, day)
+            assert tle.validate_record(l1, TRACK[0][1]) == [], label
+            jd = sgp4_epoch_jd(l1, TRACK[0][1])
+            theirs = J2000_DT + datetime.timedelta(days=jd - J2000_JD)
+            drift = abs((theirs - epoch.epoch_dt(l1)).total_seconds())
+            assert drift < 1e-3, f"{label}: sgp4 drifts {drift}s from lintle.epoch"
+
+    def test_equal_instants_are_bit_equal_on_both_sides(self):
+        # lintle.epoch guarantees bit-equal keys for equal instants; sgp4 must
+        # likewise land on one float, or dt would be a hair off zero and the
+        # pair would be measured as ordered instead of recognized as same-epoch.
+        for a, b in self.ALIASES:
+            la, lb = epoch_at(*a), epoch_at(*b)
+            assert tle.validate_record(la, TRACK[0][1]) == []
+            assert tle.validate_record(lb, TRACK[0][1]) == []
+            assert epoch.epoch_key(la) == epoch.epoch_key(lb)
+            assert sgp4_epoch_jd(la, TRACK[0][1]) == sgp4_epoch_jd(lb, TRACK[0][1])
