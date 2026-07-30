@@ -124,6 +124,45 @@ class TestRun:
         assert meta["largest_gap_at"] == "2020-01-10T00:00:00Z"
         assert meta["source"]["dedup_records_written"] == 3
 
+    def test_missing_summary_json_degrades_to_null_source(self, tmp_path, capsys):
+        # A pruned tree used to crash each catalog AFTER its txt commit, and
+        # the pair rollback then deleted a prior run's still-good outputs.
+        # summary.json is read once, tolerantly: absent -> null source fields.
+        out = write_import_tree(tmp_path, recs((200, 1.0), (200, 2.5)), 10)
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        assert extract.run(str(out), [200], str(dest)) == 0  # prior good run
+        (out / DEDUP_DIRNAME / "summary.json").unlink()
+        assert extract.run(str(out), [200], str(dest)) == 0
+        assert (dest / "200.txt").is_file()  # prior pair survived the re-run
+        meta = json.loads((dest / "200.json").read_text(encoding="ascii"))
+        assert meta["source"]["dedup_records_written"] is None
+        assert meta["source"]["dedup_schema_version"] is None
+
+    def test_corrupt_summary_json_degrades_to_null_source(self, tmp_path, capsys):
+        out = write_import_tree(tmp_path, recs((200, 1.0), (200, 2.5)), 10)
+        (out / DEDUP_DIRNAME / "summary.json").write_bytes(b"\xc3{not json")
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        assert extract.run(str(out), [200], str(dest)) == 0
+        meta = json.loads((dest / "200.json").read_text(encoding="ascii"))
+        assert meta["source"]["dedup_records_written"] is None
+
+    def test_unusable_record_fails_preflight_before_anything_is_written(
+        self, tmp_path, capsys
+    ):
+        # An Alpha-5 (or corrupt) record sorts to record 0 of chunk 1 and used
+        # to fail EVERY per-catalog lookup blaming corruption. Now it is one
+        # up-front preflight error naming the record, with nothing written.
+        pairs = recs((100, 1.0), (200, 1.0))
+        bad_l1 = "1 T7530U" + pairs[0][0][8:]  # Alpha-5 catalog in cols 3-7
+        out = write_import_tree(tmp_path, [(bad_l1, pairs[0][1]), pairs[1]], 10)
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        with pytest.raises(extract.ExtractError, match="record 0"):
+            extract.run(str(out), [200], str(dest))
+        assert list(dest.iterdir()) == []  # preflight: nothing written
+
     def test_missing_id_partial_success_exit_2(self, tmp_path, capsys):
         out = write_import_tree(tmp_path, recs((100, 1.0)), 10)
         dest = tmp_path / "dest"
@@ -379,6 +418,21 @@ class TestAnalyze:
         assert hs.median_spacing_days is None
         assert hs.gaps == () and hs.gap_count == 0
         assert hs.largest_gap_days == 1.5  # largest gap still tracked
+
+    def test_shrunken_chunk_raises_instead_of_spinning(self, tmp_path):
+        # A chunk truncated between find_spans' stat and the read used to make
+        # fh.read() return b"" forever with `remaining` stuck — an infinite
+        # spin under the status spinner. Both passes must raise instead.
+        import io
+
+        out = write_import_tree(tmp_path, recs((100, 1.0), (100, 2.0), (100, 3.0)), 10)
+        spans = extract.find_spans(str(out), 100)
+        chunk = spans[0][0]
+        chunk.write_bytes(chunk.read_bytes()[: extract.RECORD_BYTES])  # 1 of 3 left
+        with pytest.raises(extract.ExtractError, match="shrank"):
+            extract._analyze(spans)
+        with pytest.raises(extract.ExtractError, match="shrank"):
+            extract._copy_spans(spans, io.BytesIO())
 
     def test_cap_keeps_ten_largest_chronological(self, tmp_path):
         # 12 runs of 3 daily records, 28-day holes between runs: 11 reportable
