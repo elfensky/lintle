@@ -48,7 +48,7 @@ NOTES_STEM = "notes"
 MANIFEST_STEM = "manifest"
 MANIFEST_SUFFIX = ".jsonl"
 SUMMARY_NAME = "summary.json"
-SCHEMA_VERSION = "1"
+SCHEMA_VERSION = "2"
 
 _README = """\
 # 05-dedup — latest-re-issue-only import list
