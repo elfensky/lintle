@@ -14,6 +14,7 @@ import dataclasses
 import datetime
 import enum
 import hashlib
+import itertools
 import json
 import os
 from collections.abc import Callable
@@ -246,8 +247,19 @@ def archive_checkpoint(out_dir: str, *, timestamp: str) -> str | None:
     src = _checkpoint_path(out_dir)
     if not Path(src).exists():
         return None
+    # os.link is the atomic never-clobber primitive (os.replace is the atomic
+    # always-clobber one — the opposite of what "never silently destroys"
+    # needs): two archives inside one second used to overwrite each other. The
+    # ``-N`` suffix keeps sorted() chronological within a stamp for pruning
+    # ('...Z' < '...Z-1' < '...Z-2' lexically).
     archived = f"{CHECKPOINT_NAME}.stale-{timestamp}"
-    os.replace(src, Path(out_dir) / archived)
+    for n in itertools.count(1):
+        try:
+            os.link(src, Path(out_dir) / archived)
+            break
+        except FileExistsError:
+            archived = f"{CHECKPOINT_NAME}.stale-{timestamp}-{n}"
+    os.unlink(src)
     # Prune old stale archives — keep only the newest _STALE_ARCHIVE_KEEP.
     prefix = CHECKPOINT_NAME + ".stale-"
     out = Path(out_dir)
@@ -301,7 +313,13 @@ def verify_completed_outputs(completed: dict, out_dir: str) -> list[str]:
     for path, entry in completed.items():
         for name, expected_size in entry.get("outputs", {}).items():
             actual = _locate_output(out_dir, name)
-            if actual is None or actual.stat().st_size != expected_size:
+            try:
+                intact = actual is not None and actual.stat().st_size == expected_size
+            except OSError:
+                # Vanished between exists() and stat(): semantically identical
+                # to "missing" — reprocess this input, never abort the plan.
+                intact = False
+            if not intact:
                 reprocess.append(path)
                 break
     return reprocess
