@@ -124,7 +124,7 @@ def _catalog_at(fh, index: int) -> int:
     if cat is None:
         raise ExtractError(
             f"unparseable catalog at record {index} of {fh.name}: {line1[:8]!r}… — "
-            "an Alpha-5 or corrupt record in the import set; re-run 'lintle dedup' "
+            "a corrupt record in the import set; re-run 'lintle dedup' "
             "(current dedup skips these as DEDUP-UNUSABLE-RECORD)."
         )
     return cat

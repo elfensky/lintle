@@ -59,7 +59,7 @@ _README = """\
 - `notes.NNNNN.jsonl` — one note per collapsed group (the kept and dropped
   cards, and whether it was a genuine same-epoch conflict), plus one
   `DEDUP-UNUSABLE-RECORD` note per record skipped as unimportable
-  (Alpha-5 id, unparseable epoch, non-ASCII bytes).
+  (corrupt catalog field, unparseable epoch, non-ASCII bytes).
 - `manifest.jsonl` — one row per satellite (catalog-ascending): record
   count, epoch span, median spacing, and largest gap — see `history.py`.
 - `summary.json` — dedup tallies and verdict.
@@ -154,11 +154,12 @@ def _unusable_reason(g: Group, epoch: _dt.datetime | None) -> str | None:
     when it can. The reader (``records._catalog_and_key``) is lenient *by
     design* — an unparseable line yields ``catalog == -1`` and flows on as "a
     finding, not a crash" — so the strict write seam must uphold the same
-    policy: a legitimate Alpha-5 id, an unparseable epoch, or a U+FFFD from the
+    policy: a corrupt catalog field, an unparseable epoch, or a U+FFFD from the
     reader's tolerant decode used to crash the run (or poison record 0 of the
-    import set, failing every later ``extract``)."""
+    import set, failing every later ``extract``). Alpha-5 ids no longer land
+    here — they decode to their integer value and import normally (#203)."""
     if g.kept.catalog < 0:
-        return "unparseable catalog or epoch (Alpha-5 id, or a corrupt line)"
+        return "unparseable catalog or epoch (a corrupt line)"
     if epoch is None:
         return "unparseable epoch"
     if not (g.kept.line1.isascii() and g.kept.line2.isascii()):
