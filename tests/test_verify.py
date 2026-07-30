@@ -5,8 +5,8 @@ import json
 from pathlib import Path
 
 import lintle
-from lintle import CLEANED_DIRNAME, VERIFY_DIRNAME, cli, tle
-from lintle.verify import checks, epoch, grouping, records, report, run
+from lintle import CLEANED_DIRNAME, VERIFY_DIRNAME, cli, epoch, tle
+from lintle.verify import checks, grouping, records, report, run
 from lintle.verify.records import CleanedRecord
 from lintle.verify.report import Suspect, VerifyRule
 
@@ -636,10 +636,10 @@ class TestImportGuard:
 
     def test_extract_closure_never_imports_sgp4(self):
         """``lintle.extract`` reaches into ``verify.{checks,records}``
-        directly for the shared catalog/element-set parsers (and reaches
-        ``verify.epoch`` transitively via ``lintle.history``, which owns the
-        epoch-datetime reduction shared with ``dedup``) — those edges are
-        expected and fine — but it must never drag in ``sgp4`` itself, which
+        directly for the shared catalog/element-set parsers (and reaches the
+        stdlib-only ``lintle.epoch`` transitively via ``lintle.history``,
+        which owns the history reduction shared with ``dedup``) — those edges
+        are expected and fine — but it must never drag in ``sgp4`` itself, which
         stays the sole province of ``verify/orbit.py`` under the lazy
         ``--orbit`` gate. Same walk as the clean-path test, seeded at
         ``extract``. NOTE: ``_module_level_imports`` collapses any
@@ -684,6 +684,16 @@ class TestImportGuard:
             assert "sgp4" not in imports, (
                 f"verify.{mod_path.stem} imports sgp4 directly"
             )
+
+    def test_epoch_leaf_is_stdlib_only(self):
+        """``lintle.epoch`` is the single definition of a record's moment in
+        time (#199) and must stay importable from anywhere — including, one
+        day, ``tle.py`` — without dragging in ``sgp4``, ``lintle.verify``, or
+        any other lintle module. The import detector collects only lintle
+        submodule names and the ``sgp4`` marker, so a stdlib-only module
+        yields the empty set."""
+        src = Path(lintle.__file__).parent
+        assert self._module_level_imports(src / "epoch.py") == set()
 
 
 class TestLiveTable:

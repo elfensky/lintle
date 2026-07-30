@@ -18,8 +18,8 @@ from pathlib import Path
 
 from lintle import CLEANED_DIRNAME, cli_progress, summary, term
 from lintle.chunking import CHUNK_RECORDS_DEFAULT
+from lintle.epoch import parse_epoch
 from lintle.verify import checks, grouping, records
-from lintle.verify.epoch import parse_epoch
 from lintle.verify.report import SuspectSink
 
 

@@ -8,8 +8,8 @@ import json
 
 from sgp4.api import SGP4_ERRORS, Satrec
 
-from lintle import CLEANED_DIRNAME, VERIFY_DIRNAME, cli, tle
-from lintle.verify import epoch, orbit, run
+from lintle import CLEANED_DIRNAME, VERIFY_DIRNAME, cli, epoch, tle
+from lintle.verify import orbit, run
 from lintle.verify.records import CleanedRecord, catalog_of
 from lintle.verify.report import VerifyRule
 

@@ -228,6 +228,11 @@ def _check_semantics(body: str, lineno: int) -> list[FieldError]:
     errors = []
     try:
         if lineno == 1:
+            # (0, 367) with no leap-year logic is deliberate: space-track
+            # ships real rollover records (day 366.x in a non-leap year, day
+            # 0.x). Normalizing them across year boundaries is lintle.epoch's
+            # job — tightening this bound would redefine "perfect" (Critical
+            # Rule #4) and newly quarantine those records.
             day = float(body[20:23] + "." + body[24:32])
             if not 0.0 < day < 367.0:
                 errors.append(
