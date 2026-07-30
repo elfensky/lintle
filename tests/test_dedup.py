@@ -222,6 +222,27 @@ class TestEndToEnd:
         # ...and the satellite is extractable end-to-end by that integer.
         assert extract.find_spans(out_dir, 277530) != []
 
+    def test_alpha5_round_trips_cleaned_to_dedup_to_extract(self, tmp_path):
+        # The full #203 path on a synthetic tree: a cleaned Alpha-5 record
+        # survives dedup and comes back out of `extract` addressed by either
+        # spelling, with the wire bytes untouched.
+        alpha5_l1 = fix(L1[:2] + "E8493" + L1[7:])
+        alpha5_l2 = fix(L2[:2] + "E8493" + L2[7:])
+        out_dir = build_tree(tmp_path, [(alpha5_l1, alpha5_l2), (L1, L2)])
+        assert dedup.run(out_dir) == 0
+        dest = tmp_path / "dest"
+        for spelling in ("E8493", "148493"):
+            assert (
+                cli.main(
+                    ["extract", spelling, "--out-dir", out_dir, "--dest", str(dest)]
+                )
+                == 0
+            )
+            body = (dest / "148493.txt").read_text(encoding="ascii")
+            assert body == f"{alpha5_l1}\n{alpha5_l2}\n"  # verbatim wire bytes
+        meta = json.loads((dest / "148493.json").read_text(encoding="ascii"))
+        assert meta["norad_id"] == 148493  # the sidecar speaks the integer
+
     def test_bad_epoch_record_is_skipped_not_a_valueerror(self, tmp_path):
         # records._catalog_and_key tolerates this line ("a finding, not a
         # crash"); the write seam used to re-parse it unguarded and abort the

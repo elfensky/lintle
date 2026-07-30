@@ -29,6 +29,7 @@ from lintle import (
     summary,
     term,
     thresholds,
+    tle,
     worker_pool,
 )
 from lintle import (
@@ -50,6 +51,21 @@ def _chunk_records_type(value):
     if n < 0:
         raise argparse.ArgumentTypeError("must be >= 0 (0 = never roll)")
     return n
+
+
+def _norad_id_type(value):
+    """argparse type for ``extract``'s NORAD-ID: the plain decimal catalog
+    number or, since the SATCAT passed 99,999, the Alpha-5 wire spelling
+    (``E8493``), decoded to the integer every downstream artifact speaks.
+    Routed through ``tle.decode_catalog`` so the CLI and the cleaned-tree
+    reader cannot disagree about which satellite the caller means."""
+    catalog = tle.decode_catalog(value)
+    if catalog is None or catalog < 1:
+        raise argparse.ArgumentTypeError(
+            f"not a NORAD id: {value!r} (expected a catalog number like 25544 "
+            "or an Alpha-5 id like E8493)"
+        )
+    return catalog
 
 
 def _add_chunk_records_arg(parser):
@@ -436,8 +452,8 @@ def _add_extract_subparser(subparsers):
         "norad_ids",
         metavar="NORAD-ID",
         nargs="+",
-        type=int,
-        help="catalog number(s) to extract (1-99999)",
+        type=_norad_id_type,
+        help="catalog number(s) to extract, decimal or Alpha-5 (e.g. 25544, E8493)",
     )
     extract_parser.add_argument(
         "--out-dir",
