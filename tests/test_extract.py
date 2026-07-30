@@ -22,6 +22,13 @@ def l2(cat: int) -> str:
     return (base + "0" * 69)[:69]
 
 
+def alpha5(pair: tuple[str, str], field: str) -> tuple[str, str]:
+    """A record pair rewritten to an Alpha-5 catalog spelling in cols 3-7 — the
+    5-char wire form the ``{cat:5d}`` helpers above cannot express."""
+    a, b = pair
+    return a[:2] + field + a[7:], b[:2] + field + b[7:]
+
+
 def write_import_tree(tmp_path, records, chunk_records=3):
     """Build a fake dedup import chunk set from (line1, line2) pairs, rolling
     every ``chunk_records`` records like ChunkedWriter would."""
@@ -386,6 +393,40 @@ class TestCli:
     def test_rejects_non_numeric_id(self, tmp_path, capsys):
         with pytest.raises(SystemExit):
             cli.main(["extract", "ISS", "--out-dir", str(tmp_path)])
+
+    def test_rejects_five_char_non_alpha5_id(self, tmp_path):
+        # Letter-led and 5 chars, but the tail is not digits — corruption, not
+        # an Alpha-5 id. Rejected at the parser, not treated as a satellite.
+        with pytest.raises(SystemExit):
+            cli.main(["extract", "ABCDE", "--out-dir", str(tmp_path)])
+
+    def test_accepts_alpha5_spelling(self, tmp_path, monkeypatch):
+        # #203: `extract E8493` finds the satellite the import set stores under
+        # the Alpha-5 wire spelling, and names its outputs by the DECODED
+        # integer — artifacts speak integers, the CLI accepts both.
+        out = write_import_tree(
+            tmp_path, [alpha5(r, "E8493") for r in recs((0, 1.0), (0, 2.0))], 10
+        )
+        dest = tmp_path / "dest"
+        monkeypatch.chdir(tmp_path)
+        rc = cli.main(["extract", "E8493", "--out-dir", str(out), "--dest", str(dest)])
+        assert rc == 0
+        assert (dest / "148493.txt").exists() and (dest / "148493.json").exists()
+        meta = json.loads((dest / "148493.json").read_text(encoding="ascii"))
+        assert meta["norad_id"] == 148493
+        # Both records came back, verbatim, in the Alpha-5 spelling they were
+        # stored in — extract slices bytes; it never rewrites the wire form.
+        assert (dest / "148493.txt").read_text(encoding="ascii").count("E8493") == 4
+
+    def test_accepts_the_decimal_spelling_of_an_alpha5_id(self, tmp_path, monkeypatch):
+        out = write_import_tree(
+            tmp_path, [alpha5(r, "E8493") for r in recs((0, 1.0))], 10
+        )
+        dest = tmp_path / "dest"
+        monkeypatch.chdir(tmp_path)
+        rc = cli.main(["extract", "148493", "--out-dir", str(out), "--dest", str(dest)])
+        assert rc == 0
+        assert (dest / "148493.txt").exists()
 
 
 class TestAnalyze:
