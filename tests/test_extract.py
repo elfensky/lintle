@@ -151,11 +151,12 @@ class TestRun:
     def test_unusable_record_fails_preflight_before_anything_is_written(
         self, tmp_path, capsys
     ):
-        # An Alpha-5 (or corrupt) record sorts to record 0 of chunk 1 and used
-        # to fail EVERY per-catalog lookup blaming corruption. Now it is one
-        # up-front preflight error naming the record, with nothing written.
+        # A corrupt record sorts to record 0 of chunk 1 and used to fail EVERY
+        # per-catalog lookup blaming corruption. Now it is one up-front
+        # preflight error naming the record, with nothing written. (An Alpha-5
+        # id is NOT this case since #203 — it decodes and imports normally.)
         pairs = recs((100, 1.0), (200, 1.0))
-        bad_l1 = "1 T7530U" + pairs[0][0][8:]  # Alpha-5 catalog in cols 3-7
+        bad_l1 = "1 ?????U" + pairs[0][0][8:]  # unreadable catalog in cols 3-7
         out = write_import_tree(tmp_path, [(bad_l1, pairs[0][1]), pairs[1]], 10)
         dest = tmp_path / "dest"
         dest.mkdir()

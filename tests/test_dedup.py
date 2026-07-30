@@ -195,12 +195,13 @@ class TestEndToEnd:
         assert s["records_read"] == 2 and s["records_written"] == 1
         assert s["records_dropped"] == 1 and s["conflicts_flagged"] == 0
 
-    def test_alpha5_record_is_skipped_as_unusable_not_a_crash(self, tmp_path):
-        # A legitimate checksum-valid Alpha-5 id passes clean's validator but
-        # has no parseable integer catalog: it used to be written as the
-        # catalog=-1 FIRST record of the import set, failing every later
-        # `lintle extract` with a bogus "corrupted set" error — plus a
-        # norad_id:-1 manifest row.
+    def test_alpha5_record_imports_with_its_decoded_catalog(self, tmp_path):
+        # #203: an Alpha-5 id is a real satellite, not corruption. It decodes to
+        # its integer value (T -> 27, so T7530 is 277530) and imports normally.
+        # Before #203 catalog_of returned None for it, the reader mapped that to
+        # the catalog=-1 sentinel, and dedup skipped it as DEDUP-UNUSABLE-RECORD
+        # (which was itself a fix for writing it as the poisoned record 0 of the
+        # import set). The unusable arm remains — for genuinely corrupt lines.
         from lintle import extract
 
         alpha5_l1 = fix(L1[:2] + "T7530" + L1[7:])
@@ -208,18 +209,18 @@ class TestEndToEnd:
         assert tle.validate_record(alpha5_l1, alpha5_l2) == []  # clean keeps it
         out = tmp_path / "output"
         out_dir = build_tree(tmp_path, [(alpha5_l1, alpha5_l2), (L1, L2)])
-        assert dedup.run(out_dir) == 0  # telemetry, not an exit-code change
-        assert read_import(out) == f"{L1}\n{L2}\n"  # only the usable record
-        notes = read_notes(out)
-        assert len(notes) == 1
-        assert notes[0]["rule"] == dedup.UNUSABLE_RULE
-        assert notes[0]["catalog"] == -1
+        assert dedup.run(out_dir) == 0
+        # Both records are imported, catalog-ascending: 5 before 277530.
+        assert read_import(out) == f"{L1}\n{L2}\n{alpha5_l1}\n{alpha5_l2}\n"
+        assert read_notes(out) == []  # nothing collapsed, nothing unusable
         s = read_summary(out)
-        assert s["unusable_records"] == 1 and s["records_written"] == 1
+        assert s["unusable_records"] == 0 and s["records_written"] == 2
+        # The manifest speaks the decoded integer, never the Alpha-5 spelling.
         manifest = (out / DEDUP_DIRNAME / "manifest.jsonl").read_text("ascii")
-        assert '"norad_id":-1' not in manifest
-        # and the import set is now extractable end-to-end
-        assert extract.find_spans(out_dir, 5) != []
+        assert '"norad_id":277530' in manifest
+        assert "T7530" not in manifest
+        # ...and the satellite is extractable end-to-end by that integer.
+        assert extract.find_spans(out_dir, 277530) != []
 
     def test_bad_epoch_record_is_skipped_not_a_valueerror(self, tmp_path):
         # records._catalog_and_key tolerates this line ("a finding, not a
