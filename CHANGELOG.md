@@ -8,6 +8,55 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Fixed
 
+- **`verify --orbit` survives records sgp4 cannot parse.** sgp4's parser is stricter than
+  `tle.py` in two digit-or-space fields (line-1 element-set number, line-2 revolution number
+  — both bare `int()` for sgp4), so a lintle-perfect record with a blank field crashed the
+  whole pass with an anonymous `invalid literal for int()` and exit 2. The `ValueError` is now
+  caught per record and emitted as a hard `VRFY-ORBIT-ERROR` suspect naming the file, index,
+  and catalog. Init-error details now cite sgp4's own `SGP4_ERRORS` message alongside the
+  code, and a test pins the hard/soft code tables to the installed library's registry.
+- **A gapped chunk set is refused, not silently read around.** `ChunkedReader` never checked
+  that chunk indices run `1..N`, so a deleted interior chunk read as a shorter-but-whole
+  stream: `extract` exported confidently truncated histories claiming the full span with
+  `gap_count: 0`, `iter_file` renumbered record indices (desyncing the `(src_file, index)`
+  addresses `suspects.jsonl` uses, so `dedup` excluded the wrong records), and `diff`
+  undercounted findings. Read consumers now assert contiguity (`complete_chunk_paths`,
+  `ChunkSetError` naming the first missing index); scrub paths stay gap-tolerant.
+- **`dedup` skips unusable records as findings instead of crashing or poisoning.** A
+  legitimate checksum-valid Alpha-5 id (accepted by the validator) was written as the
+  `catalog=-1` first record of the import set — failing every later `lintle extract` with a
+  bogus "corrupted set" error — and an unparseable epoch or a non-ASCII byte crashed the run
+  outright. Such groups now produce one `DEDUP-UNUSABLE-RECORD` note in `notes.*.jsonl`, an
+  `unusable_records` tally in `summary.json`, and a verdict mention — telemetry, never an
+  exit-code change.
+- **`extract` preflights its preconditions and bounds its reads.** `05-dedup/summary.json`
+  was re-read unguarded once per written catalog *after* the txt commit — a pruned or corrupt
+  tree crashed each extraction post-commit, and the pair rollback then deleted a prior run's
+  still-good outputs. It is now read once per run, tolerantly (absent/corrupt → null `source`
+  fields). A preflight probe of each chunk's boundary catalogs turns one unusable record —
+  which sorts first and used to fail *every* per-catalog lookup — into a single up-front
+  error naming the chunk and record. Both span-copy loops now raise if a chunk shrinks
+  mid-read instead of spinning forever on a zero-length read.
+- **Short terminals no longer lose the results table.** At a height at or below the table
+  chrome (an 8-line tmux split), the windowing guard inverted and handed rich an uncroppable
+  full-length live region — cropped from the top, active row never visible — while leaving
+  `windowed` false, which also suppressed the complete-table reprint on exit. The window now
+  clamps to one row and the full table always prints.
+- **Ctrl-C teardown uses the public pool API.** The interrupt branch reached into the private
+  `ProcessPoolExecutor._processes` (which becomes `None` after shutdown — the fallback
+  guarded a rename, not the documented value) and then called `shutdown` separately. Python
+  3.14's public `terminate_workers()` replaces both calls with the closed/exited races
+  guarded; the hand-rolled helper and its fallback tests are deleted.
+- **Resume archives never clobber; planning never aborts on a stat race.** Two checkpoint
+  archives within the same second silently overwrote each other via `os.replace` — destroying
+  exactly the "recoverable interrupted run" the archive exists to preserve; archiving now
+  uses `os.link` with a `-N` suffix on collision. And an output file vanishing between
+  `exists()` and `stat()` aborted resume planning where the contract says "reprocess that
+  input" — the race now takes the reprocess branch.
+- **The live table's zero-denominator dash is ASCII-safe.** `cli_progress._percent`
+  hard-coded an em dash; ASCII-only consoles now get the `-` fallback through the same
+  `summary.can_encode` decision every results table makes (the #97 rule).
+
 - **One epoch definition** (#199): a record's moment in time was defined three times
   (`verify/epoch.py`'s key, `history.py`'s datetime, an inline histogram copy) and the
   definitions disagreed at year boundaries — `tle.py` accepts day-of-year in `(0, 367)` with
