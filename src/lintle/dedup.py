@@ -57,7 +57,9 @@ _README = """\
   (catalog, epoch), hard suspects excluded, re-issues collapsed to the
   latest element-set.
 - `notes.NNNNN.jsonl` — one note per collapsed group (the kept and dropped
-  cards, and whether it was a genuine same-epoch conflict).
+  cards, and whether it was a genuine same-epoch conflict), plus one
+  `DEDUP-UNUSABLE-RECORD` note per record skipped as unimportable
+  (Alpha-5 id, unparseable epoch, non-ASCII bytes).
 - `manifest.jsonl` — one row per satellite (catalog-ascending): record
   count, epoch span, median spacing, and largest gap — see `history.py`.
 - `summary.json` — dedup tallies and verdict.
@@ -140,6 +142,44 @@ def _card(rec: CleanedRecord) -> dict[str, object]:
         "index": rec.index,
         "element_set": checks.element_set(rec.line1),
     }
+
+
+# notes.jsonl wire token for a record dedup cannot usably import. Telemetry,
+# never an exit-code change — matching extract's warn-and-proceed philosophy.
+UNUSABLE_RULE = "DEDUP-UNUSABLE-RECORD"
+
+
+def _unusable_reason(g: Group, epoch: _dt.datetime | None) -> str | None:
+    """Why the group's kept record cannot enter the import list, or ``None``
+    when it can. The reader (``records._catalog_and_key``) is lenient *by
+    design* — an unparseable line yields ``catalog == -1`` and flows on as "a
+    finding, not a crash" — so the strict write seam must uphold the same
+    policy: a legitimate Alpha-5 id, an unparseable epoch, or a U+FFFD from the
+    reader's tolerant decode used to crash the run (or poison record 0 of the
+    import set, failing every later ``extract``)."""
+    if g.kept.catalog < 0:
+        return "unparseable catalog or epoch (Alpha-5 id, or a corrupt line)"
+    if epoch is None:
+        return "unparseable epoch"
+    if not (g.kept.line1.isascii() and g.kept.line2.isascii()):
+        return "non-ASCII bytes in a cleaned line"
+    return None
+
+
+def _unusable_note_bytes(g: Group, reason: str) -> bytes:
+    """One compact ASCII JSON note for a skipped-unusable record — fixed key
+    order, same byte-determinism contract as :func:`_note_bytes`."""
+    note = {
+        "schema_version": SCHEMA_VERSION,
+        "rule": UNUSABLE_RULE,
+        "catalog": g.kept.catalog,
+        "src_file": g.kept.src_file,
+        "index": g.kept.index,
+        "detail": reason,
+    }
+    return (json.dumps(note, ensure_ascii=True, separators=(",", ":")) + "\n").encode(
+        "ascii"
+    )
 
 
 def _note_bytes(g: Group) -> bytes:
@@ -319,7 +359,7 @@ def _write_import_set(
     table.phase("collapsing re-issues and writing 05-dedup…")
     ddir = Path(out_dir) / DEDUP_DIRNAME
     ddir.mkdir(parents=True, exist_ok=True)
-    n_written = n_dropped = n_collapsed = n_conflicts = 0
+    n_written = n_dropped = n_collapsed = n_conflicts = n_unusable = 0
     manifest = _ManifestBuilder()
     # Stream both outputs in sorted (catalog, epoch) order into fixed-count chunk
     # sets — constant memory even when import is corpus-scale (28.7 GB). import is
@@ -335,6 +375,16 @@ def _write_import_set(
         ) as notes,
     ):
         for g in _groups(sorter.sorted_records()):
+            try:
+                epoch = history.epoch_dt(g.kept.line1)
+            except ValueError, IndexError:
+                epoch = None
+            if (reason := _unusable_reason(g, epoch)) is not None:
+                # Skip-and-report: never a crash, never a norad_id:-1 manifest
+                # row, never an import record extract's binary search chokes on.
+                notes.write(_unusable_note_bytes(g, reason))
+                n_unusable += 1
+                continue
             imp.write_record(g.kept.line1.encode("ascii"), g.kept.line2.encode("ascii"))
             n_written += 1
             if n_written % 10_000 == 0:  # sparse refresh, as in the read loop
@@ -345,11 +395,7 @@ def _write_import_set(
                 n_dropped += len(g.dropped)
                 if g.conflict:
                     n_conflicts += 1
-            manifest.add(
-                g.kept.catalog,
-                history.epoch_dt(g.kept.line1),
-                checks.element_set(g.kept.line1),
-            )
+            manifest.add(g.kept.catalog, epoch, checks.element_set(g.kept.line1))
     manifest.flush()
     fsutil.durable_write_text(
         str(ddir / f"{MANIFEST_STEM}{MANIFEST_SUFFIX}"),
@@ -368,6 +414,7 @@ def _write_import_set(
         "records_dropped": n_dropped,
         "groups_collapsed": n_collapsed,
         "conflicts_flagged": n_conflicts,
+        "unusable_records": n_unusable,
         "exit_code": code,
     }
     body = json.dumps(summary, ensure_ascii=True, indent=2, sort_keys=True) + "\n"
@@ -382,4 +429,6 @@ def _write_import_set(
     verdict = (
         f"{n_written} records written, {n_dropped} re-issue duplicate(s) collapsed"
     )
+    if n_unusable:
+        verdict += f", {n_unusable} unusable record(s) skipped (see notes.*.jsonl)"
     return code, verdict, ddir, n_conflicts

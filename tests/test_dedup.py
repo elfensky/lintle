@@ -167,6 +167,63 @@ class TestEndToEnd:
         assert s["records_read"] == 2 and s["records_written"] == 1
         assert s["records_dropped"] == 1 and s["conflicts_flagged"] == 0
 
+    def test_alpha5_record_is_skipped_as_unusable_not_a_crash(self, tmp_path):
+        # A legitimate checksum-valid Alpha-5 id passes clean's validator but
+        # has no parseable integer catalog: it used to be written as the
+        # catalog=-1 FIRST record of the import set, failing every later
+        # `lintle extract` with a bogus "corrupted set" error — plus a
+        # norad_id:-1 manifest row.
+        from lintle import extract
+
+        alpha5_l1 = fix(L1[:2] + "T7530" + L1[7:])
+        alpha5_l2 = fix(L2[:2] + "T7530" + L2[7:])
+        assert tle.validate_record(alpha5_l1, alpha5_l2) == []  # clean keeps it
+        out = tmp_path / "output"
+        out_dir = build_tree(tmp_path, [(alpha5_l1, alpha5_l2), (L1, L2)])
+        assert dedup.run(out_dir) == 0  # telemetry, not an exit-code change
+        assert read_import(out) == f"{L1}\n{L2}\n"  # only the usable record
+        notes = read_notes(out)
+        assert len(notes) == 1
+        assert notes[0]["rule"] == dedup.UNUSABLE_RULE
+        assert notes[0]["catalog"] == -1
+        s = read_summary(out)
+        assert s["unusable_records"] == 1 and s["records_written"] == 1
+        manifest = (out / DEDUP_DIRNAME / "manifest.jsonl").read_text("ascii")
+        assert '"norad_id":-1' not in manifest
+        # and the import set is now extractable end-to-end
+        assert extract.find_spans(out_dir, 5) != []
+
+    def test_bad_epoch_record_is_skipped_not_a_valueerror(self, tmp_path):
+        # records._catalog_and_key tolerates this line ("a finding, not a
+        # crash"); the write seam used to re-parse it unguarded and abort the
+        # whole run with a ValueError from history.epoch_dt.
+        bad = L1[:20] + "XXX.78495062" + L1[32:]
+        out = tmp_path / "output"
+        out_dir = build_tree(tmp_path, [(bad, L2), (L1, L2)])
+        assert dedup.run(out_dir) == 0
+        assert read_import(out) == f"{L1}\n{L2}\n"
+        assert read_summary(out)["unusable_records"] == 1
+
+    def test_non_ascii_record_is_skipped_not_a_unicodeencodeerror(self, tmp_path):
+        # The reader decodes with errors="replace" (stray byte -> U+FFFD); the
+        # writer's strict encode("ascii") used to crash on the same string.
+        out = tmp_path / "output"
+        cdir = Path(build_tree(tmp_path, [(L1, L2)])) / CLEANED_DIRNAME
+        # A distinct epoch (day 180) so the bad record forms its own
+        # (catalog, epoch) group instead of collapsing into L1's.
+        day_mod = L1[:20] + "180.78495062" + L1[32:]
+        bad_l1 = day_mod[:9].encode() + b"\xc3\xa9" + day_mod[11:].encode()  # é
+        (cdir / "tle01.00001.cleaned.txt").write_bytes(
+            bad_l1 + b"\n" + L2.encode() + b"\n" + f"{L1}\n{L2}\n".encode()
+        )
+        out_dir = str(tmp_path / "output")
+        assert dedup.run(out_dir) == 0
+        assert read_import(out) == f"{L1}\n{L2}\n"
+        notes = read_notes(out)
+        assert len(notes) == 1
+        assert "non-ASCII" in notes[0]["detail"]
+        assert read_summary(out)["unusable_records"] == 1
+
     def test_genuine_conflict_kept_latest_and_flagged(self, tmp_path):
         out = tmp_path / "output"
         # SAME element-set, two orbits -> a real contradiction (#158)
