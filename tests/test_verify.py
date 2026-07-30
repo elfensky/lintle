@@ -549,6 +549,16 @@ class TestEpochHistogram:
         summary = json.loads((tmp_path / VERIFY_DIRNAME / "summary.json").read_text())
         assert summary["epoch_distribution"] == {}
 
+    def test_year_boundary_rollover_bins_into_next_january(self, tmp_path):
+        # Day 366.x of non-leap 2019 IS 2020-01-01: the pre-#199 inline copy
+        # took month from the rolled datetime but reused the raw year,
+        # binning this record into "2019-01".
+        out = str(tmp_path)
+        _build_cleaned(out, {100: [(2019, 366)]})
+        run(out, source_dir=None)
+        summary = json.loads((tmp_path / VERIFY_DIRNAME / "summary.json").read_text())
+        assert summary["epoch_distribution"] == {"2020-01": 1}
+
     def test_epoch_distribution_is_sibling_of_checked(self, tmp_path):
         out = str(tmp_path)
         _build_cleaned(out, {100: [(2017, 15)]})

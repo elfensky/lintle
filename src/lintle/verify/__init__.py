@@ -12,13 +12,12 @@ source tree, and writes only under ``<out-dir>/04-verify``. It reuses
 ``tle.py`` for every validity judgment and never re-defines what a valid TLE
 is."""
 
-import datetime as _dt
 from collections import Counter
 from pathlib import Path
 
 from lintle import CLEANED_DIRNAME, cli_progress, summary, term
 from lintle.chunking import CHUNK_RECORDS_DEFAULT
-from lintle.epoch import parse_epoch
+from lintle.epoch import epoch_dt
 from lintle.verify import checks, grouping, records
 from lintle.verify.report import SuspectSink
 
@@ -100,11 +99,8 @@ def run(
                     sorter.add(rec)
                     # Only records that survive revalidate are binned — a broken
                     # record has no trustworthy epoch (informational, sgp4-free).
-                    year, day = parse_epoch(rec.line1)
-                    month = (
-                        _dt.datetime(year, 1, 1) + _dt.timedelta(days=day - 1)
-                    ).month
-                    histogram[f"{year}-{month:02d}"] += 1
+                    instant = epoch_dt(rec.line1)
+                    histogram[f"{instant.year}-{instant.month:02d}"] += 1
                     if orbit and rec.catalog != -1:
                         population.add(rec.catalog)
                     mutated = aligner.feed(rec)
