@@ -6,8 +6,9 @@ residual over a robust per-satellite threshold is a **soft** ``VRFY-ORBIT-OUTLIE
 — *inconclusive*, never a conviction, because a real manoeuvre looks the same as
 a corruption from a single pair (leave-one-out culprit isolation is a follow-up).
 The only **hard** verdict is ``VRFY-ORBIT-ERROR``: ``sgp4`` rejecting an element
-set as physically unphysical (error codes 1-5). Decayed orbits (error 6) are real,
-not corruption, so they merely break the propagation chain.
+set as unparseable (its parser is stricter than ours in two digit-or-space
+fields) or physically unphysical (error codes 1-5). Decayed orbits (error 6) are
+real, not corruption, so they merely break the propagation chain.
 
 Determinism: residuals are rounded to a 0.1 km quantum *before* thresholding, and
 an outlier must clear the threshold by a full quantum — so the suspect set and
@@ -24,7 +25,7 @@ import dataclasses
 import math
 import statistics
 
-from sgp4.api import Satrec
+from sgp4.api import SGP4_ERRORS, Satrec
 
 from lintle.verify import grouping, records
 from lintle.verify.records import CleanedRecord
@@ -55,7 +56,11 @@ STRICT = Sensitivity(floor_km=200.0, mad_k=20.0)  # fewer, higher-confidence out
 # Public name → tier mapping; the CLI's --sensitivity choices resolve through this.
 TIERS = {"sensitive": SENSITIVE, "strict": STRICT}
 # sgp4 init errors that mean "these mean elements are not a physical orbit" -> hard.
-# Error 6 (decayed) is a real end-of-life state, not corruption, so it is excluded.
+# Error 6 (decayed) is a real end-of-life state, not corruption, so it stays soft.
+# Both sets are pinned literals — an unknown future sgp4 code must be triaged by a
+# human, not auto-convicted — and a test ties their union to the installed
+# ``SGP4_ERRORS`` so a library change fails loudly instead of silently soft.
+_SOFT_SGP4_ERRORS = frozenset({6})
 _HARD_SGP4_ERRORS = frozenset({1, 2, 3, 4, 5})
 
 
@@ -141,7 +146,30 @@ def _track_suspects(
     # re-propagate a record's neighbours skipping it.
     sats: list[tuple[Satrec | None, CleanedRecord]] = []
     for rec in track:
-        sat = Satrec.twoline2rv(rec.line1, rec.line2)
+        try:
+            sat = Satrec.twoline2rv(rec.line1, rec.line2)
+        except ValueError as exc:
+            # sgp4's parser is stricter than tle.validate_record in two places
+            # (blank/interior-space element-set number, line 1 cols 65-68, and
+            # revolution number, line 2 cols 64-68 — both digit-or-space for us,
+            # both bare int() for sgp4), so a perfectly lintle-valid record can
+            # still be unparseable here. That is a finding about the record, not
+            # a crash of the corpus-wide pass. ValueError only: a broader catch
+            # would re-hide the class of bug this exists to surface. The message
+            # is whitespace-squashed — sgp4's template is multi-line, and the
+            # suspect spill is tab/newline-framed.
+            suspects.append(
+                Suspect(
+                    VerifyRule.ORBIT_ERROR,
+                    rec.catalog,
+                    rec.epoch_key,
+                    rec.src_file,
+                    rec.index,
+                    f"sgp4 cannot parse these elements: {' '.join(str(exc).split())}",
+                )
+            )
+            sats.append((None, rec))  # unparseable: breaks the chain, like an init error
+            continue
         if sat.error:
             if sat.error in _HARD_SGP4_ERRORS:
                 suspects.append(
@@ -151,7 +179,8 @@ def _track_suspects(
                         rec.epoch_key,
                         rec.src_file,
                         rec.index,
-                        f"sgp4 rejects these elements (error {sat.error})",
+                        f"sgp4 rejects these elements (error {sat.error}: "
+                        f"{SGP4_ERRORS.get(sat.error, 'unknown sgp4 error code')})",
                     )
                 )
             sats.append((None, rec))  # unphysical or decayed: breaks the chain

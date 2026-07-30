@@ -6,7 +6,7 @@ cross-platform determinism of the residual pipeline."""
 
 import json
 
-from sgp4.api import Satrec
+from sgp4.api import SGP4_ERRORS, Satrec
 
 from lintle import CLEANED_DIRNAME, VERIFY_DIRNAME, cli, tle
 from lintle.verify import epoch, orbit, run
@@ -282,6 +282,63 @@ class TestTrackVerdict:
         recs = [rec(*TRACK[0], idx=0), rec(*TRACK[-1], idx=1)]
         suspects, pairs = orbit._track_suspects(recs)
         assert pairs == 0 and suspects == []
+
+    def test_blank_element_set_number_is_a_hard_suspect_not_a_crash(self):
+        # lintle's column spec allows digit-or-space in line-1 cols 65-68, but
+        # sgp4 reads them with a bare int() — a lintle-perfect record used to
+        # crash the whole orbit pass with an anonymous ValueError.
+        l1, l2 = TRACK[2]
+        blank = fix(l1[:64] + "    " + l1[68:])
+        assert tle.validate_record(blank, l2) == []  # perfect, per our validator
+        recs = track_records()
+        recs[2] = rec(blank, l2, idx=2)
+        suspects, _ = orbit._track_suspects(recs)
+        errors = [s for s in suspects if s.rule is VerifyRule.ORBIT_ERROR]
+        assert len(errors) == 1
+        assert errors[0].index == 2 and errors[0].severity == "hard"
+        assert "cannot parse" in errors[0].detail
+        assert "\n" not in errors[0].detail  # squashed for the tab-framed spill
+
+    def test_blank_revolution_number_is_a_hard_suspect_not_a_crash(self):
+        # Same hole on line 2: the revolution number (cols 64-68) is
+        # digit-or-space for us, bare int() for sgp4's pure-Python wrapper.
+        l1, l2 = TRACK[2]
+        blank = fix(l2[:63] + "     " + l2[68:])
+        assert tle.validate_record(l1, blank) == []
+        recs = track_records()
+        recs[2] = rec(l1, blank, idx=2)
+        suspects, _ = orbit._track_suspects(recs)
+        errors = [s for s in suspects if s.rule is VerifyRule.ORBIT_ERROR]
+        assert len(errors) == 1
+        assert errors[0].index == 2 and errors[0].severity == "hard"
+
+    def test_hard_init_error_code_is_convicted(self, monkeypatch):
+        # No lintle-valid TLE can express codes 1-5 directly, so fake the init
+        # error at the seam: every record errors with code 2 -> every record is
+        # a hard ORBIT_ERROR citing the library's own message, and no pair is
+        # measurable.
+        class _Broken:
+            error = 2
+
+        monkeypatch.setattr(
+            orbit.Satrec, "twoline2rv", classmethod(lambda cls, l1, l2: _Broken())
+        )
+        suspects, pairs = orbit._track_suspects(track_records())
+        assert pairs == 0
+        assert len(suspects) == len(TRACK)
+        assert all(
+            s.rule is VerifyRule.ORBIT_ERROR
+            and s.severity == "hard"
+            and "error 2" in s.detail
+            and "nm is less than zero" in s.detail
+            for s in suspects
+        )
+
+    def test_hard_error_table_matches_the_installed_sgp4(self):
+        # Fails loudly if sgp4 adds/removes a code, so a new code is triaged by
+        # a human instead of silently defaulting to soft (or auto-convicting).
+        assert set(SGP4_ERRORS) == {1, 2, 3, 4, 5, 6}
+        assert orbit._HARD_SGP4_ERRORS == set(SGP4_ERRORS) - orbit._SOFT_SGP4_ERRORS
 
 
 class TestLeaveOneOut:
