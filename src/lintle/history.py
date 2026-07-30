@@ -8,21 +8,14 @@ import dataclasses
 import datetime as _dt
 import statistics
 
-from lintle.verify.epoch import parse_epoch
+# Re-exported for extract/dedup: the epoch instant and its ISO rendering live
+# in lintle.epoch (the single definition, #199); history keeps the names so
+# its callers need one import for "reduce this satellite's timeline".
+from lintle.epoch import epoch_dt as epoch_dt
+from lintle.epoch import iso as iso
 
 GAP_FACTOR = 10
 GAPS_CAP = 10
-
-
-def epoch_dt(line1: str) -> _dt.datetime:
-    """Record epoch as an aware UTC datetime — pure arithmetic from
-    ``parse_epoch``'s ``(year, day_of_year)``, no wall clock."""
-    year, day = parse_epoch(line1)
-    return _dt.datetime(year, 1, 1, tzinfo=_dt.UTC) + _dt.timedelta(days=day - 1)
-
-
-def iso(dt: _dt.datetime) -> str:
-    return dt.isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
 @dataclasses.dataclass(slots=True, frozen=True)

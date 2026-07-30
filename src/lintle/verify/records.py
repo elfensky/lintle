@@ -9,8 +9,7 @@ import re
 from collections.abc import Iterator
 from pathlib import Path
 
-from lintle import CLEANED_DIRNAME, CLEANED_SUFFIX, chunking, tle
-from lintle.verify import epoch
+from lintle import CLEANED_DIRNAME, CLEANED_SUFFIX, chunking, epoch, tle
 
 # Distinct-stem parse for the chunked layout: <stem>.NNNNN.cleaned.txt. A
 # right-anchored regex on the 5-digit index + literal suffix (not a fixed-length

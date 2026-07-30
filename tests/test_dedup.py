@@ -5,9 +5,16 @@ list. Cleaned output is immutable; dedup only reads it and writes under
 import json
 from pathlib import Path
 
-from lintle import CLEANED_DIRNAME, DEDUP_DIRNAME, VERIFY_DIRNAME, cli, dedup, tle
+from lintle import (
+    CLEANED_DIRNAME,
+    DEDUP_DIRNAME,
+    VERIFY_DIRNAME,
+    cli,
+    dedup,
+    epoch,
+    tle,
+)
 from lintle.chunking import ChunkedReader
-from lintle.verify import epoch
 from lintle.verify.records import CleanedRecord
 
 # A canonical known-good record (Vanguard 1, NORAD 00005).
