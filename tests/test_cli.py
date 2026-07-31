@@ -1115,25 +1115,28 @@ class TestCancelBackstop:
 
     def test_verify_interrupt_returns_130(self, tmp_path, line1, line2, monkeypatch):
         out = self._cleaned_out_dir(tmp_path, line1, line2)
-        from lintle import verify
+        from lintle.verify import scan
 
         def _interrupt(*_args, **_kwargs):
             raise KeyboardInterrupt
 
-        monkeypatch.setattr(verify.records, "cleaned_stems", _interrupt)
+        # The scan driver is the shared entry point both consumers open with,
+        # so one patch site interrupts either of them at the same moment.
+        monkeypatch.setattr(scan, "cleaned_stems_or_error", _interrupt)
         assert cli.main(["verify", str(out), "--no-source-diff"]) == 130
 
     def test_dedup_interrupt_releases_the_out_dir_lock(
         self, tmp_path, line1, line2, monkeypatch
     ):
-        from lintle import dedup, fsutil
+        from lintle import fsutil
+        from lintle.verify import scan
 
         out = self._cleaned_out_dir(tmp_path, line1, line2)
 
         def _interrupt(*_args, **_kwargs):
             raise KeyboardInterrupt
 
-        monkeypatch.setattr(dedup.records, "cleaned_stems", _interrupt)
+        monkeypatch.setattr(scan, "cleaned_stems_or_error", _interrupt)
         assert cli.main(["dedup", str(out)]) == 130
         # The lock is advisory-flock held for the whole consumer run; a cancel
         # that leaked it would wedge every later command on this out-dir.

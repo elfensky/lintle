@@ -28,17 +28,15 @@ from collections.abc import Iterator
 from pathlib import Path
 
 from lintle import (
-    CLEANED_DIRNAME,
     DEDUP_DIRNAME,
     chunking,
     cli_progress,
     fsutil,
     history,
-    summary,
     term,
 )
 from lintle.chunking import CHUNK_RECORDS_DEFAULT
-from lintle.verify import checks, grouping, records
+from lintle.verify import checks, grouping, scan
 from lintle.verify.records import CleanedRecord
 from lintle.verify.report import SUSPECTS_STEM, SUSPECTS_SUFFIX, VERIFY_DIRNAME
 
@@ -262,72 +260,42 @@ def run(out_dir: str, chunk_records: int = CHUNK_RECORDS_DEFAULT) -> int:
     ``summary.json``). Returns the exit code: ``0`` clean, ``1`` genuine
     contradiction(s) arbitrated (review the notes), ``2`` operational error
     (no cleaned output)."""
-    stems = records.cleaned_stems(out_dir)
-    if not stems:
-        cleaned_dir = Path(out_dir) / CLEANED_DIRNAME
-        term.error(
-            f"no cleaned output found under {cleaned_dir!s}.\n"
-            "  run 'lintle clean' first, or point at its --out-dir."
-        )
+    stems = scan.cleaned_stems_or_error(out_dir)
+    if stems is None:
         return 2
 
-    # One live table for the whole run — a row per stem before any work starts,
-    # filled in as each streams. Sizes come from the same stat-only fingerprint
-    # `verify` uses, so the roster and the stream it announces cannot disagree.
-    stem_sizes = dict(records.cleaned_fingerprint(out_dir)["stems"])
     # Spinner: this streams and parses a prior verify run's whole suspects
     # chunk set — every severity, filtered after — before the table opens.
     with cli_progress.status("reading verify suspects…"):
         hard = _load_hard_positions(out_dir)
     sorter = grouping.record_sorter()
-    n_read = n_excluded = 0
+    n_excluded = 0
     excluded_by_stem: Counter[str] = Counter()
-    table = cli_progress.UnitTable(
+
+    with scan.scan_cleaned(
+        out_dir,
         stems,
-        ("#", "file", "size", "progress", "records", "excluded"),
-        console=term.stderr_console,
-        drop={"medium": ("size",), "narrow": ("size", "progress")},
-    )
-    with table:
-        for stem in stems:
-            table.start(stem)
-            size = stem_sizes.get(stem, 0)
-            # Per-stem, like verify's: a corpus total in one stem's row would
-            # read as that stem's own count.
-            file_records = 0
-            for rec in records.iter_file(out_dir, stem):
-                n_read += 1
-                file_records += 1
-                # Sparse refresh — one update per record would dominate the loop.
-                if file_records % 50_000 == 0:
-                    table.update(
-                        stem,
-                        size=summary.format_size(size),
-                        progress=_progress_bar(file_records, size),
-                        records=f"{file_records:,}",
-                        excluded=f"{excluded_by_stem[stem]:,}",
-                    )
-                    table.totals(records=f"{n_read:,}")
+        columns=("#", "file", "size", "progress", "records", "excluded"),
+        cells=lambda stem, _n: {"excluded": f"{excluded_by_stem[stem]:,}"},
+        totals=lambda: {"excluded": f"{n_excluded:,}"},
+    ) as sc:
+        for stem, _size in sc.units():
+            for rec in sc.stream(stem):
                 if (rec.src_file, rec.index) in hard:
                     n_excluded += 1
                     excluded_by_stem[stem] += 1
                     continue
                 sorter.add(rec)
-            table.finish(
-                stem,
-                size=summary.format_size(size),
-                progress=cli_progress.bar(size, size),
-                records=f"{file_records:,}",
-                excluded=f"{excluded_by_stem[stem]:,}",
-            )
-            table.totals(
-                size=summary.format_size(sum(stem_sizes.values())),
-                records=f"{n_read:,}",
-                excluded=f"{n_excluded:,}",
-            )
 
         code, verdict, ddir, n_conflicts = _write_import_set(
-            out_dir, table, sorter, n_read, n_excluded, len(stems), chunk_records
+            out_dir,
+            sc.table,
+            sorter,
+            sc.n_records,
+            n_excluded,
+            len(stems),
+            chunk_records,
+            fingerprint=sc.fingerprint,
         )
     # After the table closes, so the verdict lands under the results rather than
     # as a print above a live region.
@@ -341,20 +309,8 @@ def run(out_dir: str, chunk_records: int = CHUNK_RECORDS_DEFAULT) -> int:
     return code
 
 
-def _progress_bar(records_seen, size):
-    """A stem's progress bar, from the record count: a cleaned record is exactly
-    two 69-column lines plus newlines, so the count converts to bytes exactly.
-    Clamped — a truncated final chunk would read past 100%."""
-    if not size:
-        return ""
-    return cli_progress.bar(records_seen * _RECORD_BYTES, size)
-
-
-_RECORD_BYTES = 140  # two 69-column lines + two newlines
-
-
 def _write_import_set(
-    out_dir, table, sorter, n_read, n_excluded, n_stems, chunk_records
+    out_dir, table, sorter, n_read, n_excluded, n_stems, chunk_records, *, fingerprint
 ):
     """Collapse the sorted stream into the import set, reporting through the
     live table's summary label so the stage needs no spinner and no new line.
@@ -413,7 +369,11 @@ def _write_import_set(
     code = 1 if n_conflicts else 0
     summary = {
         "schema_version": SCHEMA_VERSION,
-        "cleaned_fingerprint": records.cleaned_fingerprint(out_dir),
+        # Handed down from the scan, not recomputed: this used to stat-walk the
+        # whole 01-cleaned tree a second time (once for the roster sizes, once
+        # here) — and a tree changing between the two walks would have stored a
+        # fingerprint that never matched what was actually read.
+        "cleaned_fingerprint": fingerprint,
         "cleaned_files": n_stems,
         "records_read": n_read,
         "excluded_hard_suspects": n_excluded,
@@ -428,7 +388,7 @@ def _write_import_set(
     body = json.dumps(summary, ensure_ascii=True, indent=2, sort_keys=True) + "\n"
     # Structured artifact — commit through the one sanctioned durable path.
     fsutil.durable_write_text(str(ddir / SUMMARY_NAME), body, encoding="ascii")
-    fsutil.durable_write_text(str(ddir / "README.md"), _README, encoding="utf-8")
+    fsutil.write_step_readme(ddir, _README)
 
     # The per-stem rows are already final; the group-level numbers belong to the
     # sorted stream, not to any one stem, so they close the run in the verdict.
