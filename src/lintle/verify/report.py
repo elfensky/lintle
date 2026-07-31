@@ -336,5 +336,5 @@ class SuspectSink:
                 epoch_distribution=epoch_distribution,
             ),
         )
-        fsutil.durable_write_text(str(vdir / "README.md"), _README, encoding="utf-8")
+        fsutil.write_step_readme(vdir, _README)
         return vdir

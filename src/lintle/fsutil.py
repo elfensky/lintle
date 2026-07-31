@@ -101,6 +101,17 @@ def durable_write_text(path: str, text: str, *, encoding: str = "utf-8") -> None
     durable_replace(tmp, path)
 
 
+def write_step_readme(directory, text: str) -> None:
+    """Write a step directory's static ``README.md``, creating the directory if
+    needed — the one spelling of "this output directory describes itself",
+    shared by the ``clean`` root and step dirs, ``verify``, ``dedup``, and
+    ``extract``. Deterministic text (no counts, no timestamps), committed
+    through the durable path like every other artifact."""
+    d = Path(directory)
+    d.mkdir(parents=True, exist_ok=True)
+    durable_write_text(str(d / "README.md"), text, encoding="utf-8")
+
+
 LOCK_NAME = ".clean.lock"
 
 

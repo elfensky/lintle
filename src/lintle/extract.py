@@ -460,9 +460,7 @@ def run(
     dest_dir = Path(dest)
     dest_dir.mkdir(parents=True, exist_ok=True)
     if write_readme:
-        fsutil.durable_write_text(
-            str(dest_dir / "README.md"), _README, encoding="utf-8"
-        )
+        fsutil.write_step_readme(dest_dir, _README)
     # Phase 1 — discovery, only when there is something to orient: a one-row
     # roster above a one-row result table is noise, not orientation.
     if len(catalogs) > 1:

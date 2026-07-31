@@ -133,9 +133,7 @@ def write_layout_readme(out_dir):
     """Write a static ``README.md`` at the out-dir root explaining the per-step
     output layout, so a run is self-describing without external docs. Written via
     the durable-commit path; deterministic for a given lintle version."""
-    fsutil.durable_write_text(
-        str(Path(out_dir) / "README.md"), _LAYOUT_README, encoding="utf-8"
-    )
+    fsutil.write_step_readme(out_dir, _LAYOUT_README)
 
 
 def _write_step_readmes(out_dir):
@@ -148,6 +146,4 @@ def _write_step_readmes(out_dir):
         (BROKEN_DIRNAME, _BROKEN_README),
         (REPORT_DIRNAME, _REPORT_README),
     ):
-        d = Path(out_dir) / dirname
-        d.mkdir(parents=True, exist_ok=True)
-        fsutil.durable_write_text(str(d / "README.md"), text, encoding="utf-8")
+        fsutil.write_step_readme(Path(out_dir) / dirname, text)
