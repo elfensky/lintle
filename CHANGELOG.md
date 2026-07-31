@@ -6,6 +6,15 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Changed
+
+- **Repo conformance sweep.** Added `dependabot.yml` (pip + github-actions, minor/patch
+  grouped), a version-bump gate workflow (advisory, PR-triggered), and a `gitleaks` job in
+  `ci.yml` for secret history scanning. `AGENTS.md` is now the real agent file with `CLAUDE.md`
+  symlinked to it; `graphify-out/` is generated locally and git-ignored. Dependabot security
+  updates and secret-scanning push protection enabled repo-side. No version bump — these notes
+  accumulate under `[Unreleased]` until the next release cut.
+
 ### Fixed
 
 - **`verify --orbit` survives records sgp4 cannot parse.** sgp4's parser is stricter than
