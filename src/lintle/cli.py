@@ -2,7 +2,6 @@
 
 import argparse
 import contextlib
-import json
 import os
 import shutil
 import signal
@@ -586,7 +585,7 @@ def _finalize_run(
         )
 
     if args.report == "json":
-        print(json.dumps(envelope, indent=2))
+        print(report.render_run_json(envelope), end="")
     elif all_stats:
         # Phase 3 of the display: the per-file results table, then the human
         # aggregate panel. Both go to stderr (styled ephemera) — per-file detail

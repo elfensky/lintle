@@ -311,6 +311,36 @@ class TestMain:
 
         assert rc == 2
 
+    def test_report_json_stdout_is_byte_identical_to_report_json_file(
+        self, tmp_path, line1, line2, capsys
+    ):
+        # The twin property end to end, over the two REAL call sites rather than
+        # a restatement of the serialization: what `--report json` prints must be
+        # exactly the bytes `03-report/report.json` holds. Both now route through
+        # report.render_run_json; this is what would catch them drifting apart.
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "tle2099.txt").write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
+        out = tmp_path / "out"
+        assert (
+            cli.main(
+                [
+                    "clean",
+                    str(src),
+                    "--out-dir",
+                    str(out),
+                    "--jobs",
+                    "1",
+                    "--report",
+                    "json",
+                ]
+            )
+            == 0
+        )
+        stdout = capsys.readouterr().out
+        on_disk = (out / REPORT_DIRNAME / "report.json").read_text(encoding="utf-8")
+        assert stdout == on_disk
+
     def test_all_files_fail_report_json_emits_valid_envelope_not_null(
         self, tmp_path, line1, line2, monkeypatch, capsys
     ):

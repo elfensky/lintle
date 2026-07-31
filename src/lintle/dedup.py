@@ -385,7 +385,7 @@ def _write_import_set(
         "gap_silent_satellites": manifest.gap_silent,
         "exit_code": code,
     }
-    body = json.dumps(summary, ensure_ascii=True, indent=2, sort_keys=True) + "\n"
+    body = fsutil.json_document(summary)
     # Structured artifact — commit through the one sanctioned durable path.
     fsutil.durable_write_text(str(ddir / SUMMARY_NAME), body, encoding="ascii")
     fsutil.write_step_readme(ddir, _README)
