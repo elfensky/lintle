@@ -566,10 +566,18 @@ def write_run_report(
     )
 
 
+def render_run_json(envelope) -> str:
+    """The one serialization of the run envelope: ``indent=2``, INSERTION order
+    (not sorted — the envelope's key order is authored, and `report.json` is
+    read by humans top-down), a trailing newline, UTF-8. Both consumers go
+    through here — the persisted ``03-report/report.json`` and what
+    ``--report json`` prints to stdout — so their being byte-identical twins
+    (Critical Rules #1/#2) is structural rather than two comments promising it.
+    Distinct from :func:`fsutil.json_document`, which sorts keys."""
+    return json.dumps(envelope, indent=2) + "\n"
+
+
 def write_run_json(path, envelope):
     """Write the run ``envelope`` (the exact object ``--report json`` prints) to
-    ``path``, atomically and durably via tmp + :func:`fsutil.durable_replace`.
-    Serialised byte-for-byte like the ``--report json`` stdout path: ``indent=2``,
-    insertion order, a trailing newline, UTF-8 — so the persisted ``report.json``
-    is a byte-identical twin of the stdout envelope (Critical Rules #1/#2)."""
-    fsutil.durable_write_text(path, json.dumps(envelope, indent=2) + "\n")
+    ``path``, atomically and durably via tmp + :func:`fsutil.durable_replace`."""
+    fsutil.durable_write_text(path, render_run_json(envelope))

@@ -5,7 +5,6 @@ stdout for ``report``); it is NOT byte-determinism-bound — only ``report.json`
 is. Fed by the ``build_run_envelope`` dict in both paths, so there is one
 renderer and one input shape."""
 
-import json
 from pathlib import Path
 
 import humanize
@@ -13,7 +12,7 @@ from rich import box
 from rich.table import Table
 from rich.text import Text
 
-from lintle import REPORT_DIRNAME, term
+from lintle import REPORT_DIRNAME, fsutil, term
 from lintle.categories import FIXES, FixClass
 from lintle.diagnostics import RULES, RuleID
 
@@ -358,6 +357,11 @@ def run(out_dir, fmt):
     to stdout; ``"json"`` -> the file's bytes verbatim. Missing file or unexpected
     ``schema_version`` -> ``term.error`` + exit 2."""
     path = Path(out_dir) / REPORT_DIRNAME / "report.json"
+    # The text is read separately from the parse because `--format json` echoes
+    # these exact bytes back (below) rather than re-serialising them. An absent
+    # report and a corrupt one carry different advice — "no run here yet" vs
+    # "this run's report is damaged" — so they stay separate arms; malformed
+    # JSON and a non-object collapse into fsutil's one parse policy.
     try:
         raw = path.read_text(encoding="utf-8")
     except OSError:
@@ -369,12 +373,9 @@ def run(out_dir, fmt):
         term.error(f"{path}: invalid report.json ({exc})")
         return 2
     try:
-        envelope = json.loads(raw)
-    except json.JSONDecodeError as exc:
+        envelope = fsutil.parse_json_object(raw)
+    except fsutil.JsonReadError as exc:
         term.error(f"{path}: invalid report.json ({exc})")
-        return 2
-    if not isinstance(envelope, dict):
-        term.error(f"{path}: invalid report.json (not a JSON object)")
         return 2
     if envelope.get("schema_version") != _SCHEMA:
         term.error(

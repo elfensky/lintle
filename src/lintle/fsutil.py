@@ -129,18 +129,60 @@ def _host_id() -> str:
     return socket.gethostname()
 
 
-def read_json_or_none(path: str | Path) -> dict[str, object] | None:
-    """Open ``path`` as UTF-8 JSON and return its parsed value if it is a
-    ``dict``; return ``None`` on any read or parse error (``OSError``,
-    ``json.JSONDecodeError``, ``UnicodeDecodeError``) and also when the
-    parsed value is not a dict (array, string, number, null). The dict guard
-    means callers can index the result directly without an isinstance check."""
+class JsonReadError(Exception):
+    """A file that could be read but does not hold a JSON object. Its message is
+    the human-readable reason — bad UTF-8, malformed JSON, or a non-object at the
+    top level — so a caller can surface it verbatim."""
+
+
+def parse_json_object(text: str) -> dict[str, object]:
+    """Parse already-read JSON ``text`` into a dict, raising
+    :class:`JsonReadError` on malformed JSON or a top-level array/scalar. Split
+    out from :func:`read_json` for the caller that needs the raw text as well as
+    the parsed object — ``lintle report --format json`` echoes the file's bytes
+    verbatim — so both still share one parse-and-shape policy."""
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise JsonReadError(str(exc)) from exc
+    if not isinstance(data, dict):
+        raise JsonReadError("not a JSON object")
+    return data
+
+
+def read_json(path: str | Path) -> dict[str, object]:
+    """Parse ``path`` as a UTF-8 JSON object. ``OSError`` deliberately
+    propagates: "the file isn't there" is a different situation from "the file
+    is corrupt", and only the caller knows whether it is fatal or routine.
+    Everything else — undecodable bytes, malformed JSON, a top-level array or
+    scalar — raises :class:`JsonReadError`. The dict guarantee means callers can
+    index the result without an isinstance check."""
     try:
         with open(path, encoding="utf-8") as h:
-            data = json.load(h)
-    except OSError, json.JSONDecodeError, UnicodeDecodeError:
+            return parse_json_object(h.read())
+    except UnicodeDecodeError as exc:
+        raise JsonReadError(str(exc)) from exc
+
+
+def read_json_or_none(path: str | Path) -> dict[str, object] | None:
+    """:func:`read_json`, with every failure — missing, unreadable, malformed,
+    or not an object — collapsed to ``None``. The tolerant half of the pair, for
+    the callers whose answer to "no usable document here" is to carry on."""
+    try:
+        return read_json(path)
+    except OSError, JsonReadError:
         return None
-    return data if isinstance(data, dict) else None
+
+
+def json_document(obj) -> str:
+    """The house pretty-printed JSON document: two-space indent, sorted keys,
+    ASCII-escaped, one trailing newline. The single spelling behind
+    ``05-dedup/summary.json``, ``04-verify/summary.json``, and ``extract``'s
+    ``<id>.json`` sidecar, so those three artifacts cannot drift apart in
+    formatting. NOT for the compact record streams (``notes``, ``suspects``,
+    ``report.jsonl``, the NDJSON) — those carry deliberately different flags —
+    nor for the run envelope, which is :func:`report.render_run_json`."""
+    return json.dumps(obj, indent=2, sort_keys=True, ensure_ascii=True) + "\n"
 
 
 @contextlib.contextmanager

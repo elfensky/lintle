@@ -92,12 +92,7 @@ def _dedup_summary(out_dir: str) -> dict | None:
     prior run's still-good outputs. UTF-8, not ascii: the doc is
     ``ensure_ascii``-escaped so UTF-8 always decodes it, and a foreign byte
     should degrade to the tolerant ``None``, not a crash."""
-    path = Path(out_dir) / DEDUP_DIRNAME / "summary.json"
-    try:
-        doc = json.loads(path.read_text(encoding="utf-8"))
-    except OSError, ValueError:
-        return None
-    return doc if isinstance(doc, dict) else None
+    return fsutil.read_json_or_none(Path(out_dir) / DEDUP_DIRNAME / "summary.json")
 
 
 def _warn_if_stale(out_dir: str, dedup_summary: dict | None) -> None:
@@ -285,7 +280,7 @@ def _sidecar(
             "dedup_schema_version": summary.get("schema_version"),
         },
     }
-    return json.dumps(doc, indent=2, sort_keys=True) + "\n"
+    return fsutil.json_document(doc)
 
 
 def _warn_and_confirm(
@@ -428,10 +423,7 @@ def _render_results(outcomes: list[tuple[int, str]], dest_dir: Path) -> None:
 def _read_sidecar(dest_dir: Path, catalog: int) -> dict | None:
     """Return the just-written ``<id>.json`` as a dict, or ``None`` if it cannot
     be read — the results table is cosmetic and must never fail a good run."""
-    try:
-        return json.loads((dest_dir / f"{catalog}.json").read_text(encoding="ascii"))
-    except OSError, ValueError:
-        return None
+    return fsutil.read_json_or_none(dest_dir / f"{catalog}.json")
 
 
 def run(

@@ -836,10 +836,19 @@ class TestWriteRunJson:
         env = self._envelope()
         path = tmp_path / "report.json"
         report.write_run_json(str(path), env)
-        # The exact bytes the `--report json` stdout path emits: cli.py prints
-        # `json.dumps(envelope, indent=2)` followed by print's trailing newline.
-        expected = json.dumps(env, indent=2) + "\n"
-        assert path.read_text(encoding="utf-8") == expected
+        # Both the persisted file and the `--report json` stdout path go through
+        # render_run_json, so the twin property is structural. Asserted against
+        # that function rather than a re-spelling of json.dumps(...): a test that
+        # restates the policy passes even when the two real call sites diverge.
+        assert path.read_text(encoding="utf-8") == report.render_run_json(env)
+
+    def test_render_is_insertion_ordered_not_sorted(self, tmp_path):
+        # The envelope's key order is authored (run, environment, summary,
+        # files) and read top-down by humans, which is exactly what separates
+        # it from fsutil.json_document's sorted house style. Sorting here would
+        # be silent churn across every stored report.json.
+        rendered = report.render_run_json({"zebra": 1, "alpha": 2})
+        assert rendered.index('"zebra"') < rendered.index('"alpha"')
 
     def test_deterministic_for_same_logical_run(self, tmp_path):
         a, b = tmp_path / "a.json", tmp_path / "b.json"

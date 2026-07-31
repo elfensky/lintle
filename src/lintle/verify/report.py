@@ -140,9 +140,7 @@ def _summary_json_bytes(
         "soft": total - hard,
         "exit_code": 1 if hard else 0,
     }
-    return (
-        json.dumps(envelope, ensure_ascii=True, indent=2, sort_keys=True) + "\n"
-    ).encode("ascii")
+    return (fsutil.json_document(envelope)).encode("ascii")
 
 
 def _summary_md_str(
