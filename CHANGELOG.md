@@ -92,6 +92,17 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Changed
 
+- **One `_LiveTable` base for both live tables** (#204 G). `ProgressDisplay` and `UnitTable`
+  kept seven members side by side plus a duplicated `Live` construction, refresh, windowing
+  call, and heartbeat; the base owns all of it and subclasses supply only their own `_table()`.
+  `render_roster` now goes through `summary.results_table` instead of hand-building the same
+  chrome. The two copies had already drifted on *where* they locked — unifying surfaced a
+  deadlock (`threading.Lock` is not reentrant, so a refresh that locks before calling a
+  `_table()` that also locks hangs on the first frame). The convention is now explicit —
+  `_table()` locks, `_refresh()` does not — and pinned by a test using a lock that raises on a
+  nested acquire, so a regression fails in a second rather than hanging the suite. No output
+  change.
+
 - **One read-side JSON seam, and the two document classes named** (#204 D). Six hand-rolled
   tolerant readers had six failure policies. `fsutil` now owns one: `JsonReadError` /
   `parse_json_object` / `read_json` / `read_json_or_none` — `read_json` lets `OSError` through
