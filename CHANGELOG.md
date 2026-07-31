@@ -92,6 +92,24 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Changed
 
+- **One read-side JSON seam, and the two document classes named** (#204 D). Six hand-rolled
+  tolerant readers had six failure policies. `fsutil` now owns one: `JsonReadError` /
+  `parse_json_object` / `read_json` / `read_json_or_none` — `read_json` lets `OSError` through
+  (absent and corrupt carry different advice), `read_json_or_none` collapses both to `None`.
+  `extract`'s two readers were 1:1 reimplementations and are now one line each; `config`,
+  `diff`'s per-line reader, and the two NDJSON readers stay bespoke, deliberately. On the write
+  side, `fsutil.json_document` names the house pretty-doc (indent 2, sorted keys, ASCII-escaped)
+  behind `dedup`'s and `verify`'s `summary.json` and `extract`'s sidecar, and
+  `report.render_run_json` names the run envelope (indent 2, insertion order) behind both the
+  persisted `report.json` and `--report json`'s stdout — making their byte-twin property
+  structural. The compact record-stream writers are deliberately untouched: their differing
+  flags are load-bearing. No output bytes change.
+
+- **End-to-end output freeze test** (#204 D). A new `tests/test_freeze.py` runs
+  `clean → verify → dedup → extract` and pins a sha256 per artifact (23 files), so a refactor
+  that moves any output byte fails loudly and names the file. Regenerate an intended change
+  with `LINTLE_FREEZE_UPDATE=1 uv run pytest tests/test_freeze.py -n0`.
+
 - **One cleaned-scan driver** (#204 C). `verify` and `dedup` opened with a byte-identical
   block — the same "no cleaned output" error, fingerprint line, `UnitTable` construction,
   50k-throttled per-stem loop, and finish/totals — differing only in the per-record body and
