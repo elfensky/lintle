@@ -144,7 +144,8 @@ src/lintle/
     ├── grouping.py # external merge-sort for (catalog, epoch) grouping
     ├── orbit.py    # opt-in --orbit sgp4 physics pass (lazy import)
     ├── records.py  # streams cleaned chunk sets back as records
-    └── report.py   # SuspectSink, suspects.jsonl + summary.{json,md} writers
+    ├── report.py   # SuspectSink, suspects.jsonl + summary.{json,md} writers
+    └── scan.py     # the shared cleaned-scan driver (live table + fingerprint) for verify + dedup
 ```
 
 Module dependencies flow one way: `cli.py → pipeline.py → repair.py → tle.py`,

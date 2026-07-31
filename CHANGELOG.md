@@ -92,6 +92,18 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Changed
 
+- **One cleaned-scan driver** (#204 C). `verify` and `dedup` opened with a byte-identical
+  block — the same "no cleaned output" error, fingerprint line, `UnitTable` construction,
+  50k-throttled per-stem loop, and finish/totals — differing only in the per-record body and
+  two tally columns. `verify/scan.py` now owns it, as a context manager that keeps the table
+  live *after* the record loop (both callers do their real work there). Folded in: `dedup` no
+  longer stat-walks `01-cleaned` **twice** per run — the fingerprint is computed once and
+  handed back, which also closes a window where a tree changing between the two walks stored a
+  fingerprint that never matched what was read; `RECORD_BYTES` collapses from three definitions
+  to one; both progress wrappers are deleted (`verify`'s clamp was dead — `cli_progress.bar`
+  already clamps — and `dedup`'s empty-size branch was unreachable); and
+  `fsutil.write_step_readme` replaces five call sites in four shapes. No output bytes change.
+
 - **One external sorter, two adapters** (#204 B). `verify.report.SuspectSink` re-implemented
   `grouping.ExternalSorter` byte-for-byte modulo renaming; the sorter is now parameterised by
   `key`/`encode`/`decode` and the sink delegates, keeping only its tally and its render.
