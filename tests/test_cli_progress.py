@@ -166,7 +166,7 @@ class TestProgressDisplayRendering:
         # line is plain text — no ANSI escape sequences.
         console = Console(file=io.StringIO(), force_terminal=False, width=100)
         disp = cli_progress.ProgressDisplay(1, queue.Queue(), console, sizes={"a": 100})
-        assert disp._live is False
+        assert disp._live_mode is False
         stats = report.FileStats(src_name="a")
         stats.clean_count = 1
         stats.quarantined_count = 0
@@ -584,6 +584,56 @@ class TestLiveTable:
         disp.file_failed("/src/a.txt", RuntimeError("boom"))
         out = console.file.getvalue()
         assert "boom" in out and disp._rows["a.txt"].state == "failed"
+
+
+class _AssertingLock:
+    """A stand-in for the tables' lock that RAISES on a nested acquire instead
+    of blocking. threading.Lock is not reentrant, so the real deadlock shows up
+    as a hung test run — useless as a signal. This turns it into a fast, named
+    failure."""
+
+    def __init__(self):
+        self.held = False
+
+    def __enter__(self):
+        assert not self.held, (
+            "_refresh must not hold the lock _table takes — threading.Lock is "
+            "not reentrant, so this nesting deadlocks the first frame"
+        )
+        self.held = True
+        return self
+
+    def __exit__(self, *_exc):
+        self.held = False
+        return False
+
+
+class TestLockConvention:
+    """_LiveTable's rule: _table() acquires the lock, _refresh() must not. It is
+    easy to 'tidy' the lock up into _refresh — and that hangs the whole run, so
+    both subclasses are pinned here."""
+
+    def test_unit_table_refresh_does_not_nest_the_lock(self):
+        console = Console(file=io.StringIO(), force_terminal=True, width=120, height=40)
+        table = cli_progress.UnitTable(["a", "b"], ("#", "file", "n"), console=console)
+        table._lock = _AssertingLock()
+        with table:
+            table.start("a")
+            table.update("a", n="1")
+            table.finish("a", n="2")
+            table.totals(n="2")
+            table.phase("writing…")
+
+    def test_progress_display_refresh_does_not_nest_the_lock(self):
+        console = Console(file=io.StringIO(), force_terminal=True, width=120, height=40)
+        disp = cli_progress.ProgressDisplay(
+            1, queue.Queue(), console, sizes={"a.txt": 100}
+        )
+        disp._lock = _AssertingLock()
+        stats = report.FileStats(src_name="a.txt")
+        stats.clean_count = 1
+        with disp:
+            disp.file_done(stats)
 
 
 class TestUnitTable:
