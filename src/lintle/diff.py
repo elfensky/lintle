@@ -25,13 +25,19 @@ from pathlib import Path
 
 from rich.text import Text
 
-from lintle import REPORT_DIRNAME, chunking, cli_progress, summary, term
+from lintle import (
+    REPORT_DIRNAME,
+    REPORT_JSONL_NAME,
+    REPORT_JSONL_STEM,
+    REPORT_JSONL_SUFFIX,
+    chunking,
+    cli_progress,
+    summary,
+    term,
+)
 from lintle.diagnostics import RULES, RuleID
 
 _SCHEMA_VERSION = "1"
-_FINDINGS_NAME = "report.jsonl"
-_FINDINGS_STEM = "report"
-_FINDINGS_SUFFIX = ".jsonl"
 
 
 class DiffError(Exception):
@@ -48,7 +54,7 @@ def iter_findings(run_dir):
     line, a ``schema_version`` other than ``"1"``, or a line lacking ``rule_id``
     — the diff refuses to count what it cannot interpret."""
     rdir = Path(run_dir) / REPORT_DIRNAME
-    reader = chunking.ChunkedReader(rdir, _FINDINGS_STEM, _FINDINGS_SUFFIX)
+    reader = chunking.ChunkedReader(rdir, REPORT_JSONL_STEM, REPORT_JSONL_SUFFIX)
     try:
         paths = reader.complete_chunk_paths()
     except chunking.ChunkSetError as exc:
@@ -57,7 +63,7 @@ def iter_findings(run_dir):
         raise DiffError(str(exc)) from exc
     if not paths:
         raise DiffError(
-            f"cannot read {rdir / _FINDINGS_NAME}: no report.jsonl chunk "
+            f"cannot read {rdir / REPORT_JSONL_NAME}: no report.jsonl chunk "
             "set found — is this a lintle run directory?"
         )
     for path in paths:

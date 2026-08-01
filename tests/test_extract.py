@@ -750,9 +750,9 @@ class TestWarnConfirm:
             events.append(f"status:{message}")
             return _Status()
 
-        def traced_find_spans(out_dir, catalog):
+        def traced_find_spans(out_dir, catalog, chunks=None):
             events.append(f"find_spans:{active_status}")
-            return real_find_spans(out_dir, catalog)
+            return real_find_spans(out_dir, catalog, chunks)
 
         def traced_analyze(spans):
             events.append(f"analyze:{active_status}")
