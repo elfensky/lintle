@@ -99,7 +99,28 @@ All notable changes to this project are documented in this file. The format is b
   5-digit contract. The 2004–2025 corpus contains zero Alpha-5 records, so this is
   future-proofing with no effect on current output.
 
+### Fixed
+
+- **An explicitly-given empty path is now treated as explicit** (#204). `_apply_config_paths`
+  documents "explicit CLI arg > stored config > built-in default", but `verify`/`report`/`dedup`
+  tested truthiness (`args.out_dir or config.get("output") or DEFAULT`). Since `""` is falsy, an
+  explicitly-passed empty out-dir was silently replaced by the stored config — so
+  `lintle verify ""` with a config present operated on the *configured* tree, and a script whose
+  `$OUT` resolved to empty would quietly verify or dedup a directory it never named. All paths
+  now test `is None` (genuinely omitted) through one helper. `extract`, which tested for the flag
+  rather than truthiness, was always correct. The function previously had no tests; it has six.
+
 ### Changed
+
+- **Smaller #204 cleanups.** `report.jsonl`'s stream naming moves to `lintle/__init__.py`
+  (`REPORT_JSONL_{STEM,SUFFIX,NAME}`) so the writer, the reader, and the fresh-run scrub list
+  stop re-encoding it; the `OUT-DIR` positional, declared verbatim three times, becomes
+  `_add_out_dir_positional`; `extract` builds its chunk index once per run instead of re-globbing
+  and re-stat'ing per catalog (measured: 800 → 0 `stat()` calls over 10 chunks × 40 ids, the
+  shape of the documented `jq | shuf | xargs lintle extract` workflow); `config.py` pins
+  `newline="\n"` like every other text writer; the default job count reads
+  `os.process_cpu_count()` so CPU affinity is honoured on Linux; and `extract`'s local `summary`
+  no longer shadows the imported module.
 
 - **One `_LiveTable` base for both live tables** (#204 G). `ProgressDisplay` and `UnitTable`
   kept seven members side by side plus a duplicated `Live` construction, refresh, windowing
