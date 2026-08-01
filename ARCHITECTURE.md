@@ -160,7 +160,10 @@ the menu re-enters `cli.main` — is broken by a lazy import on *both* sides (`c
 dispatch), so `wizard ──▶ config`/`term` are the only module-load-time edges.
 
 **Output-naming constants.** `CLEANED_SUFFIX`, `BROKEN_SUFFIX`, `FINDINGS_SUFFIX`,
-`CLEANED_DIRNAME`, `BROKEN_DIRNAME`, and `SHARDS_DIRNAME` live in `lintle/__init__.py` —
+`REPORT_JSONL_STEM`/`REPORT_JSONL_SUFFIX`/`REPORT_JSONL_NAME` (the corpus findings stream —
+named from here by its writer in `output_artifacts`, its reader in `diff`, and the fresh-run
+scrub list in `run_planning`), `CLEANED_DIRNAME`, `BROKEN_DIRNAME`, and `SHARDS_DIRNAME` live
+in `lintle/__init__.py` —
 the single source of truth for the naming convention. `pipeline._clean_output_paths`,
 `resume.output_sizes`, `cli.discover_paths`, and `report_writers.concat_findings_shards`
 all import them from there rather than re-encoding the convention.
