@@ -1172,3 +1172,47 @@ class TestCancelBackstop:
         # that leaked it would wedge every later command on this out-dir.
         with fsutil.out_dir_lock(str(out)):
             pass
+
+
+class TestConfigPathPrecedence:
+    """``_apply_config_paths``: explicit CLI arg > stored config > built-in
+    default, per its own docstring. It had three different spellings of that
+    rule across the commands, and they disagreed."""
+
+    CONFIG = {"output": "/from/config", "source": "/src/from/config"}
+
+    def _resolved(self, argv, config=None):
+        args = cli.build_parser().parse_args(argv)
+        cli._apply_config_paths(args, argv, self.CONFIG if config is None else config)
+        return args
+
+    def test_explicit_path_beats_config(self):
+        for cmd in ("verify", "report", "dedup"):
+            assert self._resolved([cmd, "/explicit"]).out_dir == "/explicit", cmd
+
+    def test_config_fills_an_omitted_path(self):
+        for cmd in ("verify", "report", "dedup"):
+            assert self._resolved([cmd]).out_dir == "/from/config", cmd
+
+    def test_default_fills_when_there_is_no_config(self):
+        for cmd in ("verify", "report", "dedup"):
+            assert self._resolved([cmd], config={}).out_dir == cli._DEFAULT_OUTPUT, cmd
+
+    def test_explicit_empty_path_is_still_explicit(self):
+        # The bug the `or` chain hid: "" is falsy, so an explicitly-given empty
+        # out-dir was silently REPLACED by the stored config — the one thing the
+        # docstring promises never happens. A script whose $OUT came out empty
+        # would quietly operate on the configured corpus tree instead of failing.
+        # `extract` (which tests for the flag, not for truthiness) always got
+        # this right; the other three now agree with it.
+        for cmd in ("verify", "report", "dedup"):
+            assert self._resolved([cmd, ""]).out_dir == "", cmd
+        assert self._resolved(["extract", "5", "--out-dir", ""]).out_dir == ""
+
+    def test_explicit_empty_source_is_still_explicit(self):
+        assert self._resolved(["verify", "/out", "--source", ""]).source == ""
+
+    def test_verify_source_falls_back_like_out_dir(self):
+        args = self._resolved(["verify"])
+        assert args.source == "/src/from/config"
+        assert self._resolved(["verify"], config={}).source == cli._DEFAULT_SOURCE
