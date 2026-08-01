@@ -919,7 +919,14 @@ def _dispatch(argv=None):
         # Resolve the worker count now that files_to_process is final: an
         # explicit --jobs is honoured as-is; the default is CPU count - 1,
         # capped at the file count and floored at one (issue #53 §2.3).
-        jobs = resolve_jobs(config.jobs, os.cpu_count(), len(plan.files_to_process))
+        jobs = resolve_jobs(
+            # process_cpu_count honours CPU affinity (taskset, cgroup quota,
+            # a scheduler pinning) where cpu_count reports the whole machine;
+            # identical on macOS, right on a constrained Linux box.
+            config.jobs,
+            os.process_cpu_count(),
+            len(plan.files_to_process),
+        )
 
         # The shared rich Console on stderr (term.stderr_console) drives both the
         # roster and the live progress block; off a TTY each degrades to plain

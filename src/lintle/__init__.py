@@ -15,6 +15,13 @@ except PackageNotFoundError:  # source checkout that was never installed
 CLEANED_SUFFIX = ".cleaned.txt"
 BROKEN_SUFFIX = ".broken.txt"
 FINDINGS_SUFFIX = ".findings.jsonl"
+# The corpus-wide findings stream `clean` concatenates the per-worker shards
+# into: a `<REPORT_JSONL_STEM>.NNNNN<REPORT_JSONL_SUFFIX>` chunk set under
+# 03-report. The writer (output_artifacts), the reader (diff), and the
+# fresh-run scrub list (run_planning) all name it from here.
+REPORT_JSONL_STEM = "report"
+REPORT_JSONL_SUFFIX = ".jsonl"
+REPORT_JSONL_NAME = REPORT_JSONL_STEM + REPORT_JSONL_SUFFIX
 # `lintle` lays out its out-dir as one flat level of directories, numbered in
 # pipeline order so the directory listing itself documents the order of
 # operations: 01-cleaned (clean), 02-broken (clean), 03-report (clean),

@@ -125,7 +125,17 @@ def _catalog_at(fh, index: int) -> int:
     return cat
 
 
-def _probe_boundaries(chunks: list[Path]) -> None:
+def chunk_index(out_dir: str) -> list[tuple[Path, int]]:
+    """The import set's chunks paired with their record counts, globbed and
+    stat'd ONCE per run. ``run`` builds it in the preflight and threads it into
+    every per-catalog lookup: rebuilding it inside :func:`find_spans` cost a
+    glob plus a stat per chunk per id, which in the documented
+    ``jq | shuf | xargs lintle extract`` workflow is O(ids x chunks) syscalls
+    for a set that cannot change under a single run."""
+    return [(c, c.stat().st_size // RECORD_BYTES) for c in _import_chunks(out_dir)]
+
+
+def _probe_boundaries(chunks: list[tuple[Path, int]]) -> None:
     """Preflight probe: every chunk's first and last record must carry a
     parseable catalog, and the set must be globally non-decreasing across chunk
     boundaries. One up-front error naming the chunk and record — instead of the
@@ -133,8 +143,7 @@ def _probe_boundaries(chunks: list[Path]) -> None:
     first) failed *every* per-catalog binary search, one catalog at a time,
     blaming corruption."""
     prev_last: int | None = None
-    for chunk in chunks:
-        n = chunk.stat().st_size // RECORD_BYTES
+    for chunk, n in chunks:
         if n == 0:
             continue
         with open(chunk, "rb") as fh:
@@ -148,14 +157,17 @@ def _probe_boundaries(chunks: list[Path]) -> None:
         prev_last = last
 
 
-def find_spans(out_dir: str, catalog: int) -> list[tuple[Path, int, int]]:
+def find_spans(
+    out_dir: str, catalog: int, chunks: list[tuple[Path, int]] | None = None
+) -> list[tuple[Path, int, int]]:
     """Locate ``catalog``'s contiguous run as per-chunk half-open record-index
     ranges ``(chunk_path, lo, hi)`` — ``[]`` if absent. Bisects inside each
     candidate chunk; a run may straddle consecutive chunks (fixed-count rolls
-    ignore catalog boundaries)."""
+    ignore catalog boundaries). ``chunks`` is :func:`chunk_index`'s result;
+    ``run`` passes the one it built in the preflight, and it is rebuilt here
+    only for a standalone call."""
     spans: list[tuple[Path, int, int]] = []
-    for chunk in _import_chunks(out_dir):
-        n = chunk.stat().st_size // RECORD_BYTES
+    for chunk, n in chunks if chunks is not None else chunk_index(out_dir):
         if n == 0:
             continue
         with open(chunk, "rb") as fh:
@@ -248,7 +260,7 @@ def _sidecar(
     so is ``dedup_summary`` — its ``source`` fields are already null-tolerant,
     so a pruned tree degrades to nulls instead of a post-commit crash."""
     span = (hs.last - hs.first).total_seconds() / 86400.0
-    summary = dedup_summary or {}
+    source = dedup_summary or {}  # not `summary`: that name is the imported module
     doc = {
         "schema_version": "2",
         "norad_id": catalog,
@@ -276,8 +288,8 @@ def _sidecar(
         "element_set_last": hs.elset_last,
         "source": {
             "out_dir": str(Path(out_dir)),
-            "dedup_records_written": summary.get("records_written"),
-            "dedup_schema_version": summary.get("schema_version"),
+            "dedup_records_written": source.get("records_written"),
+            "dedup_schema_version": source.get("schema_version"),
         },
     }
     return fsutil.json_document(doc)
@@ -316,6 +328,7 @@ def _extract_one(
     dest: Path,
     quarantined: set[int] | None,
     dedup_summary: dict | None,
+    chunks: list[tuple[Path, int]],
 ) -> str:
     """Extract one satellite in two passes: analyze the span read-only, then
     stream its byte range verbatim to ``<dest>/<id>.txt`` (durable
@@ -333,7 +346,7 @@ def _extract_one(
     # analysis are the same silent stretch to anyone watching, and two
     # consecutive spinners would only flicker.
     with cli_progress.status(f"analyzing {catalog}…"):
-        spans = find_spans(out_dir, catalog)
+        spans = find_spans(out_dir, catalog, chunks)
         if not spans:
             return "absent"
         hs = _analyze(spans)
@@ -442,7 +455,8 @@ def run(
     # written: a complete, whole-record, globally-sorted import set with
     # parseable boundary catalogs. Checked once, before any per-catalog work,
     # never after a commit point.
-    _probe_boundaries(_import_chunks(out_dir))
+    chunks = chunk_index(out_dir)  # globbed and stat'd once, then threaded
+    _probe_boundaries(chunks)
     dedup_summary = _dedup_summary(out_dir)  # the single read of summary.json
     _warn_if_stale(out_dir, dedup_summary)
     # Spinner: reads and parses the whole broken-noradids.ndjson before any
@@ -463,7 +477,7 @@ def run(
     for catalog in catalogs:
         try:
             outcome = _extract_one(
-                out_dir, catalog, dest_dir, quarantined, dedup_summary
+                out_dir, catalog, dest_dir, quarantined, dedup_summary, chunks
             )
         except Exception as exc:
             term.error(f"extraction failed for catalog {catalog}: {exc}")

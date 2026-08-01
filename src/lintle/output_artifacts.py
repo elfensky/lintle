@@ -6,6 +6,7 @@ from lintle import (
     BROKEN_DIRNAME,
     CLEANED_DIRNAME,
     REPORT_DIRNAME,
+    REPORT_JSONL_NAME,
     __version__,
     cli_progress,
     fsutil,
@@ -47,7 +48,7 @@ def write_clean_artifacts(
             str(rdir / "broken-noradids.ndjson"), all_stats
         )
         missing = report_writers.concat_findings_shards(
-            out_dir, str(rdir / "report.jsonl"), all_stats, chunk_records
+            out_dir, str(rdir / REPORT_JSONL_NAME), all_stats, chunk_records
         )
         write_layout_readme(out_dir)
         _write_step_readmes(out_dir)

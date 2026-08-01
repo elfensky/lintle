@@ -35,5 +35,13 @@ def save(config: dict[str, str], base: str = ".") -> Path:
     newline) and return the path."""
     data = {k: config[k] for k in _KEYS if config.get(k)}
     path = config_path(base)
-    path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    # newline="\n" for the same reason every other writer pins it: on Windows the
+    # default would translate "\n" to "\r\n" and the file would differ by platform.
+    # (Skipping the durable-commit path is deliberate — this is a convenience file,
+    # not a run artifact — but LF is not part of that trade.)
+    path.write_text(
+        json.dumps(data, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
     return path
