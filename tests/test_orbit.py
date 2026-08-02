@@ -7,6 +7,7 @@ cross-platform determinism of the residual pipeline."""
 import datetime
 import json
 
+from sgp4 import __version__ as SGP4_VERSION
 from sgp4.api import SGP4_ERRORS, Satrec
 
 from lintle import CLEANED_DIRNAME, VERIFY_DIRNAME, cli, epoch, tle
@@ -284,34 +285,61 @@ class TestTrackVerdict:
         suspects, pairs = orbit._track_suspects(recs)
         assert pairs == 0 and suspects == []
 
-    def test_blank_element_set_number_is_a_hard_suspect_not_a_crash(self):
-        # lintle's column spec allows digit-or-space in line-1 cols 65-68, but
-        # sgp4 reads them with a bare int() — a lintle-perfect record used to
-        # crash the whole orbit pass with an anonymous ValueError.
+    def test_blank_admin_fields_match_the_installed_sgp4(self):
+        # The two digit-or-space fields lintle allows and sgp4 historically did
+        # not: the line-1 element-set number (cols 65-68) and the line-2
+        # revolution number (cols 64-68). Through sgp4 2.26 a bare int() made
+        # these raise, and #202 turned on whether tle.py should tighten to
+        # match; sgp4 2.27 instead became permissive and now agrees with us.
+        #
+        # Pinned to the INSTALLED library rather than to either behaviour (same
+        # contract as test_hard_error_table_matches_the_installed_sgp4): assert
+        # only that lintle AGREES with whatever sgp4 does — silently accept what
+        # it accepts, hard-flag what it rejects. A future sgp4 that tightens
+        # again fails here and gets triaged, instead of quietly changing the
+        # suspect census on a corpus run.
         l1, l2 = TRACK[2]
-        blank = fix(l1[:64] + "    " + l1[68:])
-        assert tle.validate_record(blank, l2) == []  # perfect, per our validator
-        recs = track_records()
-        recs[2] = rec(blank, l2, idx=2)
-        suspects, _ = orbit._track_suspects(recs)
+        for label, a, b in (
+            ("element-set", fix(l1[:64] + "    " + l1[68:]), l2),
+            ("revolution", l1, fix(l2[:63] + "     " + l2[68:])),
+        ):
+            assert tle.validate_record(a, b) == [], label  # perfect, per our validator
+            try:
+                Satrec.twoline2rv(a, b)
+            except ValueError:
+                sgp4_rejects = True
+            else:
+                sgp4_rejects = False
+            recs = track_records()
+            recs[2] = rec(a, b, idx=2)
+            suspects, _ = orbit._track_suspects(recs)
+            errors = [s for s in suspects if s.rule is VerifyRule.ORBIT_ERROR]
+            if sgp4_rejects:
+                assert len(errors) == 1, label
+                assert errors[0].index == 2 and errors[0].severity == "hard", label
+            else:
+                assert errors == [], (
+                    f"{label}: sgp4 {SGP4_VERSION} parses this record, so lintle "
+                    "must not manufacture a suspect for it"
+                )
+
+    def test_unparseable_elements_are_a_hard_suspect_not_a_crash(self, monkeypatch):
+        # The ValueError -> hard-suspect path itself, independent of WHICH
+        # records any given sgp4 rejects. Faked at the seam, like the init-error
+        # test below, because the set of lintle-perfect-but-sgp4-unparseable
+        # records is a moving target across sgp4 releases (it is empty on 2.27)
+        # — and this catch must keep working whatever ends up in it.
+        def _raise(cls, l1, l2):
+            raise ValueError("TLE format error\n  line does not match")
+
+        monkeypatch.setattr(orbit.Satrec, "twoline2rv", classmethod(_raise))
+        suspects, pairs = orbit._track_suspects(track_records())
         errors = [s for s in suspects if s.rule is VerifyRule.ORBIT_ERROR]
-        assert len(errors) == 1
-        assert errors[0].index == 2 and errors[0].severity == "hard"
+        assert pairs == 0
+        assert len(errors) == len(TRACK)
+        assert all(s.severity == "hard" for s in errors)
         assert "cannot parse" in errors[0].detail
         assert "\n" not in errors[0].detail  # squashed for the tab-framed spill
-
-    def test_blank_revolution_number_is_a_hard_suspect_not_a_crash(self):
-        # Same hole on line 2: the revolution number (cols 64-68) is
-        # digit-or-space for us, bare int() for sgp4's pure-Python wrapper.
-        l1, l2 = TRACK[2]
-        blank = fix(l2[:63] + "     " + l2[68:])
-        assert tle.validate_record(l1, blank) == []
-        recs = track_records()
-        recs[2] = rec(l1, blank, idx=2)
-        suspects, _ = orbit._track_suspects(recs)
-        errors = [s for s in suspects if s.rule is VerifyRule.ORBIT_ERROR]
-        assert len(errors) == 1
-        assert errors[0].index == 2 and errors[0].severity == "hard"
 
     def test_hard_init_error_code_is_convicted(self, monkeypatch):
         # No lintle-valid TLE can express codes 1-5 directly, so fake the init

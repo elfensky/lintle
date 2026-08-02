@@ -101,6 +101,17 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Fixed
 
+- **`sgp4` 2.27 accepts the two fields it used to reject; lintle now tracks the installed
+  library rather than one version's behaviour.** Through 2.26, sgp4 read the line-1 element-set
+  number and line-2 revolution number with a bare `int()` and raised on the blank/interior-space
+  forms `tle.py` accepts — the divergence #202 was about. 2.27 parses both, so that class of
+  `VRFY-ORBIT-ERROR` is empty on current sgp4. The two tests pinning the old behaviour now assert
+  only that lintle *agrees* with whichever sgp4 is installed (silently accept what it accepts,
+  hard-flag what it rejects), verified against both ends of the supported range, and the
+  `ValueError` → hard-suspect path is covered at the seam so it stays tested whatever a future
+  release rejects. This vindicates #202's decision to keep `tle.py` permissive: had it been
+  tightened, lintle would now be stricter than the reference implementation it defers to.
+
 - **An explicitly-given empty path is now treated as explicit** (#204). `_apply_config_paths`
   documents "explicit CLI arg > stored config > built-in default", but `verify`/`report`/`dedup`
   tested truthiness (`args.out_dir or config.get("output") or DEFAULT`). Since `""` is falsy, an
@@ -111,6 +122,13 @@ All notable changes to this project are documented in this file. The format is b
   rather than truthiness, was always correct. The function previously had no tests; it has six.
 
 ### Changed
+
+- **`docs/` is excluded from `ruff format`.** ruff 0.16 began formatting Python code blocks
+  inside Markdown, which rewrote snippets in the dated, explicitly-unmaintained plan and spec
+  records under `docs/superpowers/archive/`. Those snippets document what the code looked like
+  *then*; reformatting them rewrites history. With the exclude, the 0.15 → 0.16 upgrade is a
+  no-op on this repo. `ARCHITECTURE.md`, `README.md` and `CONTRIBUTING.md` are at the root and
+  stay in scope.
 
 - **Smaller #204 cleanups.** `report.jsonl`'s stream naming moves to `lintle/__init__.py`
   (`REPORT_JSONL_{STEM,SUFFIX,NAME}`) so the writer, the reader, and the fresh-run scrub list
