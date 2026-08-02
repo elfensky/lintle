@@ -69,6 +69,12 @@ explicit = true
 target-version = "py314"
 line-length = 88
 src = ["src"]
+# ruff 0.16 began formatting Python code blocks inside Markdown. `docs/` holds
+# dated, explicitly-unmaintained point-in-time records (see CLAUDE.md); their
+# snippets document what the code looked like THEN, so reformatting them
+# rewrites history rather than tidying it. ARCHITECTURE.md, README.md and
+# CONTRIBUTING.md sit at the root and stay in scope.
+extend-exclude = ["docs/"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]

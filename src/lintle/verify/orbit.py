@@ -6,9 +6,11 @@ residual over a robust per-satellite threshold is a **soft** ``VRFY-ORBIT-OUTLIE
 — *inconclusive*, never a conviction, because a real manoeuvre looks the same as
 a corruption from a single pair (leave-one-out culprit isolation is a follow-up).
 The only **hard** verdict is ``VRFY-ORBIT-ERROR``: ``sgp4`` rejecting an element
-set as unparseable (its parser is stricter than ours in two digit-or-space
-fields) or physically unphysical (error codes 1-5). Decayed orbits (error 6) are
-real, not corruption, so they merely break the propagation chain.
+set as unparseable (through sgp4 2.26 its parser was stricter than ours in two
+digit-or-space fields; 2.27 accepts them, so the catch is version-independent
+defence rather than a fix for one known pair) or physically unphysical (1-5).
+Decayed orbits (error 6) are real, not corruption, so they merely break the
+propagation chain.
 
 Determinism: residuals are rounded to a 0.1 km quantum *before* thresholding, and
 an outlier must clear the threshold by a full quantum — so the suspect set and
@@ -150,12 +152,14 @@ def _track_suspects(
         try:
             sat = Satrec.twoline2rv(rec.line1, rec.line2)
         except ValueError as exc:
-            # sgp4's parser is stricter than tle.validate_record in two places
-            # (blank/interior-space element-set number, line 1 cols 65-68, and
-            # revolution number, line 2 cols 64-68 — both digit-or-space for us,
-            # both bare int() for sgp4), so a perfectly lintle-valid record can
-            # still be unparseable here. That is a finding about the record, not
-            # a crash of the corpus-wide pass. ValueError only: a broader catch
+            # A perfectly lintle-valid record can still be unparseable here.
+            # Through sgp4 2.26 the known pair was the blank/interior-space
+            # element-set number (line 1, cols 65-68) and revolution number
+            # (line 2, cols 64-68) — digit-or-space for us, bare int() for
+            # sgp4; 2.27 accepts both, so that set is empty on current sgp4 and
+            # this stays as defence against whatever a future release rejects.
+            # Either way it is a finding about the record, not a crash of the
+            # corpus-wide pass. ValueError only: a broader catch
             # would re-hide the class of bug this exists to surface. The message
             # is whitespace-squashed — sgp4's template is multi-line, and the
             # suspect spill is tab/newline-framed.
