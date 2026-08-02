@@ -1,6 +1,9 @@
 version: 2
 updates:
-  - package-ecosystem: "pip"
+  # "uv", not "pip": this project locks with uv, and the pip ecosystem edits
+  # pyproject.toml WITHOUT regenerating uv.lock — which fails CI's
+  # `uv sync --locked` on every dependency PR (it did, on the ruff bump).
+  - package-ecosystem: "uv"
     directory: "/"
     schedule: { interval: "weekly" }
     groups:

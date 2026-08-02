@@ -1,8 +1,12 @@
 name: version
+# main only. Releases are the only thing that bumps the version, and releases
+# land on main; feature and refactor PRs target develop and deliberately do NOT
+# touch it (CONTRIBUTING § Versioning: "No per-merge version bumps"). Firing on
+# develop made this fail every feature PR by design.
 on:
   pull_request:
-    branches: [develop, main]
-    paths: ['src/**', 'package.json', 'pyproject.toml']
+    branches: [main]
+    paths: ['src/**', 'pyproject.toml']
 
 jobs:
   bumped:
