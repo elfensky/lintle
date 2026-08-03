@@ -1,6 +1,16 @@
 """End-to-end pipeline tests: golden output, idempotence, re-validation."""
 
-from lintle import BROKEN_DIRNAME, CLEANED_DIRNAME, pipeline, tle
+import json
+
+from lintle import (
+    BROKEN_DIRNAME,
+    CLEANED_DIRNAME,
+    EXTRACT_DIRNAME,
+    REPORT_DIRNAME,
+    cli,
+    pipeline,
+    tle,
+)
 from lintle.categories import FixClass
 from lintle.chunking import ChunkedReader
 
@@ -85,6 +95,39 @@ class TestEndToEnd:
         )
         assert stats.clean_count == 1
         assert stats.quarantined_count == 0
+
+    def test_alpha5_quarantine_reaches_the_extract_sidecar(
+        self, tmp_path, line1, line2
+    ):
+        # #206, the whole chain in one test: an Alpha-5 satellite (E8493 ->
+        # 148493) with one clean record and one quarantined (wrong checksum)
+        # one. clean must list the satellite in broken-noradids.ndjson, and
+        # extract must then read that file back as had_quarantined_records
+        # true. While extract_norad_id refused Alpha-5 the id never reached the
+        # ndjson, so the sidecar reported a confident `false` for a satellite
+        # whose records WERE quarantined — a silent wrong answer.
+        def fix(line: str) -> str:
+            return line[:68] + str(tle.compute_checksum(line))
+
+        a1, a2 = fix("1 E8493" + line1[7:]), fix("2 E8493" + line2[7:])
+        clean_epoch = fix(a1[:20] + "180" + a1[23:])
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "tle2099.txt").write_bytes(
+            f"{a1[:68]}9\n{a2}\n{clean_epoch}\n{a2}\n".encode("ascii")
+        )
+        out = tmp_path / "out"
+
+        assert cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"]) == 1
+        ndjson = (out / REPORT_DIRNAME / "broken-noradids.ndjson").read_text("ascii")
+        assert ndjson == '{"noradId":148493}\n'
+
+        assert cli.main(["dedup", str(out)]) == 0
+        assert cli.main(["extract", "E8493", "--out-dir", str(out)]) == 0
+        sidecar = json.loads(
+            (out / EXTRACT_DIRNAME / "148493.json").read_text(encoding="ascii")
+        )
+        assert sidecar["had_quarantined_records"] is True
 
     def test_every_cleaned_line_passes_validate_line(self, tmp_path, line1, line2):
         src = tmp_path / "tle2099.txt"
