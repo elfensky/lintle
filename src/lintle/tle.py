@@ -395,7 +395,7 @@ def extract_norad_id(line: str | bytes) -> int | None:
     """Return the NORAD catalog ID from a TLE *line 1*, or ``None``.
 
     Locates columns 3-7 and hands them to :func:`decode_catalog`, which stays
-    the one reading of that field (#206) — so every spelling it accepts is
+    the one reading of that field (#216) — so every spelling it accepts is
     accepted here too: space-padded low numbers (``'  836'`` -> 836) and the
     Alpha-5 letter-prefixed form for ids past 99,999 (``'E8493'`` -> 148493).
     Used to recover a programmatic ID from quarantined records whose other

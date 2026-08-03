@@ -17,7 +17,7 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Fixed
 
-- **An Alpha-5 satellite's quarantines are reported, not silently dropped** (#206). #203 made
+- **An Alpha-5 satellite's quarantines are reported, not silently dropped** (#216). #203 made
   `tle.decode_catalog` the general reader of columns 3–7 but left `tle.extract_norad_id` a
   strict 5-digit reader, so the two clean-path/verify consumers that go through it gave wrong
   answers. A quarantined Alpha-5 record never reached `03-report/broken-noradids.ndjson`, and
@@ -118,7 +118,7 @@ All notable changes to this project are documented in this file. The format is b
   documented vectors, and `sgp4.io`'s `from_alpha5` stays out of the clean path.
   The 2004–2025 corpus contains zero Alpha-5 records, so this is future-proofing with no
   effect on current output. (`tle.extract_norad_id` was left a strict 5-digit reader here and
-  routed through `decode_catalog` in #206 — see *An Alpha-5 satellite's quarantines are
+  routed through `decode_catalog` in #216 — see *An Alpha-5 satellite's quarantines are
   reported* below.)
 
 ### Fixed

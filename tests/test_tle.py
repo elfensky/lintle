@@ -256,7 +256,7 @@ class TestFieldError:
 
 class TestExtractNoradId:
     """``extract_norad_id`` — the line-level adapter that finds cols 3-7 on a
-    line 1 and delegates the decode to ``decode_catalog`` (#206). It therefore
+    line 1 and delegates the decode to ``decode_catalog`` (#216). It therefore
     accepts every spelling ``decode_catalog`` does; what it alone decides is
     whether the line has a readable line-1 catalog field at all."""
 
@@ -287,7 +287,7 @@ class TestExtractNoradId:
         assert tle.extract_norad_id("1 12") is None
 
     def test_decodes_alpha5_field(self, line1):
-        # Reversed in #206. The old contract returned None here, on the
+        # Reversed in #216. The old contract returned None here, on the
         # grounds that broken-noradids.ndjson wants a plain integer — but a
         # decoded Alpha-5 id IS a plain integer, and returning None made a
         # quarantined Alpha-5 satellite vanish from that file, which then made
@@ -320,7 +320,7 @@ class TestExtractNoradId:
 class TestDecodeCatalog:
     """``decode_catalog`` — THE reading of the cols 3-7 catalog field, covering
     both the plain-digit and the Alpha-5 letter-prefixed spellings (#203).
-    ``extract_norad_id`` routes through it (#206), so there is one definition of
+    ``extract_norad_id`` routes through it (#216), so there is one definition of
     what those five columns mean."""
 
     # The canonical table, verbatim from space-track's Alpha-5 documentation

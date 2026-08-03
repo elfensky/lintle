@@ -99,7 +99,7 @@ class TestEndToEnd:
     def test_alpha5_quarantine_reaches_the_extract_sidecar(
         self, tmp_path, line1, line2
     ):
-        # #206, the whole chain in one test: an Alpha-5 satellite (E8493 ->
+        # #216, the whole chain in one test: an Alpha-5 satellite (E8493 ->
         # 148493) with one clean record and one quarantined (wrong checksum)
         # one. clean must list the satellite in broken-noradids.ndjson, and
         # extract must then read that file back as had_quarantined_records

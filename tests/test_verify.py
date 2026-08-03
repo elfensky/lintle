@@ -335,7 +335,7 @@ class TestSourceAligner:
         assert s is not None and s.rule is VerifyRule.INTERIOR_MUT
 
     def test_interior_mutation_flagged_for_alpha5(self, tmp_path):
-        # #206: the resync anchor is (catalog, epoch columns). While
+        # #216: the resync anchor is (catalog, epoch columns). While
         # extract_norad_id refused Alpha-5, an Alpha-5 record had no anchor, so
         # a real interior mutation degraded to the soft ORIGIN_MISSING —
         # "no origin here at all" — instead of the hard INTERIOR_MUT.

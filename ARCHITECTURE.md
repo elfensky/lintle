@@ -205,7 +205,7 @@ surfaces first.
   `extract_norad_id(line)` is the line-level adapter over it — it applies the `"1 "` prefix,
   length, and ASCII-decode guards that decide whether a *line* has a readable line-1 catalog
   field at all, then delegates the decode. Rule #4 in miniature: the guards are about the line,
-  the decode is defined once. #206 replaced its former strict-5-digit body, which returned
+  the decode is defined once. #216 replaced its former strict-5-digit body, which returned
   `None` for both Alpha-5 and space-padded fields; see §6 for the output-contract consequence.
 
 This is reference-level; the code is authoritative for the exact column offsets and ranges.
@@ -707,7 +707,7 @@ consumers ignore unknown fields. Empty file when nothing was quarantined. Verifi
 {"noradId":25544}
 ```
 
-**`noradId` is not bounded by five digits.** Since #206 it is whatever `decode_catalog` reads
+**`noradId` is not bounded by five digits.** Since #216 it is whatever `decode_catalog` reads
 from columns 3–7, so a quarantined Alpha-5 satellite appears as its decoded integer
 (`{"noradId":148493}`, up to 339999) and a space-padded low number appears at all (`'  836'`
 → `{"noradId":836}`, previously omitted). The *shape* is unchanged — it was always a JSON
