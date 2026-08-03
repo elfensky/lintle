@@ -392,15 +392,18 @@ def decode_catalog(field: str) -> int | None:
 
 
 def extract_norad_id(line: str | bytes) -> int | None:
-    """Return the 5-digit NORAD catalog ID from a TLE line 1, or ``None``.
+    """Return the NORAD catalog ID from a TLE *line 1*, or ``None``.
 
-    Reads columns 3-7 (the satellite catalog number) and parses them as a
-    decimal integer. Used to recover a programmatic ID from quarantined
-    records whose other fields may be corrupt. Returns ``None`` when the
-    line does not start with the ``"1 "`` line-1 prefix, is too short to
-    contain the field, contains a non-ASCII byte, or the field is not
-    five decimal digits — Alpha-5 letter-prefixed IDs are deliberately
-    excluded to keep the downstream contract a plain integer.
+    Locates columns 3-7 and hands them to :func:`decode_catalog`, which stays
+    the one reading of that field (#206) — so every spelling it accepts is
+    accepted here too: space-padded low numbers (``'  836'`` -> 836) and the
+    Alpha-5 letter-prefixed form for ids past 99,999 (``'E8493'`` -> 148493).
+    Used to recover a programmatic ID from quarantined records whose other
+    fields may be corrupt. This is the line-level adapter — it only finds the
+    field — so ``None`` means the line has no readable line-1 catalog field at
+    all: it does not start with the ``"1 "`` line-1 prefix, is too short to
+    contain the field, carries a non-ASCII byte, or the field is neither
+    spelling.
     """
     if isinstance(line, bytes):
         try:
@@ -409,10 +412,7 @@ def extract_norad_id(line: str | bytes) -> int | None:
             return None
     if len(line) < 7 or not line.startswith("1 "):
         return None
-    field = line[2:7]
-    if not is_ascii_digits(field):
-        return None
-    return int(field)
+    return decode_catalog(line[2:7])
 
 
 def validate_record(line1: str, line2: str) -> list[FieldError]:

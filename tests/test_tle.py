@@ -255,6 +255,11 @@ class TestFieldError:
 
 
 class TestExtractNoradId:
+    """``extract_norad_id`` — the line-level adapter that finds cols 3-7 on a
+    line 1 and delegates the decode to ``decode_catalog`` (#206). It therefore
+    accepts every spelling ``decode_catalog`` does; what it alone decides is
+    whether the line has a readable line-1 catalog field at all."""
+
     def test_extracts_from_canonical_line1(self, line1):
         assert tle.extract_norad_id(line1) == 5
 
@@ -281,12 +286,23 @@ class TestExtractNoradId:
         # field to read at all — must not raise.
         assert tle.extract_norad_id("1 12") is None
 
-    def test_returns_none_for_non_digit_field(self, line1):
-        # Modern Alpha-5 NORAD encoding allows letters (e.g. "B1234"),
-        # but the issue's contract is "5-digit integer" — letters are
-        # treated as undecodable so downstream sees only pure-int IDs.
-        body = "1 B0005" + line1[7:]
-        assert tle.extract_norad_id(body) is None
+    def test_decodes_alpha5_field(self, line1):
+        # Reversed in #206. The old contract returned None here, on the
+        # grounds that broken-noradids.ndjson wants a plain integer — but a
+        # decoded Alpha-5 id IS a plain integer, and returning None made a
+        # quarantined Alpha-5 satellite vanish from that file, which then made
+        # extract's had_quarantined_records report a confident false.
+        assert tle.extract_norad_id("1 B0005" + line1[7:]) == 110005
+
+    def test_decodes_space_padded_field(self, line1):
+        # space-track writes low catalog numbers space-padded, and the column
+        # charset allows it — cols 3-7 '  836' is catalog 836, not undecodable.
+        assert tle.extract_norad_id("1   836" + line1[7:]) == 836
+
+    def test_returns_none_for_undecodable_field(self, line1):
+        # Delegation is not blanket acceptance: a field that is neither
+        # spelling still has no id to report.
+        assert tle.extract_norad_id("1 T75A0" + line1[7:]) is None
 
     def test_returns_none_for_non_ascii_bytes(self):
         # A line with a non-ASCII byte in the prefix region is unreadable
@@ -302,10 +318,10 @@ class TestExtractNoradId:
 
 
 class TestDecodeCatalog:
-    """``decode_catalog`` — the one reading of the cols 3-7 catalog field,
-    covering both the plain-digit and the Alpha-5 letter-prefixed spellings
-    (#203). ``extract_norad_id`` deliberately stays 5-digit-only: it feeds the
-    clean path's ``broken-noradids.ndjson`` contract."""
+    """``decode_catalog`` — THE reading of the cols 3-7 catalog field, covering
+    both the plain-digit and the Alpha-5 letter-prefixed spellings (#203).
+    ``extract_norad_id`` routes through it (#206), so there is one definition of
+    what those five columns mean."""
 
     # The canonical table, verbatim from space-track's Alpha-5 documentation
     # (the same vectors sgp4's own test suite uses) — A=10 … Z=33 with I and O

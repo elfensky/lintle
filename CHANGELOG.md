@@ -17,6 +17,27 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Fixed
 
+- **An Alpha-5 satellite's quarantines are reported, not silently dropped** (#206). #203 made
+  `tle.decode_catalog` the general reader of columns 3–7 but left `tle.extract_norad_id` a
+  strict 5-digit reader, so the two clean-path/verify consumers that go through it gave wrong
+  answers. A quarantined Alpha-5 record never reached `03-report/broken-noradids.ndjson`, and
+  `lintle extract` reads that file back — so its `<id>.json` sidecar reported
+  `had_quarantined_records: false` (a confident *no*, not the tri-state `null` that means
+  "unknown") for a satellite whose records were quarantined. And `verify`'s source byte-diff
+  lost its resync anchor for such a record, degrading a real interior mutation from the hard
+  `VRFY-INTERIOR-MUT` to the soft `VRFY-ORIGIN-MISSING`. `extract_norad_id` is now the
+  line-level adapter over `decode_catalog` — it decides only whether a *line* has a readable
+  line-1 catalog field (the `"1 "` prefix, length, and ASCII guards) and delegates the decode,
+  leaving one definition of what those columns mean.
+  **Output-contract note:** `broken-noradids.ndjson`'s `{"noradId":N}` shape is unchanged — a
+  decoded Alpha-5 id is still a JSON integer — but its *range* widens past 99999 (max 339999),
+  and space-padded low numbers (`'  836'`) now appear at all where the old reader omitted
+  them. `report.jsonl`'s `norad_id` and `report.md`'s per-NORAD breakdown widen identically:
+  they read the same `QuarantineEntry` field, and one satellite must not have two answers.
+  Consumers assuming 5 digits must widen. The corpus has zero Alpha-5 records (scanned
+  2026-07-30), so that half is pure future-proofing and the end-to-end freeze passes unchanged.
+  The space-padded half is not: a re-run over the real corpus may list ids the old reader
+  dropped, which is the correct answer arriving late, not a regression.
 - **`verify --orbit` survives records sgp4 cannot parse.** sgp4's parser is stricter than
   `tle.py` in two digit-or-space fields (line-1 element-set number, line-2 revolution number
   — both bare `int()` for sgp4), so a lintle-perfect record with a blank field crashed the
@@ -95,9 +116,10 @@ All notable changes to this project are documented in this file. The format is b
   integer (`manifest.jsonl`'s `norad_id`, the `<id>.json` sidecar, the `<id>.txt` filename);
   exported TLE bytes stay verbatim. The decode table is pinned to space-track's own
   documented vectors, and `sgp4.io`'s `from_alpha5` stays out of the clean path.
-  `tle.extract_norad_id` is deliberately unchanged — it feeds `broken-noradids.ndjson`'s
-  5-digit contract. The 2004–2025 corpus contains zero Alpha-5 records, so this is
-  future-proofing with no effect on current output.
+  The 2004–2025 corpus contains zero Alpha-5 records, so this is future-proofing with no
+  effect on current output. (`tle.extract_norad_id` was left a strict 5-digit reader here and
+  routed through `decode_catalog` in #206 — see *An Alpha-5 satellite's quarantines are
+  reported* below.)
 
 ### Fixed
 

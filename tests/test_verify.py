@@ -163,8 +163,8 @@ class TestCatalogExtraction:
     def test_space_padded_catalog_recovered(self):
         # space-track writes low catalog numbers space-padded, not zero-padded:
         # cols 3-7 '  836' is catalog 836 and validates (the charset allows
-        # spaces), but tle.extract_norad_id's strict 5-digit contract returns
-        # None -> the -1 sentinel manufactures epoch conflicts (#157).
+        # spaces); reading it as undecodable would drop the record onto the -1
+        # sentinel and manufacture epoch conflicts (#157).
         l1 = fix(L1[:2] + "  836" + L1[7:])
         cat, key = records._catalog_and_key(l1)
         assert cat == 836 and key != -1.0
@@ -331,6 +331,20 @@ class TestSourceAligner:
         src.write_text(f"{L1}\n{L2}\n", encoding="ascii")
         aligner = checks.SourceAligner(str(src))
         s = aligner.feed(rec(line2=mutated_l2()))
+        aligner.close()
+        assert s is not None and s.rule is VerifyRule.INTERIOR_MUT
+
+    def test_interior_mutation_flagged_for_alpha5(self, tmp_path):
+        # #206: the resync anchor is (catalog, epoch columns). While
+        # extract_norad_id refused Alpha-5, an Alpha-5 record had no anchor, so
+        # a real interior mutation degraded to the soft ORIGIN_MISSING —
+        # "no origin here at all" — instead of the hard INTERIOR_MUT.
+        a1 = fix("1 E8493" + L1[7:])
+        a2 = fix("2 E8493" + L2[7:])
+        src = tmp_path / "s.txt"
+        src.write_text(f"{a1}\n{a2}\n", encoding="ascii")
+        aligner = checks.SourceAligner(str(src))
+        s = aligner.feed(rec(line1=a1, line2=fix(a2[:13] + "3" + a2[14:])))
         aligner.close()
         assert s is not None and s.rule is VerifyRule.INTERIOR_MUT
 

@@ -195,17 +195,18 @@ surfaces first.
   defect, not a checksum one.
 - **Pairing.** `validate_record(line1, line2)` requires each line to validate *and* the
   satellite catalog numbers (columns 3–7) to match between the two lines.
-- **NORAD extraction.** Two readers of columns 3–7, deliberately different:
-  - `decode_catalog(field)` is the general one (#203) — the integer catalog behind either
-    spelling: the space-padded digits space-track uses for low numbers (`'  836'` → 836) and
-    the **Alpha-5** letter-prefixed form for ids past 99,999, where column 3 carries the
-    leading 10–33 with `I` and `O` omitted so the letter can never be read as `1` or `0`
-    (`'E8493'` → 148493; the maximum is `'Z9999'` → 339999). The table is pinned to
-    space-track's own documented vectors. `verify.records.catalog_of` and `extract`'s CLI
-    argument both route through it, so the reader and the caller cannot disagree about which
-    satellite is meant, and `sgp4.io`'s `from_alpha5` stays out of the clean path.
-  - `extract_norad_id` stays a strict 5-digit reader, returning `None` for Alpha-5, because it
-    feeds `broken-noradids.ndjson`'s plain-integer contract for quarantined records.
+- **NORAD extraction.** One reader of columns 3–7, `decode_catalog(field)` (#203) — the integer
+  catalog behind either spelling: the space-padded digits space-track uses for low numbers
+  (`'  836'` → 836) and the **Alpha-5** letter-prefixed form for ids past 99,999, where column 3
+  carries the leading 10–33 with `I` and `O` omitted so the letter can never be read as `1` or
+  `0` (`'E8493'` → 148493; the maximum is `'Z9999'` → 339999). The table is pinned to
+  space-track's own documented vectors, so `sgp4.io`'s `from_alpha5` stays out of the clean path.
+  `verify.records.catalog_of` and `extract`'s CLI argument route through it directly;
+  `extract_norad_id(line)` is the line-level adapter over it — it applies the `"1 "` prefix,
+  length, and ASCII-decode guards that decide whether a *line* has a readable line-1 catalog
+  field at all, then delegates the decode. Rule #4 in miniature: the guards are about the line,
+  the decode is defined once. #206 replaced its former strict-5-digit body, which returned
+  `None` for both Alpha-5 and space-padded fields; see §6 for the output-contract consequence.
 
 This is reference-level; the code is authoritative for the exact column offsets and ranges.
 
@@ -705,6 +706,17 @@ consumers ignore unknown fields. Empty file when nothing was quarantined. Verifi
 ```
 {"noradId":25544}
 ```
+
+**`noradId` is not bounded by five digits.** Since #206 it is whatever `decode_catalog` reads
+from columns 3–7, so a quarantined Alpha-5 satellite appears as its decoded integer
+(`{"noradId":148493}`, up to 339999) and a space-padded low number appears at all (`'  836'`
+→ `{"noradId":836}`, previously omitted). The *shape* is unchanged — it was always a JSON
+integer — but a consumer that assumed a 5-digit range must widen. The same widening reaches
+`report.jsonl`'s `norad_id` and `report.md`'s per-NORAD breakdown, which read the same
+`QuarantineEntry` field; keeping them narrower would mean two answers for one satellite.
+This is the field `extract`'s `<id>.json` sidecar reads back for `had_quarantined_records`, so
+the narrow reader made that tri-state flag report a confident `false` — not `null` — for a
+satellite whose records were quarantined.
 
 ### The checkpoint `.clean-state.json` — `schema_version 4`
 
