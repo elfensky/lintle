@@ -13,7 +13,7 @@ from pathlib import Path
 from rich.text import Text
 
 from lintle import CLEANED_DIRNAME, REPORT_DIRNAME, cli_progress, fsutil, summary, term
-from lintle.chunking import ChunkedReader
+from lintle.chunking import ChunkedReader, ChunkSetError
 from lintle.dedup import DEDUP_DIRNAME, IMPORT_STEM, IMPORT_SUFFIX
 from lintle.history import HistoryStats, analyze_epochs
 from lintle.history import epoch_dt as _epoch_dt
@@ -45,7 +45,12 @@ def _import_chunks(out_dir: str) -> list[Path]:
     140-byte records (a torn chunk must never yield sliced records — correctness
     over recovery)."""
     ddir = Path(out_dir) / DEDUP_DIRNAME
-    chunks = ChunkedReader(ddir, IMPORT_STEM, IMPORT_SUFFIX).chunk_paths()
+    try:
+        chunks = ChunkedReader(ddir, IMPORT_STEM, IMPORT_SUFFIX).complete_chunk_paths()
+    except ChunkSetError as exc:
+        # A gapped set would binary-search a silently shortened stream and
+        # export confidently truncated histories — refuse instead.
+        raise ExtractError(f"{exc}\n  re-run 'lintle dedup'.") from exc
     if not chunks:
         raise ExtractError(
             f"no dedup import set under {ddir}.\n"
@@ -78,20 +83,27 @@ def _quarantined_ids(out_dir: str) -> set[int] | None:
         return None
 
 
-def _warn_if_stale(out_dir: str) -> None:
+def _dedup_summary(out_dir: str) -> dict | None:
+    """``05-dedup/summary.json`` as a dict, or ``None`` when absent, unreadable,
+    or not an object — the *single* read of it per run, threaded into both the
+    staleness warning and every sidecar's ``source`` block. It used to be
+    re-read unguarded once per written catalog, so a pruned tree crashed each
+    extraction *after* its txt commit — and the pair rollback then deleted a
+    prior run's still-good outputs. UTF-8, not ascii: the doc is
+    ``ensure_ascii``-escaped so UTF-8 always decodes it, and a foreign byte
+    should degrade to the tolerant ``None``, not a crash."""
+    return fsutil.read_json_or_none(Path(out_dir) / DEDUP_DIRNAME / "summary.json")
+
+
+def _warn_if_stale(out_dir: str, dedup_summary: dict | None) -> None:
     """Warn — never fail — if ``01-cleaned`` drifted since the ``dedup`` run
     this extraction reads from, by comparing the stat-only structural
     fingerprint ``dedup`` stored in ``summary.json`` against a live recompute.
-    No fingerprint stored (older run, or a hand-built dedup tree) means
-    nothing to compare against, so it's silently skipped. Matches extract's
-    existing warn-and-proceed philosophy (see :func:`_warn_and_confirm`); the
-    exit code is untouched."""
-    summary_path = Path(out_dir) / DEDUP_DIRNAME / "summary.json"
-    if not summary_path.is_file():
-        return
-    stored = json.loads(summary_path.read_text(encoding="ascii")).get(
-        "cleaned_fingerprint"
-    )
+    No summary or no fingerprint stored (older run, or a hand-built dedup
+    tree) means nothing to compare against, so it's silently skipped. Matches
+    extract's existing warn-and-proceed philosophy (see
+    :func:`_warn_and_confirm`); the exit code is untouched."""
+    stored = (dedup_summary or {}).get("cleaned_fingerprint")
     if stored is not None and stored != cleaned_fingerprint(out_dir):
         term.warning(
             f"{CLEANED_DIRNAME} changed since the last dedup run — extract results "
@@ -105,18 +117,57 @@ def _catalog_at(fh, index: int) -> int:
     line1 = fh.read(RECORD_BYTES)[:69].decode("ascii", errors="replace")
     cat = catalog_of(line1)
     if cat is None:
-        raise ExtractError("unparseable catalog in import chunk — corrupted set")
+        raise ExtractError(
+            f"unparseable catalog at record {index} of {fh.name}: {line1[:8]!r}… — "
+            "a corrupt record in the import set; re-run 'lintle dedup' "
+            "(current dedup skips these as DEDUP-UNUSABLE-RECORD)."
+        )
     return cat
 
 
-def find_spans(out_dir: str, catalog: int) -> list[tuple[Path, int, int]]:
+def chunk_index(out_dir: str) -> list[tuple[Path, int]]:
+    """The import set's chunks paired with their record counts, globbed and
+    stat'd ONCE per run. ``run`` builds it in the preflight and threads it into
+    every per-catalog lookup: rebuilding it inside :func:`find_spans` cost a
+    glob plus a stat per chunk per id, which in the documented
+    ``jq | shuf | xargs lintle extract`` workflow is O(ids x chunks) syscalls
+    for a set that cannot change under a single run."""
+    return [(c, c.stat().st_size // RECORD_BYTES) for c in _import_chunks(out_dir)]
+
+
+def _probe_boundaries(chunks: list[tuple[Path, int]]) -> None:
+    """Preflight probe: every chunk's first and last record must carry a
+    parseable catalog, and the set must be globally non-decreasing across chunk
+    boundaries. One up-front error naming the chunk and record — instead of the
+    old failure mode where a single unusable record at position 0 (it sorts
+    first) failed *every* per-catalog binary search, one catalog at a time,
+    blaming corruption."""
+    prev_last: int | None = None
+    for chunk, n in chunks:
+        if n == 0:
+            continue
+        with open(chunk, "rb") as fh:
+            first, last = _catalog_at(fh, 0), _catalog_at(fh, n - 1)
+        if prev_last is not None and first < prev_last:
+            raise ExtractError(
+                f"{chunk} starts at catalog {first} but the previous chunk ends "
+                f"at {prev_last} — the import set is not globally sorted; "
+                "re-run 'lintle dedup'."
+            )
+        prev_last = last
+
+
+def find_spans(
+    out_dir: str, catalog: int, chunks: list[tuple[Path, int]] | None = None
+) -> list[tuple[Path, int, int]]:
     """Locate ``catalog``'s contiguous run as per-chunk half-open record-index
     ranges ``(chunk_path, lo, hi)`` — ``[]`` if absent. Bisects inside each
     candidate chunk; a run may straddle consecutive chunks (fixed-count rolls
-    ignore catalog boundaries)."""
+    ignore catalog boundaries). ``chunks`` is :func:`chunk_index`'s result;
+    ``run`` passes the one it built in the preflight, and it is rebuilt here
+    only for a standalone call."""
     spans: list[tuple[Path, int, int]] = []
-    for chunk in _import_chunks(out_dir):
-        n = chunk.stat().st_size // RECORD_BYTES
+    for chunk, n in chunks if chunks is not None else chunk_index(out_dir):
         if n == 0:
             continue
         with open(chunk, "rb") as fh:
@@ -160,12 +211,25 @@ def _analyze(spans: list[tuple[Path, int, int]]) -> HistoryStats:
             remaining = (hi - lo) * RECORD_BYTES
             while remaining:
                 block = fh.read(min(_COPY_BLOCK, remaining))
+                if not block:
+                    raise _shrank(chunk, remaining)
                 remaining -= len(block)
                 for off in range(0, len(block), RECORD_BYTES):
                     line1 = block[off : off + 69].decode("ascii")
                     elsets.append(element_set(line1))
                     epochs.append(_epoch_dt(line1))
     return analyze_epochs(epochs, elsets)
+
+
+def _shrank(chunk: Path, remaining: int) -> ExtractError:
+    """A zero-length read before the span was exhausted: the chunk shrank
+    between ``find_spans``' stat and this open (external mutation, NFS). The
+    old loop spun forever on the sticky ``remaining`` — it must raise. Short
+    *progressing* reads stay legal (network filesystems)."""
+    return ExtractError(
+        f"{chunk} shrank mid-extract (expected {remaining} more bytes) — "
+        "another process is modifying the dedup tree; re-run 'lintle extract'."
+    )
 
 
 def _copy_spans(spans: list[tuple[Path, int, int]], out) -> None:
@@ -177,19 +241,26 @@ def _copy_spans(spans: list[tuple[Path, int, int]], out) -> None:
             remaining = (hi - lo) * RECORD_BYTES
             while remaining:
                 block = fh.read(min(_COPY_BLOCK, remaining))
+                if not block:
+                    raise _shrank(chunk, remaining)
                 out.write(block)
                 remaining -= len(block)
 
 
 def _sidecar(
-    out_dir: str, catalog: int, hs: HistoryStats, had_quarantined: bool | None
+    out_dir: str,
+    catalog: int,
+    hs: HistoryStats,
+    had_quarantined: bool | None,
+    dedup_summary: dict | None,
 ) -> str:
     """The ``<id>.json`` document (sorted keys, 2-space indent, trailing LF —
     the house deterministic-JSON shape). Schema v2 adds the gap-awareness
-    fields; ``had_quarantined`` is tri-state (None = clean report absent)."""
+    fields; ``had_quarantined`` is tri-state (None = clean report absent), and
+    so is ``dedup_summary`` — its ``source`` fields are already null-tolerant,
+    so a pruned tree degrades to nulls instead of a post-commit crash."""
     span = (hs.last - hs.first).total_seconds() / 86400.0
-    summary_path = Path(out_dir) / DEDUP_DIRNAME / "summary.json"
-    summary = json.loads(summary_path.read_text(encoding="ascii"))
+    source = dedup_summary or {}  # not `summary`: that name is the imported module
     doc = {
         "schema_version": "2",
         "norad_id": catalog,
@@ -217,11 +288,11 @@ def _sidecar(
         "element_set_last": hs.elset_last,
         "source": {
             "out_dir": str(Path(out_dir)),
-            "dedup_records_written": summary.get("records_written"),
-            "dedup_schema_version": summary.get("schema_version"),
+            "dedup_records_written": source.get("records_written"),
+            "dedup_schema_version": source.get("schema_version"),
         },
     }
-    return json.dumps(doc, indent=2, sort_keys=True) + "\n"
+    return fsutil.json_document(doc)
 
 
 def _warn_and_confirm(
@@ -252,7 +323,12 @@ def _warn_and_confirm(
 
 
 def _extract_one(
-    out_dir: str, catalog: int, dest: Path, quarantined: set[int] | None
+    out_dir: str,
+    catalog: int,
+    dest: Path,
+    quarantined: set[int] | None,
+    dedup_summary: dict | None,
+    chunks: list[tuple[Path, int]],
 ) -> str:
     """Extract one satellite in two passes: analyze the span read-only, then
     stream its byte range verbatim to ``<dest>/<id>.txt`` (durable
@@ -270,7 +346,7 @@ def _extract_one(
     # analysis are the same silent stretch to anyone watching, and two
     # consecutive spinners would only flicker.
     with cli_progress.status(f"analyzing {catalog}…"):
-        spans = find_spans(out_dir, catalog)
+        spans = find_spans(out_dir, catalog, chunks)
         if not spans:
             return "absent"
         hs = _analyze(spans)
@@ -291,7 +367,7 @@ def _extract_one(
             committed = True
             fsutil.durable_write_text(
                 str(dest / f"{catalog}.json"),
-                _sidecar(out_dir, catalog, hs, had_quarantined),
+                _sidecar(out_dir, catalog, hs, had_quarantined, dedup_summary),
                 encoding="ascii",
             )
     except Exception:
@@ -360,10 +436,7 @@ def _render_results(outcomes: list[tuple[int, str]], dest_dir: Path) -> None:
 def _read_sidecar(dest_dir: Path, catalog: int) -> dict | None:
     """Return the just-written ``<id>.json`` as a dict, or ``None`` if it cannot
     be read — the results table is cosmetic and must never fail a good run."""
-    try:
-        return json.loads((dest_dir / f"{catalog}.json").read_text(encoding="ascii"))
-    except OSError, ValueError:
-        return None
+    return fsutil.read_json_or_none(dest_dir / f"{catalog}.json")
 
 
 def run(
@@ -378,8 +451,14 @@ def run(
     — an explicit ``--dest`` is the user's own directory and is never
     decorated; the cli passes True only when ``dest`` resolved to the default
     ``<out-dir>/06-extract`` (Task 3)."""
-    _import_chunks(out_dir)  # raises ExtractError before any per-catalog work
-    _warn_if_stale(out_dir)
+    # Preflight — every failure here is ExtractError -> exit 2 with nothing
+    # written: a complete, whole-record, globally-sorted import set with
+    # parseable boundary catalogs. Checked once, before any per-catalog work,
+    # never after a commit point.
+    chunks = chunk_index(out_dir)  # globbed and stat'd once, then threaded
+    _probe_boundaries(chunks)
+    dedup_summary = _dedup_summary(out_dir)  # the single read of summary.json
+    _warn_if_stale(out_dir, dedup_summary)
     # Spinner: reads and parses the whole broken-noradids.ndjson before any
     # per-catalog work, which on a corpus run is far from instant.
     with cli_progress.status("reading quarantine info…"):
@@ -387,9 +466,7 @@ def run(
     dest_dir = Path(dest)
     dest_dir.mkdir(parents=True, exist_ok=True)
     if write_readme:
-        fsutil.durable_write_text(
-            str(dest_dir / "README.md"), _README, encoding="utf-8"
-        )
+        fsutil.write_step_readme(dest_dir, _README)
     # Phase 1 — discovery, only when there is something to orient: a one-row
     # roster above a one-row result table is noise, not orientation.
     if len(catalogs) > 1:
@@ -399,7 +476,9 @@ def run(
     outcomes: list[tuple[int, str]] = []
     for catalog in catalogs:
         try:
-            outcome = _extract_one(out_dir, catalog, dest_dir, quarantined)
+            outcome = _extract_one(
+                out_dir, catalog, dest_dir, quarantined, dedup_summary, chunks
+            )
         except Exception as exc:
             term.error(f"extraction failed for catalog {catalog}: {exc}")
             missing.append(catalog)

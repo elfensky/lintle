@@ -1,12 +1,13 @@
 """Tests for ``lintle verify`` (Increment 1: the exhaustive, sgp4-free core)."""
 
 import ast
+import contextlib
 import json
 from pathlib import Path
 
 import lintle
-from lintle import CLEANED_DIRNAME, VERIFY_DIRNAME, cli, tle
-from lintle.verify import checks, epoch, grouping, records, report, run
+from lintle import CLEANED_DIRNAME, VERIFY_DIRNAME, cli, epoch, tle
+from lintle.verify import checks, grouping, records, report, run
 from lintle.verify.records import CleanedRecord
 from lintle.verify.report import Suspect, VerifyRule
 
@@ -162,8 +163,8 @@ class TestCatalogExtraction:
     def test_space_padded_catalog_recovered(self):
         # space-track writes low catalog numbers space-padded, not zero-padded:
         # cols 3-7 '  836' is catalog 836 and validates (the charset allows
-        # spaces), but tle.extract_norad_id's strict 5-digit contract returns
-        # None -> the -1 sentinel manufactures epoch conflicts (#157).
+        # spaces); reading it as undecodable would drop the record onto the -1
+        # sentinel and manufacture epoch conflicts (#157).
         l1 = fix(L1[:2] + "  836" + L1[7:])
         cat, key = records._catalog_and_key(l1)
         assert cat == 836 and key != -1.0
@@ -333,6 +334,20 @@ class TestSourceAligner:
         aligner.close()
         assert s is not None and s.rule is VerifyRule.INTERIOR_MUT
 
+    def test_interior_mutation_flagged_for_alpha5(self, tmp_path):
+        # #216: the resync anchor is (catalog, epoch columns). While
+        # extract_norad_id refused Alpha-5, an Alpha-5 record had no anchor, so
+        # a real interior mutation degraded to the soft ORIGIN_MISSING —
+        # "no origin here at all" — instead of the hard INTERIOR_MUT.
+        a1 = fix("1 E8493" + L1[7:])
+        a2 = fix("2 E8493" + L2[7:])
+        src = tmp_path / "s.txt"
+        src.write_text(f"{a1}\n{a2}\n", encoding="ascii")
+        aligner = checks.SourceAligner(str(src))
+        s = aligner.feed(rec(line1=a1, line2=fix(a2[:13] + "3" + a2[14:])))
+        aligner.close()
+        assert s is not None and s.rule is VerifyRule.INTERIOR_MUT
+
     def test_origin_missing(self, tmp_path):
         src = tmp_path / "s.txt"
         src.write_text("unrelated one\nunrelated two\n", encoding="ascii")
@@ -447,7 +462,7 @@ class TestReadme:
 
 class TestGrouping:
     def test_external_sort_orders_by_catalog_then_epoch(self):
-        sorter = grouping.ExternalSorter(chunk_size=2)  # force a spill
+        sorter = grouping.record_sorter(chunk_size=2)  # force a spill
         other = fix(L1[:2] + "00006" + L1[7:])
         later = fix(L1[:18] + "00200.50000000" + L1[32:])
         given = [
@@ -459,6 +474,33 @@ class TestGrouping:
             sorter.add(r)
         keys = [(r.catalog, r.epoch_key) for r in sorter.sorted_records()]
         assert keys == sorted(keys)
+
+    def test_equal_keys_keep_add_order_across_a_spill_boundary(self):
+        # The stability contract the whole design leans on: records sharing a
+        # (catalog, epoch) key must come back in ADD order even when the tie is
+        # split across spilled runs and the in-memory tail. heapq.merge breaks
+        # key ties by iterable order, and runs are merged in spill order with
+        # the tail last — so add order survives. If this ever regressed, dedup
+        # would silently pick a different "latest" record for a tied group and
+        # the import set's bytes would change run to run.
+        sorter = grouping.record_sorter(chunk_size=2)  # 5 records -> 2 runs + tail
+        given = [rec(idx=i) for i in range(5)]  # identical key, distinct index
+        for r in given:
+            sorter.add(r)
+        assert [r.index for r in sorter.sorted_records()] == [0, 1, 2, 3, 4]
+
+    def test_abandoned_drain_releases_temp_runs_on_close(self):
+        # The drain only cleans up in its `finally`, so a partial consume leaves
+        # the spilled runs on disk until the generator is collected. closing()
+        # (which every call site now wraps the drain in) makes that deterministic.
+        sorter = grouping.record_sorter(chunk_size=2)
+        for i in range(5):
+            sorter.add(rec(idx=i))
+        tmpdir = Path(sorter._tmpdir.name)
+        assert list(tmpdir.iterdir())  # runs spilled
+        with contextlib.closing(sorter.sorted_records()) as stream:
+            next(stream)  # consume one record, then abandon the drain
+        assert not tmpdir.exists()  # released at close, not at collection
 
 
 class TestEndToEnd:
@@ -549,6 +591,16 @@ class TestEpochHistogram:
         summary = json.loads((tmp_path / VERIFY_DIRNAME / "summary.json").read_text())
         assert summary["epoch_distribution"] == {}
 
+    def test_year_boundary_rollover_bins_into_next_january(self, tmp_path):
+        # Day 366.x of non-leap 2019 IS 2020-01-01: the pre-#199 inline copy
+        # took month from the rolled datetime but reused the raw year,
+        # binning this record into "2019-01".
+        out = str(tmp_path)
+        _build_cleaned(out, {100: [(2019, 366)]})
+        run(out, source_dir=None)
+        summary = json.loads((tmp_path / VERIFY_DIRNAME / "summary.json").read_text())
+        assert summary["epoch_distribution"] == {"2020-01": 1}
+
     def test_epoch_distribution_is_sibling_of_checked(self, tmp_path):
         out = str(tmp_path)
         _build_cleaned(out, {100: [(2017, 15)]})
@@ -636,10 +688,10 @@ class TestImportGuard:
 
     def test_extract_closure_never_imports_sgp4(self):
         """``lintle.extract`` reaches into ``verify.{checks,records}``
-        directly for the shared catalog/element-set parsers (and reaches
-        ``verify.epoch`` transitively via ``lintle.history``, which owns the
-        epoch-datetime reduction shared with ``dedup``) — those edges are
-        expected and fine — but it must never drag in ``sgp4`` itself, which
+        directly for the shared catalog/element-set parsers (and reaches the
+        stdlib-only ``lintle.epoch`` transitively via ``lintle.history``,
+        which owns the history reduction shared with ``dedup``) — those edges
+        are expected and fine — but it must never drag in ``sgp4`` itself, which
         stays the sole province of ``verify/orbit.py`` under the lazy
         ``--orbit`` gate. Same walk as the clean-path test, seeded at
         ``extract``. NOTE: ``_module_level_imports`` collapses any
@@ -684,6 +736,16 @@ class TestImportGuard:
             assert "sgp4" not in imports, (
                 f"verify.{mod_path.stem} imports sgp4 directly"
             )
+
+    def test_epoch_leaf_is_stdlib_only(self):
+        """``lintle.epoch`` is the single definition of a record's moment in
+        time (#199) and must stay importable from anywhere — including, one
+        day, ``tle.py`` — without dragging in ``sgp4``, ``lintle.verify``, or
+        any other lintle module. The import detector collects only lintle
+        submodule names and the ``sgp4`` marker, so a stdlib-only module
+        yields the empty set."""
+        src = Path(lintle.__file__).parent
+        assert self._module_level_imports(src / "epoch.py") == set()
 
 
 class TestLiveTable:

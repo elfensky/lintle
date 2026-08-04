@@ -13,6 +13,7 @@ from collections.abc import Iterable, Iterator
 from pathlib import Path
 
 from lintle import tle
+from lintle.verify.grouping import record_key
 from lintle.verify.records import CleanedRecord
 from lintle.verify.report import Suspect, VerifyRule
 
@@ -142,7 +143,7 @@ def find_conflicts(
     by_elset: dict[int | None, tuple] = {}
     states: set[tuple] = set()
     for rec in sorted_records:
-        key = (rec.catalog, rec.epoch_key)
+        key = record_key(rec)
         if key != group_key:
             group_key = key
             by_elset = {}

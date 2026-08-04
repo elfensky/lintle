@@ -255,6 +255,11 @@ class TestFieldError:
 
 
 class TestExtractNoradId:
+    """``extract_norad_id`` — the line-level adapter that finds cols 3-7 on a
+    line 1 and delegates the decode to ``decode_catalog`` (#216). It therefore
+    accepts every spelling ``decode_catalog`` does; what it alone decides is
+    whether the line has a readable line-1 catalog field at all."""
+
     def test_extracts_from_canonical_line1(self, line1):
         assert tle.extract_norad_id(line1) == 5
 
@@ -281,12 +286,23 @@ class TestExtractNoradId:
         # field to read at all — must not raise.
         assert tle.extract_norad_id("1 12") is None
 
-    def test_returns_none_for_non_digit_field(self, line1):
-        # Modern Alpha-5 NORAD encoding allows letters (e.g. "B1234"),
-        # but the issue's contract is "5-digit integer" — letters are
-        # treated as undecodable so downstream sees only pure-int IDs.
-        body = "1 B0005" + line1[7:]
-        assert tle.extract_norad_id(body) is None
+    def test_decodes_alpha5_field(self, line1):
+        # Reversed in #216. The old contract returned None here, on the
+        # grounds that broken-noradids.ndjson wants a plain integer — but a
+        # decoded Alpha-5 id IS a plain integer, and returning None made a
+        # quarantined Alpha-5 satellite vanish from that file, which then made
+        # extract's had_quarantined_records report a confident false.
+        assert tle.extract_norad_id("1 B0005" + line1[7:]) == 110005
+
+    def test_decodes_space_padded_field(self, line1):
+        # space-track writes low catalog numbers space-padded, and the column
+        # charset allows it — cols 3-7 '  836' is catalog 836, not undecodable.
+        assert tle.extract_norad_id("1   836" + line1[7:]) == 836
+
+    def test_returns_none_for_undecodable_field(self, line1):
+        # Delegation is not blanket acceptance: a field that is neither
+        # spelling still has no id to report.
+        assert tle.extract_norad_id("1 T75A0" + line1[7:]) is None
 
     def test_returns_none_for_non_ascii_bytes(self):
         # A line with a non-ASCII byte in the prefix region is unreadable
@@ -299,6 +315,70 @@ class TestExtractNoradId:
         # zero-padded string, so dedup across "  005" and "00005" collapses.
         body = "1 00005U junk"
         assert tle.extract_norad_id(body) == 5
+
+
+class TestDecodeCatalog:
+    """``decode_catalog`` — THE reading of the cols 3-7 catalog field, covering
+    both the plain-digit and the Alpha-5 letter-prefixed spellings (#203).
+    ``extract_norad_id`` routes through it (#216), so there is one definition of
+    what those five columns mean."""
+
+    # The canonical table, verbatim from space-track's Alpha-5 documentation
+    # (the same vectors sgp4's own test suite uses) — A=10 … Z=33 with I and O
+    # omitted, so the letter can never be confused with 1 or 0.
+    SPACE_TRACK_VECTORS = [
+        ("A0000", 100000),
+        ("E8493", 148493),
+        ("J2931", 182931),
+        ("P4018", 234018),
+        ("W1928", 301928),
+        ("Z9999", 339999),
+    ]
+
+    def test_plain_five_digit_field(self):
+        assert tle.decode_catalog("00005") == 5
+
+    def test_space_padded_field(self):
+        # space-track pads low numbers with spaces ('  836'); the field is the
+        # same catalog either way.
+        assert tle.decode_catalog("  836") == 836
+
+    def test_alpha5_matches_space_track_vectors(self):
+        for field, expected in self.SPACE_TRACK_VECTORS:
+            assert tle.decode_catalog(field) == expected, field
+
+    def test_alpha5_skips_i_and_o(self):
+        # H -> 17 and J -> 18 are adjacent: no code point is spent on I.
+        assert tle.decode_catalog("H0000") == 170000
+        assert tle.decode_catalog("J0000") == 180000
+        # Likewise N -> 22 and P -> 23 straddle the absent O.
+        assert tle.decode_catalog("N0000") == 220000
+        assert tle.decode_catalog("P0000") == 230000
+        assert tle.decode_catalog("I0000") is None
+        assert tle.decode_catalog("O0000") is None
+
+    def test_rejects_lowercase_letter(self):
+        # Alpha-5 is uppercase; a lowercase letter is corruption, not an id.
+        assert tle.decode_catalog("t7530") is None
+
+    def test_rejects_letter_outside_column_three(self):
+        assert tle.decode_catalog("0T530") is None
+
+    def test_rejects_non_digit_tail(self):
+        assert tle.decode_catalog("T75A0") is None
+
+    def test_rejects_empty_and_blank(self):
+        assert tle.decode_catalog("") is None
+        assert tle.decode_catalog("     ") is None
+
+    def test_rejects_short_alpha5(self):
+        # An Alpha-5 id is exactly 5 characters — a letter plus 4 digits.
+        assert tle.decode_catalog("T753") is None
+
+    def test_accepts_plain_integer_above_the_alpha5_floor(self):
+        # The decoded value is what the rest of the toolchain speaks, so the
+        # decimal spelling of the same id must round-trip too.
+        assert tle.decode_catalog("245530") == 245530
 
 
 class TestSemanticBoundaries:

@@ -30,6 +30,85 @@ def status(message):
     return contextlib.nullcontext()
 
 
+class _LiveTable:
+    """Shared scaffolding for the two live tables — ``ProgressDisplay`` (the
+    ``clean`` run) and ``UnitTable`` (the single-process post-run commands).
+
+    Both obey the same rules for the same reasons: a ``rich.live.Live`` region
+    cannot scroll, so a frame taller than the terminal is **windowed** around the
+    active rows (:attr:`windowed` records that it happened, so the caller can
+    reprint the complete table); the frame is not transient, so the last one is
+    the results view; and off a TTY there is no live block at all. What differs
+    is only what a row *is* and how it is filled, which is why subclasses supply
+    :meth:`_table` and nothing else here knows about columns.
+
+    Locking convention: :meth:`_table` acquires :attr:`_lock` itself, around
+    exactly the span that reads row state. :meth:`_refresh` therefore must NOT
+    hold it — ``threading.Lock`` is not reentrant, and a refresh that locked
+    before calling ``_table`` would deadlock the first frame. Keeping it in
+    ``_table`` also makes the method safe to call from anywhere, including
+    :meth:`_start_live` before any thread exists."""
+
+    # Lines a frame needs beyond its rows: header, its rule, the section rule,
+    # the summary row, table padding, and one spare so a redraw never collides
+    # with the shell prompt.
+    _CHROME_LINES = 8
+
+    def __init__(self, console):
+        self._console = console
+        self._live_mode = console.is_terminal
+        self._display = None
+        self._finished = False
+        self.windowed = False
+        self._start = time.monotonic()
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+
+    def _start_live(self):
+        """Open the live region, if this console has one. ``transient=False``:
+        the final frame is the results view. ``auto_refresh`` off: every frame is
+        driven by a state change or an explicit tick, never by rich's timer."""
+        if self._live_mode:
+            self._display = Live(
+                self._table(),
+                console=self._console,
+                transient=False,
+                auto_refresh=False,
+            )
+            self._display.start()
+
+    def _stop_live(self):
+        """Commit the final state, then freeze the frame."""
+        if self._display is not None:
+            self._refresh()
+            self._display.stop()
+
+    def _refresh(self):
+        """Redraw the live frame. Takes no lock — :meth:`_table` does its own
+        (see the class note). A render failure is cosmetic; callers that must
+        keep working regardless (the drain loop) catch it themselves."""
+        if self._display is not None:
+            self._display.update(self._table(), refresh=True)
+
+    def _visible(self, rows):
+        """The rows this frame can show, plus the number it cannot — see
+        :func:`window`. Records that windowing happened so the caller knows the
+        final frame is partial."""
+        visible, hidden = window(rows, self._console.size.height, self._CHROME_LINES)
+        self.windowed = self.windowed or bool(hidden)
+        return visible, hidden
+
+    def _heartbeat(self, complete=False):
+        """This table's frame of the shared :func:`heartbeat`. ``complete`` is
+        the static full-table reprint, which is finished output by definition."""
+        return heartbeat(
+            self._start, live=self._live_mode, finished=complete or self._finished
+        )
+
+    def _table(self):
+        raise NotImplementedError  # subclasses render their own columns
+
+
 @dataclasses.dataclass(slots=True)
 class _Row:
     """One discovered file's row — the whole run's state for that file, from
@@ -50,7 +129,7 @@ class _Row:
     elapsed: float = 0.0
 
 
-class ProgressDisplay:
+class ProgressDisplay(_LiveTable):
     """The one live table a ``clean`` run renders, from discovery to results.
 
     Every discovered file gets a row at construction, so the first frame *is*
@@ -75,28 +154,17 @@ class ProgressDisplay:
     """
 
     _REFRESH = 0.1  # seconds between queue drains
-    # Lines the frame needs beyond its rows: header, its rule, the section rule,
-    # the summary row, table padding, and one spare so a redraw never collides
-    # with the shell prompt.
-    _CHROME_LINES = 8
 
     def __init__(self, total_files, progress_queue, console, sizes, completed=()):
+        super().__init__(console)
         self._total_files = total_files
         self._queue = progress_queue
-        self._console = console
-        self._live = console.is_terminal
         self._records = 0
         self._bytes_done = 0
         self._clean = 0
         self._quarantined = 0
         self._files_done = len(completed)
-        self._start = time.monotonic()
-        self._lock = threading.Lock()
-        self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
-        self._display = None
-        self._finished = False
-        self.windowed = False
         # `sizes` is the ordered name -> size map the caller stat'd once, so row
         # N is file N everywhere. Column widths are pinned from these
         # pre-dispatch bounds — with auto-width the `#` and count columns
@@ -129,16 +197,9 @@ class ProgressDisplay:
         self._w_records = 13
 
     def __enter__(self):
-        if self._live:
-            # transient=False: the final frame is the results view. auto_refresh
-            # off: every frame is driven by a state change, never by a timer.
-            self._display = Live(
-                self._table(),
-                console=self._console,
-                transient=False,
-                auto_refresh=False,
-            )
-            self._display.start()
+        self._start_live()
+        # Unlike UnitTable's cosmetic animator, this thread drains the worker
+        # queue — it must run off a TTY too, or the queue grows unbounded.
         self._thread.start()
         return self
 
@@ -146,9 +207,7 @@ class ProgressDisplay:
         self._stop.set()
         self._thread.join()
         self._finished = True  # the frozen frame carries no spinner
-        if self._display is not None:
-            self._refresh()  # commit the final state before the frame freezes
-            self._display.stop()
+        self._stop_live()
         return False
 
     def _adopt_completed(self, stats):
@@ -188,7 +247,7 @@ class ProgressDisplay:
                 row.elapsed = stats.elapsed_seconds
             self._clean += stats.clean_count
             self._quarantined += stats.quarantined_count
-        if not self._live:
+        if not self._live_mode:
             self._console.print(
                 f"[{done}/{self._total_files}] {stats.src_name} — "
                 f"{stats.clean_count:,} clean, {stats.quarantined_count:,} quarantined",
@@ -265,20 +324,6 @@ class ProgressDisplay:
                     case pipeline.FileEnded():
                         pass  # the exact counts arrive with `file_done`
 
-    def _refresh(self):
-        """Redraw the live table. A render failure is cosmetic — the drain loop's
-        handler keeps the queue draining regardless."""
-        if self._display is not None:
-            self._display.update(self._table(), refresh=True)
-
-    def _visible(self, rows):
-        """The rows this frame can show, plus the number it cannot — see
-        :func:`window`. Records that windowing happened so the caller knows the
-        final frame is partial."""
-        visible, hidden = window(rows, self._console.size.height, self._CHROME_LINES)
-        self.windowed = self.windowed or bool(hidden)
-        return visible, hidden
-
     def _table(self):
         """Build the current frame: a row per discovered file (windowed to the
         terminal's height) plus the pinned summary row, with columns selected
@@ -325,7 +370,7 @@ class ProgressDisplay:
                     )
                 )
             cells += [
-                _percent(self._bytes_done, self._corpus_bytes),
+                _percent(self._bytes_done, self._corpus_bytes, _dash(self._console)),
                 f"{self._records:,}",
                 f"{self._clean:,}",
                 f"{self._quarantined:,}",
@@ -334,8 +379,7 @@ class ProgressDisplay:
                 cells.append(summary.format_clock(elapsed))
             table.add_row(
                 "",
-                heartbeat(self._start, live=self._live, finished=self._finished)
-                + f"{self._files_done}/{self._total_files} files",
+                self._heartbeat() + f"{self._files_done}/{self._total_files} files",
                 *cells,
                 style="bold",
             )
@@ -357,7 +401,7 @@ class ProgressDisplay:
                 "" if pending else ProgressBar(total=max(row.size, 1), completed=filled)
             )
         cells += [
-            "" if pending else _percent(filled, row.size),
+            "" if pending else _percent(filled, row.size, _dash(self._console)),
             "" if pending else f"{row.records:,}",
         ]
         if failed:
@@ -407,9 +451,12 @@ def window(rows, height, chrome_lines):
     still to come stay on screen, and slides no further than the end of the
     list. Rows outside the window keep their state and come back into it as the
     window moves — the alternative, a live region taller than the viewport,
-    cannot scroll and strands its overflow."""
-    budget = height - chrome_lines
-    if budget < 1 or len(rows) <= budget:
+    cannot scroll and strands its overflow. A terminal shorter than the chrome
+    still gets a one-row window, never the whole list: `budget < 1` used to
+    return every row, handing rich an uncroppable region *and* leaving
+    ``windowed`` False, which suppressed the complete-table reprint on exit."""
+    budget = max(1, height - chrome_lines)
+    if len(rows) <= budget:
         return rows, 0
     active = [i for i, r in enumerate(rows) if r.state in ("pending", "running")]
     start = min(active) if active else len(rows) - budget
@@ -428,7 +475,7 @@ class _UnitRow:
     cells: dict = dataclasses.field(default_factory=dict)
 
 
-class UnitTable:
+class UnitTable(_LiveTable):
     """The one live table a single-process command renders, updated in place.
 
     The post-run commands (``verify``, ``dedup``) know their units — the cleaned
@@ -448,13 +495,10 @@ class UnitTable:
     ``summary.results_table``; the rest are the command's own columns.
     """
 
-    _CHROME_LINES = 8
-
     def __init__(
         self, names, headers, *, console, unit="files", drop=None, justify=None
     ):
-        self._console = console
-        self._live_mode = console.is_terminal
+        super().__init__(console)
         self._headers = list(headers)
         self._unit = unit
         # Columns this console is too narrow for, by tier — dropped whole, never
@@ -470,26 +514,16 @@ class UnitTable:
         self._done = 0
         self._label = None
         self._totals = {}
-        self._display = None
-        self._finished = False
-        self.windowed = False
-        self._start = time.monotonic()
         # The heartbeat has to keep moving between work reports, so a timer
-        # redraws the frame as well as the work does. That makes `_table()` a
-        # shared read across two threads, hence the lock.
-        self._lock = threading.Lock()
-        self._stop = threading.Event()
+        # redraws the frame as well as the work does — hence the base's lock,
+        # which makes `_table()` a safe shared read across two threads.
         self._thread = threading.Thread(target=self._animate, daemon=True)
 
     def __enter__(self):
+        self._start_live()
         if self._live_mode:
-            self._display = Live(
-                self._table(),
-                console=self._console,
-                transient=False,
-                auto_refresh=False,
-            )
-            self._display.start()
+            # Purely cosmetic, unlike ProgressDisplay's queue drain: off a TTY
+            # there is no frame to animate, so the thread never starts.
             self._thread.start()
         else:
             self._console.print(self._table())  # the roster, statically
@@ -500,9 +534,7 @@ class UnitTable:
         self._stop.set()
         if self._thread.is_alive():
             self._thread.join()
-        if self._display is not None:
-            self._refresh()
-            self._display.stop()
+        self._stop_live()
         if not self._live_mode or self.windowed:
             # Off a TTY there was no live frame to end on; a windowed frame
             # ended on only part of the table. Either way the complete results
@@ -556,58 +588,51 @@ class UnitTable:
         while not self._stop.wait(_TICK):
             self._refresh()
 
-    def _refresh(self):
-        if self._display is not None:
-            with self._lock:
-                table = self._table()
-            self._display.update(table, refresh=True)
-
     def _table(self, *, complete=False):
         """Build the current frame. ``complete`` renders every row regardless of
-        the terminal's height — the static fallback for a windowed run."""
+        the terminal's height — the static fallback for a windowed run. Takes the
+        lock around the row read, per the :class:`_LiveTable` convention."""
         headers = [h for h in self._headers if h not in self._drop]
         table = summary.results_table(*headers, justify=self._justify)
-        if complete:
-            visible, hidden = self._rows, 0
-        else:
-            visible, hidden = window(
-                self._rows, self._console.size.height, self._CHROME_LINES
-            )
-            self.windowed = self.windowed or bool(hidden)
-        for row in visible:
+        with self._lock:
+            if complete:
+                visible, hidden = self._rows, 0
+            else:
+                visible, hidden = self._visible(self._rows)
+            for row in visible:
+                table.add_row(
+                    str(row.index),
+                    Text(row.name),
+                    # Cells pass through as given: a string, or a renderable such
+                    # as a ProgressBar, which a str() would flatten to its repr.
+                    *(row.cells.get(h, "") for h in headers[2:]),
+                    style="dim" if row.state == "pending" else None,
+                )
+            if hidden:
+                table.add_row("", f"… {hidden} more", style="dim")
+            table.add_section()
             table.add_row(
-                str(row.index),
-                Text(row.name),
-                # Cells pass through as given: a string, or a renderable such as
-                # a ProgressBar, which a str() would flatten to its repr.
-                *(row.cells.get(h, "") for h in headers[2:]),
-                style="dim" if row.state == "pending" else None,
+                "",
+                self._heartbeat(complete)
+                + (self._label or f"{self._done}/{len(self._rows)} {self._unit}"),
+                *(self._totals.get(h, "") for h in headers[2:]),
+                style="bold",
             )
-        if hidden:
-            table.add_row("", f"… {hidden} more", style="dim")
-        table.add_section()
-        table.add_row(
-            "",
-            self._heartbeat(complete)
-            + (self._label or f"{self._done}/{len(self._rows)} {self._unit}"),
-            *(self._totals.get(h, "") for h in headers[2:]),
-            style="bold",
-        )
         return table
 
-    def _heartbeat(self, complete):
-        """This table's frame of the shared :func:`heartbeat`. ``complete`` is
-        the static full-table reprint, which is finished output by definition."""
-        return heartbeat(
-            self._start,
-            live=self._live_mode,
-            finished=complete or self._finished,
-        )
+
+def _percent(part, whole, dash="—"):
+    """Render ``part / whole`` as a whole-number percentage cell; ``dash`` is
+    the zero-denominator marker, chosen by the caller via :func:`_dash` so an
+    ASCII-only console never receives a raw em dash (the #97 rule — the summary
+    panel learned this; the live table had re-hard-coded it)."""
+    return f"{int(100 * part / whole)}%" if whole > 0 else dash
 
 
-def _percent(part, whole):
-    """Render ``part / whole`` as a whole-number percentage cell."""
-    return f"{int(100 * part / whole)}%" if whole > 0 else "—"
+def _dash(console):
+    """The em dash, or ``"-"`` when the console's encoding cannot carry it —
+    the same `summary.can_encode` decision every results table makes."""
+    return "—" if summary.can_encode(console.encoding, "—") else "-"
 
 
 def _format_size(n_bytes):
@@ -622,11 +647,10 @@ def render_roster(console, file_sizes):
     ``path -> size`` map the caller stat'd once (no contents are read), so the
     roster, the disk-space guard, and the byte-bar denominators all agree.
     Rendered via ``rich`` so it degrades to plain text off a TTY (issue #53
-    §2.1)."""
-    table = Table(box=box.SIMPLE, pad_edge=False)
-    table.add_column("#", justify="right", style="dim")
-    table.add_column("file")
-    table.add_column("size", justify="right")
+    §2.1), through the same ``summary.results_table`` chrome every other table
+    goes through — it used to hand-build an identical box/columns/justify set,
+    which is one more place the house style could have drifted."""
+    table = summary.results_table("#", "file", "size")
     total = 0
     for index, (path, size) in enumerate(file_sizes.items(), start=1):
         total += size

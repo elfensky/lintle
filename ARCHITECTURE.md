@@ -77,16 +77,22 @@ cli.py ──▶ pipeline.py ──▶ repair.py ──▶ tle.py
 
 verify/   (lintle verify — Increment-1 core + opt-in --orbit physics pass; cli ──▶ verify, never the reverse)
   __init__.py (run) ──▶ checks.py ──▶ tle.py
-                          ├──▶ grouping.py ──▶ records.py ──▶ epoch.py
-                          ├──▶ report.py          (checks ──▶ records, report; records ──▶ __init__ naming constants; __init__ ──▶ term)
+                          ├──▶ scan.py ──▶ records.py  (the shared cleaned-scan driver; dedup uses it too)
+                          ├──▶ grouping.py ──▶ records.py ──▶ (top-level) epoch.py
+                          ├──▶ report.py          (checks ──▶ records, report; records ──▶ __init__ naming constants; __init__ ──▶ term, epoch)
                           └──▶ orbit.py ──▶ sgp4   (Increment 2; lazy-imported only under --orbit)
 
 fsutil.py    stdlib-only I/O leaf — durable_replace + out_dir_lock
 diagnostics.py, categories.py, explain_examples.py    pure-data leaves (no I/O)
 config.py    stdlib-JSON leaf — ./.lintle.json load/save (no internal deps)
+epoch.py     stdlib-only leaf (#199) — THE definition of a record's moment in time:
+             parse_epoch/epoch_key/epoch_dt/iso over one string-based normalizer
+             (day 366.x non-leap → next January, day 0.x → prior December), so key
+             order ≡ instant order and equal instants get bit-equal keys
 history.py   pure history-reduction leaf — HistoryStats/Gap + analyze_epochs (gap/median
              math), lifted out of extract._analyze so extract and dedup share one
-             definition; no I/O, no sgp4; imports only stdlib + verify.epoch.parse_epoch
+             definition; no I/O, no sgp4; imports only stdlib + lintle.epoch
+             (re-exporting its epoch_dt/iso for extract/dedup)
 ```
 
 | Module | Owns |
@@ -94,14 +100,14 @@ history.py   pure history-reduction leaf — HistoryStats/Gap + analyze_epochs (
 | `tle.py` | The validator: column layout, mod-10 checksum, semantic ranges, record pairing. The single definition of "perfect." Pure functions, no I/O. |
 | `repair.py` | Speculative fixes, each confirmed by `tle.py` before commit; the `Accepted` / `Quarantined` record outcomes. Pure functions. |
 | `pipeline.py` | Streams a file in binary, pairs `1 `/`2 ` lines into records, routes each to clean output or quarantine. Owns the per-file `process_file` worker entry. |
-| `report.py` | `FileStats` and its sibling dataclasses, the `summary_dict` / `build_run_envelope` JSON shapes, and the Markdown `report.md` / JSON `report.json` writers (`write_run_json` is the byte-identical twin of the `--report json` stdout envelope). |
+| `report.py` | `FileStats` and its sibling dataclasses, the `summary_dict` / `build_run_envelope` JSON shapes, and the Markdown `report.md` / JSON `report.json` writers. `render_run_json` is the single serialization of the run envelope — indent 2, **insertion order** (authored, read top-down; deliberately *not* `fsutil.json_document`'s sorted house style) — and both the persisted `report.json` and `--report json`'s stdout go through it, so their being byte-identical twins is structural. |
 | `report_aggregation.py` | Pure corpus aggregation helpers for run totals and per-NORAD rollups consumed by `report.py`. |
 | `report_writers.py` | Structured-file writers leaf: the `.broken.txt` sidecar (`BrokenFileWriter`), the `report.jsonl` findings shards (`JsonlFindingsWriter`), the `QuarantineSink` (bounded sample + streaming), `broken-noradids.ndjson`, and shard concatenation. Imports `report.py` one-way. |
 | `output_artifacts.py` | End-of-clean-run finalization for `report.md`, the machine-readable `report.json`, `broken-noradids.ndjson`, and corpus-wide `report.jsonl` — all committed in one place. |
 | `resume.py` | The single-run `.clean-state.json` checkpoint for `clean --resume`: input fingerprinting, checkpoint build/load, the resume-decision matrix, the run-start timestamp, per-file output-size capture, and the typed `CompletedEntry` dataclass (issue #118). Imports only `__version__`, `fsutil`, and `stem`/naming-constants — an actual leaf: `CompletedEntry`'s `summary`/`outputs` dicts are built by its caller (worker_pool), so resume never imports `report`. |
 | `run_planning.py` | Clean-run preflight: disk-space policy, resume classification, fresh-run output scrubbing, and the resolved `RunPlan` (slots=True). Also owns `CleanConfig` (issue #121) — the typed `clean`-command configuration snapshot built once in `cli.main` and passed to both leaf functions instead of a raw argparse `Namespace`. Imports `fsutil`, `report`, `resume`, `term`. |
 | `worker_pool.py` | Process-pool dispatch, progress collection, per-file failure handling, checkpoint updates via `resume.CompletedEntry.from_stats` (issue #118), and interrupt shutdown. Now imports `run_planning` for the `CleanConfig` type (one-way, no cycle). |
-| `fsutil.py` | `durable_replace` (the one atomic+fsync commit path) and `out_dir_lock` (the advisory-flock out-dir lock). Stdlib only. |
+| `fsutil.py` | `durable_replace` (the one atomic+fsync commit path), `durable_write_text`, the JSON seam (`JsonReadError` / `parse_json_object` / `read_json` / `read_json_or_none` — one parse-and-shape policy, two failure styles: `read_json` lets `OSError` through because "absent" and "corrupt" carry different advice, `read_json_or_none` collapses both; and `json_document`, the house pretty-doc — indent 2, sorted keys, ASCII-escaped — behind `05-dedup/summary.json`, `04-verify/summary.json`, and `extract`'s `<id>.json`), `write_step_readme` (the one spelling of "this output directory describes itself" — used by the `clean` root and step dirs, `verify`, `dedup`, and `extract`), and `out_dir_lock` (the advisory-flock out-dir lock). Stdlib only. |
 | `chunking.py` | Fixed-count output chunking: `ChunkedWriter` splits every record/line output stream into `<stem>.NNNNN.<suffix>` chunks of `--chunk-records` units (default 1,000,000), committing each chunk via `durable_replace` the instant it fills and scrubbing a stem's prior set on first open (invariant 5); `ChunkedReader` reassembles a stem's set in index order as one logical stream. Concatenating a set == the pre-chunking single file. Stdlib-only leaf; imports only `fsutil`; never `sgp4`. Depended on by `pipeline`, `report_writers`, `resume`, `verify/records`, `verify/report`, `dedup`, and `diff`. |
 | `diff.py` | Read-only: per-rule delta between two runs' `report.jsonl` (`lintle diff`). |
 | `explain.py` | Read-only: renders rule/fix documentation (`lintle explain`). |
@@ -113,11 +119,12 @@ history.py   pure history-reduction leaf — HistoryStats/Gap + analyze_epochs (
 | `process_control.py` | Signal/worker shutdown helpers (SIGINT setup, fast pool termination, cancel/exit-code) used by `cli.py` and `worker_pool.py`. |
 | `term.py` | Two shared `rich` Consoles — `stderr_console` for status/errors, `stdout_console` for the `report` result view — the `error:` / `warning:` / `note` / `prompt` emitters, and the `is_interactive` / `prompt_yes_no` stdin helpers. |
 | `cli.py` | argparse, globbing, and top-level `clean` orchestration: delegates preflight to `run_planning`, dispatch to `worker_pool`, signal/shutdown to `process_control`, the quality-gate exit policy to `thresholds`, run finalization to `output_artifacts`, and the aggregate panel / `report` render to `summary`; owns the resulting process exit code. |
-| `cli_progress.py` | Rich presentation leaf: the phase-1 `render_roster`, the phase-2 live `ProgressDisplay` (a `rich.live.Live` over a `rich.table.Table` — in-flight rows plus a pinned summary row, bounded so terminal height and resize cannot strand or crop it), and the `status` spinner for the single-process post-run phases (`verify`, `dedup`, `extract`, `diff`). Consumes `pipeline`'s typed progress messages and `summary`'s shared tier/duration/size formatters, so phases 2 and 3 cannot disagree about a boundary or a format. Every live block is disabled off a TTY. |
-| `verify/` | The `lintle verify` post-run auditor (own package): `epoch` (epoch-key parsing), `records` (the `CleanedRecord` dataclass + cleaned-tree readers), `grouping` (the spill-to-disk `ExternalSorter` for the constant-memory contradiction pass), `checks` (`revalidate` / `find_conflicts` — both routing the #158 same-epoch clash through the one `_is_clash` predicate `has_epoch_clash` also uses — / the `SourceAligner` byte-diff: a null object built via `SourceAligner.open`, inert when a stem has no source, whose `feed(rec, revalidated=...)` internalizes the revalidate-skip policy so `run`'s loop carries no aligner guards), `report` (`VerifyRule`, `Suspect`, and the `SuspectSink` (which owns the exit-code rule) — an external merge-sort that streams suspects to disk and renders `suspects.jsonl` + `summary.{json,md}` at flat peak memory, byte-identical to its list renderers; #156), a `collections.Counter`-based `epoch_distribution` record-density histogram (`{"YYYY-MM": count}` over revalidated records only — a sibling of `checked` in `summary.json`, plus an `### Epoch distribution` section in `summary.md` — purely informational, never feeding `counts`/`hard`/`exit_code`), `__init__.run` (orchestration), and `orbit` (Increment 2 — the opt-in sampled `sgp4` orbit-consistency pass: adjacent-pair position residuals, soft `VRFY-ORBIT-OUTLIER` outliers, deterministic 0.1 km quantum; refined in #163 with regime-aware gap gates (GEO 7-day vs LEO/MEO 3-day), a windowed local-median threshold term, leave-one-out culprit isolation for lone interior spikes, a `--sensitivity {sensitive,strict}` dial, and dup-epoch stratified oversampling of the satellite sample). A pure *consumer* of `tle` (its sole validity authority) and `term`; `orbit` is the package's **only** `sgp4` importer, lazily imported by `run` only under `--orbit` so the default path stays `sgp4`-free. |
-| `dedup.py` | The `lintle dedup` pass: reads `01-cleaned/` (never mutating it), excludes hard suspects from a prior `verify` run's `suspects.jsonl`, groups by `(catalog, epoch)` through `verify`'s `ExternalSorter`, and writes `<out-dir>/05-dedup/{import.txt,notes.jsonl,manifest.jsonl,summary.json}` — one card per group, the latest re-issue kept, benign re-issues (including refined orbits under a new element-set) collapsed and genuine same-element-set contradictions kept-latest-but-flagged. Reuses `verify.checks.orbital_state`/`element_set` and the shared `has_epoch_clash` #158 predicate (one definition of "same orbit" / "latest" / "same-epoch clash" — #164). Also streams each kept card's catalog/epoch/element-set into `history.analyze_epochs`, flushing one `manifest.jsonl` row per satellite on each catalog boundary (a single plain file, never chunked — see §6), and stores a stat-only `cleaned_fingerprint` of `01-cleaned/` in `summary.json` for `extract`'s staleness check. Constant memory; deterministic bytes. |
-| `extract.py` | The `lintle extract` pass: reads a prior `dedup` run's sorted fixed-width `import.*` chunk set (140 bytes/record — guarded, never assumed) and binary-searches one catalog's contiguous run into `<dest>/<id>.txt` (verbatim byte slice, epoch-ascending) plus a deterministic `<id>.json` stats sidecar (schema v2: median spacing, the 10 largest reportable gaps — delta > 10× the satellite's median spacing, via the shared `history.analyze_epochs` — and a tri-state quarantine flag from `03-report/broken-noradids.ndjson`); warns and, on a TTY, asks y/n before exporting a gappy or quarantine-affected history (non-TTY: warn + proceed; decline = skip, not an error), where `<dest>` defaults to `<out-dir>/06-extract` (with its own README) and only an explicit `--dest` overrides it, undecorated. Also recomputes `verify.records.cleaned_fingerprint` at run start and warns (never fails) when it disagrees with the one `dedup` stored in `summary.json` — `01-cleaned/` drifted since that `dedup` run. Read-only, local, no index artifact; reuses `verify`'s `catalog_of`/`element_set` (epoch/gap math now behind `history.py`) so catalog, epoch, and gap definitions each stay singular. |
-| `history.py` | Pure history reduction shared by `extract` (the `<id>.json` sidecar) and `dedup` (`manifest.jsonl`): `analyze_epochs(epochs, elsets) -> HistoryStats` given one satellite's epoch datetimes and element-set numbers in stream order — count, span, median spacing, and the `GAPS_CAP` (10) largest reportable gaps (delta > `GAP_FACTOR` (10) × median spacing), plus the `epoch_dt`/`iso` helpers. No I/O, no `sgp4`; imports only stdlib + `verify.epoch.parse_epoch`. Lifted out of `extract._analyze` so the two callers cannot compute divergent numbers for the same satellite. |
+| `cli_progress.py` | Rich presentation leaf: the phase-1 `render_roster` (through `summary.results_table`, like every other table), the two live tables over a shared `_LiveTable` base — `ProgressDisplay` (phase-2 `clean`) and `UnitTable` (the post-run commands) — which owns the `rich.live.Live` lifecycle, the height-bounded windowing so terminal size and resize cannot strand or crop rows, the heartbeat, and the locking convention (`_table()` takes the lock, `_refresh()` must not: `threading.Lock` is not reentrant, and a test pins it with a lock that raises rather than hangs), leaving subclasses only their own `_table()`; and the `status` spinner for the single-process post-run phases (`verify`, `dedup`, `extract`, `diff`). Consumes `pipeline`'s typed progress messages and `summary`'s shared tier/duration/size formatters, so phases 2 and 3 cannot disagree about a boundary or a format. Every live block is disabled off a TTY. |
+| `verify/` | The `lintle verify` post-run auditor (own package): `records` (the `CleanedRecord` dataclass + cleaned-tree readers; epoch keys via the top-level `lintle.epoch`), `scan` (the shared cleaned-scan driver — the "no cleaned output" error, the stat-only fingerprint computed **once** per run, the live `UnitTable`, the `RECORD_BYTES` progress math and the sparse row refresh, and the per-stem finish/totals; a context manager that keeps the table live *after* the record loop, because both `verify` and `dedup` do their real work there and report it through the same summary label), `grouping` (the generic spill-to-disk `ExternalSorter` — parameterised by `key`/`encode`/`decode`, equal keys returned in add order — plus `record_key`, the one definition of a record's `(catalog, epoch_key)` group identity, and the `record_sorter()` adapter the contradiction, dedup and orbit passes stream through), `checks` (`revalidate` / `find_conflicts` — both routing the #158 same-epoch clash through the one `_is_clash` predicate `has_epoch_clash` also uses — / the `SourceAligner` byte-diff: a null object built via `SourceAligner.open`, inert when a stem has no source, whose `feed(rec, revalidated=...)` internalizes the revalidate-skip policy so `run`'s loop carries no aligner guards), `report` (`VerifyRule`, `Suspect`, and the `SuspectSink` (which owns the exit-code rule) — the second `ExternalSorter` adapter, streaming suspects to disk and rendering `suspects.jsonl` + `summary.{json,md}` at flat peak memory, byte-identical to its list renderers; #156. It pre-encodes each suspect to a `(sort_key, rendered_line)` pair on the way in, so the sorter carries the rendered bytes and the line is rendered exactly once — what the merge emits is necessarily what was tallied), a `collections.Counter`-based `epoch_distribution` record-density histogram (`{"YYYY-MM": count}` from each revalidated record's *normalized* instant (`epoch_dt`) — year-boundary rollovers bin into the January they truly belong to — a sibling of `checked` in `summary.json`, plus an `### Epoch distribution` section in `summary.md` — purely informational, never feeding `counts`/`hard`/`exit_code`), `__init__.run` (orchestration), and `orbit` (Increment 2 — the opt-in sampled `sgp4` orbit-consistency pass: adjacent-pair position residuals, soft `VRFY-ORBIT-OUTLIER` outliers, deterministic 0.1 km quantum; hard `VRFY-ORBIT-ERROR` for an element set `sgp4` rejects — unparseable — through sgp4 2.26 its parser was stricter than `tle.py` in two digit-or-space fields (line-1 element-set number, line-2 revolution number); **sgp4 2.27 accepts both**, closing that divergence from sgp4's side and retroactively vindicating #202's decision to keep `tle.py` permissive, so the `ValueError` catch is now version-independent defence rather than a fix for one known pair. A test asserts only that lintle *agrees* with the installed sgp4, whichever way it goes or unphysical (init codes 1–5, a pinned table a test ties to the installed `SGP4_ERRORS` registry so a future code is triaged, not silently soft); refined in #163 with regime-aware gap gates (GEO 7-day vs LEO/MEO 3-day), a windowed local-median threshold term, leave-one-out culprit isolation for lone interior spikes, a `--sensitivity {sensitive,strict}` dial, and dup-epoch stratified oversampling of the satellite sample). A pure *consumer* of `tle` (its sole validity authority) and `term`; `orbit` is the package's **only** `sgp4` importer, lazily imported by `run` only under `--orbit` so the default path stays `sgp4`-free. |
+| `dedup.py` | The `lintle dedup` pass: reads `01-cleaned/` (never mutating it), excludes hard suspects from a prior `verify` run's `suspects.jsonl`, groups by `(catalog, epoch)` through `verify`'s `ExternalSorter`, and writes `<out-dir>/05-dedup/{import.txt,notes.jsonl,manifest.jsonl,summary.json}` — one card per group, the latest re-issue kept, benign re-issues (including refined orbits under a new element-set) collapsed and genuine same-element-set contradictions kept-latest-but-flagged. A group whose kept record cannot be usably imported — a corrupt catalog field (`catalog == -1`; Alpha-5 ids decode normally since #203 and import like any other satellite), an unparseable epoch, or non-ASCII bytes from the reader's tolerant decode — is skipped-and-reported: one `DEDUP-UNUSABLE-RECORD` note in `notes.*.jsonl`, an `unusable_records` tally in `summary.json`, a mention in the verdict, never an exit-code change — the reader's "a broken cleaned line is a finding, not a crash" policy upheld at the write seam, so a `catalog=-1` record can never become record 0 of the import set (which poisoned every later `extract`). Reuses `verify.checks.orbital_state`/`element_set` and the shared `has_epoch_clash` #158 predicate (one definition of "same orbit" / "latest" / "same-epoch clash" — #164). Also streams each kept card's catalog/epoch/element-set into `history.analyze_epochs`, flushing one `manifest.jsonl` row per satellite on each catalog boundary (a single plain file, never chunked — see §6), and stores a stat-only `cleaned_fingerprint` of `01-cleaned/` plus a `gap_silent_satellites` tally (rows below `history.MIN_GAP_RECORDS`) in `summary.json` (`schema_version "2"` since #199 — normalized epoch keys changed group identities and sort order at year boundaries) for `extract`'s staleness check. Constant memory; deterministic bytes. |
+| `extract.py` | The `lintle extract` pass: reads a prior `dedup` run's sorted fixed-width `import.*` chunk set (140 bytes/record — guarded, never assumed; a run-start preflight validates the whole set once — contiguous chunk indices, whole records, parseable boundary catalogs in global sort order, plus a single tolerant read of `05-dedup/summary.json` (absent/corrupt → null `source` fields, threaded into every sidecar) — so every precondition failure is exit 2 with nothing written, never a post-commit crash that rolls back a prior run's good pair; span copies raise if a chunk shrinks mid-read rather than spinning on a zero-length read) and binary-searches one catalog's contiguous run into `<dest>/<id>.txt` (verbatim byte slice, epoch-ascending) plus a deterministic `<id>.json` stats sidecar (schema v2: median spacing, the 10 largest reportable gaps — delta > 10× the satellite's median spacing, via the shared `history.analyze_epochs` — and a tri-state quarantine flag from `03-report/broken-noradids.ndjson`); warns and, on a TTY, asks y/n before exporting a gappy or quarantine-affected history (non-TTY: warn + proceed; decline = skip, not an error), where `<dest>` defaults to `<out-dir>/06-extract` (with its own README) and only an explicit `--dest` overrides it, undecorated. Also recomputes `verify.records.cleaned_fingerprint` at run start and warns (never fails) when it disagrees with the one `dedup` stored in `summary.json` — `01-cleaned/` drifted since that `dedup` run. Read-only, local, no index artifact; reuses `verify`'s `catalog_of`/`element_set` (epoch/gap math now behind `history.py`) so catalog, epoch, and gap definitions each stay singular. |
+| `epoch.py` | The single definition of a record's moment in time (#199): `parse_epoch`/`epoch_key`/`epoch_dt`/`iso` over one private normalizer. `tle.py` accepts day-of-year anywhere in `(0, 367)` with no leap-year logic (space-track ships real rollover records), so this module rolls day 366.x of a non-leap year into the next January and day 0.x into the prior December — on the *decimal string*, never float subtraction, so equal instants produce bit-equal (`repr()`-identical) keys and in-range keys are bit-identical to the raw-column formula. Raises `ValueError` on garbage (dedup's unusable-record seam and verify's revalidate depend on it). Stdlib-only, enforced by an import-graph test leg. |
+| `history.py` | Pure history reduction shared by `extract` (the `<id>.json` sidecar) and `dedup` (`manifest.jsonl`): `analyze_epochs(epochs, elsets) -> HistoryStats` given one satellite's epoch datetimes and element-set numbers in stream order — count, span, median spacing, and the `GAPS_CAP` (10) largest reportable gaps. A gap is reportable when a delta exceeds `GAP_FACTOR` (10) × `median_low` of the deltas — the *reported* `median_spacing_days` stays the interpolated `statistics.median`, but the *threshold* uses `median_low` so the n=3 case is reachable (#199's dead zone: with 2 deltas, `d > 10·(a+d)/2` was algebraically impossible). Below `MIN_GAP_RECORDS` (3) gap analysis is definitionally silent. Re-exports `lintle.epoch`'s `epoch_dt`/`iso`. No I/O, no `sgp4`; imports only stdlib + `lintle.epoch`. Lifted out of `extract._analyze` so the two callers cannot compute divergent numbers for the same satellite. |
 | `config.py` | Optional `./.lintle.json` project config: stdlib-JSON `load`/`save` of the two remembered keys (`source`, `output`). Never an authority over an explicit CLI arg. No internal deps. |
 | `wizard.py` | The interactive rich menu shown when `lintle` runs with no subcommand on a TTY (configure / clean / verify / report / quit). A thin front-end that builds an argv and calls `cli.main`, reimplementing no orchestration; imports `config` + `term`. |
 
@@ -125,33 +132,38 @@ history.py   pure history-reduction leaf — HistoryStats/Gap + analyze_epochs (
 the reverse), so the structured writers and the renderers stay acyclic.
 
 **`verify/` and the wizard stay acyclic too.** The `verify/` package flows one way —
-`__init__ ──▶ {checks, grouping, records, report}`, `checks ──▶ tle` + `records` + `report`,
-`grouping ──▶ records ──▶ epoch`, with `records` reaching back only to `__init__`'s
+`__init__ ──▶ {checks, grouping, records, report}`, `checks ──▶ tle` + `records` + `report` + `grouping` (for `record_key`), `report ──▶ grouping` (for the shared `ExternalSorter`),
+`grouping ──▶ records ──▶ lintle.epoch` (the top-level stdlib-only leaf), `scan ──▶ records` (+ `cli_progress`/`summary`/`term` for the live table), with `records` reaching back only to `__init__`'s
 output-naming constants — and `cli ──▶ verify`, never the reverse. The clean/validate/repair
 path (`pipeline`, `repair`, `tle`, `cli`'s clean path) never imports `lintle.verify` or
 `sgp4`, so the auditor can never become a second validity definition; an import-graph test
 enforces the wall (see §7). `dedup.py` is a second read-only consumer of the same package —
-`cli ──▶ dedup ──▶ verify.{checks, grouping, records}` (+ `term`), one-way, and equally barred
+`cli ──▶ dedup ──▶ verify.{checks, grouping, scan}` (+ `term`), one-way, and equally barred
 from the clean path — so it reuses `verify`'s one definition of "same orbit" / "latest re-issue"
 rather than spawning a divergent second one. `dedup.py` also imports `history.py` (the shared
 gap/median reducer) to build `manifest.jsonl` — a fourth acyclic leaf, no new edge back into
 `verify` or the clean path. `extract.py` is a third read-only consumer, one hop further
 downstream — `cli ──▶ extract ──▶ dedup` (naming constants only) `+ verify.{checks, records}`
 `+ history` (+ `chunking`, `fsutil`, `term`), also one-way and lazily dispatched, also barred
-from the clean path, and also equally barred from ever reaching `sgp4`. `extract` no longer
-imports `verify.epoch` directly — the epoch/gap reduction moved behind `lintle.history`, which
-itself imports only `verify.epoch.parse_epoch` — so the import-graph closure test walks
-`extract`'s transitive imports (reaching `history` and, through it, `verify`) and separately
-`test_verify_submodules_are_sgp4_free_except_orbit` sweeps every `verify/*.py` module except
-`orbit.py` (`checks`, `epoch`, `grouping`, `records`, `report`, `__init__`) for `sgp4`-freedom
-unconditionally — so `epoch.py`'s own `sgp4`-freedom is checked independent of which caller
-imports it, rather than being pinned to one caller's import list (see §7). The `cli ↔ wizard` cycle — `cli` launches the menu,
+from the clean path, and also equally barred from ever reaching `sgp4`. Epoch parsing lives in
+the **top-level, stdlib-only `lintle.epoch`** leaf (#199 — it moved out of `verify/` so one
+definition is importable from anywhere, including, one day, `tle.py`, without crossing the
+`sgp4`/verify wall): `records`, `verify.__init__`, and `history` all import it, and `history`
+re-exports its `epoch_dt`/`iso` so `extract` needs one import for "reduce this satellite's
+timeline". The import-graph closure test walks `extract`'s transitive imports (reaching
+`history` and `verify`), `test_verify_submodules_are_sgp4_free_except_orbit` sweeps every
+`verify/*.py` module except `orbit.py` (`checks`, `grouping`, `records`, `report`, `scan`,
+`__init__`) for `sgp4`-freedom unconditionally, and `test_epoch_leaf_is_stdlib_only` pins
+`lintle.epoch` to a stdlib-only closure (see §7). The `cli ↔ wizard` cycle — `cli` launches the menu,
 the menu re-enters `cli.main` — is broken by a lazy import on *both* sides (`cli` imports
 `wizard` only inside the no-subcommand TTY branch; `wizard` imports `cli` only inside its
 dispatch), so `wizard ──▶ config`/`term` are the only module-load-time edges.
 
 **Output-naming constants.** `CLEANED_SUFFIX`, `BROKEN_SUFFIX`, `FINDINGS_SUFFIX`,
-`CLEANED_DIRNAME`, `BROKEN_DIRNAME`, and `SHARDS_DIRNAME` live in `lintle/__init__.py` —
+`REPORT_JSONL_STEM`/`REPORT_JSONL_SUFFIX`/`REPORT_JSONL_NAME` (the corpus findings stream —
+named from here by its writer in `output_artifacts`, its reader in `diff`, and the fresh-run
+scrub list in `run_planning`), `CLEANED_DIRNAME`, `BROKEN_DIRNAME`, and `SHARDS_DIRNAME` live
+in `lintle/__init__.py` —
 the single source of truth for the naming convention. `pipeline._clean_output_paths`,
 `resume.output_sizes`, `cli.discover_paths`, and `report_writers.concat_findings_shards`
 all import them from there rather than re-encoding the convention.
@@ -172,7 +184,10 @@ surfaces first.
   fields (catalog number, international designator, epoch, derivatives, B\*, inclination, RAAN,
   eccentricity, etc.) each carry an allowed-character set.
 - **Semantic ranges.** Only checked once the column layout is sound. Epoch day-of-year in
-  `(0, 367)`; inclination in `[0, 180]`; RAAN, argument of perigee, mean anomaly in `[0, 360)`;
+  `(0, 367)` — deliberately leap-year-blind: space-track ships real rollover records (day
+  366.x in a non-leap year, day 0.x), and tightening the bound would redefine "perfect"
+  (Critical Rule #4) and quarantine them; normalizing across year boundaries is
+  `lintle.epoch`'s job, downstream. Inclination in `[0, 180]`; RAAN, argument of perigee, mean anomaly in `[0, 360)`;
   eccentricity in `[0, 1)`; mean motion strictly positive.
 - **Checksum.** Column 69 is a **mod-10 checksum** of the first 68 characters — each digit adds
   its value, each `-` adds 1, every other character adds 0, result is `sum % 10`. Checked last,
@@ -180,9 +195,18 @@ surfaces first.
   defect, not a checksum one.
 - **Pairing.** `validate_record(line1, line2)` requires each line to validate *and* the
   satellite catalog numbers (columns 3–7) to match between the two lines.
-- **NORAD extraction.** `extract_norad_id` recovers the 5-digit catalog ID from a line 1 for
-  programmatic reporting of quarantined records. It deliberately returns `None` for Alpha-5
-  letter-prefixed IDs, keeping the downstream contract a plain integer.
+- **NORAD extraction.** One reader of columns 3–7, `decode_catalog(field)` (#203) — the integer
+  catalog behind either spelling: the space-padded digits space-track uses for low numbers
+  (`'  836'` → 836) and the **Alpha-5** letter-prefixed form for ids past 99,999, where column 3
+  carries the leading 10–33 with `I` and `O` omitted so the letter can never be read as `1` or
+  `0` (`'E8493'` → 148493; the maximum is `'Z9999'` → 339999). The table is pinned to
+  space-track's own documented vectors, so `sgp4.io`'s `from_alpha5` stays out of the clean path.
+  `verify.records.catalog_of` and `extract`'s CLI argument route through it directly;
+  `extract_norad_id(line)` is the line-level adapter over it — it applies the `"1 "` prefix,
+  length, and ASCII-decode guards that decide whether a *line* has a readable line-1 catalog
+  field at all, then delegates the decode. Rule #4 in miniature: the guards are about the line,
+  the decode is defined once. #216 replaced its former strict-5-digit body, which returned
+  `None` for both Alpha-5 and space-padded fields; see §6 for the output-contract consequence.
 
 This is reference-level; the code is authoritative for the exact column offsets and ranges.
 
@@ -407,9 +431,14 @@ migrated — regenerate them; a fresh `clean` run scrubs all legacy layouts from
 `<stem>.NNNNN.<suffix>` chunk set of `--chunk-records` units each (default 1,000,000 ≈ 140 MB),
 so no single file is ever huge (the worst pre-chunking, `05-dedup/import.txt`, was 28.7 GB).
 Concatenating a set's chunks in index order (`cat <stem>.*.<suffix>`) is byte-identical to the
-old single file — the invariant that keeps Critical Rules #1/#2 intact. The six invariants
+old single file — the invariant that keeps Critical Rules #1/#2 intact. The seven invariants
 (`chunking.py`): per-stream counting never global; always-index (no rename-on-roll); concat-identity;
-atomic commit per chunk; stale-chunk scrub on (re)run/resume; constant memory. Aggregate *summary*
+atomic commit per chunk; stale-chunk scrub on (re)run/resume; constant memory; and read-side
+contiguity — every read consumer asserts the set is the contiguous `1..N` a writer commits
+(`ChunkedReader.complete_chunk_paths`, raising `ChunkSetError` naming the first missing index),
+so a deleted chunk is a loud operational error, never a silently shorter stream with renumbered
+record indices. Only the scrub paths (`_open_next`, `discard_all`, the legacy output scrub),
+which exist to clean up damage, keep the gap-tolerant `chunk_paths`. Aggregate *summary*
 documents (`report.md`, `report.json`, `04-verify/summary.*`, `05-dedup/summary.json`,
 `broken-noradids.ndjson`) are not streams and stay single files. `05-dedup/manifest.jsonl` is a
 partial exception: it is one row per satellite (a genuine per-record-family stream, not an
@@ -460,6 +489,9 @@ and 114 lines plus 8 duplicate headers after a resize). The table therefore **wi
 when the rows outnumber the terminal height: it shows a run of rows starting at the first
 unfinished one — the active files and everything still to come — plus an `… N more`
 marker. Rows outside the window keep their state and slide back in; they are not dropped.
+A terminal shorter than the chrome still gets a one-row window, never the whole list — the
+old `budget < 1` guard inverted into exactly the uncroppable overflow windowing exists to
+prevent, with `windowed` left false so the complete-table reprint was suppressed too.
 `ProgressDisplay.windowed` records that this happened, and the caller then prints the
 complete static results table (`summary.render_files`) after the run, so nothing the
 window could not show is lost. When every row fits, that table is redundant and is
@@ -675,6 +707,17 @@ consumers ignore unknown fields. Empty file when nothing was quarantined. Verifi
 {"noradId":25544}
 ```
 
+**`noradId` is not bounded by five digits.** Since #216 it is whatever `decode_catalog` reads
+from columns 3–7, so a quarantined Alpha-5 satellite appears as its decoded integer
+(`{"noradId":148493}`, up to 339999) and a space-padded low number appears at all (`'  836'`
+→ `{"noradId":836}`, previously omitted). The *shape* is unchanged — it was always a JSON
+integer — but a consumer that assumed a 5-digit range must widen. The same widening reaches
+`report.jsonl`'s `norad_id` and `report.md`'s per-NORAD breakdown, which read the same
+`QuarantineEntry` field; keeping them narrower would mean two answers for one satellite.
+This is the field `extract`'s `<id>.json` sidecar reads back for `had_quarantined_records`, so
+the narrow reader made that tri-state flag report a confident `false` — not `null` — for a
+satellite whose records were quarantined.
+
 ### The checkpoint `.clean-state.json` — `schema_version 4`
 
 The single-run resume checkpoint. Note `schema_version` here is an **integer** (`4`), unlike
@@ -727,7 +770,9 @@ checkpoint. Resolution:
 - `ABSENT`: `--resume` aborts ("no interrupted run to resume"); otherwise fresh.
 
 A fresh run **archives** any existing checkpoint to `.clean-state.json.stale-<timestamp>`
-(never destroying a recoverable run), then scrubs the `01-cleaned/`, `02-broken/`, `.shards/`
+(never destroying a recoverable run — via `os.link`, the atomic never-clobber primitive, with a
+`-N` suffix when a same-second stamp collides, so two archives can never silently overwrite;
+the suffix keeps `sorted()` chronological within a stamp), then scrubs the `01-cleaned/`, `02-broken/`, `.shards/`
 trees and the four report artifacts (`report.md`, `report.json`, `report.jsonl`,
 `broken-noradids.ndjson`) so no orphans from a differently-scoped prior run linger and no stale
 report is left for `lintle report` to render if the fresh run is itself interrupted (issue #102).
@@ -767,7 +812,17 @@ machinery buys nothing here. Row shape (fixed key order, one line):
 {"norad_id":25544,"records":1234,"first_epoch":"2017-01-01T00:00:00Z","last_epoch":"2026-07-01T00:00:00Z","span_days":3468.0,"median_spacing_days":0.72,"largest_gap_days":41.3,"gap_count":2}
 ```
 
-`median_spacing_days` is `null` below 3 records (the trivially-gapless case). This is the
+`norad_id` is always the **decoded integer**, never the wire spelling — an Alpha-5 satellite
+appears as `148493`, not `"E8493"` (#203) — and the same holds for `extract`'s `<id>.json`
+sidecar and its `<id>.txt` filename. The TLE *bytes* `extract` copies out keep whatever
+spelling the source used; only the addressing is normalized.
+
+`median_spacing_days` is `null` below `MIN_GAP_RECORDS` (3) records — gap analysis is
+definitionally silent there (one delta has no typical spacing to be 10× of), and
+`summary.json`'s `gap_silent_satellites` carries the corpus-level count; the "low numbers
+bucket" is a query (`jq 'select(.records < 3)'`), not a separate artifact. Epochs arrive
+instant-ordered (keys are normalized, #199), so `span_days` is never negative and
+`first_epoch <= last_epoch` always holds. This is the
 corpus-coverage substrate: a query like `jq | shuf | xargs lintle extract` picks a random
 well-covered (or gappy) satellite for spot-checking — `lintle` itself owns no RNG, so `shuf`
 supplies the randomness.
@@ -776,7 +831,9 @@ supplies the randomness.
 
 `lintle verify` tallies a `{"YYYY-MM": count}` histogram of every revalidated record's epoch
 month while it revalidates (a `collections.Counter`, converted to a plain `dict` — sorted by
-key — at the output boundary), and writes it as a new top-level `epoch_distribution` key in
+key — at the output boundary). The bucket comes from the record's *normalized* instant
+(`lintle.epoch.epoch_dt` — year and month together, so a day-366.x rollover bins into the
+January it truly belongs to, #199), and it is written as a top-level `epoch_distribution` key in
 `04-verify/summary.json` — a **sibling of `checked`, not nested inside it** — plus a matching
 `### Epoch distribution` Markdown section in `summary.md` (one `- YYYY-MM  N` line per month,
 emitted only when non-empty). Only records that pass revalidation are binned; a month with no

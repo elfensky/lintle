@@ -1,0 +1,23 @@
+name: version
+# main only. Releases are the only thing that bumps the version, and releases
+# land on main; feature and refactor PRs target develop and deliberately do NOT
+# touch it (CONTRIBUTING § Versioning: "No per-merge version bumps"). Firing on
+# develop made this fail every feature PR by design.
+on:
+  pull_request:
+    branches: [main]
+    paths: ['src/**', 'pyproject.toml']
+
+jobs:
+  bumped:
+    if: github.actor != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with: { fetch-depth: 0 }
+      - name: Version must differ from the base branch
+        run: |
+          base="origin/${{ github.base_ref }}"
+          old=$(git show "$base:pyproject.toml" | grep -m1 '^version = ' | cut -d'"' -f2)
+          new=$(grep -m1 '^version = ' pyproject.toml | cut -d'"' -f2)
+          [ "$old" != "$new" ] || { echo "::error::Still $new — bump it"; exit 1; }

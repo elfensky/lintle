@@ -6,8 +6,11 @@ residual over a robust per-satellite threshold is a **soft** ``VRFY-ORBIT-OUTLIE
 — *inconclusive*, never a conviction, because a real manoeuvre looks the same as
 a corruption from a single pair (leave-one-out culprit isolation is a follow-up).
 The only **hard** verdict is ``VRFY-ORBIT-ERROR``: ``sgp4`` rejecting an element
-set as physically unphysical (error codes 1-5). Decayed orbits (error 6) are real,
-not corruption, so they merely break the propagation chain.
+set as unparseable (through sgp4 2.26 its parser was stricter than ours in two
+digit-or-space fields; 2.27 accepts them, so the catch is version-independent
+defence rather than a fix for one known pair) or physically unphysical (1-5).
+Decayed orbits (error 6) are real, not corruption, so they merely break the
+propagation chain.
 
 Determinism: residuals are rounded to a 0.1 km quantum *before* thresholding, and
 an outlier must clear the threshold by a full quantum — so the suspect set and
@@ -20,11 +23,12 @@ This module is the sole ``sgp4`` importer in the package; the clean/validate/rep
 path stays walled off from it (import-graph test). Sampling unit is the satellite
 (continuity needs a contiguous track); the sample is deterministic."""
 
+import contextlib
 import dataclasses
 import math
 import statistics
 
-from sgp4.api import Satrec
+from sgp4.api import SGP4_ERRORS, Satrec
 
 from lintle.verify import grouping, records
 from lintle.verify.records import CleanedRecord
@@ -55,7 +59,11 @@ STRICT = Sensitivity(floor_km=200.0, mad_k=20.0)  # fewer, higher-confidence out
 # Public name → tier mapping; the CLI's --sensitivity choices resolve through this.
 TIERS = {"sensitive": SENSITIVE, "strict": STRICT}
 # sgp4 init errors that mean "these mean elements are not a physical orbit" -> hard.
-# Error 6 (decayed) is a real end-of-life state, not corruption, so it is excluded.
+# Error 6 (decayed) is a real end-of-life state, not corruption, so it stays soft.
+# Both sets are pinned literals — an unknown future sgp4 code must be triaged by a
+# human, not auto-convicted — and a test ties their union to the installed
+# ``SGP4_ERRORS`` so a library change fails loudly instead of silently soft.
+_SOFT_SGP4_ERRORS = frozenset({6})
 _HARD_SGP4_ERRORS = frozenset({1, 2, 3, 4, 5})
 
 
@@ -141,7 +149,32 @@ def _track_suspects(
     # re-propagate a record's neighbours skipping it.
     sats: list[tuple[Satrec | None, CleanedRecord]] = []
     for rec in track:
-        sat = Satrec.twoline2rv(rec.line1, rec.line2)
+        try:
+            sat = Satrec.twoline2rv(rec.line1, rec.line2)
+        except ValueError as exc:
+            # A perfectly lintle-valid record can still be unparseable here.
+            # Through sgp4 2.26 the known pair was the blank/interior-space
+            # element-set number (line 1, cols 65-68) and revolution number
+            # (line 2, cols 64-68) — digit-or-space for us, bare int() for
+            # sgp4; 2.27 accepts both, so that set is empty on current sgp4 and
+            # this stays as defence against whatever a future release rejects.
+            # Either way it is a finding about the record, not a crash of the
+            # corpus-wide pass. ValueError only: a broader catch
+            # would re-hide the class of bug this exists to surface. The message
+            # is whitespace-squashed — sgp4's template is multi-line, and the
+            # suspect spill is tab/newline-framed.
+            suspects.append(
+                Suspect(
+                    VerifyRule.ORBIT_ERROR,
+                    rec.catalog,
+                    rec.epoch_key,
+                    rec.src_file,
+                    rec.index,
+                    f"sgp4 cannot parse these elements: {' '.join(str(exc).split())}",
+                )
+            )
+            sats.append((None, rec))  # unparseable: breaks the chain, as init errors do
+            continue
         if sat.error:
             if sat.error in _HARD_SGP4_ERRORS:
                 suspects.append(
@@ -151,7 +184,8 @@ def _track_suspects(
                         rec.epoch_key,
                         rec.src_file,
                         rec.index,
-                        f"sgp4 rejects these elements (error {sat.error})",
+                        f"sgp4 rejects these elements (error {sat.error}: "
+                        f"{SGP4_ERRORS.get(sat.error, 'unknown sgp4 error code')})",
                     )
                 )
             sats.append((None, rec))  # unphysical or decayed: breaks the chain
@@ -308,7 +342,7 @@ def run_orbit_pass(
     ``cleaned/`` to gather the sample — a single-pass sampling optimisation is a
     follow-up (issue #144)."""
     sampled = sample_catalogs(population, sample, all_sats, oversample)
-    sorter = grouping.ExternalSorter()
+    sorter = grouping.record_sorter()
     # Reports through the caller's live table rather than opening a progress
     # region of its own: this runs inside that table's `rich.live.Live`, and a
     # live region cannot nest.
@@ -320,13 +354,16 @@ def run_orbit_pass(
                 sorter.add(rec)
 
     n_pairs = n_tracks = 0
-    for _, track in grouping.grouped(sorter.sorted_records(), key=_by_catalog):
-        found, pairs = _track_suspects(track, sensitivity)
-        sink.add_all(found)
-        n_pairs += pairs
-        n_tracks += 1
-        if n_tracks % 500 == 0:
-            say(f"orbit: propagating — {n_tracks:,}/{len(sampled):,} satellites")
+    # closing(): if a track raises part-way through, the sorter's temp runs go
+    # now rather than at collection time.
+    with contextlib.closing(sorter.sorted_records()) as stream:
+        for _, track in grouping.grouped(stream, key=_by_catalog):
+            found, pairs = _track_suspects(track, sensitivity)
+            sink.add_all(found)
+            n_pairs += pairs
+            n_tracks += 1
+            if n_tracks % 500 == 0:
+                say(f"orbit: propagating — {n_tracks:,}/{len(sampled):,} satellites")
 
     return {
         "orbit_population": len(population),

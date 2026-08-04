@@ -12,6 +12,7 @@ from lintle import (
     DEDUP_DIRNAME,
     EXTRACT_DIRNAME,
     REPORT_DIRNAME,
+    REPORT_JSONL_NAME,
     SHARDS_DIRNAME,
     VERIFY_DIRNAME,
     cli_progress,
@@ -40,7 +41,7 @@ _STALE_CHECKPOINT_PREFIX = resume.CHECKPOINT_NAME + ".stale-"
 _REPORT_ARTIFACTS = (
     "report.md",
     "report.json",
-    "report.jsonl",
+    REPORT_JSONL_NAME,
     "broken-noradids.ndjson",
 )
 

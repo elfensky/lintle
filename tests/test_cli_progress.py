@@ -3,6 +3,7 @@
 import contextlib
 import io
 import queue
+import types
 
 from rich.console import Console
 
@@ -165,7 +166,7 @@ class TestProgressDisplayRendering:
         # line is plain text — no ANSI escape sequences.
         console = Console(file=io.StringIO(), force_terminal=False, width=100)
         disp = cli_progress.ProgressDisplay(1, queue.Queue(), console, sizes={"a": 100})
-        assert disp._live is False
+        assert disp._live_mode is False
         stats = report.FileStats(src_name="a")
         stats.clean_count = 1
         stats.quarantined_count = 0
@@ -462,6 +463,35 @@ class TestLiveTable:
         out = self._render(disp, disp._table())
         assert "f28.txt" in out  # the last row is visible at the end of a run
 
+    def test_window_still_windows_on_a_terminal_shorter_than_the_chrome(self):
+        # Height <= chrome used to invert the guard and return ALL rows — a
+        # 200-row live region rich crops from the top, with `windowed` left
+        # False so the complete results table was never printed either (#G).
+        rows = [types.SimpleNamespace(state="done") for _ in range(200)]
+        visible, hidden = cli_progress.window(rows, 8, 8)
+        assert len(visible) == 1
+        assert hidden == 199
+        visible, hidden = cli_progress.window(rows, 1, 8)
+        assert len(visible) == 1
+        assert hidden == 199
+
+    def test_zero_denominator_dash_respects_console_encoding(self):
+        # A zero-byte corpus renders the dash cell; an ASCII-only console must
+        # get "-" (the #97 rule), never a raw em dash it cannot encode.
+        assert cli_progress._percent(0, 0, "-") == "-"
+        assert cli_progress._percent(50, 100, "-") == "50%"
+        assert cli_progress._dash(types.SimpleNamespace(encoding="ascii")) == "-"
+        assert cli_progress._dash(types.SimpleNamespace(encoding="utf-8")) == "—"
+        assert cli_progress._dash(types.SimpleNamespace(encoding=None)) == "—"
+
+    def test_short_terminal_marks_the_display_windowed(self):
+        # `windowed` drives the complete-table reprint on exit; at height 8 it
+        # must be True, so run results are still shown after the live frame.
+        sizes = {f"f{i}.txt": 1000 for i in range(20)}
+        disp = self._display(120, sizes=sizes, total_files=20, height=8)
+        self._render(disp, disp._table())
+        assert disp.windowed is True
+
     def test_tiers_drop_columns_whole(self):
         sizes = {"a.txt": 1000}
         headers = lambda t: [c.header for c in t.columns]  # noqa: E731
@@ -554,6 +584,56 @@ class TestLiveTable:
         disp.file_failed("/src/a.txt", RuntimeError("boom"))
         out = console.file.getvalue()
         assert "boom" in out and disp._rows["a.txt"].state == "failed"
+
+
+class _AssertingLock:
+    """A stand-in for the tables' lock that RAISES on a nested acquire instead
+    of blocking. threading.Lock is not reentrant, so the real deadlock shows up
+    as a hung test run — useless as a signal. This turns it into a fast, named
+    failure."""
+
+    def __init__(self):
+        self.held = False
+
+    def __enter__(self):
+        assert not self.held, (
+            "_refresh must not hold the lock _table takes — threading.Lock is "
+            "not reentrant, so this nesting deadlocks the first frame"
+        )
+        self.held = True
+        return self
+
+    def __exit__(self, *_exc):
+        self.held = False
+        return False
+
+
+class TestLockConvention:
+    """_LiveTable's rule: _table() acquires the lock, _refresh() must not. It is
+    easy to 'tidy' the lock up into _refresh — and that hangs the whole run, so
+    both subclasses are pinned here."""
+
+    def test_unit_table_refresh_does_not_nest_the_lock(self):
+        console = Console(file=io.StringIO(), force_terminal=True, width=120, height=40)
+        table = cli_progress.UnitTable(["a", "b"], ("#", "file", "n"), console=console)
+        table._lock = _AssertingLock()
+        with table:
+            table.start("a")
+            table.update("a", n="1")
+            table.finish("a", n="2")
+            table.totals(n="2")
+            table.phase("writing…")
+
+    def test_progress_display_refresh_does_not_nest_the_lock(self):
+        console = Console(file=io.StringIO(), force_terminal=True, width=120, height=40)
+        disp = cli_progress.ProgressDisplay(
+            1, queue.Queue(), console, sizes={"a.txt": 100}
+        )
+        disp._lock = _AssertingLock()
+        stats = report.FileStats(src_name="a.txt")
+        stats.clean_count = 1
+        with disp:
+            disp.file_done(stats)
 
 
 class TestUnitTable:

@@ -2,7 +2,6 @@
 
 import argparse
 import contextlib
-import json
 import os
 import shutil
 import signal
@@ -29,6 +28,7 @@ from lintle import (
     summary,
     term,
     thresholds,
+    tle,
     worker_pool,
 )
 from lintle import (
@@ -50,6 +50,38 @@ def _chunk_records_type(value):
     if n < 0:
         raise argparse.ArgumentTypeError("must be >= 0 (0 = never roll)")
     return n
+
+
+def _norad_id_type(value):
+    """argparse type for ``extract``'s NORAD-ID: the plain decimal catalog
+    number or, since the SATCAT passed 99,999, the Alpha-5 wire spelling
+    (``E8493``), decoded to the integer every downstream artifact speaks.
+    Routed through ``tle.decode_catalog`` so the CLI and the cleaned-tree
+    reader cannot disagree about which satellite the caller means."""
+    catalog = tle.decode_catalog(value)
+    if catalog is None or catalog < 1:
+        raise argparse.ArgumentTypeError(
+            f"not a NORAD id: {value!r} (expected a catalog number like 25544 "
+            "or an Alpha-5 id like E8493)"
+        )
+    return catalog
+
+
+def _add_out_dir_positional(parser, purpose):
+    """Add the shared optional ``OUT-DIR`` positional (report/verify/dedup).
+    ``purpose`` completes "clean run output directory ..." in the help text.
+    ``default=None`` is load-bearing: :func:`_apply_config_paths` distinguishes
+    "omitted" from an explicitly-given empty path by identity, not truthiness."""
+    parser.add_argument(
+        "out_dir",
+        nargs="?",
+        default=None,
+        metavar="OUT-DIR",
+        help=(
+            f"clean run output directory{purpose} "
+            f"(default: stored config, else {_DEFAULT_OUTPUT})"
+        ),
+    )
 
 
 def _add_chunk_records_arg(parser):
@@ -286,16 +318,7 @@ def _add_report_subparser(subparsers):
         epilog=_EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    report_parser.add_argument(
-        "out_dir",
-        nargs="?",
-        default=None,
-        metavar="OUT-DIR",
-        help=(
-            "clean run output directory "
-            f"(default: stored config, else {_DEFAULT_OUTPUT})"
-        ),
-    )
+    _add_out_dir_positional(report_parser, "")
     report_parser.add_argument(
         "--report",
         choices=["text", "json"],
@@ -325,16 +348,7 @@ def _add_verify_subparser(subparsers):
         epilog=_EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    verify_parser.add_argument(
-        "out_dir",
-        nargs="?",
-        default=None,
-        metavar="OUT-DIR",
-        help=(
-            "clean run output directory to verify "
-            f"(default: stored config, else {_DEFAULT_OUTPUT})"
-        ),
-    )
+    _add_out_dir_positional(verify_parser, " to verify")
     verify_parser.add_argument(
         "--source",
         default=None,
@@ -405,16 +419,7 @@ def _add_dedup_subparser(subparsers):
         epilog=_EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    dedup_parser.add_argument(
-        "out_dir",
-        nargs="?",
-        default=None,
-        metavar="OUT-DIR",
-        help=(
-            "clean run output directory to de-duplicate "
-            f"(default: stored config, else {_DEFAULT_OUTPUT})"
-        ),
-    )
+    _add_out_dir_positional(dedup_parser, " to de-duplicate")
     _add_chunk_records_arg(dedup_parser)
 
 
@@ -436,8 +441,8 @@ def _add_extract_subparser(subparsers):
         "norad_ids",
         metavar="NORAD-ID",
         nargs="+",
-        type=int,
-        help="catalog number(s) to extract (1-99999)",
+        type=_norad_id_type,
+        help="catalog number(s) to extract, decimal or Alpha-5 (e.g. 25544, E8493)",
     )
     extract_parser.add_argument(
         "--out-dir",
@@ -570,7 +575,7 @@ def _finalize_run(
         )
 
     if args.report == "json":
-        print(json.dumps(envelope, indent=2))
+        print(report.render_run_json(envelope), end="")
     elif all_stats:
         # Phase 3 of the display: the per-file results table, then the human
         # aggregate panel. Both go to stderr (styled ephemera) — per-file detail
@@ -612,11 +617,27 @@ def _flag_present(argv, flag):
     return any(a == flag or a.startswith(flag + "=") for a in argv)
 
 
+def _resolved_path(explicit, configured, fallback):
+    """One spelling of "explicit CLI arg > stored config > built-in default".
+    ``explicit is None`` means the argument was omitted (the positionals' argparse
+    default); an empty string was *given*, so it wins. A configured-but-empty
+    value is meaningless and falls through to ``fallback``."""
+    if explicit is not None:
+        return explicit
+    return configured or fallback
+
+
 def _apply_config_paths(args, argv, config):
     """Fill path arguments left at their defaults from the stored project config,
     so ``clean``/``verify``/``report`` can run without repeating paths. Precedence
     is always explicit CLI arg > stored config > built-in default — an explicit
-    argument is never overridden. Mutates ``args`` in place."""
+    argument is never overridden. Mutates ``args`` in place.
+
+    "Not given" is tested as ``is None`` (the positionals' argparse default), never
+    for truthiness: an explicitly-passed empty path is still explicit. The `or`
+    chain this replaced silently swapped it for the stored config — quietly
+    operating on a *different* tree than the one asked for, which is exactly the
+    guarantee above."""
     match args.command:
         case "clean":
             if args.path is None and config.get("source"):
@@ -624,10 +645,16 @@ def _apply_config_paths(args, argv, config):
             if not _flag_present(argv, "--out-dir") and config.get("output"):
                 args.out_dir = config["output"]
         case "verify":
-            args.out_dir = args.out_dir or config.get("output") or _DEFAULT_OUTPUT
-            args.source = args.source or config.get("source") or _DEFAULT_SOURCE
+            args.out_dir = _resolved_path(
+                args.out_dir, config.get("output"), _DEFAULT_OUTPUT
+            )
+            args.source = _resolved_path(
+                args.source, config.get("source"), _DEFAULT_SOURCE
+            )
         case "report" | "dedup":
-            args.out_dir = args.out_dir or config.get("output") or _DEFAULT_OUTPUT
+            args.out_dir = _resolved_path(
+                args.out_dir, config.get("output"), _DEFAULT_OUTPUT
+            )
         case "extract":
             if not _flag_present(argv, "--out-dir") and config.get("output"):
                 args.out_dir = config["output"]
@@ -892,7 +919,14 @@ def _dispatch(argv=None):
         # Resolve the worker count now that files_to_process is final: an
         # explicit --jobs is honoured as-is; the default is CPU count - 1,
         # capped at the file count and floored at one (issue #53 §2.3).
-        jobs = resolve_jobs(config.jobs, os.cpu_count(), len(plan.files_to_process))
+        jobs = resolve_jobs(
+            # process_cpu_count honours CPU affinity (taskset, cgroup quota,
+            # a scheduler pinning) where cpu_count reports the whole machine;
+            # identical on macOS, right on a constrained Linux box.
+            config.jobs,
+            os.process_cpu_count(),
+            len(plan.files_to_process),
+        )
 
         # The shared rich Console on stderr (term.stderr_console) drives both the
         # roster and the live progress block; off a TTY each degrades to plain

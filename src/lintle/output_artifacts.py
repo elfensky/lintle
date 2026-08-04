@@ -6,6 +6,7 @@ from lintle import (
     BROKEN_DIRNAME,
     CLEANED_DIRNAME,
     REPORT_DIRNAME,
+    REPORT_JSONL_NAME,
     __version__,
     cli_progress,
     fsutil,
@@ -47,7 +48,7 @@ def write_clean_artifacts(
             str(rdir / "broken-noradids.ndjson"), all_stats
         )
         missing = report_writers.concat_findings_shards(
-            out_dir, str(rdir / "report.jsonl"), all_stats, chunk_records
+            out_dir, str(rdir / REPORT_JSONL_NAME), all_stats, chunk_records
         )
         write_layout_readme(out_dir)
         _write_step_readmes(out_dir)
@@ -133,9 +134,7 @@ def write_layout_readme(out_dir):
     """Write a static ``README.md`` at the out-dir root explaining the per-step
     output layout, so a run is self-describing without external docs. Written via
     the durable-commit path; deterministic for a given lintle version."""
-    fsutil.durable_write_text(
-        str(Path(out_dir) / "README.md"), _LAYOUT_README, encoding="utf-8"
-    )
+    fsutil.write_step_readme(out_dir, _LAYOUT_README)
 
 
 def _write_step_readmes(out_dir):
@@ -148,6 +147,4 @@ def _write_step_readmes(out_dir):
         (BROKEN_DIRNAME, _BROKEN_README),
         (REPORT_DIRNAME, _REPORT_README),
     ):
-        d = Path(out_dir) / dirname
-        d.mkdir(parents=True, exist_ok=True)
-        fsutil.durable_write_text(str(d / "README.md"), text, encoding="utf-8")
+        fsutil.write_step_readme(Path(out_dir) / dirname, text)

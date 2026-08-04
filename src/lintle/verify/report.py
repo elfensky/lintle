@@ -8,10 +8,10 @@ stays intact. Output is byte-deterministic: suspects sort by a stable key and
 serialize as compact ASCII JSON, so two runs over the same output produce
 identical bytes."""
 
+import contextlib
 import dataclasses
-import heapq
 import json
-import tempfile
+import operator
 from collections import Counter
 from collections.abc import Iterable
 from enum import StrEnum
@@ -19,12 +19,13 @@ from pathlib import Path
 
 from lintle import VERIFY_DIRNAME, chunking, fsutil
 from lintle.chunking import CHUNK_RECORDS_DEFAULT
+from lintle.verify import grouping
 
 SUSPECTS_STEM = "suspects"
 SUSPECTS_SUFFIX = ".jsonl"
 SUMMARY_JSON = "summary.json"
 SUMMARY_MD = "summary.md"
-SCHEMA_VERSION = "1"
+SCHEMA_VERSION = "2"
 
 _README = """\
 # 04-verify — independent audit of 01-cleaned
@@ -46,7 +47,7 @@ class VerifyRule(StrEnum):
     EPOCH_CONFLICT = "VRFY-EPOCH-CONFLICT"  # same (catalog, epoch), different bytes
     INTERIOR_MUT = "VRFY-INTERIOR-MUT"  # cleaned differs from source off the edges
     ORIGIN_MISSING = "VRFY-ORIGIN-MISSING"  # no source origin found in the window
-    ORBIT_ERROR = "VRFY-ORBIT-ERROR"  # sgp4 rejects the element set as unphysical
+    ORBIT_ERROR = "VRFY-ORBIT-ERROR"  # sgp4 rejects the elements (parse or physics)
     ORBIT_OUTLIER = "VRFY-ORBIT-OUTLIER"  # residual outlier vs neighbours (soft)
 
 
@@ -139,9 +140,7 @@ def _summary_json_bytes(
         "soft": total - hard,
         "exit_code": 1 if hard else 0,
     }
-    return (
-        json.dumps(envelope, ensure_ascii=True, indent=2, sort_keys=True) + "\n"
-    ).encode("ascii")
+    return (fsutil.json_document(envelope)).encode("ascii")
 
 
 def _summary_md_str(
@@ -215,35 +214,48 @@ def render_summary_md(
     )
 
 
-def _encode_spill(s: Suspect) -> str:
-    """A suspect as a tab-framed spill row: the five sort-key columns (so a run
-    decodes back to its sort key without re-parsing JSON) then the verbatim
-    ``_suspect_line`` — which carries no raw tab, so the framing round-trips."""
-    rule, catalog, epoch_key, src_file, index = _sort_key(s)
+type _SpillItem = tuple[tuple[str, int, float, str, int], str]
+
+
+def _encode_spill(item: _SpillItem) -> str:
+    """A ``(sort_key, suspect_line)`` pair as a tab-framed spill row: the five
+    sort-key columns (so a run decodes back to its sort key without re-parsing
+    JSON) then the verbatim ``_suspect_line`` — which carries no raw tab, so the
+    framing round-trips."""
+    (rule, catalog, epoch_key, src_file, index), line = item
     prefix = f"{rule}\t{catalog}\t{epoch_key!r}\t{src_file}\t{index}"
-    return f"{prefix}\t{_suspect_line(s)}\n"
+    return f"{prefix}\t{line}\n"
 
 
-def _decode_spill(row: str) -> tuple[tuple[str, int, float, str, int], str]:
+def _decode_spill(row: str) -> _SpillItem:
     """Inverse of :func:`_encode_spill`: ``(sort_key, suspect_json_line)``."""
     rule, catalog, epoch_key, src_file, index, line = row.rstrip("\n").split("\t", 5)
     return (rule, int(catalog), float(epoch_key), src_file, int(index)), line
 
 
 class SuspectSink:
-    """Constant-memory accumulator for verify suspects: an external merge-sort
-    (each full chunk sorted and spilled to a temp file) plus a running tally.
-    ``add`` suspects during the checks, then ``write`` k-way-merges the runs into
-    a globally-sorted ``suspects.jsonl`` and renders ``summary.{json,md}`` from
-    the tally — byte-identical to the list-based renderers, but peak memory is one
-    chunk, not the whole suspect set (issue #156). Mirrors the external sorter in
-    ``grouping``."""
+    """Constant-memory accumulator for verify suspects: `grouping`'s external
+    merge-sorter plus a running tally. ``add`` suspects during the checks, then
+    ``write`` drains the sorter into a globally-sorted ``suspects.jsonl`` and
+    renders ``summary.{json,md}`` from the tally — byte-identical to the
+    list-based renderers, but peak memory is one chunk, not the whole suspect set
+    (issue #156).
+
+    Suspects are pre-encoded to ``(sort_key, rendered_line)`` on the way in, and
+    that pair — not the ``Suspect`` — is what the sorter carries. Deliberate: the
+    line is rendered exactly once, so what the merge emits is what was tallied,
+    with no second rendering that could drift from the first."""
 
     def __init__(self, chunk_size: int = 200_000) -> None:
-        self._chunk_size = chunk_size
-        self._buf: list[Suspect] = []
-        self._runs: list[Path] = []
-        self._tmpdir = tempfile.TemporaryDirectory(prefix="lintle-verify-suspects-")
+        self._sorter: grouping.ExternalSorter[_SpillItem, tuple] = (
+            grouping.ExternalSorter(
+                key=operator.itemgetter(0),
+                encode=_encode_spill,
+                decode=_decode_spill,
+                chunk_size=chunk_size,
+                prefix="lintle-verify-suspects-",
+            )
+        )
         self.counts: Counter[str] = Counter()
         # Per-stem tallies for the phase-3 results table. Keyed by the stem each
         # suspect names, so findings raised after the streaming pass (the
@@ -255,7 +267,7 @@ class SuspectSink:
         self.total = 0
 
     def add(self, s: Suspect) -> None:
-        self._buf.append(s)
+        self._sorter.add((_sort_key(s), _suspect_line(s)))
         self.counts[s.rule.value] += 1
         if s.severity == "hard":
             self.hard += 1
@@ -263,8 +275,6 @@ class SuspectSink:
         else:
             self.soft_by_stem[s.src_file] += 1
         self.total += 1
-        if len(self._buf) >= self._chunk_size:
-            self._spill()
 
     def add_all(self, suspects: Iterable[Suspect]) -> None:
         for s in suspects:
@@ -273,14 +283,6 @@ class SuspectSink:
     @property
     def exit_code(self) -> int:
         return 1 if self.hard else 0
-
-    def _spill(self) -> None:
-        self._buf.sort(key=_sort_key)
-        path = Path(self._tmpdir.name) / f"run-{len(self._runs):06d}.tsv"
-        with path.open("w", encoding="ascii") as fh:
-            fh.writelines(_encode_spill(s) for s in self._buf)
-        self._runs.append(path)
-        self._buf = []
 
     def write(
         self,
@@ -297,24 +299,17 @@ class SuspectSink:
         per-month record-density histogram (informational, empty by default)."""
         vdir = Path(out_dir) / VERIFY_DIRNAME
         vdir.mkdir(parents=True, exist_ok=True)
-        handles = [p.open(encoding="ascii") for p in self._runs]
-        try:
-            runs = [(_decode_spill(row) for row in fh) for fh in handles]
-            self._buf.sort(key=_sort_key)
-            tail = ((_sort_key(s), _suspect_line(s)) for s in self._buf)
-            # heapq.merge breaks key ties by iterable order (earlier run first,
-            # then the tail) and preserves each run's own order — exactly the
-            # stable add-order that sorted(key=_sort_key) gives the list path.
-            merged = heapq.merge(*runs, tail, key=lambda item: item[0])
-            with chunking.ChunkedWriter(
+        # The sorter merges equal keys in add order, matching what
+        # sorted(key=_sort_key) gives the list path. closing() releases the temp
+        # runs even if the writer raises part-way through the drain.
+        with (
+            contextlib.closing(self._sorter.sorted_records()) as merged,
+            chunking.ChunkedWriter(
                 str(vdir), SUSPECTS_STEM, SUSPECTS_SUFFIX, chunk_records
-            ) as out:
-                for _, line in merged:
-                    out.write((line + "\n").encode("ascii"))
-        finally:
-            for fh in handles:
-                fh.close()
-            self._tmpdir.cleanup()
+            ) as out,
+        ):
+            for _, line in merged:
+                out.write((line + "\n").encode("ascii"))
         # Both summaries commit through the one sanctioned durable path.
         fsutil.durable_write_text(
             str(vdir / SUMMARY_JSON),
@@ -339,5 +334,5 @@ class SuspectSink:
                 epoch_distribution=epoch_distribution,
             ),
         )
-        fsutil.durable_write_text(str(vdir / "README.md"), _README, encoding="utf-8")
+        fsutil.write_step_readme(vdir, _README)
         return vdir

@@ -66,7 +66,7 @@ class TestByteEquivalence:
         # large chunk -> everything stays in the in-memory tail (no runs on disk)
         sink = SuspectSink(chunk_size=10_000)
         sink.add_all(SUSPECTS)
-        assert sink._runs == []
+        assert sink._sorter._runs == []
         jsonl, _, _ = _drain(sink, tmp_path)
         assert jsonl == report.render_suspects_jsonl(SUSPECTS)
 
@@ -83,12 +83,15 @@ class TestTally:
 
 class TestConstantMemory:
     def test_peak_buffer_is_bounded_by_chunk(self, tmp_path):
-        # 100 suspects, chunk 10 -> spills to disk, buffer never exceeds one chunk.
+        # 100 suspects, chunk 10 -> spills to disk, buffer never exceeds one
+        # chunk. The buffer lives in the delegated ExternalSorter now; the
+        # invariant under test is unchanged.
         sink = SuspectSink(chunk_size=10)
         for i in range(100):
             sink.add(Suspect(VerifyRule.ORBIT_OUTLIER, i, float(i), "tle", i, "x"))
-            assert len(sink._buf) <= 10
-        assert len(sink._runs) == 10  # spilled every full chunk -> constant memory
+            assert len(sink._sorter._buf) <= 10
+        # spilled every full chunk -> constant memory
+        assert len(sink._sorter._runs) == 10
         sink.write(str(tmp_path), checked=CHECKED)
         lines = _read_suspects(tmp_path / VERIFY_DIRNAME).splitlines()
         assert len(lines) == 100  # nothing lost across the spill/merge

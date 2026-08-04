@@ -8,21 +8,19 @@ import dataclasses
 import datetime as _dt
 import statistics
 
-from lintle.verify.epoch import parse_epoch
+# Re-exported for extract/dedup: the epoch instant and its ISO rendering live
+# in lintle.epoch (the single definition, #199); history keeps the names so
+# its callers need one import for "reduce this satellite's timeline".
+from lintle.epoch import epoch_dt as epoch_dt
+from lintle.epoch import iso as iso
 
 GAP_FACTOR = 10
 GAPS_CAP = 10
-
-
-def epoch_dt(line1: str) -> _dt.datetime:
-    """Record epoch as an aware UTC datetime — pure arithmetic from
-    ``parse_epoch``'s ``(year, day_of_year)``, no wall clock."""
-    year, day = parse_epoch(line1)
-    return _dt.datetime(year, 1, 1, tzinfo=_dt.UTC) + _dt.timedelta(days=day - 1)
-
-
-def iso(dt: _dt.datetime) -> str:
-    return dt.isoformat(timespec="seconds").replace("+00:00", "Z")
+# Gap analysis needs at least this many records: below it there is only one
+# delta — no "typical spacing" for GAP_FACTOR to multiply — so the history is
+# definitionally gap-silent (median_spacing_days: null tells the reader why,
+# and dedup's summary tallies these as gap_silent_satellites).
+MIN_GAP_RECORDS = 3
 
 
 @dataclasses.dataclass(slots=True, frozen=True)
@@ -63,14 +61,20 @@ def analyze_epochs(
     ]
     largest = max(deltas, default=0.0)
     largest_at = epochs[deltas.index(largest) + 1] if deltas else None
-    median = statistics.median(deltas) if len(deltas) >= 2 else None
-    # `median and ...`: 0 is intentionally excluded here — a zero median
-    # would otherwise flag every record as a gap (d > 10*0 is always true
-    # for d > 0), and deltas are strictly positive post-dedup anyway.
+    enough = len(deltas) >= MIN_GAP_RECORDS - 1
+    median = statistics.median(deltas) if enough else None
+    # REPORT the interpolated median (byte-stable field) but THRESHOLD on
+    # median_low: with exactly 2 deltas the interpolated (a+d)/2 makes
+    # d > GAP_FACTOR*median algebraically impossible (#199's n=3 dead zone);
+    # the low median keeps the bar at a real observed spacing.
+    # `bar and ...`: 0 is intentionally excluded here — a zero bar would
+    # otherwise flag every record as a gap (d > 10*0 is always true for
+    # d > 0), and deltas are strictly positive post-dedup anyway.
+    bar = statistics.median_low(deltas) if enough else None
     reportable = [
         Gap(epochs[i], epochs[i + 1], d)
         for i, d in enumerate(deltas)
-        if median and d > GAP_FACTOR * median
+        if bar and d > GAP_FACTOR * bar
     ]
     top = sorted(reportable, key=lambda g: g.days, reverse=True)[:GAPS_CAP]
     return HistoryStats(

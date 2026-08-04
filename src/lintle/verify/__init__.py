@@ -12,14 +12,13 @@ source tree, and writes only under ``<out-dir>/04-verify``. It reuses
 ``tle.py`` for every validity judgment and never re-defines what a valid TLE
 is."""
 
-import datetime as _dt
+import contextlib
 from collections import Counter
-from pathlib import Path
 
-from lintle import CLEANED_DIRNAME, cli_progress, summary, term
+from lintle import term
 from lintle.chunking import CHUNK_RECORDS_DEFAULT
-from lintle.verify import checks, grouping, records
-from lintle.verify.epoch import parse_epoch
+from lintle.epoch import epoch_dt
+from lintle.verify import checks, grouping, scan
 from lintle.verify.report import SuspectSink
 
 
@@ -39,57 +38,37 @@ def run(
     (``all_sats`` for the full sweep); ``sensitivity`` (``sensitive``/``strict``,
     #3) scales its outlier threshold. Returns the process exit code: 0 clean, 1
     hard suspects found, 2 operational error (no cleaned output)."""
-    stems = records.cleaned_stems(out_dir)
-    if not stems:
-        cleaned_dir = Path(out_dir) / CLEANED_DIRNAME
-        term.error(
-            f"no cleaned output found under {cleaned_dir!s}.\n"
-            "  run 'lintle clean' first, or point at its --out-dir."
-        )
+    stems = scan.cleaned_stems_or_error(out_dir)
+    if stems is None:
         return 2
 
-    # One live table for the whole run: every stem has a row before any work
-    # starts (so the first frame is the roster), each row fills in as its stem
-    # streams, and the finished table is the results view. The stat-only
-    # fingerprint supplies the sizes, so what is announced and what is then
-    # streamed cannot disagree.
-    stem_sizes = dict(records.cleaned_fingerprint(out_dir)["stems"])
     sink = SuspectSink()  # external-sorts suspects to disk (#156): flat peak memory
-    sorter = grouping.ExternalSorter()
+    sorter = grouping.record_sorter()
     population: set[int] = set()  # distinct catalogs, for the orbit sample
-    n_records = 0
     missing_source = 0
     histogram: Counter[str] = Counter()  # epoch record density, YYYY-MM -> count
 
-    with cli_progress.UnitTable(
+    with scan.scan_cleaned(
+        out_dir,
         stems,
-        ("#", "file", "size", "progress", "records", "hard", "soft"),
-        console=term.stderr_console,
-        drop={"medium": ("size",), "narrow": ("size", "progress")},
-    ) as table:
-        for file_stem in stems:
-            table.start(file_stem)
-            size = stem_sizes.get(file_stem, 0)
-            # Per-stem, not corpus-cumulative: the count sits in one stem's row,
-            # so a running corpus total there would read as that stem's.
-            file_records = 0
+        columns=("#", "file", "size", "progress", "records", "hard", "soft"),
+        cells=lambda stem, _n: {
+            "hard": f"{sink.hard_by_stem[stem]:,}",
+            "soft": f"{sink.soft_by_stem[stem]:,}",
+        },
+        totals=lambda: {
+            "hard": f"{sink.hard:,}",
+            "soft": f"{sink.total - sink.hard:,}",
+        },
+    ) as sc:
+        for file_stem, _size in sc.units():
             # Null-object seam: always constructed, inert when the stem has no
             # source — no `is not None` guards, no caller-side skip contract.
             aligner = checks.SourceAligner.open(source_dir, file_stem)
             if source_dir is not None and not aligner.active:
                 missing_source += 1
             try:
-                for rec in records.iter_file(out_dir, file_stem):
-                    n_records += 1
-                    file_records += 1
-                    # Refresh sparsely — one update per record would cost more
-                    # than the checks themselves.
-                    if file_records % 50_000 == 0:
-                        table.update(
-                            file_stem,
-                            **_row_cells(file_records, size, sink, file_stem),
-                        )
-                        table.totals(records=f"{n_records:,}")
+                for rec in sc.stream(file_stem):
                     bad = checks.revalidate(rec)
                     if bad is not None:
                         sink.add(bad)
@@ -100,11 +79,8 @@ def run(
                     sorter.add(rec)
                     # Only records that survive revalidate are binned — a broken
                     # record has no trustworthy epoch (informational, sgp4-free).
-                    year, day = parse_epoch(rec.line1)
-                    month = (
-                        _dt.datetime(year, 1, 1) + _dt.timedelta(days=day - 1)
-                    ).month
-                    histogram[f"{year}-{month:02d}"] += 1
+                    instant = epoch_dt(rec.line1)
+                    histogram[f"{instant.year}-{instant.month:02d}"] += 1
                     if orbit and rec.catalog != -1:
                         population.add(rec.catalog)
                     mutated = aligner.feed(rec)
@@ -112,31 +88,17 @@ def run(
                         sink.add(mutated)
             finally:
                 aligner.close()
-            table.finish(
-                file_stem,
-                size=summary.format_size(size),
-                progress=cli_progress.bar(size, size),
-                records=f"{file_records:,}",
-                hard=f"{sink.hard_by_stem[file_stem]:,}",
-                soft=f"{sink.soft_by_stem[file_stem]:,}",
-            )
-            table.totals(
-                size=summary.format_size(sum(stem_sizes.values())),
-                records=f"{n_records:,}",
-                hard=f"{sink.hard:,}",
-                soft=f"{sink.total - sink.hard:,}",
-            )
 
         code, verdict, vdir = _finish_run(
             out_dir,
-            table,
+            sc.table,
             sink=sink,
             sorter=sorter,
             stems=stems,
-            stem_sizes=stem_sizes,
+            stem_sizes=sc.stem_sizes,
             population=population,
             histogram=histogram,
-            n_records=n_records,
+            n_records=sc.n_records,
             missing_source=missing_source,
             source_dir=source_dir,
             orbit=orbit,
@@ -152,24 +114,6 @@ def run(
     else:
         term.note(f"verify: PASS — {verdict}\n  see {vdir / 'summary.md'!s}")
     return code
-
-
-def _row_cells(file_records, size, sink, stem):
-    """The cells of a stem's row mid-stream. Progress is the share of the stem's
-    stat'd bytes its records account for: every cleaned record is exactly two
-    69-column lines plus newlines, so the count converts to bytes exactly.
-    Clamped, because a truncated final chunk would otherwise read past 100%."""
-    seen = min(file_records * _RECORD_BYTES, size)
-    return {
-        "size": summary.format_size(size),
-        "progress": cli_progress.bar(seen, size),
-        "records": f"{file_records:,}",
-        "hard": f"{sink.hard_by_stem[stem]:,}",
-        "soft": f"{sink.soft_by_stem[stem]:,}",
-    }
-
-
-_RECORD_BYTES = 140  # two 69-column lines + two newlines
 
 
 def _counted(stream, table, total):
@@ -218,9 +162,12 @@ def _finish_run(
     # Contradiction pass over the fully sorted stream (goal 3b): same-epoch
     # re-issues are counted (a census); only a same-element-set clash is hard.
     # Under --orbit, also collect the dup-epoch catalogs for the #2 sample stratum.
-    conflicts, epoch_reissues, dup_epoch_catalogs = checks.find_conflicts(
-        _counted(sorter.sorted_records(), table, n_records), orbit=orbit
-    )
+    # closing(): a check raising mid-stream releases the sorter's temp runs now
+    # rather than whenever the abandoned generator is collected.
+    with contextlib.closing(sorter.sorted_records()) as stream:
+        conflicts, epoch_reissues, dup_epoch_catalogs = checks.find_conflicts(
+            _counted(stream, table, n_records), orbit=orbit
+        )
     sink.add_all(conflicts)
 
     checked = {

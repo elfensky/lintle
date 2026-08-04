@@ -188,7 +188,11 @@ uv run pytest && uv run ruff check . && uv run ruff format --check .
 # 5. Push and open a PR; land via "Rebase and merge"
 git push -u origin feature/<desc>
 gh pr create --base develop --title "<title>" --body "<body>"
-gh pr merge --rebase --delete-branch
+# Run the merge from OUTSIDE the repo. --delete-branch also deletes the local
+# branch, so gh first switches the checkout to develop — which fails from
+# inside a worktree ("'develop' is already used by worktree at ..."). The API
+# merge still succeeds, but the local step errors; --repo avoids it entirely.
+(cd /tmp && gh pr merge <N> --rebase --delete-branch --repo elfensky/lintle)
 
 # 6. Clean up (use -D, not -d: rebase rewrites SHAs so the local branch
 #    won't appear "merged" to git even after origin landed it)

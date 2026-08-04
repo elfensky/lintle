@@ -228,6 +228,11 @@ def _check_semantics(body: str, lineno: int) -> list[FieldError]:
     errors = []
     try:
         if lineno == 1:
+            # (0, 367) with no leap-year logic is deliberate: space-track
+            # ships real rollover records (day 366.x in a non-leap year, day
+            # 0.x). Normalizing them across year boundaries is lintle.epoch's
+            # job — tightening this bound would redefine "perfect" (Critical
+            # Rule #4) and newly quarantine those records.
             day = float(body[20:23] + "." + body[24:32])
             if not 0.0 < day < 367.0:
                 errors.append(
@@ -364,16 +369,41 @@ def validate_line(line: str, lineno: int) -> list[FieldError]:
     return [err] if err else []
 
 
-def extract_norad_id(line: str | bytes) -> int | None:
-    """Return the 5-digit NORAD catalog ID from a TLE line 1, or ``None``.
+# Alpha-5 letter values for column 3: A=10 … Z=33, with I and O omitted so the
+# letter can never be confused with 1 or 0. Verbatim from space-track's Alpha-5
+# documentation; a test pins the decode to that document's own vectors.
+_ALPHA5_LETTERS = "ABCDEFGHJKLMNPQRSTUVWXYZ"
 
-    Reads columns 3-7 (the satellite catalog number) and parses them as a
-    decimal integer. Used to recover a programmatic ID from quarantined
-    records whose other fields may be corrupt. Returns ``None`` when the
-    line does not start with the ``"1 "`` line-1 prefix, is too short to
-    contain the field, contains a non-ASCII byte, or the field is not
-    five decimal digits — Alpha-5 letter-prefixed IDs are deliberately
-    excluded to keep the downstream contract a plain integer.
+
+def decode_catalog(field: str) -> int | None:
+    """The integer catalog number spelled by a line-1 cols 3-7 field, or
+    ``None`` if it is neither form. Accepts the plain digits space-track pads
+    for low numbers (``'  836'`` -> 836) and, since the SATCAT passed 99,999 in
+    2026, the Alpha-5 letter-prefixed form where column 3 carries the leading
+    10-33 (``'E8493'`` -> 148493, max ``'Z9999'`` -> 339999). The one reading of
+    this field, so ``verify``'s reader and the ``extract`` CLI cannot disagree
+    about which satellite a caller means."""
+    field = field.strip()
+    if is_ascii_digits(field):
+        return int(field)
+    if len(field) == 5 and field[0] in _ALPHA5_LETTERS and is_ascii_digits(field[1:]):
+        return (_ALPHA5_LETTERS.index(field[0]) + 10) * 10000 + int(field[1:])
+    return None
+
+
+def extract_norad_id(line: str | bytes) -> int | None:
+    """Return the NORAD catalog ID from a TLE *line 1*, or ``None``.
+
+    Locates columns 3-7 and hands them to :func:`decode_catalog`, which stays
+    the one reading of that field (#216) — so every spelling it accepts is
+    accepted here too: space-padded low numbers (``'  836'`` -> 836) and the
+    Alpha-5 letter-prefixed form for ids past 99,999 (``'E8493'`` -> 148493).
+    Used to recover a programmatic ID from quarantined records whose other
+    fields may be corrupt. This is the line-level adapter — it only finds the
+    field — so ``None`` means the line has no readable line-1 catalog field at
+    all: it does not start with the ``"1 "`` line-1 prefix, is too short to
+    contain the field, carries a non-ASCII byte, or the field is neither
+    spelling.
     """
     if isinstance(line, bytes):
         try:
@@ -382,10 +412,7 @@ def extract_norad_id(line: str | bytes) -> int | None:
             return None
     if len(line) < 7 or not line.startswith("1 "):
         return None
-    field = line[2:7]
-    if not is_ascii_digits(field):
-        return None
-    return int(field)
+    return decode_catalog(line[2:7])
 
 
 def validate_record(line1: str, line2: str) -> list[FieldError]:

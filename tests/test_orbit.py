@@ -4,12 +4,14 @@ The golden fixture is a real Vanguard (catalog 5) track pulled from the corpus;
 its adjacent-pair residuals are asserted to the 0.1 km quantum to lock the
 cross-platform determinism of the residual pipeline."""
 
+import datetime
 import json
 
-from sgp4.api import Satrec
+from sgp4 import __version__ as SGP4_VERSION
+from sgp4.api import SGP4_ERRORS, Satrec
 
-from lintle import CLEANED_DIRNAME, VERIFY_DIRNAME, cli, tle
-from lintle.verify import epoch, orbit, run
+from lintle import CLEANED_DIRNAME, VERIFY_DIRNAME, cli, epoch, tle
+from lintle.verify import orbit, run
 from lintle.verify.records import CleanedRecord, catalog_of
 from lintle.verify.report import VerifyRule
 
@@ -283,6 +285,91 @@ class TestTrackVerdict:
         suspects, pairs = orbit._track_suspects(recs)
         assert pairs == 0 and suspects == []
 
+    def test_blank_admin_fields_match_the_installed_sgp4(self):
+        # The two digit-or-space fields lintle allows and sgp4 historically did
+        # not: the line-1 element-set number (cols 65-68) and the line-2
+        # revolution number (cols 64-68). Through sgp4 2.26 a bare int() made
+        # these raise, and #202 turned on whether tle.py should tighten to
+        # match; sgp4 2.27 instead became permissive and now agrees with us.
+        #
+        # Pinned to the INSTALLED library rather than to either behaviour (same
+        # contract as test_hard_error_table_matches_the_installed_sgp4): assert
+        # only that lintle AGREES with whatever sgp4 does — silently accept what
+        # it accepts, hard-flag what it rejects. A future sgp4 that tightens
+        # again fails here and gets triaged, instead of quietly changing the
+        # suspect census on a corpus run.
+        l1, l2 = TRACK[2]
+        for label, a, b in (
+            ("element-set", fix(l1[:64] + "    " + l1[68:]), l2),
+            ("revolution", l1, fix(l2[:63] + "     " + l2[68:])),
+        ):
+            assert tle.validate_record(a, b) == [], label  # perfect, per our validator
+            try:
+                Satrec.twoline2rv(a, b)
+            except ValueError:
+                sgp4_rejects = True
+            else:
+                sgp4_rejects = False
+            recs = track_records()
+            recs[2] = rec(a, b, idx=2)
+            suspects, _ = orbit._track_suspects(recs)
+            errors = [s for s in suspects if s.rule is VerifyRule.ORBIT_ERROR]
+            if sgp4_rejects:
+                assert len(errors) == 1, label
+                assert errors[0].index == 2 and errors[0].severity == "hard", label
+            else:
+                assert errors == [], (
+                    f"{label}: sgp4 {SGP4_VERSION} parses this record, so lintle "
+                    "must not manufacture a suspect for it"
+                )
+
+    def test_unparseable_elements_are_a_hard_suspect_not_a_crash(self, monkeypatch):
+        # The ValueError -> hard-suspect path itself, independent of WHICH
+        # records any given sgp4 rejects. Faked at the seam, like the init-error
+        # test below, because the set of lintle-perfect-but-sgp4-unparseable
+        # records is a moving target across sgp4 releases (it is empty on 2.27)
+        # — and this catch must keep working whatever ends up in it.
+        def _raise(cls, l1, l2):
+            raise ValueError("TLE format error\n  line does not match")
+
+        monkeypatch.setattr(orbit.Satrec, "twoline2rv", classmethod(_raise))
+        suspects, pairs = orbit._track_suspects(track_records())
+        errors = [s for s in suspects if s.rule is VerifyRule.ORBIT_ERROR]
+        assert pairs == 0
+        assert len(errors) == len(TRACK)
+        assert all(s.severity == "hard" for s in errors)
+        assert "cannot parse" in errors[0].detail
+        assert "\n" not in errors[0].detail  # squashed for the tab-framed spill
+
+    def test_hard_init_error_code_is_convicted(self, monkeypatch):
+        # No lintle-valid TLE can express codes 1-5 directly, so fake the init
+        # error at the seam: every record errors with code 2 -> every record is
+        # a hard ORBIT_ERROR citing the library's own message, and no pair is
+        # measurable.
+        class _Broken:
+            error = 2
+
+        monkeypatch.setattr(
+            orbit.Satrec, "twoline2rv", classmethod(lambda cls, l1, l2: _Broken())
+        )
+        suspects, pairs = orbit._track_suspects(track_records())
+        assert pairs == 0
+        assert len(suspects) == len(TRACK)
+        assert all(
+            s.rule is VerifyRule.ORBIT_ERROR
+            and s.severity == "hard"
+            and "error 2" in s.detail
+            and "nm is less than zero" in s.detail
+            for s in suspects
+        )
+
+    def test_hard_error_table_matches_the_installed_sgp4(self):
+        # Fails loudly if sgp4 adds/removes a code, so a new code is triaged by
+        # a human instead of silently defaulting to soft (or auto-convicting).
+        assert set(SGP4_ERRORS) == {1, 2, 3, 4, 5, 6}
+        expected = set(SGP4_ERRORS) - orbit._SOFT_SGP4_ERRORS
+        assert expected == orbit._HARD_SGP4_ERRORS
+
 
 class TestLeaveOneOut:
     """#1 leave-one-out culprit isolation: a lone interior spike is attributed to
@@ -446,3 +533,75 @@ class TestCLI:
             ["verify", out, "--orbit", "--no-source-diff", "--sensitivity", "strict"]
         )
         assert code == 0
+
+
+# ---------------------------------------------------------------------------
+# #200: orbit.py measures inter-record dt from sgp4's OWN epoch fields
+# (jdsatepoch + jdsatepochF) — a second parse of the same columns, living
+# outside lintle.epoch's single definition by design (the sgp4 wall means
+# lintle.epoch must stay stdlib-only, so the two cannot be merged). The 2026-07-30
+# audit found them in exact agreement, including at the year-boundary rollovers
+# lintle.epoch normalizes. These tests pin that agreement to the INSTALLED sgp4,
+# so a future release that rolls day 366.x or day 0.x differently fails here
+# rather than silently desynchronizing orbit's dt gate from dedup's grouping.
+
+
+def epoch_at(yy: str, day: str) -> str:
+    """Canonical line 1 with its 2-digit year and ``DDD.DDDDDDDD`` day-of-year
+    spliced in and re-checksummed."""
+    return fix(TRACK[0][0][:18] + yy + day + TRACK[0][0][32:])
+
+
+def sgp4_epoch_jd(line1: str, line2: str) -> float:
+    sat = Satrec.twoline2rv(line1, line2)
+    return sat.jdsatepoch + sat.jdsatepochF
+
+
+# JD 2451545.0 == 2000-01-01T12:00Z.
+J2000_JD = 2451545.0
+J2000_DT = datetime.datetime(2000, 1, 1, 12, tzinfo=datetime.UTC)
+
+
+class TestSgp4EpochAgreement:
+    """sgp4's epoch parse vs ``lintle.epoch`` on records ``tle.py`` calls perfect."""
+
+    # (label, yy, day) covering both rollovers, both leap cases, and the 56/57 pivot.
+    EDGES = [
+        ("in-range", "00", "179.78495062"),
+        ("day 366.x non-leap -> next Jan", "01", "366.50000000"),
+        ("day 366.x leap -> in range", "00", "366.50000000"),
+        ("day 366.99999999 non-leap", "03", "366.99999999"),
+        ("day 0.x -> prior Dec", "01", "000.50000000"),
+        ("day 1.0 exactly", "01", "001.00000000"),
+        ("pivot yy=56 -> 2056", "56", "179.78495062"),
+        ("pivot yy=57 -> 1957", "57", "179.78495062"),
+        ("pivot yy=57 + 366.x rollover", "57", "366.50000000"),
+    ]
+
+    # Same instant, two legal spellings — the dt == 0 boundary where orbit's
+    # `0 < dt` gate must agree with dedup's same-epoch grouping.
+    ALIASES = [
+        (("01", "366.50000000"), ("02", "001.50000000")),
+        (("01", "000.50000000"), ("00", "366.50000000")),
+        (("02", "000.25000000"), ("01", "365.25000000")),
+    ]
+
+    def test_instants_agree_on_every_epoch_edge(self):
+        for label, yy, day in self.EDGES:
+            l1 = epoch_at(yy, day)
+            assert tle.validate_record(l1, TRACK[0][1]) == [], label
+            jd = sgp4_epoch_jd(l1, TRACK[0][1])
+            theirs = J2000_DT + datetime.timedelta(days=jd - J2000_JD)
+            drift = abs((theirs - epoch.epoch_dt(l1)).total_seconds())
+            assert drift < 1e-3, f"{label}: sgp4 drifts {drift}s from lintle.epoch"
+
+    def test_equal_instants_are_bit_equal_on_both_sides(self):
+        # lintle.epoch guarantees bit-equal keys for equal instants; sgp4 must
+        # likewise land on one float, or dt would be a hair off zero and the
+        # pair would be measured as ordered instead of recognized as same-epoch.
+        for a, b in self.ALIASES:
+            la, lb = epoch_at(*a), epoch_at(*b)
+            assert tle.validate_record(la, TRACK[0][1]) == []
+            assert tle.validate_record(lb, TRACK[0][1]) == []
+            assert epoch.epoch_key(la) == epoch.epoch_key(lb)
+            assert sgp4_epoch_jd(la, TRACK[0][1]) == sgp4_epoch_jd(lb, TRACK[0][1])

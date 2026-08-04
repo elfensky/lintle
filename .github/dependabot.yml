@@ -1,0 +1,17 @@
+version: 2
+updates:
+  # "uv", not "pip": this project locks with uv, and the pip ecosystem edits
+  # pyproject.toml WITHOUT regenerating uv.lock — which fails CI's
+  # `uv sync --locked` on every dependency PR (it did, on the ruff bump).
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule: { interval: "weekly" }
+    groups:
+      minor-and-patch:
+        update-types: ["minor", "patch"]
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule: { interval: "weekly" }
+    groups:
+      actions:
+        update-types: ["minor", "patch"]

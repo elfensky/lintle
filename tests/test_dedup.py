@@ -5,9 +5,16 @@ list. Cleaned output is immutable; dedup only reads it and writes under
 import json
 from pathlib import Path
 
-from lintle import CLEANED_DIRNAME, DEDUP_DIRNAME, VERIFY_DIRNAME, cli, dedup, tle
+from lintle import (
+    CLEANED_DIRNAME,
+    DEDUP_DIRNAME,
+    VERIFY_DIRNAME,
+    cli,
+    dedup,
+    epoch,
+    tle,
+)
 from lintle.chunking import ChunkedReader
-from lintle.verify import epoch
 from lintle.verify.records import CleanedRecord
 
 # A canonical known-good record (Vanguard 1, NORAD 00005).
@@ -49,6 +56,14 @@ def epoch_l1(catalog: int, day: int) -> str:
     epoch spacing."""
     line = other_catalog(catalog)
     return fix(line[:20] + f"{day:03d}.00000000" + line[32:])
+
+
+def epoch_l1_yy(catalog: int, yy: int, day: str) -> str:
+    """L1 for ``catalog`` at ``yy``/``day`` (a 12-char ``DDD.FFFFFFFF``
+    string), checksum fixed — lets year-boundary tests spell rollover epochs
+    (day 366.x of a non-leap year, day 0.x) exactly."""
+    line = other_catalog(catalog)
+    return fix(line[:18] + f"{yy:02d}" + day + line[32:])
 
 
 def build_tree(tmp_path, cleaned_pairs, *, suspects=None, stem="tle01"):
@@ -128,6 +143,19 @@ class TestCollapse:
         assert g.conflict is True
         assert g.kept is other  # element-set tie -> latest source position kept
 
+    def test_same_instant_across_year_boundary_collapses(self, tmp_path):
+        # 19/365.5 and 20/000.5 spell the SAME instant (2019-12-31T12:00Z):
+        # one group, latest element-set kept — pre-#199 the two spellings got
+        # different keys and the re-issue dedup exists to collapse survived.
+        lo = with_elset(epoch_l1_yy(300, 19, "365.50000000"), 100)
+        hi = with_elset(epoch_l1_yy(300, 20, "000.50000000"), 200)
+        out = tmp_path / "output"
+        out_dir = build_tree(tmp_path, [(lo, L2), (hi, L2)])
+        assert dedup.run(out_dir) == 0
+        assert read_import(out) == f"{hi}\n{L2}\n"
+        s = read_summary(out)
+        assert s["records_written"] == 1 and s["records_dropped"] == 1
+
     def test_refined_reissue_different_orbit_is_benign(self):
         # a NEW element-set with a refined orbit is a benign re-issue, not a clash
         # (#164: dedup must not flag what verify's #158 counts as a census re-issue)
@@ -166,6 +194,85 @@ class TestEndToEnd:
         s = read_summary(out)
         assert s["records_read"] == 2 and s["records_written"] == 1
         assert s["records_dropped"] == 1 and s["conflicts_flagged"] == 0
+
+    def test_alpha5_record_imports_with_its_decoded_catalog(self, tmp_path):
+        # #203: an Alpha-5 id is a real satellite, not corruption. It decodes to
+        # its integer value (T -> 27, so T7530 is 277530) and imports normally.
+        # Before #203 catalog_of returned None for it, the reader mapped that to
+        # the catalog=-1 sentinel, and dedup skipped it as DEDUP-UNUSABLE-RECORD
+        # (which was itself a fix for writing it as the poisoned record 0 of the
+        # import set). The unusable arm remains — for genuinely corrupt lines.
+        from lintle import extract
+
+        alpha5_l1 = fix(L1[:2] + "T7530" + L1[7:])
+        alpha5_l2 = fix(L2[:2] + "T7530" + L2[7:])
+        assert tle.validate_record(alpha5_l1, alpha5_l2) == []  # clean keeps it
+        out = tmp_path / "output"
+        out_dir = build_tree(tmp_path, [(alpha5_l1, alpha5_l2), (L1, L2)])
+        assert dedup.run(out_dir) == 0
+        # Both records are imported, catalog-ascending: 5 before 277530.
+        assert read_import(out) == f"{L1}\n{L2}\n{alpha5_l1}\n{alpha5_l2}\n"
+        assert read_notes(out) == []  # nothing collapsed, nothing unusable
+        s = read_summary(out)
+        assert s["unusable_records"] == 0 and s["records_written"] == 2
+        # The manifest speaks the decoded integer, never the Alpha-5 spelling.
+        manifest = (out / DEDUP_DIRNAME / "manifest.jsonl").read_text("ascii")
+        assert '"norad_id":277530' in manifest
+        assert "T7530" not in manifest
+        # ...and the satellite is extractable end-to-end by that integer.
+        assert extract.find_spans(out_dir, 277530) != []
+
+    def test_alpha5_round_trips_cleaned_to_dedup_to_extract(self, tmp_path):
+        # The full #203 path on a synthetic tree: a cleaned Alpha-5 record
+        # survives dedup and comes back out of `extract` addressed by either
+        # spelling, with the wire bytes untouched.
+        alpha5_l1 = fix(L1[:2] + "E8493" + L1[7:])
+        alpha5_l2 = fix(L2[:2] + "E8493" + L2[7:])
+        out_dir = build_tree(tmp_path, [(alpha5_l1, alpha5_l2), (L1, L2)])
+        assert dedup.run(out_dir) == 0
+        dest = tmp_path / "dest"
+        for spelling in ("E8493", "148493"):
+            assert (
+                cli.main(
+                    ["extract", spelling, "--out-dir", out_dir, "--dest", str(dest)]
+                )
+                == 0
+            )
+            body = (dest / "148493.txt").read_text(encoding="ascii")
+            assert body == f"{alpha5_l1}\n{alpha5_l2}\n"  # verbatim wire bytes
+        meta = json.loads((dest / "148493.json").read_text(encoding="ascii"))
+        assert meta["norad_id"] == 148493  # the sidecar speaks the integer
+
+    def test_bad_epoch_record_is_skipped_not_a_valueerror(self, tmp_path):
+        # records._catalog_and_key tolerates this line ("a finding, not a
+        # crash"); the write seam used to re-parse it unguarded and abort the
+        # whole run with a ValueError from history.epoch_dt.
+        bad = L1[:20] + "XXX.78495062" + L1[32:]
+        out = tmp_path / "output"
+        out_dir = build_tree(tmp_path, [(bad, L2), (L1, L2)])
+        assert dedup.run(out_dir) == 0
+        assert read_import(out) == f"{L1}\n{L2}\n"
+        assert read_summary(out)["unusable_records"] == 1
+
+    def test_non_ascii_record_is_skipped_not_a_unicodeencodeerror(self, tmp_path):
+        # The reader decodes with errors="replace" (stray byte -> U+FFFD); the
+        # writer's strict encode("ascii") used to crash on the same string.
+        out = tmp_path / "output"
+        cdir = Path(build_tree(tmp_path, [(L1, L2)])) / CLEANED_DIRNAME
+        # A distinct epoch (day 180) so the bad record forms its own
+        # (catalog, epoch) group instead of collapsing into L1's.
+        day_mod = L1[:20] + "180.78495062" + L1[32:]
+        bad_l1 = day_mod[:9].encode() + b"\xc3\xa9" + day_mod[11:].encode()  # é
+        (cdir / "tle01.00001.cleaned.txt").write_bytes(
+            bad_l1 + b"\n" + L2.encode() + b"\n" + f"{L1}\n{L2}\n".encode()
+        )
+        out_dir = str(tmp_path / "output")
+        assert dedup.run(out_dir) == 0
+        assert read_import(out) == f"{L1}\n{L2}\n"
+        notes = read_notes(out)
+        assert len(notes) == 1
+        assert "non-ASCII" in notes[0]["detail"]
+        assert read_summary(out)["unusable_records"] == 1
 
     def test_genuine_conflict_kept_latest_and_flagged(self, tmp_path):
         out = tmp_path / "output"
@@ -294,6 +401,34 @@ class TestManifest:
         # byte-determinism: a second run produces identical bytes
         dedup.run(out_dir)
         assert manifest_path.read_text("ascii") == manifest
+
+    def test_year_boundary_span_non_negative(self, tmp_path):
+        # Instants 2019-12-31T12:00Z (spelled 20/000.5) and 2020-01-01T12:00Z
+        # (spelled 19/366.5): the import stream now follows the instants, so
+        # the span is +1.0 day — pre-#199 the raw keys reversed the pair and
+        # shipped span_days: -1.0 with first_epoch > last_epoch.
+        pairs = [
+            (epoch_l1_yy(300, 19, "366.50000000"), L2),
+            (epoch_l1_yy(300, 20, "000.50000000"), L2),
+        ]
+        out_dir = build_tree(tmp_path, pairs)
+        assert dedup.run(out_dir) == 0
+        manifest = Path(out_dir) / DEDUP_DIRNAME / "manifest.jsonl"
+        (row,) = [json.loads(line) for line in manifest.read_text("ascii").splitlines()]
+        assert row["records"] == 2
+        assert row["span_days"] == 1.0
+        assert row["first_epoch"] == "2019-12-31T12:00:00Z"
+        assert row["last_epoch"] == "2020-01-01T12:00:00Z"
+
+    def test_gap_silent_satellites_tally(self, tmp_path):
+        # catalog 100 has 3 records (gap analysis active); catalog 200 has 1
+        # (below MIN_GAP_RECORDS — definitionally gap-silent, tallied).
+        out = tmp_path / "output"
+        pairs = [(epoch_l1(100, d), L2) for d in (1, 2, 3)]
+        pairs.append((epoch_l1(200, 1), L2))
+        out_dir = build_tree(tmp_path, pairs)
+        assert dedup.run(out_dir) == 0
+        assert read_summary(out)["gap_silent_satellites"] == 1
 
 
 class TestFingerprint:

@@ -1,6 +1,6 @@
 [project]
 name = "lintle"
-version = "0.13.6"
+version = "0.14.0"
 description = "Validate and clean Two-Line Element (TLE) satellite-tracking files"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -47,7 +47,7 @@ dev = [
     "pytest>=9.0,<10",
     "pytest-cov>=7.1,<8",
     "pytest-xdist>=3,<4",
-    "ruff>=0.15,<0.16",
+    "ruff>=0.15,<0.17",
 ]
 
 [build-system]
@@ -69,6 +69,12 @@ explicit = true
 target-version = "py314"
 line-length = 88
 src = ["src"]
+# ruff 0.16 began formatting Python code blocks inside Markdown. `docs/` holds
+# dated, explicitly-unmaintained point-in-time records (see CLAUDE.md); their
+# snippets document what the code looked like THEN, so reformatting them
+# rewrites history rather than tidying it. ARCHITECTURE.md, README.md and
+# CONTRIBUTING.md sit at the root and stay in scope.
+extend-exclude = ["docs/"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]

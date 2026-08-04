@@ -1,5 +1,6 @@
 """Tests for lintle.resume — the per-run `clean --resume` checkpoint (issue #56)."""
 
+import json
 import os
 
 import pytest
@@ -412,6 +413,18 @@ class TestVerifyCompletedOutputs:
             self._completed("tle2099.txt", 100), str(out)
         ) == ["tle2099.txt"]
 
+    def test_output_vanishing_between_exists_and_stat_flags_reprocess(
+        self, tmp_path, monkeypatch
+    ):
+        # A file deleted in the window between _locate_output's exists() and
+        # the stat() used to raise OSError out of resume planning — aborting
+        # the run where "missing" means "reprocess that input".
+        ghost = tmp_path / CLEANED_DIRNAME / "tle2099.cleaned.txt"
+        monkeypatch.setattr(resume, "_locate_output", lambda *_a: ghost)
+        assert resume.verify_completed_outputs(
+            self._completed("tle2099.txt", 100), str(tmp_path)
+        ) == ["tle2099.txt"]
+
     def test_locates_output_without_suffix_inference(self, tmp_path):
         # The output dir is found by searching the known output trees, not by
         # inferring it from the filename suffix — so a name that doesn't end in
@@ -512,6 +525,28 @@ class TestArchiveCheckpoint:
 
     def test_noop_when_absent(self, tmp_path):
         assert resume.archive_checkpoint(str(tmp_path), timestamp="x") is None
+
+    def test_same_second_collision_preserves_both_archives(self, tmp_path):
+        # os.replace silently clobbered an archive with the same stamp — the
+        # exact "silently destroys a recoverable interrupted run" this
+        # function exists to prevent. Same stamp must yield distinct files.
+        ck_a = resume.build_checkpoint(
+            inputs={}, completed={}, run_identity={"run": "A"}
+        )
+        resume.write_checkpoint(str(tmp_path), ck_a)
+        first = resume.archive_checkpoint(str(tmp_path), timestamp="20260101T000000Z")
+        ck_b = resume.build_checkpoint(
+            inputs={}, completed={}, run_identity={"run": "B"}
+        )
+        resume.write_checkpoint(str(tmp_path), ck_b)
+        second = resume.archive_checkpoint(str(tmp_path), timestamp="20260101T000000Z")
+        assert first != second
+        assert (tmp_path / first).exists() and (tmp_path / second).exists()
+        a = json.loads((tmp_path / first).read_text())
+        b = json.loads((tmp_path / second).read_text())
+        assert a["run_identity"] != b["run_identity"]  # both contents intact
+        # the -N suffix keeps sorted() chronological within a stamp
+        assert sorted([first, second]) == [first, second]
 
     def test_prunes_old_stale_archives_keeping_newest_3(self, tmp_path):
         # Create 5 stale archives with sortable timestamps — only the newest 3

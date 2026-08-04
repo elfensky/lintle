@@ -22,6 +22,13 @@ def l2(cat: int) -> str:
     return (base + "0" * 69)[:69]
 
 
+def alpha5(pair: tuple[str, str], field: str) -> tuple[str, str]:
+    """A record pair rewritten to an Alpha-5 catalog spelling in cols 3-7 — the
+    5-char wire form the ``{cat:5d}`` helpers above cannot express."""
+    a, b = pair
+    return a[:2] + field + a[7:], b[:2] + field + b[7:]
+
+
 def write_import_tree(tmp_path, records, chunk_records=3):
     """Build a fake dedup import chunk set from (line1, line2) pairs, rolling
     every ``chunk_records`` records like ChunkedWriter would."""
@@ -88,6 +95,19 @@ class TestFindSpans:
         with pytest.raises(extract.ExtractError, match="lintle dedup"):
             extract.find_spans(str(tmp_path), 100)
 
+    def test_missing_interior_chunk_is_an_error_not_a_short_history(self, tmp_path):
+        # Deleting import.00002.txt used to yield exit 0 and a confidently
+        # truncated history claiming the full span with gap_count 0 — the
+        # worst failure mode of the whole set. It must refuse instead.
+        out = write_import_tree(
+            tmp_path,
+            recs(*[(100, 1.0 + i) for i in range(6)]),
+            2,
+        )
+        (out / DEDUP_DIRNAME / f"{IMPORT_STEM}.00002{IMPORT_SUFFIX}").unlink()
+        with pytest.raises(extract.ExtractError, match="missing chunk 00002"):
+            extract.find_spans(str(out), 100)
+
 
 class TestRun:
     def test_writes_txt_and_json(self, tmp_path, capsys):
@@ -110,6 +130,46 @@ class TestRun:
         assert meta["largest_gap_days"] == 7.5
         assert meta["largest_gap_at"] == "2020-01-10T00:00:00Z"
         assert meta["source"]["dedup_records_written"] == 3
+
+    def test_missing_summary_json_degrades_to_null_source(self, tmp_path, capsys):
+        # A pruned tree used to crash each catalog AFTER its txt commit, and
+        # the pair rollback then deleted a prior run's still-good outputs.
+        # summary.json is read once, tolerantly: absent -> null source fields.
+        out = write_import_tree(tmp_path, recs((200, 1.0), (200, 2.5)), 10)
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        assert extract.run(str(out), [200], str(dest)) == 0  # prior good run
+        (out / DEDUP_DIRNAME / "summary.json").unlink()
+        assert extract.run(str(out), [200], str(dest)) == 0
+        assert (dest / "200.txt").is_file()  # prior pair survived the re-run
+        meta = json.loads((dest / "200.json").read_text(encoding="ascii"))
+        assert meta["source"]["dedup_records_written"] is None
+        assert meta["source"]["dedup_schema_version"] is None
+
+    def test_corrupt_summary_json_degrades_to_null_source(self, tmp_path, capsys):
+        out = write_import_tree(tmp_path, recs((200, 1.0), (200, 2.5)), 10)
+        (out / DEDUP_DIRNAME / "summary.json").write_bytes(b"\xc3{not json")
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        assert extract.run(str(out), [200], str(dest)) == 0
+        meta = json.loads((dest / "200.json").read_text(encoding="ascii"))
+        assert meta["source"]["dedup_records_written"] is None
+
+    def test_unusable_record_fails_preflight_before_anything_is_written(
+        self, tmp_path, capsys
+    ):
+        # A corrupt record sorts to record 0 of chunk 1 and used to fail EVERY
+        # per-catalog lookup blaming corruption. Now it is one up-front
+        # preflight error naming the record, with nothing written. (An Alpha-5
+        # id is NOT this case since #203 — it decodes and imports normally.)
+        pairs = recs((100, 1.0), (200, 1.0))
+        bad_l1 = "1 ?????U" + pairs[0][0][8:]  # unreadable catalog in cols 3-7
+        out = write_import_tree(tmp_path, [(bad_l1, pairs[0][1]), pairs[1]], 10)
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        with pytest.raises(extract.ExtractError, match="record 0"):
+            extract.run(str(out), [200], str(dest))
+        assert list(dest.iterdir()) == []  # preflight: nothing written
 
     def test_missing_id_partial_success_exit_2(self, tmp_path, capsys):
         out = write_import_tree(tmp_path, recs((100, 1.0)), 10)
@@ -334,6 +394,40 @@ class TestCli:
         with pytest.raises(SystemExit):
             cli.main(["extract", "ISS", "--out-dir", str(tmp_path)])
 
+    def test_rejects_five_char_non_alpha5_id(self, tmp_path):
+        # Letter-led and 5 chars, but the tail is not digits — corruption, not
+        # an Alpha-5 id. Rejected at the parser, not treated as a satellite.
+        with pytest.raises(SystemExit):
+            cli.main(["extract", "ABCDE", "--out-dir", str(tmp_path)])
+
+    def test_accepts_alpha5_spelling(self, tmp_path, monkeypatch):
+        # #203: `extract E8493` finds the satellite the import set stores under
+        # the Alpha-5 wire spelling, and names its outputs by the DECODED
+        # integer — artifacts speak integers, the CLI accepts both.
+        out = write_import_tree(
+            tmp_path, [alpha5(r, "E8493") for r in recs((0, 1.0), (0, 2.0))], 10
+        )
+        dest = tmp_path / "dest"
+        monkeypatch.chdir(tmp_path)
+        rc = cli.main(["extract", "E8493", "--out-dir", str(out), "--dest", str(dest)])
+        assert rc == 0
+        assert (dest / "148493.txt").exists() and (dest / "148493.json").exists()
+        meta = json.loads((dest / "148493.json").read_text(encoding="ascii"))
+        assert meta["norad_id"] == 148493
+        # Both records came back, verbatim, in the Alpha-5 spelling they were
+        # stored in — extract slices bytes; it never rewrites the wire form.
+        assert (dest / "148493.txt").read_text(encoding="ascii").count("E8493") == 4
+
+    def test_accepts_the_decimal_spelling_of_an_alpha5_id(self, tmp_path, monkeypatch):
+        out = write_import_tree(
+            tmp_path, [alpha5(r, "E8493") for r in recs((0, 1.0))], 10
+        )
+        dest = tmp_path / "dest"
+        monkeypatch.chdir(tmp_path)
+        rc = cli.main(["extract", "148493", "--out-dir", str(out), "--dest", str(dest)])
+        assert rc == 0
+        assert (dest / "148493.txt").exists()
+
 
 class TestAnalyze:
     """_analyze: pure pass-1 history stats — median spacing + reportable gaps."""
@@ -366,6 +460,21 @@ class TestAnalyze:
         assert hs.median_spacing_days is None
         assert hs.gaps == () and hs.gap_count == 0
         assert hs.largest_gap_days == 1.5  # largest gap still tracked
+
+    def test_shrunken_chunk_raises_instead_of_spinning(self, tmp_path):
+        # A chunk truncated between find_spans' stat and the read used to make
+        # fh.read() return b"" forever with `remaining` stuck — an infinite
+        # spin under the status spinner. Both passes must raise instead.
+        import io
+
+        out = write_import_tree(tmp_path, recs((100, 1.0), (100, 2.0), (100, 3.0)), 10)
+        spans = extract.find_spans(str(out), 100)
+        chunk = spans[0][0]
+        chunk.write_bytes(chunk.read_bytes()[: extract.RECORD_BYTES])  # 1 of 3 left
+        with pytest.raises(extract.ExtractError, match="shrank"):
+            extract._analyze(spans)
+        with pytest.raises(extract.ExtractError, match="shrank"):
+            extract._copy_spans(spans, io.BytesIO())
 
     def test_cap_keeps_ten_largest_chronological(self, tmp_path):
         # 12 runs of 3 daily records, 28-day holes between runs: 11 reportable
@@ -477,6 +586,27 @@ class TestSidecarV2:
                 "start": "2020-01-10T00:00:00Z",
             }
         ]
+
+    def test_year_boundary_span_non_negative(self, tmp_path):
+        # The import stream is instant-ordered post-#199: Dec 31 2019 12:00Z
+        # (spelled 20/000.5) precedes Jan 1 2020 12:00Z (spelled 19/366.5),
+        # so the sidecar span is +1.0 — never the pre-fix -1.0.
+        out = write_import_tree(
+            tmp_path,
+            [
+                (l1(100, yy=20, day=0.5), l2(100)),
+                (l1(100, yy=19, day=366.5), l2(100)),
+            ],
+            10,
+        )
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        assert extract.run(str(out), [100], str(dest)) == 0
+        meta = json.loads((dest / "100.json").read_text(encoding="ascii"))
+        assert meta["span_days"] == 1.0
+        assert meta["mean_records_per_day"] == 2.0
+        assert meta["first_epoch"] == "2019-12-31T12:00:00Z"
+        assert meta["last_epoch"] == "2020-01-01T12:00:00Z"
 
 
 class TestQuarantinedIds:
@@ -620,9 +750,9 @@ class TestWarnConfirm:
             events.append(f"status:{message}")
             return _Status()
 
-        def traced_find_spans(out_dir, catalog):
+        def traced_find_spans(out_dir, catalog, chunks=None):
             events.append(f"find_spans:{active_status}")
-            return real_find_spans(out_dir, catalog)
+            return real_find_spans(out_dir, catalog, chunks)
 
         def traced_analyze(spans):
             events.append(f"analyze:{active_status}")

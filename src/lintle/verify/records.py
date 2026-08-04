@@ -9,8 +9,7 @@ import re
 from collections.abc import Iterator
 from pathlib import Path
 
-from lintle import CLEANED_DIRNAME, CLEANED_SUFFIX, chunking, tle
-from lintle.verify import epoch
+from lintle import CLEANED_DIRNAME, CLEANED_SUFFIX, chunking, epoch, tle
 
 # Distinct-stem parse for the chunked layout: <stem>.NNNNN.cleaned.txt. A
 # right-anchored regex on the 5-digit index + literal suffix (not a fixed-length
@@ -36,15 +35,15 @@ class CleanedRecord:
 
 
 def catalog_of(line1: str) -> int | None:
-    """The integer NORAD catalog from line-1 cols 3-7, tolerant of the
-    space-padded form space-track uses for low numbers (``'  836'`` -> 836) that
-    ``tle.extract_norad_id`` — a strict 5-digit contract for the clean path's
-    broken-id output — reports as ``None``. Alpha-5 letter-prefixed ids (catalog
-    >= 100000, absent from this 2004-2020 corpus) stay ``None``."""
+    """The integer NORAD catalog from line-1 cols 3-7 via ``tle.decode_catalog``
+    — tolerant of both the space-padded form space-track uses for low numbers
+    (``'  836'`` -> 836) and the Alpha-5 letter-prefixed form for ids past
+    99,999 (``'E8493'`` -> 148493), each of which ``tle.extract_norad_id`` — a
+    strict 5-digit contract for the clean path's broken-id output — reports as
+    ``None``. Only a genuinely unreadable field stays ``None`` here."""
     if len(line1) < 7 or not line1.startswith("1 "):
         return None
-    field = line1[2:7].strip()
-    return int(field) if tle.is_ascii_digits(field) else None
+    return tle.decode_catalog(line1[2:7])
 
 
 def _catalog_and_key(line1: str) -> tuple[int, float]:

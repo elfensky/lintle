@@ -274,7 +274,6 @@ class TestMain:
 
         class _FakeExecutor:
             def __init__(self, *_args, **_kwargs):
-                self._processes = {}
                 self._f = _RaisingFuture()
 
             def submit(self, fn, *args, **kwargs):
@@ -312,6 +311,36 @@ class TestMain:
 
         assert rc == 2
 
+    def test_report_json_stdout_is_byte_identical_to_report_json_file(
+        self, tmp_path, line1, line2, capsys
+    ):
+        # The twin property end to end, over the two REAL call sites rather than
+        # a restatement of the serialization: what `--report json` prints must be
+        # exactly the bytes `03-report/report.json` holds. Both now route through
+        # report.render_run_json; this is what would catch them drifting apart.
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "tle2099.txt").write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
+        out = tmp_path / "out"
+        assert (
+            cli.main(
+                [
+                    "clean",
+                    str(src),
+                    "--out-dir",
+                    str(out),
+                    "--jobs",
+                    "1",
+                    "--report",
+                    "json",
+                ]
+            )
+            == 0
+        )
+        stdout = capsys.readouterr().out
+        on_disk = (out / REPORT_DIRNAME / "report.json").read_text(encoding="utf-8")
+        assert stdout == on_disk
+
     def test_all_files_fail_report_json_emits_valid_envelope_not_null(
         self, tmp_path, line1, line2, monkeypatch, capsys
     ):
@@ -329,7 +358,6 @@ class TestMain:
 
         class _FakeExecutor:
             def __init__(self, *_args, **_kwargs):
-                self._processes = {}
                 self._f = _RaisingFuture()
 
             def submit(self, fn, *args, **kwargs):
@@ -552,10 +580,13 @@ class TestMain:
 
         class _FakeExecutor:
             def __init__(self, *_args, **_kwargs):
-                self._processes = {}  # _terminate_workers iterates this
+                self.terminated = False
 
             def submit(self, *_args, **_kwargs):
                 return _NoopFuture()
+
+            def terminate_workers(self):  # the KI path stops the pool with this
+                self.terminated = True
 
             def shutdown(self, **_kwargs):
                 pass
@@ -934,7 +965,6 @@ class TestFailedFilesInEnvelope:
 
         class _FakeExecutor:
             def __init__(self, *_args, **_kwargs):
-                self._processes = {}
                 self._f = _RaisingFuture()
 
             def submit(self, fn, *args, **kwargs):
@@ -1018,7 +1048,6 @@ class TestFailedFilesInEnvelope:
 
         class _FakeExecutor:
             def __init__(self, *_a, **_k):
-                self._processes = {}
                 self._f = _RaisingFuture()
 
             def submit(self, *a, **k):
@@ -1116,27 +1145,74 @@ class TestCancelBackstop:
 
     def test_verify_interrupt_returns_130(self, tmp_path, line1, line2, monkeypatch):
         out = self._cleaned_out_dir(tmp_path, line1, line2)
-        from lintle import verify
+        from lintle.verify import scan
 
         def _interrupt(*_args, **_kwargs):
             raise KeyboardInterrupt
 
-        monkeypatch.setattr(verify.records, "cleaned_stems", _interrupt)
+        # The scan driver is the shared entry point both consumers open with,
+        # so one patch site interrupts either of them at the same moment.
+        monkeypatch.setattr(scan, "cleaned_stems_or_error", _interrupt)
         assert cli.main(["verify", str(out), "--no-source-diff"]) == 130
 
     def test_dedup_interrupt_releases_the_out_dir_lock(
         self, tmp_path, line1, line2, monkeypatch
     ):
-        from lintle import dedup, fsutil
+        from lintle import fsutil
+        from lintle.verify import scan
 
         out = self._cleaned_out_dir(tmp_path, line1, line2)
 
         def _interrupt(*_args, **_kwargs):
             raise KeyboardInterrupt
 
-        monkeypatch.setattr(dedup.records, "cleaned_stems", _interrupt)
+        monkeypatch.setattr(scan, "cleaned_stems_or_error", _interrupt)
         assert cli.main(["dedup", str(out)]) == 130
         # The lock is advisory-flock held for the whole consumer run; a cancel
         # that leaked it would wedge every later command on this out-dir.
         with fsutil.out_dir_lock(str(out)):
             pass
+
+
+class TestConfigPathPrecedence:
+    """``_apply_config_paths``: explicit CLI arg > stored config > built-in
+    default, per its own docstring. It had three different spellings of that
+    rule across the commands, and they disagreed."""
+
+    CONFIG = {"output": "/from/config", "source": "/src/from/config"}
+
+    def _resolved(self, argv, config=None):
+        args = cli.build_parser().parse_args(argv)
+        cli._apply_config_paths(args, argv, self.CONFIG if config is None else config)
+        return args
+
+    def test_explicit_path_beats_config(self):
+        for cmd in ("verify", "report", "dedup"):
+            assert self._resolved([cmd, "/explicit"]).out_dir == "/explicit", cmd
+
+    def test_config_fills_an_omitted_path(self):
+        for cmd in ("verify", "report", "dedup"):
+            assert self._resolved([cmd]).out_dir == "/from/config", cmd
+
+    def test_default_fills_when_there_is_no_config(self):
+        for cmd in ("verify", "report", "dedup"):
+            assert self._resolved([cmd], config={}).out_dir == cli._DEFAULT_OUTPUT, cmd
+
+    def test_explicit_empty_path_is_still_explicit(self):
+        # The bug the `or` chain hid: "" is falsy, so an explicitly-given empty
+        # out-dir was silently REPLACED by the stored config — the one thing the
+        # docstring promises never happens. A script whose $OUT came out empty
+        # would quietly operate on the configured corpus tree instead of failing.
+        # `extract` (which tests for the flag, not for truthiness) always got
+        # this right; the other three now agree with it.
+        for cmd in ("verify", "report", "dedup"):
+            assert self._resolved([cmd, ""]).out_dir == "", cmd
+        assert self._resolved(["extract", "5", "--out-dir", ""]).out_dir == ""
+
+    def test_explicit_empty_source_is_still_explicit(self):
+        assert self._resolved(["verify", "/out", "--source", ""]).source == ""
+
+    def test_verify_source_falls_back_like_out_dir(self):
+        args = self._resolved(["verify"])
+        assert args.source == "/src/from/config"
+        assert self._resolved(["verify"], config={}).source == cli._DEFAULT_SOURCE
