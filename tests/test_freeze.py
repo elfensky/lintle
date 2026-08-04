@@ -47,7 +47,9 @@ def _canonical(text: str, out_dir: str, src_dir: str) -> str:
     text = re.sub(r'"records_per_sec": [0-9.e-]+', '"records_per_sec": <RATE>', text)
     text = re.sub(r'"tool_version": "[^"]*"', '"tool_version": "<VER>"', text)
     text = re.sub(r'"python_version": "[^"]*"', '"python_version": "<PY>"', text)
-    return re.sub(r"lintle \d+\.\d+\.\d+\S*", "lintle <VER>", text)
+    # `lintle 0.14.0` and the root README's markdown-bolded `**lintle** 0.14.0`.
+    # A release bump is as run-specific as a timestamp: it must not move the freeze.
+    return re.sub(r"lintle(\*{0,2}) \d+\.\d+\.\d+[\w.+-]*", r"lintle\1 <VER>", text)
 
 
 def _fingerprint(out: Path, src: Path) -> dict[str, str]:

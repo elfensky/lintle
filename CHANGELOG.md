@@ -4,16 +4,122 @@ All notable changes to this project are documented in this file. The format is b
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.14.0] - 2026-08-04
+
+### Added
+
+- **Alpha-5 catalog ids are decoded, not skipped** (#203). The SATCAT passed 99,999 in 2026
+  and new ids use the Alpha-5 wire form — a letter in column 3 encoding the leading 10–33,
+  with `I` and `O` omitted so it can never be read as `1` or `0` (`E8493` = 148493, up to
+  `Z9999` = 339999). `tle.decode_catalog` now reads both spellings and is the one reader of
+  the cols 3–7 field; `verify.records.catalog_of` routes through it, so such records get a
+  real catalog instead of the `-1` sentinel and `dedup` imports them like any other satellite
+  rather than skipping them as `DEDUP-UNUSABLE-RECORD` (that arm remains, for genuinely
+  corrupt lines). `lintle extract` accepts either spelling — `extract E8493` and
+  `extract 148493` name the same satellite — and every artifact keeps speaking the decoded
+  integer (`manifest.jsonl`'s `norad_id`, the `<id>.json` sidecar, the `<id>.txt` filename);
+  exported TLE bytes stay verbatim. The decode table is pinned to space-track's own
+  documented vectors, and `sgp4.io`'s `from_alpha5` stays out of the clean path.
+  The 2004–2025 corpus contains zero Alpha-5 records, so this is future-proofing with no
+  effect on current output. (`tle.extract_norad_id` was left a strict 5-digit reader here and
+  routed through `decode_catalog` in #216 — see *An Alpha-5 satellite's quarantines are
+  reported* below.)
+
+- **End-to-end output freeze test** (#204 D). A new `tests/test_freeze.py` runs
+  `clean → verify → dedup → extract` and pins a sha256 per artifact (23 files), so a refactor
+  that moves any output byte fails loudly and names the file. Regenerate an intended change
+  with `LINTLE_FREEZE_UPDATE=1 uv run pytest tests/test_freeze.py -n0`.
 
 ### Changed
 
-- **Repo conformance sweep.** Added `dependabot.yml` (pip + github-actions, minor/patch
-  grouped) and a version-bump gate workflow (advisory, PR-triggered). `AGENTS.md` is now the real
-  agent file with `CLAUDE.md` symlinked to it; `graphify-out/` is generated locally and
-  git-ignored. Dependabot security updates and GitHub-native secret scanning + push protection
-  enabled repo-side (no third-party gitleaks). No version bump — these notes accumulate under
-  `[Unreleased]` until the next release cut.
+- `dedup` and `verify` artifact `schema_version` bumped `"1"` → `"2"`: row shapes are
+  near-identical, but epoch keys are sort keys and group identities, and their meaning
+  changes at year boundaries — v1 and v2 artifacts from the same `01-cleaned/` are not
+  byte-comparable (`import.*` order, `notes.*` keys, `suspects.*` order, histogram buckets,
+  orbit `pairs_measured`). `01-cleaned/*` and the resume checkpoint are unaffected.
+
+- `dedup`'s `summary.json` gains `gap_silent_satellites` — satellites with fewer than
+  `history.MIN_GAP_RECORDS` (3) records, for which gap analysis is definitionally silent
+  (one delta has no typical spacing); the per-row signal remains `records` +
+  `median_spacing_days: null`.
+
+- **The two CI workflows were fixed after their own runs failed.** The version-bump gate fired
+  on every PR to `develop` touching `src/**`, demanding the version change that
+  CONTRIBUTING § Versioning explicitly forbids on feature merges — so it failed every feature and
+  refactor PR by design. It now fires only on PRs to `main`, where releases land and a bump is
+  genuinely expected. And Dependabot asked for the `pip` ecosystem, which edits `pyproject.toml`
+  without regenerating `uv.lock`, failing CI's `uv sync --locked` on every dependency PR; it now
+  uses the `uv` ecosystem, which updates the lockfile alongside the manifest.
+
+- **`docs/` is excluded from `ruff format`.** ruff 0.16 began formatting Python code blocks
+  inside Markdown, which rewrote snippets in the dated, explicitly-unmaintained plan and spec
+  records under `docs/superpowers/archive/`. Those snippets document what the code looked like
+  *then*; reformatting them rewrites history. With the exclude, the 0.15 → 0.16 upgrade is a
+  no-op on this repo. `ARCHITECTURE.md`, `README.md` and `CONTRIBUTING.md` are at the root and
+  stay in scope.
+
+- **One external sorter, two adapters** (#204 B). `verify.report.SuspectSink` re-implemented
+  `grouping.ExternalSorter` byte-for-byte modulo renaming; the sorter is now parameterised by
+  `key`/`encode`/`decode` and the sink delegates, keeping only its tally and its render.
+  `grouping._key` is promoted to the public `record_key` — the one definition of a record's
+  `(catalog, epoch_key)` group identity — deleting the two byte-identical copies in
+  `dedup._group_key` and `checks.find_conflicts`. Every drain is now wrapped in
+  `contextlib.closing`, fixing a latent cleanup deferral all three call sites inherited: an
+  exception mid-drain used to leave the sorter's spilled temp runs on disk until the abandoned
+  generator was collected. No artifact bytes change; the tie-stability contract equal keys
+  depend on (add order preserved across a spill boundary) is now pinned by a test.
+
+- **One cleaned-scan driver** (#204 C). `verify` and `dedup` opened with a byte-identical
+  block — the same "no cleaned output" error, fingerprint line, `UnitTable` construction,
+  50k-throttled per-stem loop, and finish/totals — differing only in the per-record body and
+  two tally columns. `verify/scan.py` now owns it, as a context manager that keeps the table
+  live *after* the record loop (both callers do their real work there). Folded in: `dedup` no
+  longer stat-walks `01-cleaned` **twice** per run — the fingerprint is computed once and
+  handed back, which also closes a window where a tree changing between the two walks stored a
+  fingerprint that never matched what was read; `RECORD_BYTES` collapses from three definitions
+  to one; both progress wrappers are deleted (`verify`'s clamp was dead — `cli_progress.bar`
+  already clamps — and `dedup`'s empty-size branch was unreachable); and
+  `fsutil.write_step_readme` replaces five call sites in four shapes. No output bytes change.
+
+- **One read-side JSON seam, and the two document classes named** (#204 D). Six hand-rolled
+  tolerant readers had six failure policies. `fsutil` now owns one: `JsonReadError` /
+  `parse_json_object` / `read_json` / `read_json_or_none` — `read_json` lets `OSError` through
+  (absent and corrupt carry different advice), `read_json_or_none` collapses both to `None`.
+  `extract`'s two readers were 1:1 reimplementations and are now one line each; `config`,
+  `diff`'s per-line reader, and the two NDJSON readers stay bespoke, deliberately. On the write
+  side, `fsutil.json_document` names the house pretty-doc (indent 2, sorted keys, ASCII-escaped)
+  behind `dedup`'s and `verify`'s `summary.json` and `extract`'s sidecar, and
+  `report.render_run_json` names the run envelope (indent 2, insertion order) behind both the
+  persisted `report.json` and `--report json`'s stdout — making their byte-twin property
+  structural. The compact record-stream writers are deliberately untouched: their differing
+  flags are load-bearing. No output bytes change.
+
+- **One `_LiveTable` base for both live tables** (#204 G). `ProgressDisplay` and `UnitTable`
+  kept seven members side by side plus a duplicated `Live` construction, refresh, windowing
+  call, and heartbeat; the base owns all of it and subclasses supply only their own `_table()`.
+  `render_roster` now goes through `summary.results_table` instead of hand-building the same
+  chrome. The two copies had already drifted on *where* they locked — unifying surfaced a
+  deadlock (`threading.Lock` is not reentrant, so a refresh that locks before calling a
+  `_table()` that also locks hangs on the first frame). The convention is now explicit —
+  `_table()` locks, `_refresh()` does not — and pinned by a test using a lock that raises on a
+  nested acquire, so a regression fails in a second rather than hanging the suite. No output
+  change.
+
+- **Smaller #204 cleanups.** `report.jsonl`'s stream naming moves to `lintle/__init__.py`
+  (`REPORT_JSONL_{STEM,SUFFIX,NAME}`) so the writer, the reader, and the fresh-run scrub list
+  stop re-encoding it; the `OUT-DIR` positional, declared verbatim three times, becomes
+  `_add_out_dir_positional`; `extract` builds its chunk index once per run instead of re-globbing
+  and re-stat'ing per catalog (measured: 800 → 0 `stat()` calls over 10 chunks × 40 ids, the
+  shape of the documented `jq | shuf | xargs lintle extract` workflow); `config.py` pins
+  `newline="\n"` like every other text writer; the default job count reads
+  `os.process_cpu_count()` so CPU affinity is honoured on Linux; and `extract`'s local `summary`
+  no longer shadows the imported module.
+
+- **Repo conformance sweep.** Added `dependabot.yml` and a version-bump gate workflow (both
+  corrected below), `AGENTS.md` is now the real agent file with `CLAUDE.md` symlinked to it, and
+  `graphify-out/` is generated locally and git-ignored. Dependabot security updates and
+  GitHub-native secret scanning + push protection are enabled repo-side (no third-party
+  gitleaks).
 
 ### Fixed
 
@@ -38,54 +144,6 @@ All notable changes to this project are documented in this file. The format is b
   2026-07-30), so that half is pure future-proofing and the end-to-end freeze passes unchanged.
   The space-padded half is not: a re-run over the real corpus may list ids the old reader
   dropped, which is the correct answer arriving late, not a regression.
-- **`verify --orbit` survives records sgp4 cannot parse.** sgp4's parser is stricter than
-  `tle.py` in two digit-or-space fields (line-1 element-set number, line-2 revolution number
-  — both bare `int()` for sgp4), so a lintle-perfect record with a blank field crashed the
-  whole pass with an anonymous `invalid literal for int()` and exit 2. The `ValueError` is now
-  caught per record and emitted as a hard `VRFY-ORBIT-ERROR` suspect naming the file, index,
-  and catalog. Init-error details now cite sgp4's own `SGP4_ERRORS` message alongside the
-  code, and a test pins the hard/soft code tables to the installed library's registry.
-- **A gapped chunk set is refused, not silently read around.** `ChunkedReader` never checked
-  that chunk indices run `1..N`, so a deleted interior chunk read as a shorter-but-whole
-  stream: `extract` exported confidently truncated histories claiming the full span with
-  `gap_count: 0`, `iter_file` renumbered record indices (desyncing the `(src_file, index)`
-  addresses `suspects.jsonl` uses, so `dedup` excluded the wrong records), and `diff`
-  undercounted findings. Read consumers now assert contiguity (`complete_chunk_paths`,
-  `ChunkSetError` naming the first missing index); scrub paths stay gap-tolerant.
-- **`dedup` skips unusable records as findings instead of crashing or poisoning.** A
-  legitimate checksum-valid Alpha-5 id (accepted by the validator) was written as the
-  `catalog=-1` first record of the import set — failing every later `lintle extract` with a
-  bogus "corrupted set" error — and an unparseable epoch or a non-ASCII byte crashed the run
-  outright. Such groups now produce one `DEDUP-UNUSABLE-RECORD` note in `notes.*.jsonl`, an
-  `unusable_records` tally in `summary.json`, and a verdict mention — telemetry, never an
-  exit-code change.
-- **`extract` preflights its preconditions and bounds its reads.** `05-dedup/summary.json`
-  was re-read unguarded once per written catalog *after* the txt commit — a pruned or corrupt
-  tree crashed each extraction post-commit, and the pair rollback then deleted a prior run's
-  still-good outputs. It is now read once per run, tolerantly (absent/corrupt → null `source`
-  fields). A preflight probe of each chunk's boundary catalogs turns one unusable record —
-  which sorts first and used to fail *every* per-catalog lookup — into a single up-front
-  error naming the chunk and record. Both span-copy loops now raise if a chunk shrinks
-  mid-read instead of spinning forever on a zero-length read.
-- **Short terminals no longer lose the results table.** At a height at or below the table
-  chrome (an 8-line tmux split), the windowing guard inverted and handed rich an uncroppable
-  full-length live region — cropped from the top, active row never visible — while leaving
-  `windowed` false, which also suppressed the complete-table reprint on exit. The window now
-  clamps to one row and the full table always prints.
-- **Ctrl-C teardown uses the public pool API.** The interrupt branch reached into the private
-  `ProcessPoolExecutor._processes` (which becomes `None` after shutdown — the fallback
-  guarded a rename, not the documented value) and then called `shutdown` separately. Python
-  3.14's public `terminate_workers()` replaces both calls with the closed/exited races
-  guarded; the hand-rolled helper and its fallback tests are deleted.
-- **Resume archives never clobber; planning never aborts on a stat race.** Two checkpoint
-  archives within the same second silently overwrote each other via `os.replace` — destroying
-  exactly the "recoverable interrupted run" the archive exists to preserve; archiving now
-  uses `os.link` with a `-N` suffix on collision. And an output file vanishing between
-  `exists()` and `stat()` aborted resume planning where the contract says "reprocess that
-  input" — the race now takes the reprocess branch.
-- **The live table's zero-denominator dash is ASCII-safe.** `cli_progress._percent`
-  hard-coded an em dash; ASCII-only consoles now get the `-` fallback through the same
-  `summary.can_encode` decision every results table makes (the #97 rule).
 
 - **One epoch definition** (#199): a record's moment in time was defined three times
   (`verify/epoch.py`'s key, `history.py`'s datetime, an inline histogram copy) and the
@@ -97,42 +155,11 @@ All notable changes to this project are documented in this file. The format is b
   spelled across a year boundary; `manifest.jsonl` / extract-sidecar spans are never negative
   (`first_epoch <= last_epoch`); verify's `epoch_distribution` bins rollovers into the January
   they belong to; negative deltas no longer suppress real gaps. `verify/epoch.py` is deleted.
+
 - **n=3 gap dead zone**: with exactly 2 deltas, the gap threshold (10× the interpolated
   median) was algebraically unreachable — a 3-record history with a 274-year hole reported
   `gap_count: 0`. The threshold now uses `statistics.median_low`; the *reported*
   `median_spacing_days` is unchanged.
-
-### Added
-
-- **Alpha-5 catalog ids are decoded, not skipped** (#203). The SATCAT passed 99,999 in 2026
-  and new ids use the Alpha-5 wire form — a letter in column 3 encoding the leading 10–33,
-  with `I` and `O` omitted so it can never be read as `1` or `0` (`E8493` = 148493, up to
-  `Z9999` = 339999). `tle.decode_catalog` now reads both spellings and is the one reader of
-  the cols 3–7 field; `verify.records.catalog_of` routes through it, so such records get a
-  real catalog instead of the `-1` sentinel and `dedup` imports them like any other satellite
-  rather than skipping them as `DEDUP-UNUSABLE-RECORD` (that arm remains, for genuinely
-  corrupt lines). `lintle extract` accepts either spelling — `extract E8493` and
-  `extract 148493` name the same satellite — and every artifact keeps speaking the decoded
-  integer (`manifest.jsonl`'s `norad_id`, the `<id>.json` sidecar, the `<id>.txt` filename);
-  exported TLE bytes stay verbatim. The decode table is pinned to space-track's own
-  documented vectors, and `sgp4.io`'s `from_alpha5` stays out of the clean path.
-  The 2004–2025 corpus contains zero Alpha-5 records, so this is future-proofing with no
-  effect on current output. (`tle.extract_norad_id` was left a strict 5-digit reader here and
-  routed through `decode_catalog` in #216 — see *An Alpha-5 satellite's quarantines are
-  reported* below.)
-
-### Fixed
-
-- **`sgp4` 2.27 accepts the two fields it used to reject; lintle now tracks the installed
-  library rather than one version's behaviour.** Through 2.26, sgp4 read the line-1 element-set
-  number and line-2 revolution number with a bare `int()` and raised on the blank/interior-space
-  forms `tle.py` accepts — the divergence #202 was about. 2.27 parses both, so that class of
-  `VRFY-ORBIT-ERROR` is empty on current sgp4. The two tests pinning the old behaviour now assert
-  only that lintle *agrees* with whichever sgp4 is installed (silently accept what it accepts,
-  hard-flag what it rejects), verified against both ends of the supported range, and the
-  `ValueError` → hard-suspect path is covered at the seam so it stays tested whatever a future
-  release rejects. This vindicates #202's decision to keep `tle.py` permissive: had it been
-  tightened, lintle would now be stricter than the reference implementation it defers to.
 
 - **An explicitly-given empty path is now treated as explicit** (#204). `_apply_config_paths`
   documents "explicit CLI arg > stored config > built-in default", but `verify`/`report`/`dedup`
@@ -143,86 +170,69 @@ All notable changes to this project are documented in this file. The format is b
   now test `is None` (genuinely omitted) through one helper. `extract`, which tested for the flag
   rather than truthiness, was always correct. The function previously had no tests; it has six.
 
-### Changed
+- **`verify --orbit` survives records sgp4 cannot parse — and now tracks whichever sgp4 is
+  installed.** Through sgp4 2.26 its parser was stricter than `tle.py` in two digit-or-space
+  fields (line-1 element-set number, line-2 revolution number — both bare `int()` for sgp4), so
+  a lintle-perfect record with a blank field crashed the whole pass with an anonymous
+  `invalid literal for int()` and exit 2. The `ValueError` is now caught per record and emitted
+  as a hard `VRFY-ORBIT-ERROR` suspect naming the file, index, and catalog; init-error details
+  cite sgp4's own `SGP4_ERRORS` message alongside the code, and a test pins the hard/soft code
+  tables to the installed library's registry.
+  **sgp4 2.27 then closed the divergence from its own side** — it parses both fields, so that
+  class of `VRFY-ORBIT-ERROR` is empty on current sgp4. The tests that pinned the old behaviour
+  now assert only that lintle *agrees* with whichever sgp4 is installed (silently accept what it
+  accepts, hard-flag what it rejects), verified against both ends of the supported range, with
+  the `ValueError` → hard-suspect path covered at the seam so it stays tested whatever a future
+  release rejects. This vindicates #202's decision to keep `tle.py` permissive: had it been
+  tightened, lintle would now be stricter than the reference implementation it defers to.
 
-- **`docs/` is excluded from `ruff format`.** ruff 0.16 began formatting Python code blocks
-  inside Markdown, which rewrote snippets in the dated, explicitly-unmaintained plan and spec
-  records under `docs/superpowers/archive/`. Those snippets document what the code looked like
-  *then*; reformatting them rewrites history. With the exclude, the 0.15 → 0.16 upgrade is a
-  no-op on this repo. `ARCHITECTURE.md`, `README.md` and `CONTRIBUTING.md` are at the root and
-  stay in scope.
+- **A gapped chunk set is refused, not silently read around.** `ChunkedReader` never checked
+  that chunk indices run `1..N`, so a deleted interior chunk read as a shorter-but-whole
+  stream: `extract` exported confidently truncated histories claiming the full span with
+  `gap_count: 0`, `iter_file` renumbered record indices (desyncing the `(src_file, index)`
+  addresses `suspects.jsonl` uses, so `dedup` excluded the wrong records), and `diff`
+  undercounted findings. Read consumers now assert contiguity (`complete_chunk_paths`,
+  `ChunkSetError` naming the first missing index); scrub paths stay gap-tolerant.
 
-- **Smaller #204 cleanups.** `report.jsonl`'s stream naming moves to `lintle/__init__.py`
-  (`REPORT_JSONL_{STEM,SUFFIX,NAME}`) so the writer, the reader, and the fresh-run scrub list
-  stop re-encoding it; the `OUT-DIR` positional, declared verbatim three times, becomes
-  `_add_out_dir_positional`; `extract` builds its chunk index once per run instead of re-globbing
-  and re-stat'ing per catalog (measured: 800 → 0 `stat()` calls over 10 chunks × 40 ids, the
-  shape of the documented `jq | shuf | xargs lintle extract` workflow); `config.py` pins
-  `newline="\n"` like every other text writer; the default job count reads
-  `os.process_cpu_count()` so CPU affinity is honoured on Linux; and `extract`'s local `summary`
-  no longer shadows the imported module.
+- **`dedup` skips unusable records as findings instead of crashing or poisoning.** A
+  legitimate checksum-valid Alpha-5 id (accepted by the validator) was written as the
+  `catalog=-1` first record of the import set — failing every later `lintle extract` with a
+  bogus "corrupted set" error — and an unparseable epoch or a non-ASCII byte crashed the run
+  outright. Such groups now produce one `DEDUP-UNUSABLE-RECORD` note in `notes.*.jsonl`, an
+  `unusable_records` tally in `summary.json`, and a verdict mention — telemetry, never an
+  exit-code change.
 
-- **One `_LiveTable` base for both live tables** (#204 G). `ProgressDisplay` and `UnitTable`
-  kept seven members side by side plus a duplicated `Live` construction, refresh, windowing
-  call, and heartbeat; the base owns all of it and subclasses supply only their own `_table()`.
-  `render_roster` now goes through `summary.results_table` instead of hand-building the same
-  chrome. The two copies had already drifted on *where* they locked — unifying surfaced a
-  deadlock (`threading.Lock` is not reentrant, so a refresh that locks before calling a
-  `_table()` that also locks hangs on the first frame). The convention is now explicit —
-  `_table()` locks, `_refresh()` does not — and pinned by a test using a lock that raises on a
-  nested acquire, so a regression fails in a second rather than hanging the suite. No output
-  change.
+- **`extract` preflights its preconditions and bounds its reads.** `05-dedup/summary.json`
+  was re-read unguarded once per written catalog *after* the txt commit — a pruned or corrupt
+  tree crashed each extraction post-commit, and the pair rollback then deleted a prior run's
+  still-good outputs. It is now read once per run, tolerantly (absent/corrupt → null `source`
+  fields). A preflight probe of each chunk's boundary catalogs turns one unusable record —
+  which sorts first and used to fail *every* per-catalog lookup — into a single up-front
+  error naming the chunk and record. Both span-copy loops now raise if a chunk shrinks
+  mid-read instead of spinning forever on a zero-length read.
 
-- **One read-side JSON seam, and the two document classes named** (#204 D). Six hand-rolled
-  tolerant readers had six failure policies. `fsutil` now owns one: `JsonReadError` /
-  `parse_json_object` / `read_json` / `read_json_or_none` — `read_json` lets `OSError` through
-  (absent and corrupt carry different advice), `read_json_or_none` collapses both to `None`.
-  `extract`'s two readers were 1:1 reimplementations and are now one line each; `config`,
-  `diff`'s per-line reader, and the two NDJSON readers stay bespoke, deliberately. On the write
-  side, `fsutil.json_document` names the house pretty-doc (indent 2, sorted keys, ASCII-escaped)
-  behind `dedup`'s and `verify`'s `summary.json` and `extract`'s sidecar, and
-  `report.render_run_json` names the run envelope (indent 2, insertion order) behind both the
-  persisted `report.json` and `--report json`'s stdout — making their byte-twin property
-  structural. The compact record-stream writers are deliberately untouched: their differing
-  flags are load-bearing. No output bytes change.
+- **Short terminals no longer lose the results table.** At a height at or below the table
+  chrome (an 8-line tmux split), the windowing guard inverted and handed rich an uncroppable
+  full-length live region — cropped from the top, active row never visible — while leaving
+  `windowed` false, which also suppressed the complete-table reprint on exit. The window now
+  clamps to one row and the full table always prints.
 
-- **End-to-end output freeze test** (#204 D). A new `tests/test_freeze.py` runs
-  `clean → verify → dedup → extract` and pins a sha256 per artifact (23 files), so a refactor
-  that moves any output byte fails loudly and names the file. Regenerate an intended change
-  with `LINTLE_FREEZE_UPDATE=1 uv run pytest tests/test_freeze.py -n0`.
+- **Ctrl-C teardown uses the public pool API.** The interrupt branch reached into the private
+  `ProcessPoolExecutor._processes` (which becomes `None` after shutdown — the fallback
+  guarded a rename, not the documented value) and then called `shutdown` separately. Python
+  3.14's public `terminate_workers()` replaces both calls with the closed/exited races
+  guarded; the hand-rolled helper and its fallback tests are deleted.
 
-- **One cleaned-scan driver** (#204 C). `verify` and `dedup` opened with a byte-identical
-  block — the same "no cleaned output" error, fingerprint line, `UnitTable` construction,
-  50k-throttled per-stem loop, and finish/totals — differing only in the per-record body and
-  two tally columns. `verify/scan.py` now owns it, as a context manager that keeps the table
-  live *after* the record loop (both callers do their real work there). Folded in: `dedup` no
-  longer stat-walks `01-cleaned` **twice** per run — the fingerprint is computed once and
-  handed back, which also closes a window where a tree changing between the two walks stored a
-  fingerprint that never matched what was read; `RECORD_BYTES` collapses from three definitions
-  to one; both progress wrappers are deleted (`verify`'s clamp was dead — `cli_progress.bar`
-  already clamps — and `dedup`'s empty-size branch was unreachable); and
-  `fsutil.write_step_readme` replaces five call sites in four shapes. No output bytes change.
+- **Resume archives never clobber; planning never aborts on a stat race.** Two checkpoint
+  archives within the same second silently overwrote each other via `os.replace` — destroying
+  exactly the "recoverable interrupted run" the archive exists to preserve; archiving now
+  uses `os.link` with a `-N` suffix on collision. And an output file vanishing between
+  `exists()` and `stat()` aborted resume planning where the contract says "reprocess that
+  input" — the race now takes the reprocess branch.
 
-- **One external sorter, two adapters** (#204 B). `verify.report.SuspectSink` re-implemented
-  `grouping.ExternalSorter` byte-for-byte modulo renaming; the sorter is now parameterised by
-  `key`/`encode`/`decode` and the sink delegates, keeping only its tally and its render.
-  `grouping._key` is promoted to the public `record_key` — the one definition of a record's
-  `(catalog, epoch_key)` group identity — deleting the two byte-identical copies in
-  `dedup._group_key` and `checks.find_conflicts`. Every drain is now wrapped in
-  `contextlib.closing`, fixing a latent cleanup deferral all three call sites inherited: an
-  exception mid-drain used to leave the sorter's spilled temp runs on disk until the abandoned
-  generator was collected. No artifact bytes change; the tie-stability contract equal keys
-  depend on (add order preserved across a spill boundary) is now pinned by a test.
-
-- `dedup` and `verify` artifact `schema_version` bumped `"1"` → `"2"`: row shapes are
-  near-identical, but epoch keys are sort keys and group identities, and their meaning
-  changes at year boundaries — v1 and v2 artifacts from the same `01-cleaned/` are not
-  byte-comparable (`import.*` order, `notes.*` keys, `suspects.*` order, histogram buckets,
-  orbit `pairs_measured`). `01-cleaned/*` and the resume checkpoint are unaffected.
-- `dedup`'s `summary.json` gains `gap_silent_satellites` — satellites with fewer than
-  `history.MIN_GAP_RECORDS` (3) records, for which gap analysis is definitionally silent
-  (one delta has no typical spacing); the per-row signal remains `records` +
-  `median_spacing_days: null`.
+- **The live table's zero-denominator dash is ASCII-safe.** `cli_progress._percent`
+  hard-coded an em dash; ASCII-only consoles now get the `-` fallback through the same
+  `summary.can_encode` decision every results table makes (the #97 rule).
 
 ## [0.13.6] - 2026-07-29
 

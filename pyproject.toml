@@ -1,6 +1,6 @@
 [project]
 name = "lintle"
-version = "0.13.6"
+version = "0.14.0"
 description = "Validate and clean Two-Line Element (TLE) satellite-tracking files"
 readme = "README.md"
 requires-python = ">=3.14"
