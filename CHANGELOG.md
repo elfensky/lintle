@@ -28,13 +28,20 @@ All notable changes to this project are documented in this file. The format is b
   line 1 and line 2 naming the same satellite, and a 20-record sgp4 spot-check found every
   recovered record consistent with independent clean neighbours 20–90 h away to within 0.1–2 km.
 
-- **The edge-repair sequence now has one definition.** `verify.checks.sanctioned_reduce` restated
-  `repair_line`'s strip rules as a hand-kept mirror, and the mirror drifted the moment that
-  sequence learned to repeat: the source-diff aligner stopped recognising a cleaned line as an
-  edit of its origin, desynchronised, and reported every later record in the file as
-  `VRFY-ORIGIN-MISSING` — 12.3M across `tle2020` and `tle2018` on a full-corpus run. The rules
-  now live once in the new `repair.normalize_edges`, which both callers use, and a test pins the
-  two functions to identical output over the artifact shapes.
+- **`verify`'s source-diff no longer desynchronises on a dropped line.** The aligner matches a
+  cleaned record to its source only when line 1 and line 2 are *adjacent* in its window, and it
+  skipped blank source lines for exactly that reason (#155) — but a bare `\` is not blank by
+  `str.strip()`, so `tle2020`'s continuation line stayed in the window, wedged between the two
+  halves, and no pair ever rematched. Every subsequent record in the file was reported as
+  `VRFY-ORIGIN-MISSING`: 12,285,063 across `tle2020` and `tle2018` on a full-corpus run. No data
+  was affected — the cleaned bytes were correct throughout; only the audit's alignment was lost.
+
+- **Two rules that must agree now have one definition each.** Both halves of the bug above were
+  a duplicated rule drifting: `verify.checks.sanctioned_reduce` restated `repair_line`'s strip
+  order, and `SourceAligner` restated `iter_records`' notion of a droppable line. The strip
+  sequence now lives once in `repair.normalize_edges` and the droppable-line predicate once in
+  `repair.is_content_free`, with both callers delegating; tests pin the shared functions against
+  the artifact shapes so neither mirror can drift again.
 
 ## [0.14.0] - 2026-08-04
 

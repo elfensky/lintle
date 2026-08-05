@@ -229,7 +229,7 @@ def iter_records(
                 stats.input_lines_seen = lineno
                 stats.bytes_consumed += n_bytes
             line = chunk.rstrip(b"\n")
-            if line.strip(b" \t\r\\") == b"":
+            if repair.is_content_free(line):
                 # Blank, whitespace-only, CR-only, or a bare `\` continuation
                 # marker — no data character, so dropped rather than allowed to
                 # orphan the record around it. tle2020 splits ~2.3k records with

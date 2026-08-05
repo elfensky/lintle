@@ -271,10 +271,18 @@ fixed rather than of passes.
 The sequence lives in **one place** — `repair.normalize_edges` — because `verify` has to undo
 exactly what `repair` did: `verify.checks.sanctioned_reduce` delegates to it rather than
 restating the rules. It used to be a hand-kept mirror, and the mirror drifted the moment the
-sequence learned to repeat: the aligner stopped recognising a cleaned line as an edit of its
-origin, desynchronised, and reported every later record in the file as `VRFY-ORIGIN-MISSING`
-(12.3M of them across `tle2020` and `tle2018`). One definition, two callers — the same rule
-Critical Rule #4 applies to validation.
+sequence learned to repeat. One definition, two callers — the same rule Critical Rule #4
+applies to validation.
+
+`repair.is_content_free` is the matching single definition of a **droppable line** (blank,
+whitespace-only, CR-only, or a bare `\`), shared by `pipeline.iter_records` and
+`verify.checks.SourceAligner`. The two *must* agree: the aligner matches a cleaned record
+against its source only when line 1 and line 2 are **adjacent** in the source window, so a
+line the pipeline drops but the aligner keeps sits between them, no pair ever rematches, and
+the aligner desynchronises for the rest of the file — reporting every later record as
+`VRFY-ORIGIN-MISSING` (12.3M of them across `tle2020` and `tle2018` before this was shared).
+That is the same failure `#155` fixed for blank lines; keeping the predicate in one place is
+what stops it recurring for the next artifact.
 
 Because trailing-whitespace stripping runs *before* the length is measured, a checksum-less
 68-character line whose column 68 is a legitimately-allowed space (the `_DIGIT_SPACE`

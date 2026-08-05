@@ -535,6 +535,31 @@ class TestEndToEnd:
         ).read_text()
         assert suspects == ""
 
+    def test_continuation_artifact_between_the_two_lines(self, tmp_path):
+        # The tle2020 shape: `<line1>\r\` / `\` / `<line2>`. The aligner needs
+        # line 1 and line 2 ADJACENT in the source, so an interposed `\` line
+        # desynchronises it and every later record reports ORIGIN_MISSING. It
+        # must be skipped exactly as a blank line is (#155).
+        out, src = build_tree_with_source(
+            tmp_path, [(L1, L2)], source_lines=[L1 + "\r\\", "\\", L2]
+        )
+        assert run(out, src) == 0
+        suspects = (
+            tmp_path / "output" / VERIFY_DIRNAME / "suspects.00001.jsonl"
+        ).read_text()
+        assert suspects == ""
+
+    def test_continuation_artifact_does_not_desync_later_records(self, tmp_path):
+        # The damaging part is the desync: one artifact must not poison every
+        # record after it.
+        l1b = fix(L1[:64] + "9999")
+        out, src = build_tree_with_source(
+            tmp_path,
+            [(L1, L2), (l1b, L2)],
+            source_lines=[L1 + "\r\\", "\\", L2, l1b, L2],
+        )
+        assert run(out, src) == 0
+
     def test_interior_mutation_fails(self, tmp_path):
         out, src = build_tree_with_source(
             tmp_path, [(L1, mutated_l2())], source_lines=[L1, L2]
