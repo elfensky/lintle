@@ -251,7 +251,7 @@ decreasing order of safety:
 | Content-preserving | trailing `\` (`trailing-backslash`), CRLF (`crlf`), trailing whitespace (`trailing-ws`) | auto-fix (checksum survives as an independent check) |
 | Reconstructed-checksum | a record exported without its column-69 digit (`reconstructed-checksum`) | recompute the checksum from intact columns 1–68 — **opt-in** via `--reconstruct-checksum`; otherwise quarantined (see *redundancy paradox*) |
 | Content-shifting | leading whitespace (`leading-trim`) | trim, then re-validate; quarantine if it fails. `iter_records` matches the `1 `/`2 ` prefix on a leading-whitespace-trimmed *view* of the line, so an indented record still pairs; the raw bytes are carried forward so `repair_line` owns the trim. A leading BOM is **not** trimmed — it is a non-ASCII byte and is quarantined |
-| Structural | blank / whitespace-only / CR-only lines | drop, resynchronise pairing |
+| Structural | blank / whitespace-only / CR-only / bare `\` continuation lines | drop, resynchronise pairing |
 | Corrupt | bad checksum, wrong length, orphan line, garbled columns, catalog mismatch | **quarantine** |
 
 The concrete `FixClass` members are `crlf`, `leading-trim`, `trailing-ws`,
@@ -260,6 +260,13 @@ strip CRLF → strip leading whitespace → strip trailing whitespace → strip 
 → build a 69-character candidate (reconstructing the checksum only if the line is 68 chars, its
 body is valid, *and* `--reconstruct-checksum` was passed — otherwise the 68-char line is
 quarantined as a length error) → a single full re-validation of the candidate.
+
+That strip sequence **repeats until the line stops changing**, because one strip can uncover
+another: `tle2020` terminates ~2.3k records `<body>\r\`, hiding the CR *behind* the trailing
+backslash, so a single pass leaves the CR in place and the line measures one column too long
+(or, on a checksum-less line, the CR is mistaken for the column-69 digit). Each `FixClass` is
+recorded at most once per line however many passes run, so `fix_counts` stays a count of lines
+fixed rather than of passes.
 
 Because trailing-whitespace stripping runs *before* the length is measured, a checksum-less
 68-character line whose column 68 is a legitimately-allowed space (the `_DIGIT_SPACE`
@@ -308,8 +315,13 @@ import-time guard fails fast if a `RuleID` lacks a matching `RuleSpec`.
 `pipeline.iter_records` opens each file in **binary** so `\r` and stray bytes are observed
 exactly, reads it line by line via `handle.readline(_MAX_LINE_BYTES)` (C-level, throughput
 equal to the iterator on normal lines), and pairs lines with a prefix-driven state machine that
-holds **at most two lines** (a line-1 awaiting its line-2). Blank, whitespace-only, and CR-only
-lines are dropped. Pairing resynchronises on every `1 ` line, so one missing line cannot cascade
+holds **at most two lines** (a line-1 awaiting its line-2). Blank, whitespace-only, CR-only, and
+bare `\` continuation lines are dropped — none carries a data character, and `repair_line`
+strips a trailing backslash from every line regardless, so a `\`-only line is empty by the same
+definition. Dropping it rather than letting it orphan both halves is what lets the ~2.3k
+`tle2020` records split by one survive; a pair formed across a dropped line is still held to
+catalog agreement by `TLE-PAIR-003`, exactly as across a blank line.
+Pairing resynchronises on every `1 ` line, so one missing line cannot cascade
 into a run of mispaired records. Memory is constant regardless of file size — a 3.2 GB file
 never loads whole.
 
