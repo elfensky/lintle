@@ -12,7 +12,7 @@
 from collections.abc import Iterable, Iterator
 from pathlib import Path
 
-from lintle import tle
+from lintle import repair, tle
 from lintle.verify.grouping import record_key
 from lintle.verify.records import CleanedRecord
 from lintle.verify.report import Suspect, VerifyRule
@@ -187,18 +187,15 @@ def has_epoch_clash(records: Iterable[CleanedRecord]) -> bool:
 
 
 def sanctioned_reduce(src_line: str) -> str:
-    """Undo the sanctioned edge repairs, each at most once, in ``repair.py``'s
-    order (CRLF, leading trim, trailing trim, one trailing backslash), leaving
-    the interior untouched. The result is the 68/69-char 'core' a clean origin
-    reduces to."""
-    s = src_line
-    if s.endswith("\r"):
-        s = s[:-1]
-    s = s.lstrip(" \t")
-    s = s.rstrip(" \t")
-    if s.endswith("\\"):
-        s = s[:-1]
-    return s
+    """Undo the sanctioned edge repairs, leaving the interior untouched. The
+    result is the 68/69-char 'core' a clean origin reduces to.
+
+    Delegates to ``repair.normalize_edges`` rather than restating its rules:
+    this reduction must track ``repair_line`` exactly or the aligner stops
+    recognising a cleaned line as an edit of its origin and reports every later
+    record in the file as ``ORIGIN_MISSING``. A hand-kept mirror drifted the
+    moment the strip sequence learned to repeat."""
+    return repair.normalize_edges(src_line)[0]
 
 
 def sanctioned_match(src_line: str, clean_line: str) -> bool:

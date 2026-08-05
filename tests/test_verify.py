@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 import lintle
-from lintle import CLEANED_DIRNAME, VERIFY_DIRNAME, cli, epoch, tle
+from lintle import CLEANED_DIRNAME, VERIFY_DIRNAME, cli, epoch, repair, tle
 from lintle.verify import checks, grouping, records, report, run
 from lintle.verify.records import CleanedRecord
 from lintle.verify.report import Suspect, VerifyRule
@@ -133,6 +133,29 @@ class TestSanctioned:
         assert checks.sanctioned_reduce(L1 + "\\") == L1
         # a valid multi-repair combo: CRLF + leading + trailing whitespace
         assert checks.sanctioned_reduce("  " + L1 + "  \r") == L1
+
+    def test_reduce_matches_repairs_normalization_exactly(self):
+        # sanctioned_reduce must track repair.normalize_edges or the aligner
+        # stops recognising a cleaned line as an edit of its origin and reports
+        # every later record in the file as ORIGIN_MISSING. Pinning the two
+        # together is what stops a hand-kept mirror drifting again.
+        for raw in (
+            L1,
+            L1 + "\r",
+            L1 + "\\",
+            L1 + "\r\\",  # tle2020: CR hidden behind the backslash
+            L1[:68] + "\r\\",
+            "  " + L1 + "  \r",
+            L1 + " \\",
+            "\t" + L1 + "\\\r",
+        ):
+            assert checks.sanctioned_reduce(raw) == repair.normalize_edges(raw)[0]
+
+    def test_reduce_undoes_carriage_return_behind_backslash(self):
+        assert checks.sanctioned_reduce(L1 + "\r\\") == L1
+        assert checks.sanctioned_match(L1 + "\r\\", L1)
+        # and the 68-char form still resolves via the recomputed digit
+        assert checks.sanctioned_match(L1[:68] + "\r\\", L1)
 
     def test_match_exact_and_padded(self):
         assert checks.sanctioned_match(L1, L1)

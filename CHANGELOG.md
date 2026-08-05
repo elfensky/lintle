@@ -28,6 +28,14 @@ All notable changes to this project are documented in this file. The format is b
   line 1 and line 2 naming the same satellite, and a 20-record sgp4 spot-check found every
   recovered record consistent with independent clean neighbours 20–90 h away to within 0.1–2 km.
 
+- **The edge-repair sequence now has one definition.** `verify.checks.sanctioned_reduce` restated
+  `repair_line`'s strip rules as a hand-kept mirror, and the mirror drifted the moment that
+  sequence learned to repeat: the source-diff aligner stopped recognising a cleaned line as an
+  edit of its origin, desynchronised, and reported every later record in the file as
+  `VRFY-ORIGIN-MISSING` — 12.3M across `tle2020` and `tle2018` on a full-corpus run. The rules
+  now live once in the new `repair.normalize_edges`, which both callers use, and a test pins the
+  two functions to identical output over the artifact shapes.
+
 ## [0.14.0] - 2026-08-04
 
 ### Added
