@@ -54,21 +54,34 @@ def repair_line(
             ),
         )
 
-    # Fix order is fixed (spec §6.6).
-    if line.endswith("\r"):
-        line = line[:-1]
-        fixes.append(FixClass.CRLF)
-    lstripped = line.lstrip(" \t")
-    if lstripped != line:
-        line = lstripped
-        fixes.append(FixClass.LEADING_TRIM)
-    rstripped = line.rstrip(" \t")
-    if rstripped != line:
-        line = rstripped
-        fixes.append(FixClass.TRAILING_WS)
-    if line.endswith("\\"):
-        line = line[:-1]
-        fixes.append(FixClass.TRAILING_BACKSLASH)
+    # Fix order is fixed (spec §6.6), but the sequence repeats until the line
+    # stops changing: one strip can uncover another. tle2020 terminates some
+    # records `<body>\r\`, where the CR hides *behind* the trailing backslash,
+    # so a single pass leaves it in place and the line reads one column too
+    # long. Each tag is recorded once however many passes it takes, so
+    # fix_counts stays a count of lines fixed, not of passes.
+    def note(fix: FixClass) -> None:
+        if fix not in fixes:
+            fixes.append(fix)
+
+    while True:
+        before = line
+        if line.endswith("\r"):
+            line = line[:-1]
+            note(FixClass.CRLF)
+        lstripped = line.lstrip(" \t")
+        if lstripped != line:
+            line = lstripped
+            note(FixClass.LEADING_TRIM)
+        rstripped = line.rstrip(" \t")
+        if rstripped != line:
+            line = rstripped
+            note(FixClass.TRAILING_WS)
+        if line.endswith("\\"):
+            line = line[:-1]
+            note(FixClass.TRAILING_BACKSLASH)
+        if line == before:
+            break
 
     # Build a 69-character candidate.
     if len(line) == tle.LINE_LENGTH:

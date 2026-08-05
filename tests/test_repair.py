@@ -15,6 +15,28 @@ class TestRepairLine:
         assert diag is None and clean == line1
         assert FixClass.TRAILING_BACKSLASH in fixes
 
+    def test_carriage_return_behind_trailing_backslash(self, line1):
+        # tle2020 writes some records as `<body>\r\` — the CR sits *behind*
+        # the trailing backslash, so stripping the backslash exposes it. The
+        # normalization must still remove it, or the line reads 70 columns.
+        raw = (line1 + "\r\\").encode("ascii")
+        clean, fixes, diag = repair.repair_line(raw, 1, source_line_no=1)
+        assert diag is None and clean == line1
+        assert FixClass.TRAILING_BACKSLASH in fixes
+        assert FixClass.CRLF in fixes
+        assert fixes.count(FixClass.CRLF) == 1
+
+    def test_carriage_return_behind_backslash_on_68_char_line(self, line1):
+        # Same artifact on a checksumless 68-char line: once the CR is gone
+        # the body is 68 columns and the tier-2 recompute applies. Without the
+        # fix the CR is mistaken for the column-69 checksum (TLE-CHK-001).
+        raw = (line1[:68] + "\r\\").encode("ascii")
+        clean, fixes, diag = repair.repair_line(
+            raw, 1, source_line_no=1, reconstruct_checksum=True
+        )
+        assert diag is None and clean == line1
+        assert FixClass.RECONSTRUCTED_CHECKSUM in fixes
+
     def test_missing_checksum_quarantined_by_default(self, line1):
         # Default: a checksumless 68-char line is quarantined as the wrong
         # length, not reconstructed (Critical Rule #2 — when in doubt,
