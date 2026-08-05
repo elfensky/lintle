@@ -268,6 +268,14 @@ backslash, so a single pass leaves the CR in place and the line measures one col
 recorded at most once per line however many passes run, so `fix_counts` stays a count of lines
 fixed rather than of passes.
 
+The sequence lives in **one place** — `repair.normalize_edges` — because `verify` has to undo
+exactly what `repair` did: `verify.checks.sanctioned_reduce` delegates to it rather than
+restating the rules. It used to be a hand-kept mirror, and the mirror drifted the moment the
+sequence learned to repeat: the aligner stopped recognising a cleaned line as an edit of its
+origin, desynchronised, and reported every later record in the file as `VRFY-ORIGIN-MISSING`
+(12.3M of them across `tle2020` and `tle2018`). One definition, two callers — the same rule
+Critical Rule #4 applies to validation.
+
 Because trailing-whitespace stripping runs *before* the length is measured, a checksum-less
 68-character line whose column 68 is a legitimately-allowed space (the `_DIGIT_SPACE`
 element-set-number and revolution-number fields permit one) is normalized to 67 characters and

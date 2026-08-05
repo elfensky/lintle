@@ -11,6 +11,46 @@ from lintle.categories import FixClass
 from lintle.diagnostics import Diagnostic, RepairTier, RuleID, diagnostic
 
 
+def normalize_edges(line: str) -> tuple[str, list[FixClass]]:
+    """Strip the sanctioned *edge* artifacts off ``line``, leaving the interior
+    untouched, and return the reduced line with the tags that fired.
+
+    THE definition of an edge repair — `repair_line` applies it and
+    `verify.checks.sanctioned_reduce` undoes it, so both must agree exactly or
+    the source-diff aligner stops recognising a cleaned line as an edit of its
+    origin. Fix order is fixed (spec §6.6) — CRLF, leading trim, trailing trim,
+    one trailing backslash — but the sequence repeats until the line stops
+    changing, because one strip can uncover another: `tle2020` terminates ~2.3k
+    records `<body>\\r\\`, hiding the CR *behind* the backslash. Each tag is
+    recorded at most once however many passes run, so `fix_counts` counts lines
+    fixed, not passes.
+    """
+    fixes: list[FixClass] = []
+
+    def note(fix: FixClass) -> None:
+        if fix not in fixes:
+            fixes.append(fix)
+
+    while True:
+        before = line
+        if line.endswith("\r"):
+            line = line[:-1]
+            note(FixClass.CRLF)
+        lstripped = line.lstrip(" \t")
+        if lstripped != line:
+            line = lstripped
+            note(FixClass.LEADING_TRIM)
+        rstripped = line.rstrip(" \t")
+        if rstripped != line:
+            line = rstripped
+            note(FixClass.TRAILING_WS)
+        if line.endswith("\\"):
+            line = line[:-1]
+            note(FixClass.TRAILING_BACKSLASH)
+        if line == before:
+            return line, fixes
+
+
 def repair_line(
     raw: bytes,
     lineno: int,
@@ -54,34 +94,7 @@ def repair_line(
             ),
         )
 
-    # Fix order is fixed (spec §6.6), but the sequence repeats until the line
-    # stops changing: one strip can uncover another. tle2020 terminates some
-    # records `<body>\r\`, where the CR hides *behind* the trailing backslash,
-    # so a single pass leaves it in place and the line reads one column too
-    # long. Each tag is recorded once however many passes it takes, so
-    # fix_counts stays a count of lines fixed, not of passes.
-    def note(fix: FixClass) -> None:
-        if fix not in fixes:
-            fixes.append(fix)
-
-    while True:
-        before = line
-        if line.endswith("\r"):
-            line = line[:-1]
-            note(FixClass.CRLF)
-        lstripped = line.lstrip(" \t")
-        if lstripped != line:
-            line = lstripped
-            note(FixClass.LEADING_TRIM)
-        rstripped = line.rstrip(" \t")
-        if rstripped != line:
-            line = rstripped
-            note(FixClass.TRAILING_WS)
-        if line.endswith("\\"):
-            line = line[:-1]
-            note(FixClass.TRAILING_BACKSLASH)
-        if line == before:
-            break
+    line, fixes = normalize_edges(line)
 
     # Build a 69-character candidate.
     if len(line) == tle.LINE_LENGTH:
