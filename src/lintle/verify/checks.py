@@ -275,10 +275,13 @@ class SourceAligner:
             if not line:
                 break
             stripped = line.rstrip("\n")
-            # Skip blank source lines: never part of a TLE record (clean's
-            # pairing skips them too), and an interposed blank would break the
-            # adjacent line-1/line-2 pair match below -> false INTERIOR_MUT (#155).
-            if stripped.strip():
+            # Skip content-free source lines: never part of a TLE record (clean's
+            # pairing skips exactly the same set), and an interposed one would
+            # break the adjacent line-1/line-2 pair match below -> false
+            # INTERIOR_MUT (#155), or, when nothing rematches, a desync that
+            # reports every later record as ORIGIN_MISSING. tle2020 wedges a
+            # bare `\` between the two lines of ~2.3k records.
+            if not repair.is_content_free(stripped):
                 self._buf.append(stripped)
 
     def feed(self, rec: CleanedRecord, *, revalidated: bool = True) -> Suspect | None:

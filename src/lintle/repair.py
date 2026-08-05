@@ -10,6 +10,28 @@ from lintle import tle
 from lintle.categories import FixClass
 from lintle.diagnostics import Diagnostic, RepairTier, RuleID, diagnostic
 
+# The edge artifacts a line may be padded with and still carry no data: ASCII
+# whitespace, a stray CR, and the `\` continuation marker `normalize_edges`
+# strips from every line regardless.
+_EDGE_ARTIFACTS = " \t\r\\"
+_EDGE_ARTIFACT_BYTES = _EDGE_ARTIFACTS.encode("ascii")
+
+
+def is_content_free(line: str | bytes) -> bool:
+    """True iff ``line`` holds no data character — blank, whitespace-only,
+    CR-only, or a bare ``\\`` continuation marker.
+
+    THE definition of a droppable line, shared by the two places that must
+    agree on it: `pipeline.iter_records` drops such a line rather than letting
+    it orphan the record around it, and `verify.checks.SourceAligner` drops it
+    from its source window because it matches a cleaned record's line 1 and
+    line 2 only when they are ADJACENT (#155). Disagreement desynchronises the
+    aligner for the rest of the file.
+    """
+    if isinstance(line, bytes):
+        return line.strip(_EDGE_ARTIFACT_BYTES) == b""
+    return line.strip(_EDGE_ARTIFACTS) == ""
+
 
 def normalize_edges(line: str) -> tuple[str, list[FixClass]]:
     """Strip the sanctioned *edge* artifacts off ``line``, leaving the interior
