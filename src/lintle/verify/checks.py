@@ -186,23 +186,15 @@ def has_epoch_clash(records: Iterable[CleanedRecord]) -> bool:
     )
 
 
-def sanctioned_reduce(src_line: str) -> str:
-    """Undo the sanctioned edge repairs, leaving the interior untouched. The
-    result is the 68/69-char 'core' a clean origin reduces to.
-
-    Delegates to ``repair.normalize_edges`` rather than restating its rules:
-    this reduction must track ``repair_line`` exactly or the aligner stops
-    recognising a cleaned line as an edit of its origin and reports every later
-    record in the file as ``ORIGIN_MISSING``. A hand-kept mirror drifted the
-    moment the strip sequence learned to repeat."""
-    return repair.normalize_edges(src_line)[0]
-
-
 def sanctioned_match(src_line: str, clean_line: str) -> bool:
     """True iff ``clean_line`` is a sanctioned repair of ``src_line``: the
-    reduced core equals it, or (missing-checksum case) the 68-char core plus the
-    recomputed column-69 digit equals it."""
-    core = sanctioned_reduce(src_line)
+    68/69-char core ``repair.normalize_edges`` reduces the origin to equals it,
+    or (missing-checksum case) the 68-char core plus the recomputed column-69
+    digit equals it. The reduction routes through ``repair`` rather than
+    restating its strip rules, which is what a hand-kept mirror used to do —
+    it drifted the moment the sequence learned to repeat, and the aligner then
+    reported every later record in the file as ``ORIGIN_MISSING``."""
+    core = repair.normalize_edges(src_line)[0]
     if core == clean_line:
         return True
     return len(core) == 68 and clean_line == core + str(tle.compute_checksum(core))
@@ -229,7 +221,11 @@ def _is_quarantined_shadow(line1: str, line2: str) -> bool:
     copy it keeps — and both share the anchor. A genuine interior mutation is
     unaffected: its origin is a valid record, so this returns False and the
     mutation is still flagged."""
-    return bool(tle.validate_record(sanctioned_reduce(line1), sanctioned_reduce(line2)))
+    return bool(
+        tle.validate_record(
+            repair.normalize_edges(line1)[0], repair.normalize_edges(line2)[0]
+        )
+    )
 
 
 class SourceAligner:

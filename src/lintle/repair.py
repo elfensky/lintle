@@ -18,35 +18,27 @@ _EDGE_ARTIFACT_BYTES = _EDGE_ARTIFACTS.encode("ascii")
 
 
 def is_content_free(line: str | bytes) -> bool:
-    """True iff ``line`` holds no data character — blank, whitespace-only,
-    CR-only, or a bare ``\\`` continuation marker.
-
-    THE definition of a droppable line, shared by the two places that must
-    agree on it: `pipeline.iter_records` drops such a line rather than letting
-    it orphan the record around it, and `verify.checks.SourceAligner` drops it
-    from its source window because it matches a cleaned record's line 1 and
-    line 2 only when they are ADJACENT (#155). Disagreement desynchronises the
-    aligner for the rest of the file.
-    """
+    """True iff ``line`` is nothing but edge artifacts — blank, whitespace-only,
+    CR-only, a bare ``\\`` continuation marker, or any mixture of those — and so
+    reduces to the empty string under ``normalize_edges``. THE definition of a
+    droppable line: `pipeline.iter_records` and `verify.checks.SourceAligner`
+    must drop exactly the same set or the aligner desynchronises (ARCHITECTURE
+    §6.6)."""
     if isinstance(line, bytes):
         return line.strip(_EDGE_ARTIFACT_BYTES) == b""
     return line.strip(_EDGE_ARTIFACTS) == ""
 
 
 def normalize_edges(line: str) -> tuple[str, list[FixClass]]:
-    """Strip the sanctioned *edge* artifacts off ``line``, leaving the interior
-    untouched, and return the reduced line with the tags that fired.
-
-    THE definition of an edge repair — `repair_line` applies it and
-    `verify.checks.sanctioned_reduce` undoes it, so both must agree exactly or
-    the source-diff aligner stops recognising a cleaned line as an edit of its
-    origin. Fix order is fixed (spec §6.6) — CRLF, leading trim, trailing trim,
-    one trailing backslash — but the sequence repeats until the line stops
-    changing, because one strip can uncover another: `tle2020` terminates ~2.3k
-    records `<body>\\r\\`, hiding the CR *behind* the backslash. Each tag is
-    recorded at most once however many passes run, so `fix_counts` counts lines
-    fixed, not passes.
-    """
+    """Strip the sanctioned *edge* artifacts off ``line`` — CR, leading and
+    trailing ASCII whitespace, trailing ``\\`` — leaving the interior untouched,
+    and return the reduced line with the tags that fired. THE definition of an
+    edge repair, applied by ``repair_line`` and undone by `verify`'s source-diff
+    aligner, so both must agree exactly. Each pass runs the strips in spec §6.6
+    order and the sequence repeats until the line stops changing, because one
+    strip can uncover another (and so a repeated or stacked artifact is removed
+    in full); each tag is recorded at most once however many passes run, leaving
+    the returned list in first-fired order rather than §6.6 order."""
     fixes: list[FixClass] = []
 
     def note(fix: FixClass) -> None:

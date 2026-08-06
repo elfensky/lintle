@@ -8,6 +8,55 @@ from lintle.categories import FixClass
 from lintle.diagnostics import RepairTier, RuleID
 
 
+class TestNormalizeEdges:
+    """The one definition of an edge repair: the strip sequence and the
+    droppable-line predicate derived from it."""
+
+    def test_undoes_each_edge_repair(self, line1):
+        assert repair.normalize_edges(line1 + "\r")[0] == line1
+        assert repair.normalize_edges("   " + line1)[0] == line1
+        assert repair.normalize_edges(line1 + "   ")[0] == line1
+        assert repair.normalize_edges(line1 + "\\")[0] == line1
+        assert repair.normalize_edges("  " + line1 + "  \r")[0] == line1
+
+    def test_repeats_until_stable(self, line1):
+        # One strip uncovers another: tle2020's `<body>\r\` hides the CR behind
+        # the backslash, and a stacked artifact needs as many passes as it has
+        # layers.
+        assert repair.normalize_edges(line1 + "\r\\")[0] == line1
+        assert repair.normalize_edges(line1 + "\r\\\r\\")[0] == line1
+        assert repair.normalize_edges("\t " + line1 + " \\ \r")[0] == line1
+
+    def test_each_tag_recorded_at_most_once_per_line(self, line1):
+        # `fix_counts` must stay a count of lines fixed, not of passes — so a
+        # line needing three passes still reports each class exactly once.
+        _, fixes = repair.normalize_edges("  " + line1 + "\r\\\r\\")
+        assert len(fixes) == len(set(fixes)) == 3
+        assert set(fixes) == {
+            FixClass.CRLF,
+            FixClass.LEADING_TRIM,
+            FixClass.TRAILING_BACKSLASH,
+        }
+
+    @given(st.text(alphabet=" \t\r\\1X", max_size=8))
+    def test_content_free_agrees_with_full_reduction(self, line):
+        # `is_content_free` is a strip-set shortcut for "normalize_edges empties
+        # this line" — the whole justification for dropping such a line. If the
+        # two ever disagree, the pipeline and verify's aligner drop different
+        # sets and the aligner desynchronises.
+        assert repair.is_content_free(line) == (repair.normalize_edges(line)[0] == "")
+        assert repair.is_content_free(line.encode("ascii")) == repair.is_content_free(
+            line
+        )
+
+    def test_content_free_covers_the_whole_artifact_set(self):
+        # Not just a lone `\`: any mixture of the edge artifacts is content-free.
+        for line in ("", " ", "\r", "\\", "\\\\", " \\ ", "\r\\", "\t\\\r "):
+            assert repair.is_content_free(line), line
+        for line in ("\\1", "1\\", " X ", "\\ X"):
+            assert not repair.is_content_free(line), line
+
+
 class TestRepairLine:
     def test_strip_trailing_backslash(self, line1):
         raw = (line1 + "\\").encode("ascii")  # 70 bytes: 69 columns + '\'

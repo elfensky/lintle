@@ -150,9 +150,12 @@ Two branches, two roles:
   `git commit-tree` (see § Versioning § Release flow).
 
 - Branch names (when branching): `feature/<desc>`, `refactor/<desc>` —
-  lowercase, hyphens. The release-prep branch is the documented exception:
-  `chore/release-X.Y.Z` (see § Versioning § Release flow) carries the version
-  bump + dated `CHANGELOG.md` section through a review PR.
+  lowercase, hyphens. Also `fix/<desc>` for a bugfix that outgrows a direct
+  `develop` commit (multi-file, or worth a PR for the reasoning); a one-line
+  or single-file fix still commits straight to `develop`. The release-prep
+  branch is the documented exception: `chore/release-X.Y.Z` (see § Versioning
+  § Release flow) carries the version bump + dated `CHANGELOG.md` section
+  through a review PR.
 - Use [Conventional Commits](https://www.conventionalcommits.org/): `feat:`,
   `fix:`, `docs:`, `test:`, `refactor:`, `style:`, `chore:`. Direct commits to
   `develop` use these as the commit prefix; branched work uses them on
