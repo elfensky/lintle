@@ -230,9 +230,10 @@ def iter_records(
                 stats.bytes_consumed += n_bytes
             line = chunk.rstrip(b"\n")
             if repair.is_content_free(line):
-                # Blank, whitespace-only, CR-only, or a bare `\` continuation
-                # marker — no data character, so dropped rather than allowed to
-                # orphan the record around it. tle2020 splits ~2.3k records with
+                # Blank, whitespace-only, CR-only, a bare `\` continuation
+                # marker, or any mixture — no data character, so dropped rather
+                # than allowed to orphan the record around it. tle2020 splits
+                # ~2.3k records with
                 # a `\`-only line; repair strips a trailing backslash from every
                 # line anyway, so such a line is empty by the same definition.
                 # A pair formed across one is still checked for catalog

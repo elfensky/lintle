@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 import lintle
-from lintle import CLEANED_DIRNAME, VERIFY_DIRNAME, cli, epoch, repair, tle
+from lintle import CLEANED_DIRNAME, VERIFY_DIRNAME, cli, epoch, tle
 from lintle.verify import checks, grouping, records, report, run
 from lintle.verify.records import CleanedRecord
 from lintle.verify.report import Suspect, VerifyRule
@@ -126,33 +126,19 @@ class TestEpoch:
 
 
 class TestSanctioned:
-    def test_reduce_undoes_each_edge_repair(self):
-        assert checks.sanctioned_reduce(L1 + "\r") == L1
-        assert checks.sanctioned_reduce("   " + L1) == L1
-        assert checks.sanctioned_reduce(L1 + "   ") == L1
-        assert checks.sanctioned_reduce(L1 + "\\") == L1
-        # a valid multi-repair combo: CRLF + leading + trailing whitespace
-        assert checks.sanctioned_reduce("  " + L1 + "  \r") == L1
+    """``sanctioned_match`` routes its reduction through
+    ``repair.normalize_edges`` — the strip rules themselves are pinned in
+    ``tests/test_repair.py``; what matters here is that a source line carrying
+    any sanctioned edge artifact still resolves to its cleaned form."""
 
-    def test_reduce_matches_repairs_normalization_exactly(self):
-        # sanctioned_reduce must track repair.normalize_edges or the aligner
-        # stops recognising a cleaned line as an edit of its origin and reports
-        # every later record in the file as ORIGIN_MISSING. Pinning the two
-        # together is what stops a hand-kept mirror drifting again.
-        for raw in (
-            L1,
-            L1 + "\r",
-            L1 + "\\",
-            L1 + "\r\\",  # tle2020: CR hidden behind the backslash
-            L1[:68] + "\r\\",
-            "  " + L1 + "  \r",
-            L1 + " \\",
-            "\t" + L1 + "\\\r",
-        ):
-            assert checks.sanctioned_reduce(raw) == repair.normalize_edges(raw)[0]
+    def test_match_undoes_each_edge_repair(self):
+        assert checks.sanctioned_match(L1 + "\r", L1)
+        assert checks.sanctioned_match("   " + L1, L1)
+        assert checks.sanctioned_match(L1 + "   ", L1)
+        assert checks.sanctioned_match(L1 + "\\", L1)
 
-    def test_reduce_undoes_carriage_return_behind_backslash(self):
-        assert checks.sanctioned_reduce(L1 + "\r\\") == L1
+    def test_match_undoes_carriage_return_behind_backslash(self):
+        # tle2020: the CR hides *behind* the trailing backslash
         assert checks.sanctioned_match(L1 + "\r\\", L1)
         # and the 68-char form still resolves via the recomputed digit
         assert checks.sanctioned_match(L1[:68] + "\r\\", L1)
@@ -551,7 +537,8 @@ class TestEndToEnd:
 
     def test_continuation_artifact_does_not_desync_later_records(self, tmp_path):
         # The damaging part is the desync: one artifact must not poison every
-        # record after it.
+        # record after it. Assert on the suspects file, NOT the exit code —
+        # ORIGIN_MISSING is soft, so a fully desynchronised run still exits 0.
         l1b = fix(L1[:64] + "9999")
         out, src = build_tree_with_source(
             tmp_path,
@@ -559,6 +546,10 @@ class TestEndToEnd:
             source_lines=[L1 + "\r\\", "\\", L2, l1b, L2],
         )
         assert run(out, src) == 0
+        suspects = (
+            tmp_path / "output" / VERIFY_DIRNAME / "suspects.00001.jsonl"
+        ).read_text()
+        assert suspects == ""
 
     def test_interior_mutation_fails(self, tmp_path):
         out, src = build_tree_with_source(

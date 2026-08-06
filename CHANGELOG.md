@@ -37,7 +37,7 @@ All notable changes to this project are documented in this file. The format is b
   was affected — the cleaned bytes were correct throughout; only the audit's alignment was lost.
 
 - **Two rules that must agree now have one definition each.** Both halves of the bug above were
-  a duplicated rule drifting: `verify.checks.sanctioned_reduce` restated `repair_line`'s strip
+  a duplicated rule drifting: `verify.checks`'s source reduction restated `repair_line`'s strip
   order, and `SourceAligner` restated `iter_records`' notion of a droppable line. The strip
   sequence now lives once in `repair.normalize_edges` and the droppable-line predicate once in
   `repair.is_content_free`, with both callers delegating; tests pin the shared functions against
