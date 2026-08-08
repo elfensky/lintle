@@ -126,13 +126,22 @@ class TestEpoch:
 
 
 class TestSanctioned:
-    def test_reduce_undoes_each_edge_repair(self):
-        assert checks.sanctioned_reduce(L1 + "\r") == L1
-        assert checks.sanctioned_reduce("   " + L1) == L1
-        assert checks.sanctioned_reduce(L1 + "   ") == L1
-        assert checks.sanctioned_reduce(L1 + "\\") == L1
-        # a valid multi-repair combo: CRLF + leading + trailing whitespace
-        assert checks.sanctioned_reduce("  " + L1 + "  \r") == L1
+    """``sanctioned_match`` routes its reduction through
+    ``repair.normalize_edges`` — the strip rules themselves are pinned in
+    ``tests/test_repair.py``; what matters here is that a source line carrying
+    any sanctioned edge artifact still resolves to its cleaned form."""
+
+    def test_match_undoes_each_edge_repair(self):
+        assert checks.sanctioned_match(L1 + "\r", L1)
+        assert checks.sanctioned_match("   " + L1, L1)
+        assert checks.sanctioned_match(L1 + "   ", L1)
+        assert checks.sanctioned_match(L1 + "\\", L1)
+
+    def test_match_undoes_carriage_return_behind_backslash(self):
+        # tle2020: the CR hides *behind* the trailing backslash
+        assert checks.sanctioned_match(L1 + "\r\\", L1)
+        # and the 68-char form still resolves via the recomputed digit
+        assert checks.sanctioned_match(L1[:68] + "\r\\", L1)
 
     def test_match_exact_and_padded(self):
         assert checks.sanctioned_match(L1, L1)
@@ -506,6 +515,36 @@ class TestGrouping:
 class TestEndToEnd:
     def test_clean_tree_passes(self, tmp_path):
         out, src = build_tree_with_source(tmp_path, [(L1, L2)], source_lines=[L1, L2])
+        assert run(out, src) == 0
+        suspects = (
+            tmp_path / "output" / VERIFY_DIRNAME / "suspects.00001.jsonl"
+        ).read_text()
+        assert suspects == ""
+
+    def test_continuation_artifact_between_the_two_lines(self, tmp_path):
+        # The tle2020 shape: `<line1>\r\` / `\` / `<line2>`. The aligner needs
+        # line 1 and line 2 ADJACENT in the source, so an interposed `\` line
+        # desynchronises it and every later record reports ORIGIN_MISSING. It
+        # must be skipped exactly as a blank line is (#155).
+        out, src = build_tree_with_source(
+            tmp_path, [(L1, L2)], source_lines=[L1 + "\r\\", "\\", L2]
+        )
+        assert run(out, src) == 0
+        suspects = (
+            tmp_path / "output" / VERIFY_DIRNAME / "suspects.00001.jsonl"
+        ).read_text()
+        assert suspects == ""
+
+    def test_continuation_artifact_does_not_desync_later_records(self, tmp_path):
+        # The damaging part is the desync: one artifact must not poison every
+        # record after it. Assert on the suspects file, NOT the exit code —
+        # ORIGIN_MISSING is soft, so a fully desynchronised run still exits 0.
+        l1b = fix(L1[:64] + "9999")
+        out, src = build_tree_with_source(
+            tmp_path,
+            [(L1, L2), (l1b, L2)],
+            source_lines=[L1 + "\r\\", "\\", L2, l1b, L2],
+        )
         assert run(out, src) == 0
         suspects = (
             tmp_path / "output" / VERIFY_DIRNAME / "suspects.00001.jsonl"

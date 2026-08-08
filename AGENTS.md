@@ -194,7 +194,12 @@ the `error`/`warning`/`note`/`prompt` emitters, and the `is_interactive` /
 `process_control`, `run_planning`, `summary`, and `worker_pool` — so the styled prefixes
 and the prompt live in one place without a `→ cli` cycle. `resume.py` (which also owns the run-start timestamp and
 the per-file output-size capture for the checkpoint) imports only `__version__`,
-`fsutil`, and `stem`. `tle.py` and the data modules carry no I/O, so cycles are
+`fsutil`, and `stem`. `verify/checks.py` imports `repair` for `normalize_edges` and
+`is_content_free` — the one definition of an edge repair and of a droppable line,
+which the source-diff aligner must undo and mirror exactly. That edge runs
+`verify → repair`, never the reverse: the wall bars `clean → sgp4`/`verify`, and
+`repair`'s own closure stays `sgp4`-free, so it adds no cycle and nothing crosses
+the wall. `tle.py` and the data modules carry no I/O, so cycles are
 structurally impossible.
 
 → See [`README.md`](README.md) for the architecture, usage, and data flow.
@@ -230,15 +235,17 @@ receives direct commits. Two paths into `develop`:
 
 - **Direct commits** for chores and bugfixes (`chore:`, `fix:`, `docs:`,
   `test:`, `style:`) — commit on `develop`, push. No branch, no PR.
-- **Branch + PR** for features and multi-file refactors (`feature/<desc>` or
-  `refactor/<desc>`) — land via **rebase-and-merge** so `develop` stays linear
+- **Branch + PR** for features, multi-file refactors, and bugfixes that
+  outgrow a direct commit (`feature/<desc>`, `refactor/<desc>`, `fix/<desc>`)
+  — land via **rebase-and-merge** so `develop` stays linear
   (see `CONTRIBUTING.md` § Git Workflow).
 
 **Worktrees are the parallel-development mechanism for branched work** — they
 let multiple branches share one clone without contention, so you can keep a
 long-running test run in one worktree while editing in another.
 
-**When to use a worktree:** any `feature/<desc>` or `refactor/<desc>` branch.
+**When to use a worktree:** any `feature/<desc>`, `refactor/<desc>`, or
+`fix/<desc>` branch.
 Default for any non-trivial change you'd raise a PR for.
 
 **When to skip the worktree:** chores and bugfixes — single-line fixes, doc
@@ -318,7 +325,8 @@ If any fail, report the actual output — do not suppress or simplify failures.
 - Git: `develop` is the trunk; `main` carries one merge commit per release and
   never receives direct commits. On `develop`: chores and bugfixes (`chore:`,
   `fix:`, `docs:`, `test:`, `style:`) commit directly; features and multi-file
-  refactors go on a `feature/<desc>` or `refactor/<desc>` branch and land via
+  refactors — and any bugfix too large for a direct commit — go on a
+  `feature/<desc>`, `refactor/<desc>`, or `fix/<desc>` branch and land via
   **rebase-and-merge** so `develop` stays linear. Releases are hand-assembled
   merge commits on `main` (tree = develop's release-point tree; second parent =
   develop's release-point) — see CONTRIBUTING.md § Versioning for the

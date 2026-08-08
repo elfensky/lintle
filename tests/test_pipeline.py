@@ -106,6 +106,28 @@ class TestIterRecords:
         assert len(records) == 1
         assert isinstance(records[0], pipeline.RecordCandidate)
 
+    def test_lone_backslash_line_dropped(self, tmp_path, line1, line2):
+        # tle2020 emits a `\`-only continuation line between the two halves
+        # of a record. It carries no data — repair strips a trailing backslash
+        # unconditionally — so it must be dropped like a blank line rather
+        # than orphaning both halves of an otherwise-intact record.
+        src = tmp_path / "in.txt"
+        src.write_bytes((line1 + "\n" + "\\\n" + line2 + "\n").encode("ascii"))
+        records = list(pipeline.iter_records(str(src)))
+        assert len(records) == 1
+        assert isinstance(records[0], pipeline.RecordCandidate)
+        assert records[0].src1 == 1 and records[0].src2 == 3
+
+    def test_corpus_continuation_artifact_pairs(self, tmp_path, line1, line2):
+        # The exact tle2020 byte pattern: `<line1>\r\` LF `\` LF `<line2>`.
+        src = tmp_path / "in.txt"
+        src.write_bytes(
+            (line1[:68] + "\r\\" + "\n" + "\\" + "\n" + line2 + "\n").encode("ascii")
+        )
+        records = list(pipeline.iter_records(str(src)))
+        assert len(records) == 1
+        assert isinstance(records[0], pipeline.RecordCandidate)
+
     def test_lone_line1_at_eof_is_orphaned(self, tmp_path, line1):
         src = tmp_path / "in.txt"
         src.write_bytes((line1 + "\n").encode("ascii"))

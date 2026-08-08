@@ -4,6 +4,45 @@ All notable changes to this project are documented in this file. The format is b
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.14.1] - 2026-08-08
+
+### Fixed
+
+- **A carriage return hiding behind a trailing backslash is now normalized.** `repair_line`
+  applied its strip sequence once, so a line terminated `<body>\r\` — the shape `tle2020` uses
+  for ~2.3k records — lost the backslash but kept the CR. The line then measured 70 columns
+  (`TLE-COL-001`), or, on a checksum-less line, the CR was mistaken for the column-69 digit
+  (`TLE-CHK-001`). The sequence now repeats until the line stops changing, since one strip can
+  uncover another. Each `FixClass` is still recorded at most once per line, so `fix_counts`
+  remains a count of lines fixed, not of passes.
+
+- **A bare `\` continuation line no longer orphans the record around it.** `tle2020` splits
+  ~2.3k records with a `\`-only line wedged between line 1 and line 2, which quarantined *both*
+  intact halves as orphans (2,281 `TLE-PAIR-002` + 4,562 `TLE-PAIR-001`). Such a line holds no
+  data character — `repair_line` strips a trailing backslash from every line regardless — so it
+  is now dropped like a blank or CR-only line. Together the two fixes recover **1,484 of the
+  2,281** affected records; the other 797 carry a checksum that genuinely disagrees with their
+  body and are still quarantined, now under the accurate `TLE-CHK-001` rather than a misleading
+  orphan. A pair formed across a dropped line is still held to catalog agreement by
+  `TLE-PAIR-003`, so this widens no correctness gap: all 2,281 sites were confirmed to have
+  line 1 and line 2 naming the same satellite, and a 20-record sgp4 spot-check found every
+  recovered record consistent with independent clean neighbours 20–90 h away to within 0.1–2 km.
+
+- **`verify`'s source-diff no longer desynchronises on a dropped line.** The aligner matches a
+  cleaned record to its source only when line 1 and line 2 are *adjacent* in its window, and it
+  skipped blank source lines for exactly that reason (#155) — but a bare `\` is not blank by
+  `str.strip()`, so `tle2020`'s continuation line stayed in the window, wedged between the two
+  halves, and no pair ever rematched. Every subsequent record in the file was reported as
+  `VRFY-ORIGIN-MISSING`: 12,285,063 across `tle2020` and `tle2018` on a full-corpus run. No data
+  was affected — the cleaned bytes were correct throughout; only the audit's alignment was lost.
+
+- **Two rules that must agree now have one definition each.** Both halves of the bug above were
+  a duplicated rule drifting: `verify.checks`'s source reduction restated `repair_line`'s strip
+  order, and `SourceAligner` restated `iter_records`' notion of a droppable line. The strip
+  sequence now lives once in `repair.normalize_edges` and the droppable-line predicate once in
+  `repair.is_content_free`, with both callers delegating; tests pin the shared functions against
+  the artifact shapes so neither mirror can drift again.
+
 ## [0.14.0] - 2026-08-04
 
 ### Added

@@ -152,7 +152,8 @@ def iter_records(
     """Yield ``RecordCandidate`` / ``Orphan`` items streamed from ``path``.
 
     The file is read in binary so ``\\r`` and stray bytes are observed
-    exactly. Blank, whitespace-only, and CR-only lines are dropped.
+    exactly. Blank, whitespace-only, CR-only, and bare ``\\`` continuation
+    lines are dropped — none holds a data character.
     Pairing is prefix-driven and resynchronises on every ``1 `` line, so
     one missing line cannot cascade into a run of mispaired records. The
     prefix is matched on a leading-whitespace-trimmed *view* of the line
@@ -228,8 +229,16 @@ def iter_records(
                 stats.input_lines_seen = lineno
                 stats.bytes_consumed += n_bytes
             line = chunk.rstrip(b"\n")
-            if line.strip(b" \t\r") == b"":
-                continue  # blank, whitespace-only, or CR-only line — dropped
+            if repair.is_content_free(line):
+                # Blank, whitespace-only, CR-only, a bare `\` continuation
+                # marker, or any mixture — no data character, so dropped rather
+                # than allowed to orphan the record around it. tle2020 splits
+                # ~2.3k records with
+                # a `\`-only line; repair strips a trailing backslash from every
+                # line anyway, so such a line is empty by the same definition.
+                # A pair formed across one is still checked for catalog
+                # agreement by TLE-PAIR-003, exactly as across a blank line.
+                continue
 
             # Route on a leading-whitespace-trimmed view (repair_line lstrips
             # the same " \t"), but keep ``line`` — the raw bytes — so repair

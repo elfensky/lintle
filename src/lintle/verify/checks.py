@@ -12,7 +12,7 @@
 from collections.abc import Iterable, Iterator
 from pathlib import Path
 
-from lintle import tle
+from lintle import repair, tle
 from lintle.verify.grouping import record_key
 from lintle.verify.records import CleanedRecord
 from lintle.verify.report import Suspect, VerifyRule
@@ -186,26 +186,15 @@ def has_epoch_clash(records: Iterable[CleanedRecord]) -> bool:
     )
 
 
-def sanctioned_reduce(src_line: str) -> str:
-    """Undo the sanctioned edge repairs, each at most once, in ``repair.py``'s
-    order (CRLF, leading trim, trailing trim, one trailing backslash), leaving
-    the interior untouched. The result is the 68/69-char 'core' a clean origin
-    reduces to."""
-    s = src_line
-    if s.endswith("\r"):
-        s = s[:-1]
-    s = s.lstrip(" \t")
-    s = s.rstrip(" \t")
-    if s.endswith("\\"):
-        s = s[:-1]
-    return s
-
-
 def sanctioned_match(src_line: str, clean_line: str) -> bool:
     """True iff ``clean_line`` is a sanctioned repair of ``src_line``: the
-    reduced core equals it, or (missing-checksum case) the 68-char core plus the
-    recomputed column-69 digit equals it."""
-    core = sanctioned_reduce(src_line)
+    68/69-char core ``repair.normalize_edges`` reduces the origin to equals it,
+    or (missing-checksum case) the 68-char core plus the recomputed column-69
+    digit equals it. The reduction routes through ``repair`` rather than
+    restating its strip rules, which is what a hand-kept mirror used to do —
+    it drifted the moment the sequence learned to repeat, and the aligner then
+    reported every later record in the file as ``ORIGIN_MISSING``."""
+    core = repair.normalize_edges(src_line)[0]
     if core == clean_line:
         return True
     return len(core) == 68 and clean_line == core + str(tle.compute_checksum(core))
@@ -232,7 +221,11 @@ def _is_quarantined_shadow(line1: str, line2: str) -> bool:
     copy it keeps — and both share the anchor. A genuine interior mutation is
     unaffected: its origin is a valid record, so this returns False and the
     mutation is still flagged."""
-    return bool(tle.validate_record(sanctioned_reduce(line1), sanctioned_reduce(line2)))
+    return bool(
+        tle.validate_record(
+            repair.normalize_edges(line1)[0], repair.normalize_edges(line2)[0]
+        )
+    )
 
 
 class SourceAligner:
@@ -278,10 +271,13 @@ class SourceAligner:
             if not line:
                 break
             stripped = line.rstrip("\n")
-            # Skip blank source lines: never part of a TLE record (clean's
-            # pairing skips them too), and an interposed blank would break the
-            # adjacent line-1/line-2 pair match below -> false INTERIOR_MUT (#155).
-            if stripped.strip():
+            # Skip content-free source lines: never part of a TLE record (clean's
+            # pairing skips exactly the same set), and an interposed one would
+            # break the adjacent line-1/line-2 pair match below -> false
+            # INTERIOR_MUT (#155), or, when nothing rematches, a desync that
+            # reports every later record as ORIGIN_MISSING. tle2020 wedges a
+            # bare `\` between the two lines of ~2.3k records.
+            if not repair.is_content_free(stripped):
                 self._buf.append(stripped)
 
     def feed(self, rec: CleanedRecord, *, revalidated: bool = True) -> Suspect | None:
