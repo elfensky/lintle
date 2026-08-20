@@ -5,6 +5,7 @@ import json
 import os
 import signal
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -1211,6 +1212,26 @@ class TestConfigPathPrecedence:
 
     def test_explicit_empty_source_is_still_explicit(self):
         assert self._resolved(["verify", "/out", "--source", ""]).source == ""
+
+    def test_explicit_empty_dest_is_still_explicit(self, tmp_path, monkeypatch):
+        # `--dest ""` resolved dest by truthiness (`args.dest or …`) but the
+        # README rule by identity (`args.dest is None`) — so an explicit empty
+        # dest wrote into the default 06-extract WITHOUT its README. Both must
+        # test `is None`, per the module's own identity-not-truthiness rule.
+        seen = {}
+
+        def _capture(out_dir, norad_ids, dest, write_readme):
+            seen.update(dest=dest, write_readme=write_readme)
+            return 0
+
+        monkeypatch.setattr("lintle.extract.run", _capture)
+        # Nonexistent out-dir: _locked_postrun skips the lock, run() is stubbed.
+        out = str(tmp_path / "missing")
+        assert cli.main(["extract", "5", "--out-dir", out, "--dest", ""]) == 0
+        assert seen == {"dest": "", "write_readme": False}
+        assert cli.main(["extract", "5", "--out-dir", out]) == 0
+        assert seen["dest"] == str(Path(out) / cli.EXTRACT_DIRNAME)
+        assert seen["write_readme"] is True
 
     def test_verify_source_falls_back_like_out_dir(self):
         args = self._resolved(["verify"])

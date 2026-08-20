@@ -814,7 +814,13 @@ def _dispatch(argv=None):
             # Lazy for the wall: extract imports lintle.verify parsers.
             from lintle import extract as extract_mod
 
-            dest = args.dest or str(Path(args.out_dir) / EXTRACT_DIRNAME)
+            # `is None`, never truthiness: an explicitly-passed empty dest is
+            # still explicit (same rule as `_resolved_path`) — `or` sent it to
+            # the default 06-extract while `write_readme` below said otherwise.
+            if args.dest is not None:
+                dest = args.dest
+            else:
+                dest = str(Path(args.out_dir) / EXTRACT_DIRNAME)
             return _locked_postrun(
                 args.out_dir,
                 "extract",
