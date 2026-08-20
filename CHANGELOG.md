@@ -4,6 +4,20 @@ All notable changes to this project are documented in this file. The format is b
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- **`extract --dest ""` now honours the explicit empty dest.** The dest default resolved by
+  truthiness (`args.dest or …`) while the README rule resolved by identity
+  (`args.dest is None`), so an explicitly-passed empty dest silently wrote into the default
+  `06-extract` without its README. Both now test `is None`, per `cli.py`'s own
+  identity-not-truthiness rule. Part of #229.
+- **Doc drift**: `verify/checks.py`'s module docstring no longer claims the source-diff never
+  calls `repair.py` — since the edge-repair unification it deliberately calls
+  `repair.normalize_edges` / `repair.is_content_free` as the one definition of an edge repair;
+  `epoch.iso()` gained its missing docstring. Part of #229.
+
 ## [0.14.1] - 2026-08-08
 
 ### Fixed
