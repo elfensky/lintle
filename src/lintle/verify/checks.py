@@ -4,10 +4,12 @@
 - **Contradiction** (goal 3): no two records share ``(catalog, epoch)`` yet carry
   different element bytes.
 - **Source byte-diff** (goal 1): every cleaned line must be a *sanctioned* edit of
-  a real source line — the sanctioned set is exactly the five edge tidy-ups
-  ``repair.py`` may apply. Any change to an interior column is corruption. This
-  re-implements the sanctioned transform independently (it never calls
-  ``repair.py``) so a repair bug can't hide behind its own output."""
+  a real source line — the sanctioned set is exactly the edge tidy-ups
+  ``repair.py`` may apply. Any change to an interior column is corruption. The
+  sanctioned transform has ONE definition — ``repair.normalize_edges`` and
+  ``repair.is_content_free`` — and this module calls it (26e7e28), so the diff
+  undoes exactly what the clean path did; a divergent re-implementation here
+  was itself a source of false suspects."""
 
 from collections.abc import Iterable, Iterator
 from pathlib import Path
