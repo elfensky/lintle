@@ -64,4 +64,8 @@ def epoch_dt(line1: str) -> _dt.datetime:
 
 
 def iso(dt: _dt.datetime) -> str:
+    """The one ISO-8601 spelling of an epoch instant (``…THH:MM:SSZ``) for
+    byte-deterministic output. Takes the ``epoch_dt`` result rather than a
+    ``line1`` so callers format each parsed instant once, not re-parse per
+    rendering — but the format lives here with the parse, one module per #199."""
     return dt.isoformat(timespec="seconds").replace("+00:00", "Z")
