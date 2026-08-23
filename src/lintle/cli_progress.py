@@ -90,6 +90,14 @@ class _LiveTable:
         if self._display is not None:
             self._display.update(self._table(), refresh=True)
 
+    def _plain_line(self, text):
+        """Off a TTY — where there is no frame to update — print ``text`` as one
+        plain line, the only progress record a piped run gets. A no-op on a live
+        console, where the table already shows the same fact. This is the one
+        off-TTY degradation policy, shared by both tables (issue #221)."""
+        if not self._live_mode:
+            self._console.print(text, markup=False)
+
     def _visible(self, rows):
         """The rows this frame can show, plus the number it cannot — see
         :func:`window`. Records that windowing happened so the caller knows the
@@ -247,12 +255,10 @@ class ProgressDisplay(_LiveTable):
                 row.elapsed = stats.elapsed_seconds
             self._clean += stats.clean_count
             self._quarantined += stats.quarantined_count
-        if not self._live_mode:
-            self._console.print(
-                f"[{done}/{self._total_files}] {stats.src_name} — "
-                f"{stats.clean_count:,} clean, {stats.quarantined_count:,} quarantined",
-                markup=False,
-            )
+        self._plain_line(
+            f"[{done}/{self._total_files}] {stats.src_name} — "
+            f"{stats.clean_count:,} clean, {stats.quarantined_count:,} quarantined"
+        )
         self._refresh()
 
     def file_failed(self, path, exc):
@@ -489,7 +495,9 @@ class UnitTable(_LiveTable):
     Same rules as the ``clean`` display, for the same reasons: the frame windows
     when the rows outnumber the terminal (a live region cannot scroll), it is
     not transient so the finished table is the results view, and off a TTY it
-    degrades to two static prints — the roster on entry, the results on exit.
+    degrades to the static roster on entry, one plain line per finished unit
+    and per phase relabel in between (issue #221), and the static results on
+    exit.
     A windowed frame is followed by the complete static table, so no row the
     window hid is lost. ``headers[0]`` indexes and ``headers[1]`` names, matching
     ``summary.results_table``; the rest are the command's own columns.
@@ -558,20 +566,40 @@ class UnitTable(_LiveTable):
         self._refresh()
 
     def finish(self, name, **cells):
-        """Write a unit's final cells and count it done."""
+        """Write a unit's final cells and count it done. Off a TTY the same
+        facts print as one plain line — string cells in column order; renderable
+        cells (the progress bar) have no plain form and are skipped."""
+        line = None
         with self._lock:
             if (row := self._by_name.get(name)) is not None:
                 row.state = "done"
                 row.cells.update(cells)
                 self._done += 1
+                detail = ", ".join(
+                    f"{h} {v}"
+                    for h in self._headers[2:]
+                    if isinstance(v := row.cells.get(h), str) and v
+                )
+                line = f"[{self._done}/{len(self._rows)}] {name}" + (
+                    f" — {detail}" if detail else ""
+                )
+        if line is not None:
+            self._plain_line(line)
         self._refresh()
 
     def phase(self, label):
         """Relabel the summary row for a stage that is not per-unit (sorting the
         stream, writing the output tree). The table stays put and keeps every
-        row it has — the stage reports itself without printing a line."""
+        row it has — the stage reports itself without printing a line. Off a TTY
+        each new label prints once instead, so the long post-loop stages leave a
+        trace in a piped log rather than silence — the callers' throttled
+        relabels (every 250k records in verify's sort, 10k in dedup's write)
+        become that log's heartbeat lines."""
         with self._lock:
+            changed = label != self._label
             self._label = label
+        if changed and label:
+            self._plain_line(label)
         self._refresh()
 
     def totals(self, **cells):
