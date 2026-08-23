@@ -542,7 +542,10 @@ records, and the command's own result columns — hard/soft suspects for `verify
 read and hard-suspect exclusions for `dedup`), and the finished table is the results view.
 The stages that follow the per-stem loop — the contradiction pass, the optional orbit
 pass, the write — report themselves by relabelling the pinned summary row, so they need
-no spinner and print no line; `verify` rewrites every row's suspect columns before the
+no spinner and print no line on a TTY. Off a TTY the same degradation as `clean` applies
+(#221): one plain line per finished stem and one per phase relabel — the callers'
+throttled relabels double as a piped log's heartbeats — so a redirected run is
+distinguishable from a hung one; `verify` rewrites every row's suspect columns before the
 frame freezes, since contradiction and orbit findings are attributed to their stems only
 after the stream. The verdict line prints after the table closes, so it lands under the
 results rather than above a live region. Per-stem progress is exact rather than estimated:
