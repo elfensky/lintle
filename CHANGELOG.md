@@ -8,6 +8,13 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Fixed
 
+- **`verify`/`dedup` now report progress off a TTY.** A piped or redirected run printed the
+  roster, then nothing until the results table — 2 h of indistinguishable-from-hung silence
+  on the full corpus. `UnitTable` now emits one plain line per finished stem and one per
+  phase relabel (the callers' throttled relabels double as heartbeat lines), through the
+  same off-TTY policy `clean`'s per-file lines already used, now shared as
+  `_LiveTable._plain_line`. Closes #221.
+
 - **`extract --dest ""` now honours the explicit empty dest.** The dest default resolved by
   truthiness (`args.dest or …`) while the README rule resolved by identity
   (`args.dest is None`), so an explicitly-passed empty dest silently wrote into the default
