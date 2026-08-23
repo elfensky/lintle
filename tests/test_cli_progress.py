@@ -706,9 +706,43 @@ class TestUnitTable:
             table.finish("a", records="7")
             table.finish("b", records="9")
         out = table._console.file.getvalue()
-        # Two static prints, no live frames: the roster, then the results.
-        assert out.count("records") == 2
-        assert "7" in out and "9" in out
+        # Two static table prints (the roster, then the results), with one
+        # plain per-unit line between them per finished unit (issue #221) —
+        # off a TTY those lines are a piped run's only sign of life.
+        assert out.count("records") == 2 + 2
+        assert "[1/2] a — records 7" in out
+        assert "[2/2] b — records 9" in out
+
+    def test_off_a_tty_finish_skips_renderable_cells(self):
+        table = self._table(["a"], terminal=False)
+        with table:
+            table.finish("a", records="3", progress=cli_progress.bar(1, 1))
+        out = table._console.file.getvalue()
+        assert "[1/1] a — records 3" in out
+        assert "ProgressBar" not in out  # no repr leaks into the plain line
+
+    def test_off_a_tty_phase_prints_each_new_label_once(self):
+        table = self._table(["a"], terminal=False)
+        with table:
+            table.phase("sorting…")
+            table.phase("sorting…")  # unchanged — must not print again
+            table.phase("writing…")
+            table.phase(None)  # reset to the files label — never printed
+        out = table._console.file.getvalue()
+        assert out.count("sorting…") == 1
+        # Once as a plain line only: `phase(None)` restored the files label,
+        # so the final results table's summary row does not repeat it.
+        assert out.count("writing…") == 1
+
+    def test_on_a_tty_finish_and_phase_print_no_plain_lines(self):
+        table = self._table(["a"])
+        with table:
+            table.finish("a", records="3")
+            table.phase("sorting…")
+        out = table._console.file.getvalue()
+        # The live frame already shows both facts; the off-TTY lines must not
+        # double up on an interactive console.
+        assert "[1/1] a — records 3" not in out
 
     def test_tier_drops_columns_whole(self):
         table = self._table(["a"], width=70, drop={"narrow": ("size", "progress")})
