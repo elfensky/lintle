@@ -134,12 +134,9 @@ Never claim success without the output. If a check fails, report the failure.
 Two branches, two roles:
 
 - **`develop`** is the long-running trunk. All non-release history lives here.
-  Two paths in, by scope:
-  - **Direct commits** for chores and bugfixes (`chore:`, `fix:`, `docs:`,
-    `test:`, `style:`) — commit on `develop`, push. No branch, no PR.
-  - **Branch + PR** for features and multi-file refactors
-    (`feature/<desc>` or `refactor/<desc>`) — land via **rebase-and-merge**
-    so `develop` stays linear (no merge bubbles).
+  One path in: every change — feature, refactor, chore or one-line fix — goes
+  on its own branch in its own worktree and lands by PR via
+  **rebase-and-merge**, so `develop` stays linear (no merge bubbles).
 - **`main`** is the release branch. Each release is a single merge commit on
   `main` whose tree is develop's release-point tree and whose second parent is
   develop's release-point commit. The second parent gives graph visualizers a
@@ -149,67 +146,38 @@ Two branches, two roles:
   **Never commit directly to `main`** — release commits only, hand-built with
   `git commit-tree` (see § Versioning § Release flow).
 
-- Branch names (when branching): `feature/<desc>`, `refactor/<desc>` —
-  lowercase, hyphens. Also `fix/<desc>` for a bugfix that outgrows a direct
-  `develop` commit (multi-file, or worth a PR for the reasoning); a one-line
-  or single-file fix still commits straight to `develop`. The release-prep
-  branch is the documented exception: `chore/release-X.Y.Z` (see § Versioning
-  § Release flow) carries the version bump + dated `CHANGELOG.md` section
-  through a review PR.
+- Branch names: `feature/<desc>`, `refactor/<desc>`, `fix/<desc>`,
+  `chore/<desc>` — lowercase, hyphens. The release-prep branch is
+  `chore/release-X.Y.Z` (see § Versioning § Release flow); it carries the
+  version bump + dated `CHANGELOG.md` section.
 - Use [Conventional Commits](https://www.conventionalcommits.org/): `feat:`,
-  `fix:`, `docs:`, `test:`, `refactor:`, `style:`, `chore:`. Direct commits to
-  `develop` use these as the commit prefix; branched work uses them on
-  individual commits inside the branch.
-- Run the verification commands above before pushing any commit to `develop`
-  (direct or via PR merge).
+  `fix:`, `docs:`, `test:`, `refactor:`, `style:`, `chore:`, on every individual
+  commit inside the branch.
+- Run the verification commands above before opening or merging a PR.
 - Land PRs to `develop` via **"Rebase and merge"** in the GitHub UI (or
   `gh pr merge --rebase --delete-branch` locally). Do not use "Create a merge
   commit" — merge bubbles fragment the visualizer into apparent multiple
   develop lanes. Do not use "Squash and merge" either — keep the individual
   commits readable in `git log develop`.
 
-### Parallel development with git worktrees
+### Worktrees — one per session
 
-Worktrees let one clone host several branches simultaneously, each in its own
-directory with its own `.venv/`. Use one for any non-trivial feature; iterate in
-one worktree while a slow test run finishes in another.
+Every session works in its own worktree under `.worktrees/`, created `--lock` from
+`origin/develop`; the main checkout stays on `develop` and only pulls. The commands are in
+[AGENTS.md § Worktrees](AGENTS.md#worktrees--one-lane-always). lintle specifics:
 
 ```bash
-# 1. Create the worktree from develop
-git worktree add .worktrees/<branch-dir> -b feature/<desc> develop
-
-# 2. Enter and install
-cd .worktrees/<branch-dir>
-uv sync
-
-# 3. Symlink the corpus so the CLI sees data/ — keeps a single ~30 GB copy on disk
-ln -s ../../data data
-
-# 4. Work, commit incrementally, then verify
-uv run pytest && uv run ruff check . && uv run ruff format --check .
-
-# 5. Push and open a PR; land via "Rebase and merge"
-git push -u origin feature/<desc>
-gh pr create --base develop --title "<title>" --body "<body>"
-# Run the merge from OUTSIDE the repo. --delete-branch also deletes the local
-# branch, so gh first switches the checkout to develop — which fails from
-# inside a worktree ("'develop' is already used by worktree at ..."). The API
-# merge still succeeds, but the local step errors; --repo avoids it entirely.
-(cd /tmp && gh pr merge <N> --rebase --delete-branch --repo elfensky/lintle)
-
-# 6. Clean up (use -D, not -d: rebase rewrites SHAs so the local branch
-#    won't appear "merged" to git even after origin landed it)
-git worktree remove .worktrees/<branch-dir>
-git branch -D feature/<desc>
+uv sync                  # a new worktree has its own .venv/
+ln -s ../../data data    # the ~30 GB corpus stays in the main checkout; one copy on disk
 ```
-
-Worktree directory names mirror the branch with slashes replaced by hyphens —
-`feature/repair-tier-2` → `.worktrees/feature-repair-tier-2`. The whole
-`.worktrees/` tree is git-ignored.
 
 When running `lintle clean` from multiple worktrees in parallel, pass
 `--out-dir <local-dir>` to each — the default `data/output/` is shared through
 the symlink and concurrent runs will collide.
+
+If `gh pr merge --rebase --delete-branch` errors on its local step inside a worktree
+("'develop' is already used by worktree at ..."), the merge has still landed. Running it from
+outside the repo avoids the error: `(cd /tmp && gh pr merge <N> --rebase --delete-branch --repo elfensky/lintle)`.
 
 ## Versioning
 
@@ -231,8 +199,8 @@ current — every dev workflow in this repo already does.
 
 Release flow:
 
-1. On a `chore/release-X.Y.Z` branch off `develop`, bump `version` in
-   `pyproject.toml`.
+1. On a `chore/release-X.Y.Z` branch in its own worktree off `origin/develop`,
+   bump `version` in `pyproject.toml`.
 2. Add a new `## [X.Y.Z] - YYYY-MM-DD` section at the top of `CHANGELOG.md` with
    `### Added` / `### Changed` / `### Fixed` subsections (see Keep a Changelog).
 3. Run the verification commands (`uv run pytest`, `uv run ruff check .`,
@@ -250,10 +218,8 @@ Release flow:
               -p origin/main \
               -p origin/develop \
               -m "Release vX.Y.Z")
-   git update-ref refs/heads/main "$COMMIT"
-   git checkout main
-   git tag -a vX.Y.Z -m "Release vX.Y.Z"
-   git push origin main vX.Y.Z
+   git tag -a vX.Y.Z "$COMMIT" -m "Release vX.Y.Z"
+   git push origin "$COMMIT:refs/heads/main" vX.Y.Z    # no checkout of main
    ```
    To see only the release commits on `main` (skipping the develop history
    reachable via second parents), use `git log --first-parent main`.

@@ -2,7 +2,7 @@
 # data/source/ holds the raw tle*.txt files and TLEs.zip; data/output/ is where
 # the cleaner writes <name>.cleaned.txt / <name>.broken.txt. No trailing slash
 # so the pattern also covers the per-worktree `data` symlink (see CLAUDE.md
-# § Worktree Workflow step 4).
+# § Worktrees).
 /data
 
 # Legacy / alternate locations (in case files are placed at the repo root)
