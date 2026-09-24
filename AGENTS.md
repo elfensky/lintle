@@ -228,73 +228,41 @@ uv run lintle clean             # Clean data/source/ -> data/output/
 - Build order, if rebuilding from the spec (§12): `pyproject.toml` → `tle.py` (test-first,
   it is the correctness oracle) → `repair.py` → `pipeline.py` → `report.py` / `cli.py`.
 
-## Worktree Workflow
+## Worktrees — one lane, always
 
-Trunk is `develop`; `main` carries one merge commit per release and never
-receives direct commits. Two paths into `develop`:
+Every session — feature, chore or one-line fix — works in its own worktree under `.worktrees/`
+(git-ignored), never in the main checkout. The main checkout stays on `develop` and moves only by
+`git pull --ff-only`: a branch parked there is how parallel sessions commit onto each other's work.
+Every change reaches `develop` by a PR. The why: vault `knowledge/developer/stack/git-and-prs.md`.
 
-- **Direct commits** for chores and bugfixes (`chore:`, `fix:`, `docs:`,
-  `test:`, `style:`) — commit on `develop`, push. No branch, no PR.
-- **Branch + PR** for features, multi-file refactors, and bugfixes that
-  outgrow a direct commit (`feature/<desc>`, `refactor/<desc>`, `fix/<desc>`)
-  — land via **rebase-and-merge** so `develop` stays linear
-  (see `CONTRIBUTING.md` § Git Workflow).
+```bash
+git status -sb && git pull --ff-only             # main checkout: sync only, never commit here
+git worktree prune && git fetch -q --prune origin
+git worktree add --lock --reason "$(hostname -s)" .worktrees/<slug> -b <type>/<slug> origin/develop
+cd .worktrees/<slug>                             # work and commit here
+git push -u origin HEAD && gh pr create --base develop --fill
+gh pr checks --watch --required && gh pr merge --rebase --delete-branch
+cd - && git pull --ff-only
+git worktree unlock .worktrees/<slug> && git worktree remove .worktrees/<slug> && git branch -D <type>/<slug>
+```
 
-**Worktrees are the parallel-development mechanism for branched work** — they
-let multiple branches share one clone without contention, so you can keep a
-long-running test run in one worktree while editing in another.
+A new worktree has no dependencies installed: run `uv sync` in it first. A locked worktree
+you did not create belongs to another session — leave it. `.claude/worktrees/` is Claude Code's own
+subagent isolation and is managed by the harness.
 
-**When to use a worktree:** any `feature/<desc>`, `refactor/<desc>`, or
-`fix/<desc>` branch.
-Default for any non-trivial change you'd raise a PR for.
+**Corpus:** the ~30 GB `data/` tree lives only in the main checkout. Symlink it into the worktree
+(`ln -s ../../data data`) — one copy on disk, and the CLI works transparently. The symlinked
+`data/` is shared, so don't write through it from parallel worktrees: pass
+`--out-dir <worktree-local-dir>` to `lintle clean`, or concurrent runs collide in `data/output/`.
 
-**When to skip the worktree:** chores and bugfixes — single-line fixes, doc
-edits, dependency bumps, `ruff format` passes. Commit directly on `develop` in
-the main checkout. No branch, no PR.
+Before the PR: small, logical commits (tests first, then implementation), and the verify chain
+(§ Verification). Land with rebase-and-merge only — never "Create a merge commit" or "Squash and
+merge" (see `CONTRIBUTING.md` § Git Workflow).
 
-**Feature workflow (worktree):**
-
-1. From the main checkout, create the worktree off `develop`:
-   `git worktree add .worktrees/<branch-dir> -b <branch-name> develop`
-2. `cd .worktrees/<branch-dir>`
-3. Install dev deps in the worktree: `uv sync`
-4. **Symlink the corpus into the worktree** (the ~30 GB `data/` tree lives only
-   in the main checkout; the symlink keeps a single copy on disk and lets the
-   CLI work transparently): `ln -s ../../data data`
-5. Do the work in the worktree directory — small, logical commits as you go
-   (tests first, then implementation), not one giant commit at the end
-6. Verify in the worktree: `uv run pytest && uv run ruff check . && uv run ruff format --check .`
-7. Land via PR. Push the branch (`git push -u origin <branch-name>`), open a
-   PR against `develop`, then use the GitHub UI's **"Rebase and merge"**
-   button (or `gh pr merge --rebase --delete-branch`). Do not use "Create a
-   merge commit" or "Squash and merge".
-8. Clean up: `git worktree remove .worktrees/<branch-dir>` then
-   `git branch -D <branch-name>` (use `-D`, not `-d`: rebase-and-merge
-   rewrites the SHAs on `develop`, so the local branch won't look "merged"
-   to git even though its content has landed).
-
-**No per-merge version bumps.** Feature merges to `develop` do not touch
-`pyproject.toml`'s version. Version bumps and the dated `CHANGELOG.md` section
-land together on a `chore/release-X.Y.Z` branch — see `CONTRIBUTING.md`
-§ Versioning § Release flow. Add CHANGELOG-worthy notes alongside the code in
-your feature branch; they'll be collected under the next dated version when the
-release is cut.
-
-**Chore/bugfix workflow (direct on develop):** stay on `develop` in the main
-checkout, edit, run the same verification chain, commit with the right
-conventional-commit prefix (`chore:`, `fix:`, `docs:`, `test:`, `style:`),
-push. No branch, no worktree, no PR.
-
-**Worktree directory:** `.worktrees/` in project root (git-ignored). Directory
-names mirror the branch with slashes replaced by hyphens —
-`feature/repair-tier-2` → `.worktrees/feature-repair-tier-2`.
-
-**Parallel worktrees:** multiple `.worktrees/*` directories can coexist. Each has
-its own `.venv/` (created by `uv sync`); the symlinked `data/` is shared, so
-don't write through it — `clean` writes to `data/output/` and concurrent
-worktrees writing there will collide. Pass `--out-dir <worktree-local-dir>` to
-`lintle clean` when iterating in parallel so each worktree writes to its own
-output tree.
+**No per-merge version bumps.** Merges to `develop` do not touch `pyproject.toml`'s version.
+Version bumps and the dated `CHANGELOG.md` section land together on a `chore/release-X.Y.Z`
+branch — see `CONTRIBUTING.md` § Versioning § Release flow. Add CHANGELOG-worthy notes alongside
+the code in your branch; they'll be collected under the next dated version when the release is cut.
 
 ## Verification
 
@@ -323,11 +291,9 @@ If any fail, report the actual output — do not suppress or simplify failures.
   records, not maintained).
 - Tests are grouped into `Test*` classes, one per unit or behaviour under test.
 - Git: `develop` is the trunk; `main` carries one merge commit per release and
-  never receives direct commits. On `develop`: chores and bugfixes (`chore:`,
-  `fix:`, `docs:`, `test:`, `style:`) commit directly; features and multi-file
-  refactors — and any bugfix too large for a direct commit — go on a
-  `feature/<desc>`, `refactor/<desc>`, or `fix/<desc>` branch and land via
-  **rebase-and-merge** so `develop` stays linear. Releases are hand-assembled
+  never receives direct commits. Every change — chores and one-line fixes
+  included — goes on its own branch in its own worktree (§ Worktrees) and lands
+  on `develop` by PR via **rebase-and-merge** so `develop` stays linear. Releases are hand-assembled
   merge commits on `main` (tree = develop's release-point tree; second parent =
   develop's release-point) — see CONTRIBUTING.md § Versioning for the
   `git commit-tree` recipe. Tagged on `main`. Use `git log --first-parent main`
