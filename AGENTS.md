@@ -256,8 +256,9 @@ subagent isolation and is managed by the harness.
 `--out-dir <worktree-local-dir>` to `lintle clean`, or concurrent runs collide in `data/output/`.
 
 Before the PR: small, logical commits (tests first, then implementation), and the verify chain
-(§ Verification). Land with rebase-and-merge only — never "Create a merge commit" or "Squash and
-merge" (see `CONTRIBUTING.md` § Git Workflow).
+(§ Verification). Land on `develop` with rebase-and-merge only — never "Create a merge commit" or
+"Squash and merge" (see `CONTRIBUTING.md` § Git Workflow). The release PR into `main` is the one
+merge commit.
 
 **No per-merge version bumps.** Merges to `develop` do not touch `pyproject.toml`'s version.
 Version bumps and the dated `CHANGELOG.md` section land together on a `chore/release-X.Y.Z`
@@ -293,10 +294,10 @@ If any fail, report the actual output — do not suppress or simplify failures.
 - Git: `develop` is the trunk; `main` carries one merge commit per release and
   never receives direct commits. Every change — chores and one-line fixes
   included — goes on its own branch in its own worktree (§ Worktrees) and lands
-  on `develop` by PR via **rebase-and-merge** so `develop` stays linear. Releases are hand-assembled
-  merge commits on `main` (tree = develop's release-point tree; second parent =
-  develop's release-point) — see CONTRIBUTING.md § Versioning for the
-  `git commit-tree` recipe. Tagged on `main`. Use `git log --first-parent main`
+  on `develop` by PR via **rebase-and-merge** so `develop` stays linear. Releases are merge
+  commits on `main` made by a release PR from `develop` (`gh pr merge --merge`; tree =
+  develop's release-point tree, second parent = develop's release-point) — see
+  CONTRIBUTING.md § Versioning § Release flow. Tagged on `main`. Use `git log --first-parent main`
   for the release-only view. Use conventional commits (`feat:`, `fix:`,
   `docs:`, `test:`, `refactor:`, `style:`, `chore:`).
 - Versioning: `pyproject.toml`'s `[project] version` is the single source of truth;
