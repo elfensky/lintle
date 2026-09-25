@@ -143,8 +143,9 @@ Two branches, two roles:
   "branched-from" edge from each release on `main` back to its origin on
   `develop`. Use `git log --first-parent main` to see only the releases.
   Releases are annotated tags on `main`. There is no separate release branch.
-  **Never commit directly to `main`** — release commits only, hand-built with
-  `git commit-tree` (see § Versioning § Release flow).
+  **Never commit directly to `main`** — a release lands by a release PR from
+  `develop`, merged with a merge commit (see § Versioning § Release flow). A
+  ruleset makes `main` PR-only and merge-only.
 
 - Branch names: `feature/<desc>`, `refactor/<desc>`, `fix/<desc>`,
   `chore/<desc>` — lowercase, hyphens. The release-prep branch is
@@ -158,7 +159,8 @@ Two branches, two roles:
   `gh pr merge --rebase --delete-branch` locally). Do not use "Create a merge
   commit" — merge bubbles fragment the visualizer into apparent multiple
   develop lanes. Do not use "Squash and merge" either — keep the individual
-  commits readable in `git log develop`.
+  commits readable in `git log develop`. The one merge commit is the release PR
+  into `main` (§ Versioning § Release flow).
 
 ### Worktrees — one per session
 
@@ -206,26 +208,29 @@ Release flow:
 3. Run the verification commands (`uv run pytest`, `uv run ruff check .`,
    `uv run ruff format --check .`) and report the actual output.
 4. Open a PR to `develop`, land via **"Rebase and merge"** once it's green.
-5. Build the release commit on `main` with `git commit-tree`. The tree comes
-   from `develop`'s release-point; the parents are `main`'s current tip and
-   `develop`'s release-point. This is what gives the graph a visible
-   "branched-from" edge from `main` to `develop` at each release while keeping
-   the release tree byte-identical to what gets published:
+5. Open the release PR from `develop` to `main` and merge it with a **merge
+   commit** — the one place this repo uses one. GitHub builds the same commit the
+   old hand-built `git commit-tree` recipe did: parents are `main`'s tip and
+   `develop`'s release-point, and the tree is `develop`'s release-point tree
+   (because `main`'s tree always equals the previous release-point's tree, the
+   merge has nothing to combine). That keeps the visible "branched-from" edge
+   from `main` to `develop` at each release and the release tree byte-identical
+   to what gets published — and CI plus the version gate now run on the release
+   before it lands:
    ```bash
+   gh pr create --base main --head develop --title "Release vX.Y.Z" --body "Release vX.Y.Z"
+   gh pr checks --watch --required
+   gh pr merge --merge --subject "Release vX.Y.Z"   # never --delete-branch: the head is develop
    git fetch origin
-   TREE=$(git rev-parse origin/develop^{tree})
-   COMMIT=$(git commit-tree "$TREE" \
-              -p origin/main \
-              -p origin/develop \
-              -m "Release vX.Y.Z")
-   git tag -a vX.Y.Z "$COMMIT" -m "Release vX.Y.Z"
-   git push origin "$COMMIT:refs/heads/main" vX.Y.Z    # no checkout of main
+   git tag -a vX.Y.Z origin/main -m "Release vX.Y.Z"
+   git push origin vX.Y.Z
    ```
-   To see only the release commits on `main` (skipping the develop history
+   Merge it before anything else lands on `develop`, or the release takes that
+   too. To see only the release commits on `main` (skipping the develop history
    reachable via second parents), use `git log --first-parent main`.
 
-   **The push to `main` auto-publishes to TestPyPI.** `publish.yml` fires on every
-   push to `main` (main only ever carries release commits, so this is per-release,
+   **The merge to `main` auto-publishes to TestPyPI.** `publish.yml` fires on every
+   push to `main` (main only ever takes release merges, so this is per-release,
    not per-merge) and uploads the built sdist + wheel to **TestPyPI** via
    **Trusted Publishing (OIDC)** — no API tokens are stored or needed; GitHub's
    signed OIDC identity is the credential. Watch the run under *Actions → Publish*
