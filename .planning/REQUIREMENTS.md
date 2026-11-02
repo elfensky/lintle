@@ -14,7 +14,7 @@ Source of scope: the five open GitHub issues (#222, #223, #226, #227, #228, read
 - [ ] **DET-01**: Two `clean` runs over identical inputs produce byte-identical `02-broken/` trees: the `.broken.txt` header is `# source: <name> | lintle <version>`, with no `generated:` stamp
 - [ ] **DET-02**: `report.md` carries the same run stamp as `report.json`'s `run.timestamp`, injected from the envelope (`format_run_report`/`write_run_report` take `generated_at`), not read from the clock inside the renderer
 - [ ] **DET-03**: The freeze test no longer canonicalises timestamps under `02-broken/`, so a reintroduced clock in the sidecar fails the test
-- [ ] **DET-04**: Every statement of the byte-determinism invariant (`AGENTS.md`, `ARCHITECTURE.md` incl. the example header at line ~722, `CONTRIBUTING.md`) says exactly which artifacts carry run metadata (`report.json` `run.timestamp` and timing floats, `report.md` stamp)
+- [ ] **DET-04**: Every statement of the byte-determinism invariant (`AGENTS.md`, `ARCHITECTURE.md` incl. the example header at line ~725, `CONTRIBUTING.md`) says exactly which artifacts carry run metadata (`report.json` `run.timestamp` and timing floats, `report.md` stamp)
 
 ### History leaf (#228)
 
@@ -83,9 +83,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 |-------------|-------|--------|
 
 **Coverage:**
-- v1 requirements: 22 total
+- v1 requirements: 20 total
 - Mapped to phases: 0
-- Unmapped: 22 ⚠️
+- Unmapped: 20 ⚠️
 
 ---
 *Requirements defined: 2026-11-02*
