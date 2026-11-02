@@ -15,6 +15,17 @@ under `docs/superpowers/archive/` (`specs/`, `plans/`, `runs/`) as historical ra
 they are point-in-time records and are no longer maintained — `ARCHITECTURE.md` and the code
 are the current truth.
 
+## Life cockpit
+
+Tracked in the life-cockpit vault under `#personal` (tracker: `elfensky/lintle`). The cockpit is the
+control plane (what to work on); this repo is where the work happens. Report progress by
+opening/closing issues and PRs as usual — the cockpit pulls from the tracker on its next
+`/sync`. Nothing to update in the vault; don't mirror cockpit state (milestones, due dates) here.
+GSD projects: after `/gsd-new-project`, run `/cockpit-gsd-profile` once in this repo before planning the first slice.
+Roadmap: this repo owns its roadmap. `.planning/ROADMAP.md` (GSD) is the one roadmap file here; no second
+roadmap file lives in this repo. A session in this repo publishes it to projects.static.lav.ren through
+keijiban (`elfensky/keijiban`); the vault keeps the enrollment only, never a copy of the plan.
+
 ## Tech Stack
 
 Python 3.14 · uv · lean runtime (**`rich`** + **`humanize`**) · `sgp4` (test oracle;
