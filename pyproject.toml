@@ -73,8 +73,9 @@ src = ["src"]
 # dated, explicitly-unmaintained point-in-time records (see CLAUDE.md); their
 # snippets document what the code looked like THEN, so reformatting them
 # rewrites history rather than tidying it. ARCHITECTURE.md, README.md and
-# CONTRIBUTING.md sit at the root and stay in scope.
-extend-exclude = ["docs/"]
+# CONTRIBUTING.md sit at the root and stay in scope. `.planning/` (GSD) is the
+# same kind of record: plans, research and the codebase map quote code as it was.
+extend-exclude = ["docs/", ".planning/"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
