@@ -40,7 +40,7 @@ and on any doubt a record is quarantined, never guessed.
 - [ ] #228 — finish the `history` reduction: `span_days` computed once in `HistoryStats`, one shared `history.stats_row` for the 8 keys dedup and extract both emit, one home for `RECORD_BYTES` in `tle.py`; outputs byte-identical
 - [ ] #227 — one owner for the checkpoint write side (`CheckpointSession` open/record/delete); checkpoint bytes identical
 - [ ] #226 — extract the clean orchestration from `cli.py` into `clean_run.py` with `run(args) -> int` and a pure, table-tested `join_exit_code(...)`
-- [ ] #223 — make the sidecar byte-determinism claim true: either qualify the invariant ("modulo run metadata") or drop the `generated:` stamp from the `.broken.txt` header (decision needed first)
+- [ ] #223 — make the sidecar byte-determinism claim true: drop the `generated:` stamp from the `.broken.txt` header and inject the run stamp into `report.md` (resolution chosen and prototyped in the 2026-08-16 issue comment)
 - [ ] #222 — parallelise the per-file cleaned scan shared by `verify` and `dedup` (`verify/scan.py`), within constant memory and with byte-identical emission order
 - [ ] Doc drift: CONTRIBUTING.md says Python 3.11+ (pyproject.toml requires 3.14); README.md and CONTRIBUTING.md call `sgp4` dev-only (it is a verify-scoped runtime dependency)
 
@@ -59,7 +59,7 @@ and on any doubt a record is quarantined, never guessed.
 - Brownfield: 0.14.1 released 2026-08-08; `CHANGELOG.md` `[Unreleased]` holds #221 and #229 fixes not yet cut into a release.
 - Codebase map: `.planning/codebase/` (2026-11-02). Living design reference: repo-root `ARCHITECTURE.md`.
 - Measured on the 30.4 GB / 232,380,554-record corpus (#222): `clean --reconstruct-checksum` 21 m 23 s on 7 workers; `verify --source --orbit` 2 h 05 m 36 s on 1 core (64% of pipeline wall clock); `dedup` 48 m 50 s on 1 core.
-- #226, #227 and #228 were each prototyped before filing: suite green, outputs byte-identical. #227 is described as prerequisite-shaped for #222.
+- #226, #227 and #228 were each prototyped before filing: suite green, outputs byte-identical. #227 is described as prerequisite-shaped for #222. A #222 spike (2026-08-16 comment, 4-stem fixture) showed a stem-order merge of parallel per-stem scans is byte-identical to serial.
 - Open Dependabot PRs: #238 (setup-uv 9.0.0 → 10.3.3), #239 (dev-dependency bumps).
 - Concerns recorded in `.planning/codebase/CONCERNS.md` (not filed as issues): `scrub_outputs` deletes with `rmtree(ignore_errors=True)`; the verify spill directory under `$TMPDIR` is outside the disk guard; CI runs on Ubuntu only.
 
