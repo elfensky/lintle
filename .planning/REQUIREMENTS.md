@@ -36,7 +36,7 @@ Source of scope: the five open GitHub issues (#222, #223, #226, #227, #228, read
 
 ### Parallel cleaned scan (#222)
 
-- [ ] **PAR-01**: Per-phase timing for `verify` and `dedup` (scan, merge/conflicts, orbit, writes) is measured on the corpus before the parallel scan is built, and the result decides whether `dedup` is parallelised too
+- [ ] **PAR-01**: Per-phase timing for `verify` and `dedup` (scan, merge/conflicts, orbit, writes) is measured on the corpus before the parallel scan is built and again after it; the first result decides whether `dedup` is parallelised too, the second records the speedup
 - [ ] **PAR-02**: `verify` (and `dedup`, if PAR-01 justifies it) accepts `--jobs N` with the same meaning as `clean`; `--jobs 1` runs serially
 - [ ] **PAR-03**: Output under `04-verify/` (and `05-dedup/`) is byte-identical for every `--jobs` value and to the serial output: per-stem results merge in stem order, never completion order, proven by a multi-stem fixture with cross-stem ties, forced spills and forced reverse completion
 - [ ] **PAR-04**: Memory stays constant: workers return spilled run paths and small tallies, never record lists; the per-worker spill budget shrinks with the worker count; the final merge's open-file count is bounded
@@ -81,11 +81,31 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
+| DET-01 | Phase 1 | Pending |
+| DET-02 | Phase 1 | Pending |
+| DET-03 | Phase 1 | Pending |
+| DET-04 | Phase 1 | Pending |
+| HIST-01 | Phase 1 | Pending |
+| HIST-02 | Phase 1 | Pending |
+| HIST-03 | Phase 1 | Pending |
+| DOC-01 | Phase 1 | Pending |
+| DOC-02 | Phase 1 | Pending |
+| CLEAN-01 | Phase 2 | Pending |
+| CLEAN-02 | Phase 2 | Pending |
+| CLEAN-03 | Phase 2 | Pending |
+| CKPT-01 | Phase 3 | Pending |
+| CKPT-02 | Phase 3 | Pending |
+| CKPT-03 | Phase 3 | Pending |
+| PAR-01 | Phase 4 | Pending |
+| PAR-02 | Phase 4 | Pending |
+| PAR-03 | Phase 4 | Pending |
+| PAR-04 | Phase 4 | Pending |
+| PAR-05 | Phase 4 | Pending |
 
 **Coverage:**
 - v1 requirements: 20 total
-- Mapped to phases: 0
-- Unmapped: 20 ⚠️
+- Mapped to phases: 20
+- Unmapped: 0 ✓
 
 ---
 *Requirements defined: 2026-11-02*
