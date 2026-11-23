@@ -16,8 +16,6 @@ from lintle import (
     cli_progress,
     pipeline,
     process_control,
-    report,
-    resume,
     run_planning,
     term,
 )
@@ -57,8 +55,12 @@ def run_workers(
     jobs: int,
     console,
     sizes: dict[str, int],
+    session,
 ) -> WorkerRunResult:
-    """Dispatch ``plan.files_to_process`` across a worker pool."""
+    """Dispatch ``plan.files_to_process`` across a worker pool. ``session`` is
+    the run's :class:`resume.CheckpointSession` — the one owner of the
+    checkpoint write side; each completed file is committed to it with a
+    single ``session.record`` call."""
     all_stats = list(plan.reused_stats)
     failed_files = []
     interrupted = False
@@ -121,18 +123,7 @@ def run_workers(
                         try:
                             all_stats.append(stats)
                             progress.file_done(stats)
-                            plan.completed[path] = resume.CompletedEntry(
-                                summary=report.summary_dict(stats),
-                                outputs=resume.output_sizes(config.out_dir, stats),
-                            ).as_dict()
-                            resume.write_checkpoint(
-                                config.out_dir,
-                                resume.build_checkpoint(
-                                    inputs=plan.inputs,
-                                    completed=plan.completed,
-                                    run_identity=plan.run_identity,
-                                ),
-                            )
+                            session.record(path, stats)
                         except Exception as exc:
                             # Parent-side bookkeeping failure: tear the pool
                             # down via the KI path; mark as an operational
@@ -158,7 +149,7 @@ def run_workers(
             if operational_error is None:
                 term.note(
                     process_control.format_cancel_message(
-                        done=len(plan.completed), total=len(files)
+                        done=session.completed_count, total=len(files)
                     )
                 )
         else:
