@@ -16,9 +16,10 @@ from lintle.diagnostics import RULES, Diagnostic, RepairTier, RuleID
 def utc_stamp() -> str:
     """Return the current UTC time as an ISO 8601 string (``%Y-%m-%dT%H:%M:%SZ``).
 
-    Shared by ``format_run_report`` and ``report_writers._render_header`` so
-    the timestamp format is defined once. Resume's compact filename stamp
-    (``%Y%m%dT%H%M%SZ``) is intentionally different and lives in resume.py.
+    Read once at the run's edge (``cli.main``) and injected into every renderer
+    that carries a stamp, so the timestamp format is defined once. Resume's
+    compact filename stamp (``%Y%m%dT%H%M%SZ``) is intentionally different and
+    lives in resume.py.
     """
     return datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -434,6 +435,7 @@ def format_run_report(
     all_stats: list[FileStats],
     top_n: int | None = 100,
     failed_files: list[tuple[str, str]] | None = None,
+    generated_at: str | None = None,
 ) -> str:
     """Render a Markdown report aggregating every processed file.
 
@@ -449,10 +451,12 @@ def format_run_report(
     present. When ``failed_files`` is non-empty, a ``## Failures`` section
     lists each file that could not be processed alongside its error string —
     omitted entirely on a clean run so a zero-failure report.md is unchanged.
+    ``generated_at`` is the run-start stamp injected from the edge (issue #223);
+    when None (direct/test calls) the clock is read here as a fallback.
     """
     if failed_files is None:
         failed_files = []
-    timestamp = utc_stamp()
+    timestamp = generated_at or utc_stamp()
     totals = report_aggregation.aggregate(all_stats)
     paired = totals.paired
     orphans = totals.orphans
@@ -555,14 +559,19 @@ def write_run_report(
     path: str,
     all_stats: list[FileStats],
     failed_files: list[tuple[str, str]] | None = None,
+    generated_at: str | None = None,
 ) -> None:
     """Write the Markdown run report (``format_run_report``) to ``path``,
     atomically and durably via tmp + :func:`fsutil.durable_replace` (issue #58).
-    ``failed_files`` is forwarded to :func:`format_run_report` so the
+    ``failed_files`` and ``generated_at`` (the injected run-start stamp,
+    issue #223) are forwarded to :func:`format_run_report` so the
     ``## Failures`` section appears when any input files could not be processed.
     """
     fsutil.durable_write_text(
-        path, format_run_report(all_stats, failed_files=failed_files)
+        path,
+        format_run_report(
+            all_stats, failed_files=failed_files, generated_at=generated_at
+        ),
     )
 
 

@@ -23,7 +23,6 @@ from lintle.report import (
     FileStats,
     QuarantineEntry,
     format_diagnostic,
-    utc_stamp,
 )
 
 
@@ -105,12 +104,13 @@ def _render_header(src_name: str) -> bytes:
     time and can lead the first chunk of the chunked ``<stem>.NNNNN.broken.txt``
     set (the per-file ``N quarantined of M entries`` counts moved out — they are
     already carried by ``report.json``/``report.md`` — because a count known only
-    at end-of-stream cannot lead a chunk that commits as soon as it fills).
+    at end-of-stream cannot lead a chunk that commits as soon as it fills). No
+    wall-clock stamp: sidecars are byte-deterministic (issue #223) — the run
+    timestamp lives in ``report.json``/``report.md``.
     """
-    timestamp = utc_stamp()
     return (
         f"# {stem(src_name)}.broken.txt - quarantined records\n"
-        f"# source: {src_name} | generated: {timestamp} | lintle {__version__}\n\n"
+        f"# source: {src_name} | lintle {__version__}\n\n"
     ).encode("ascii", errors="replace")
 
 

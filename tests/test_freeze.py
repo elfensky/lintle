@@ -37,12 +37,18 @@ GOLDEN = Path(__file__).parent / "fixtures" / "freeze-e2e.golden.json"
 SKIP = {".clean.lock"}
 
 
-def _canonical(text: str, out_dir: str, src_dir: str) -> str:
+def _canonical(
+    text: str, out_dir: str, src_dir: str, *, strip_timestamps: bool = True
+) -> str:
     """Replace the run-specific fields with fixed placeholders. Each pattern is
     something that changes between two identical runs (or between two machines)
-    while the code is unchanged — the freeze is over everything else."""
+    while the code is unchanged — the freeze is over everything else.
+    ``strip_timestamps=False`` hashes wall-clock stamps as-is: the ``02-broken``
+    sidecars carry NO stamp by design (issue #223), so canonicalising them there
+    would paper over a reintroduced clock."""
     text = text.replace(out_dir, "<OUT_DIR>").replace(src_dir, "<SRC_DIR>")
-    text = re.sub(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", "<TIMESTAMP>", text)
+    if strip_timestamps:
+        text = re.sub(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", "<TIMESTAMP>", text)
     text = re.sub(r'"elapsed_seconds": [0-9.e-]+', '"elapsed_seconds": <T>', text)
     text = re.sub(r'"records_per_sec": [0-9.e-]+', '"records_per_sec": <RATE>', text)
     text = re.sub(r'"tool_version": "[^"]*"', '"tool_version": "<VER>"', text)
@@ -61,7 +67,12 @@ def _fingerprint(out: Path, src: Path) -> dict[str, str]:
         if not path.is_file() or rel in SKIP:
             continue
         raw = path.read_text(encoding="utf-8", errors="surrogateescape")
-        canonical = _canonical(raw, str(out), str(src))
+        canonical = _canonical(
+            raw,
+            str(out),
+            str(src),
+            strip_timestamps=not rel.startswith("02-broken/"),
+        )
         digests[rel] = hashlib.sha256(
             canonical.encode("utf-8", "surrogateescape")
         ).hexdigest()
