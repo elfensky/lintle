@@ -50,18 +50,18 @@ _REPORT_ARTIFACTS = (
 class CleanConfig:
     """Typed snapshot of the ``clean`` command's configuration (issue #121).
 
-    Built once in ``cli.main`` right after ``parse_args`` via
+    Built once in ``clean_run.run``, just after the out-dir lock is taken, via
     :meth:`from_args` and passed to :func:`resolve_clean_plan` and
     ``worker_pool.run_workers`` instead of the raw argparse ``Namespace``.
     Centralising the attribute names here means a flag rename surfaces as
     an ``AttributeError`` at the single ``from_args`` construction site —
-    before the out-dir lock is taken — rather than mid-run in a leaf.
+    before preflight or any worker runs — rather than mid-run in a leaf.
     ``jobs`` is included so callers never need to reach back to the
     ``Namespace`` after the config is built.
     """
 
     out_dir: str
-    # Mirrors pipeline.process_file's mode contract — cli.main only builds a
+    # Mirrors pipeline.process_file's mode contract — clean_run.run only builds a
     # CleanConfig on the clean path, so "clean" is what production ever holds.
     command: Literal["clean", "validate"]
     max_quarantined: str
@@ -144,7 +144,7 @@ def _is_safe_to_scrub(out_dir):
       ``archive_checkpoint`` writes, NOT the bare checkpoint name, so a user
       file like ``.clean-state.json.bak`` is never mistaken for our signal).
 
-    The lock file is always present when this function is called (``cli.main``
+    The lock file is always present when this function is called (``clean_run.run``
     acquires the lock before calling ``resolve_clean_plan``), so it is excluded
     from the emptiness check to avoid spuriously refusing a brand-new out-dir.
     """

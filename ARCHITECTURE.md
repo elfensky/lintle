@@ -64,6 +64,7 @@ cli.py ──▶ clean_run.py ──▶ pipeline.py ──▶ repair.py ──�
   │            ├──▶ run_planning.py  (disk-space guard + output scrub + resume/fresh-run decision; CleanConfig + RunPlan; → fsutil, report, resume, term)
   │            ├──▶ worker_pool.py   (process-pool dispatch + progress collection; → pipeline, cli_progress, process_control, report, resume, run_planning, term + stdlib futures/mp/signal)
   │            ├──▶ output_artifacts.py (clean-run report.md/json + NDJSON/JSONL finalization; → report, report_writers, cli_progress, term)
+  │            ├──▶ summary.py       (phase-3 per-file results table + aggregate panel for the run's end; → term)
   │            ├──▶ thresholds.py    (--max-quarantined parsing + quality-gate exit policy; pure, no internal deps)
   │            └──▶ process_control.py (worker SIGINT setup + fast pool termination; → term; also used by worker_pool and cli's Ctrl-C backstop)
   │

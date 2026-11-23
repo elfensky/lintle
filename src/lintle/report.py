@@ -16,7 +16,7 @@ from lintle.diagnostics import RULES, Diagnostic, RepairTier, RuleID
 def utc_stamp() -> str:
     """Return the current UTC time as an ISO 8601 string (``%Y-%m-%dT%H:%M:%SZ``).
 
-    Read once at the run's edge (``cli.main``) and injected into every renderer
+    Read once at the run's edge (``clean_run.run``) and injected into every renderer
     that carries a stamp, so the timestamp format is defined once. Resume's
     compact filename stamp (``%Y%m%dT%H%M%SZ``) is intentionally different and
     lives in resume.py.
@@ -184,7 +184,7 @@ class FileStats:
     # ``Path(src_path).stat().st_size`` respectively. ``elapsed_seconds`` is the
     # worker's wall-clock duration on this file — NEVER summed across
     # workers to derive a corpus total (use the parent's wall-clock
-    # captured in ``cli.main`` for that).
+    # captured in ``clean_run.run`` for that).
     elapsed_seconds: float = 0.0
     bytes: int = 0
     paired_records: int = 0
@@ -339,7 +339,7 @@ def build_run_envelope(
     The shape is locked in ``ARCHITECTURE.md`` §6 (Outputs & machine-readable
     contracts): a single object with ``schema_version``, ``run``,
     ``environment``, ``summary``, and ``files``. ``run.elapsed_seconds`` is the
-    parent-process wall-clock duration captured by ``cli.main`` — independent
+    parent-process wall-clock duration captured by ``clean_run.run`` — independent
     of per-file worker durations in ``files[i].elapsed_seconds``, which the
     consumer must NOT sum to derive a corpus total. ``environment`` is a strict
     allowlist (tool + Python version only); no env vars, paths, or hostnames
