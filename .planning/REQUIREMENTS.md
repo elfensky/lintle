@@ -30,9 +30,9 @@ Source of scope: the five open GitHub issues (#222, #223, #226, #227, #228, read
 
 ### Checkpoint session (#227)
 
-- [ ] **CKPT-01**: A `CheckpointSession` (open / record / delete) owns the checkpoint write side; `worker_pool` records a finished file with one `session.record(path, stats)` call and no longer imports `resume` or `report`
-- [ ] **CKPT-02**: Checkpoint bytes are identical to the four-call path, pinned by a test against one fully populated stats object
-- [ ] **CKPT-03**: `resume.py` still never imports `report` (the summary builder is injected at `open()`)
+- [x] **CKPT-01**: A `CheckpointSession` (open / record / delete) owns the checkpoint write side; `worker_pool` records a finished file with one `session.record(path, stats)` call and no longer imports `resume` or `report`
+- [x] **CKPT-02**: Checkpoint bytes are identical to the four-call path, pinned by a test against one fully populated stats object
+- [x] **CKPT-03**: `resume.py` still never imports `report` (the summary builder is injected at `open()`)
 
 ### Parallel cleaned scan (#222)
 
@@ -93,9 +93,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 | CLEAN-01 | Phase 2 | Complete (#243) |
 | CLEAN-02 | Phase 2 | Complete (#243) |
 | CLEAN-03 | Phase 2 | Complete (#243) |
-| CKPT-01 | Phase 3 | Pending |
-| CKPT-02 | Phase 3 | Pending |
-| CKPT-03 | Phase 3 | Pending |
+| CKPT-01 | Phase 3 | Complete (#244) |
+| CKPT-02 | Phase 3 | Complete (#244) |
+| CKPT-03 | Phase 3 | Complete (#244) |
 | PAR-01 | Phase 4 | Pending |
 | PAR-02 | Phase 4 | Pending |
 | PAR-03 | Phase 4 | Pending |
@@ -109,4 +109,4 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 ---
 *Requirements defined: 2026-11-02*
-*Last updated: 2026-11-24 after #223 (#241), #228 (#242) and #226 (#243) landed*
+*Last updated: 2026-11-24 after #223 (#241), #228 (#242), #226 (#243) and #227 (#244) landed*
