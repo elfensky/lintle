@@ -517,3 +517,9 @@ class TestSemanticRangeProperties:
         in_range = 0.0 <= float(field) <= 180.0  # value as the column encodes it
         has_error = any("inclination" in e for e in tle.validate_body(body, 2))
         assert has_error != in_range
+
+
+class TestRecordBytes:
+    def test_record_is_two_lines_plus_newlines(self):
+        # The framing extract's binary search and verify's progress math share.
+        assert tle.RECORD_BYTES == 2 * (tle.LINE_LENGTH + 1) == 140
