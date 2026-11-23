@@ -15,7 +15,7 @@ New or changed modules are marked `[NEW]` or `[CHG]`. Arrows point from importer
 ```
                      lintle / python -m lintle
                               |
-                          cli.py [CHG: shrinks 1040 -> ~664 lines]
+                          cli.py [CHG: shrinks 1014 -> ~664 lines]
          parser, _dispatch, _locked_postrun, --jobs flag on verify+dedup
           |                 |                          |
           | clean arm       | lazy                     | lazy

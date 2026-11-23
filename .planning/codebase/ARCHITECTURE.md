@@ -83,7 +83,7 @@ Source of truth for the design is the repo root `ARCHITECTURE.md` (1022 lines). 
 **Overall:** Layered, one-way module pipeline with a streaming core, a process pool for per-file parallelism, and post-run read-only auditors that consume the on-disk output tree.
 
 **Key Characteristics:**
-- Module dependencies flow one way. The documented chain is `cli.py → pipeline.py → repair.py → tle.py`. Cycles are avoided by design. The two known cycles are broken with lazy imports (see Architectural Constraints).
+- Module dependencies flow one way. The documented chain is `cli.py → pipeline.py → repair.py → tle.py`. The module graph has no cycles (see Architectural Constraints).
 - Data leaves (`tle.py`, `diagnostics.py`, `categories.py`, `explain_examples.py`, `epoch.py`, `history.py`, `thresholds.py`) carry no I/O.
 - Output on disk is the contract. `verify`, `dedup`, `extract`, and `diff` read the files that `clean` writes. They do not share in-memory state with it.
 - The clean path is walled off from `sgp4` and from `lintle.verify`. An import-graph test enforces this (see `ARCHITECTURE.md` §7 at repo root).
@@ -227,9 +227,7 @@ Source of truth for the design is the repo root `ARCHITECTURE.md` (1022 lines). 
 
 - **Threading:** Process-based parallelism only. `ProcessPoolExecutor` runs one file per worker. The parent process owns progress display and checkpoint writes. Workers ignore SIGINT. Within a process the code is single-threaded, apart from the locked progress table in `cli_progress.py`.
 - **Global state:** The two shared rich Consoles in `src/lintle/term.py` (`stderr_console`, `stdout_console`) are module-level singletons. `src/lintle/__init__.py` holds the output-naming constants (`CLEANED_SUFFIX`, `BROKEN_DIRNAME`, and others). These are the only shared constants; there are no mutable module-level caches.
-- **Circular imports:** None in the module graph, by design. Two known cycles are broken with lazy imports:
-  - `cli ↔ wizard`. `cli` imports `wizard` only inside the no-subcommand branch. `wizard` imports `cli` only inside its dispatch.
-  - `cli_progress` and `summary` are presentation leaves. `cli_progress` imports `summary` one way.
+- **Circular imports:** None in the module graph, by design. `cli` imports `wizard` lazily, only inside the no-subcommand branch, and `wizard` never imports `cli`: `cli.main` is injected as its dispatch callable. `cli_progress` imports `summary` one way.
 - **Sgp4 wall:** `sgp4` is imported only in `src/lintle/verify/orbit.py`, lazily, and only under `--orbit`. Import-graph tests in `tests/` enforce that the clean path never reaches `sgp4` or `lintle.verify`.
 - **Dependency direction for verify:** `verify → repair` (for `normalize_edges` and `is_content_free`) is allowed. `repair → verify` is not. `repair`'s own closure stays `sgp4`-free.
 - **Epoch leaf:** `src/lintle/epoch.py` must stay stdlib-only. An import-graph test pins it.

@@ -28,7 +28,7 @@
 |---------|--------------|------------|-------|
 | The invariant is stated precisely, and docs, code and tests agree | README says "same input -> identical bytes every run". ARCHITECTURE section 7 lists `report.json` and the `.broken.txt` sidecar as byte-deterministic. Both are false today. | LOW | The `.broken.txt` header carries `generated: <utc_stamp()>` (`report_writers.py` line 113). That is #223. See the wider-scope finding below. |
 | Artifact bytes are a pure function of (input bytes, flags, tool version) | Reproducible-builds practice: no wall-clock, hostname, username, absolute path, locale or env in a contracted artifact. | LOW | Already true for the `.broken.txt` body, `broken-noradids.ndjson`, cleaned chunks and the checkpoint. ARCHITECTURE line 675 says outputs carry basenames, counts and a timestamp only. The timestamp is the only gap. |
-| Pick one resolution: drop the volatile field, or enumerate it as run metadata | #223 is "decision needed first". Both outcomes are legitimate practice. A hybrid with no named list is the only bad outcome. | LOW | See "Decision input for #223" below. |
+| Pick one resolution: drop the volatile field, or enumerate it as run metadata | #223 was decided on 2026-08-16 (drop the stamp; see PROJECT.md). Both outcomes are legitimate practice. A hybrid with no named list is the only bad outcome. | LOW | See "Decision input for #223" below. |
 | A run-to-run determinism test (same input twice, compare trees) | An invariant with no test drifts. | LOW | Compare the trees from two `clean` runs. If any field stays volatile, apply an explicit named allow-list (the diffoscope idea: normalise the known-volatile fields, then compare). |
 | Chunk-set determinism preserved | `cat <stem>.*.<suffix>` must reproduce the single file. A header only in chunk 00001 already shapes this. | LOW | Dropping the stamp makes chunk 00001 identical across runs. |
 
@@ -102,7 +102,7 @@ Doc drift fix ──independent──> all
 - **#226 vs `cli.py` edits:** `--jobs` on `verify`/`dedup` also touches argument wiring in `cli.py`. Sequence #226 before or after #222, never in parallel branches.
 - **Parallel scan conflicts with unordered merge:** the two cannot coexist under the determinism rule.
 
-## Decision Input for #223 (the open decision)
+## Decision Input for #223 (decided 2026-08-16; see PROJECT.md)
 
 Facts from the code (read 2026-11-02):
 

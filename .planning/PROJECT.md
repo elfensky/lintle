@@ -51,7 +51,7 @@ and on any doubt a record is quarantined, never guessed.
 - `sgp4` or `lintle.verify` imported from the clean path — enforced by an import-graph test
 - Loading a whole source file into memory — Critical Rule #3; the largest file is 3.2 GB
 - Network access, a server, a database or a GUI — lintle is an offline CLI over local files
-- New TLE catalog formats above 99999 — space-track publishes no TLE GP data for those objects; inputs stay 5-character catalog fields
+- Catalog numbers beyond the 5-character field (above Alpha-5's 339,999) — space-track publishes no TLE GP data for those objects; inputs stay 5-character catalog fields
 - Committing the corpus — `data/` (~42 GB) is git-ignored
 
 ## Context
@@ -60,7 +60,6 @@ and on any doubt a record is quarantined, never guessed.
 - Codebase map: `.planning/codebase/` (2026-11-02). Living design reference: repo-root `ARCHITECTURE.md`.
 - Measured on the 30.4 GB / 232,380,554-record corpus (#222): `clean --reconstruct-checksum` 21 m 23 s on 7 workers; `verify --source --orbit` 2 h 05 m 36 s on 1 core (64% of pipeline wall clock); `dedup` 48 m 50 s on 1 core.
 - #226, #227 and #228 were each prototyped before filing: suite green, outputs byte-identical. #227 is described as prerequisite-shaped for #222. A #222 spike (2026-08-16 comment, 4-stem fixture) showed a stem-order merge of parallel per-stem scans is byte-identical to serial.
-- Open Dependabot PRs: #238 (setup-uv 9.0.0 → 10.3.3), #239 (dev-dependency bumps).
 - Concerns recorded in `.planning/codebase/CONCERNS.md` (not filed as issues): `scrub_outputs` deletes with `rmtree(ignore_errors=True)`; the verify spill directory under `$TMPDIR` is outside the disk guard; CI runs on Ubuntu only.
 
 ## Constraints
@@ -81,7 +80,7 @@ and on any doubt a record is quarantined, never guessed.
 | `sgp4` is walled out of the clean path | It is permissive enough to become a second validity definition | ✓ Good |
 | Relaxed runtime-dependency policy (2026-05-31) | Adopt popular, maintained libraries where they cut owned code; correctness invariants are the only vetoes | ✓ Good |
 | Record/line outputs are chunk sets (`<stem>.NNNNN.<suffix>`) | No single output file is huge; `cat` reproduces the single file byte-for-byte | ✓ Good |
-| `.planning/ROADMAP.md` is the one roadmap (2026-11-01, keijiban standard) | A repo owns its roadmap; keijiban publishes it to projects.static.lav.ren | — Pending |
+| `.planning/ROADMAP.md` is the one roadmap (2026-11-01, keijiban standard) | A repo owns its roadmap; `/handbook-align-pages` publishes the roadmap and architecture pages | — Pending |
 
 ## Evolution
 
