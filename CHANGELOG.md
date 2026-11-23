@@ -30,6 +30,14 @@ All notable changes to this project are documented in this file. The format is b
   same off-TTY policy `clean`'s per-file lines already used, now shared as
   `_LiveTable._plain_line`. Closes #221.
 
+- **The `.broken.txt` sidecar is now byte-deterministic.** Its header carried a wall-clock
+  `generated:` stamp, read inside each worker, so two runs over the same input — or the
+  workers of one `--jobs N` run — wrote different bytes. The header is now
+  `# source: <name> | lintle <version>`. The run stamp lives only in `report.json`'s
+  `run.timestamp`, and `report.md` now repeats that same stamp instead of reading its own
+  clock. The output-freeze test no longer masks timestamps under `02-broken/`, so a
+  reintroduced clock fails it. Closes #223.
+
 - **`extract --dest ""` now honours the explicit empty dest.** The dest default resolved by
   truthiness (`args.dest or …`) while the README rule resolved by identity
   (`args.dest is None`), so an explicitly-passed empty dest silently wrote into the default
