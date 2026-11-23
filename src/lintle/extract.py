@@ -15,14 +15,12 @@ from rich.text import Text
 from lintle import CLEANED_DIRNAME, REPORT_DIRNAME, cli_progress, fsutil, summary, term
 from lintle.chunking import ChunkedReader, ChunkSetError
 from lintle.dedup import DEDUP_DIRNAME, IMPORT_STEM, IMPORT_SUFFIX
-from lintle.history import HistoryStats, analyze_epochs
+from lintle.history import HistoryStats, analyze_epochs, stats_row
 from lintle.history import epoch_dt as _epoch_dt
 from lintle.history import iso as _iso
+from lintle.tle import RECORD_BYTES
 from lintle.verify.checks import element_set
 from lintle.verify.records import catalog_of, cleaned_fingerprint
-
-# two validated-perfect 69-char lines + two \n — guarded, not assumed
-RECORD_BYTES = 140
 
 _README = """\
 # 06-extract — per-satellite TLE history
@@ -259,26 +257,18 @@ def _sidecar(
     fields; ``had_quarantined`` is tri-state (None = clean report absent), and
     so is ``dedup_summary`` — its ``source`` fields are already null-tolerant,
     so a pruned tree degrades to nulls instead of a post-commit crash."""
-    span = (hs.last - hs.first).total_seconds() / 86400.0
     source = dedup_summary or {}  # not `summary`: that name is the imported module
     doc = {
         "schema_version": "2",
-        "norad_id": catalog,
-        "records": hs.count,
-        "first_epoch": _iso(hs.first),
-        "last_epoch": _iso(hs.last),
-        "span_days": round(span, 6),
-        "mean_records_per_day": round(hs.count / span, 6) if span else None,
-        "largest_gap_days": round(hs.largest_gap_days, 6),
+        # The eight shared summary keys — one definition with dedup's manifest
+        # row; sort_keys below makes the spread's insertion order moot.
+        **stats_row(catalog, hs),
+        "mean_records_per_day": (
+            round(hs.count / hs.span_days, 6) if hs.span_days else None
+        ),
         "largest_gap_at": (
             _iso(hs.largest_gap_at) if hs.largest_gap_at is not None else None
         ),
-        "median_spacing_days": (
-            round(hs.median_spacing_days, 6)
-            if hs.median_spacing_days is not None
-            else None
-        ),
-        "gap_count": hs.gap_count,
         "gaps": [
             {"start": _iso(g.start), "end": _iso(g.end), "days": round(g.days, 6)}
             for g in hs.gaps

@@ -39,6 +39,7 @@ class HistoryStats:
     count: int
     first: _dt.datetime | None
     last: _dt.datetime | None
+    span_days: float
     elset_first: int | None
     elset_last: int | None
     largest_gap_days: float
@@ -81,6 +82,9 @@ def analyze_epochs(
         count=len(epochs),
         first=epochs[0] if epochs else None,
         last=epochs[-1] if epochs else None,
+        span_days=(
+            (epochs[-1] - epochs[0]).total_seconds() / 86400.0 if epochs else 0.0
+        ),
         elset_first=elsets[0] if elsets else None,
         elset_last=elsets[-1] if elsets else None,
         largest_gap_days=largest,
@@ -89,3 +93,25 @@ def analyze_epochs(
         gaps=tuple(sorted(top, key=lambda g: g.start)),
         gap_count=len(reportable),
     )
+
+
+def stats_row(catalog: int, hs: HistoryStats) -> dict[str, object]:
+    """The eight summary keys the dedup manifest row and the extract sidecar
+    both emit, with the one round-to-6-places/None policy, in the manifest's
+    authored key order — the manifest serializes this dict as-is (insertion
+    order is the wire order), while the sidecar spreads it into a larger
+    ``sort_keys`` document where the order is moot."""
+    return {
+        "norad_id": catalog,
+        "records": hs.count,
+        "first_epoch": iso(hs.first) if hs.first is not None else None,
+        "last_epoch": iso(hs.last) if hs.last is not None else None,
+        "span_days": round(hs.span_days, 6),
+        "median_spacing_days": (
+            round(hs.median_spacing_days, 6)
+            if hs.median_spacing_days is not None
+            else None
+        ),
+        "largest_gap_days": round(hs.largest_gap_days, 6),
+        "gap_count": hs.gap_count,
+    }
