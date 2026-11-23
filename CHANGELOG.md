@@ -27,6 +27,14 @@ All notable changes to this project are documented in this file. The format is b
   `128+signo` → failed file `2` → quarantine gate), table-tested directly. No behaviour change:
   same exit codes, outputs, and messages; `cli.discover_paths`, `cli.input_path_error`, and
   `cli.resolve_jobs` stay importable from `cli`. Closes #226.
+- **The checkpoint write side has one owner: `resume.CheckpointSession`.** `worker_pool` ran a
+  four-call ritual per completed file (`output_sizes` → `CompletedEntry` → `build_checkpoint` →
+  `write_checkpoint`) and mutated `plan.completed` on the side. `clean_run` now opens one
+  session per run (`open` → `record(path, stats)` → `delete`) and passes it to the pool, which
+  makes one `session.record` call per file and no longer imports `resume` or `report`. The
+  summary builder is injected at `open` (`report.summary_dict`), so `resume` still never imports
+  `report`. The checkpoint bytes are unchanged, pinned by a regression test against the old
+  path. The read side in `run_planning` is unchanged. Closes #227.
 
 ### Fixed
 

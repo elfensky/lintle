@@ -127,7 +127,7 @@ src/lintle/
 ├── clean_run.py   # the clean orchestration: discovery, lock, preflight, pool, finalize + the pure exit-code join
 ├── cli_progress.py # the live tables: ProgressDisplay (clean) + UnitTable (verify/dedup), windowed; roster, status spinner (rich)
 ├── run_planning.py # clean-run preflight: disk-space guard, output scrub, resume classification, RunPlan
-├── worker_pool.py  # process-pool dispatch, progress collection, per-file failure + checkpoint
+├── worker_pool.py  # process-pool dispatch, progress collection, per-file failure + one session.record per file
 ├── process_control.py # worker SIGINT setup, fast pool termination, cancel/exit-code helpers
 ├── thresholds.py   # --max-quarantined parsing + quality-gate exit policy (pure)
 ├── output_artifacts.py # end-of-clean-run report.md / report.json / broken-noradids.ndjson / report.jsonl
@@ -136,7 +136,7 @@ src/lintle/
 ├── report.py      # FileStats + dataclasses, the run summaries, the run report
 ├── report_aggregation.py # pure corpus aggregation: run totals + per-NORAD rollups for report.py
 ├── report_writers.py # structured-file writers: .broken.txt sidecar, report.jsonl findings, broken-noradids.ndjson, shard concat
-├── resume.py      # single-run checkpoint for `clean --resume` (#56); run-stamp + output-size helpers
+├── resume.py      # single-run checkpoint for `clean --resume` (#56): CheckpointSession write side; run-stamp + output-size helpers
 ├── fsutil.py      # durable_replace — the one atomic+fsync commit path (issue #58)
 ├── summary.py     # aggregate panel + phase-3 results tables + the shared results_table chrome/tier/clock/size formatters + `lintle report` (rich+humanize)
 ├── term.py        # stderr+stdout Consoles + error/warning/note/prompt + is_interactive/prompt_yes_no (rich)
@@ -172,9 +172,11 @@ helper leaves — `run_planning.py` (preflight:
 disk-space guard, output scrub, resume classification), `worker_pool.py` (process-pool
 dispatch), `process_control.py` (signals/shutdown), `thresholds.py` (quarantine exit
 policy, pure), and `output_artifacts.py` (run finalization). These leaves import their
-own collaborators directly rather than receiving them by injection: `worker_pool`
-imports `concurrent.futures`/`multiprocessing`/`signal` plus `process_control`,
-`pipeline`, `cli_progress`, `report`, `resume`, and `term`; `run_planning` imports
+own collaborators directly rather than receiving them by injection, with one
+exception: `worker_pool` imports `concurrent.futures`/`multiprocessing`/`signal` plus
+`process_control`, `pipeline`, `cli_progress`, `run_planning`, and `term`, and receives
+the run's `resume.CheckpointSession` from `clean_run` (opened with `report.summary_dict`
+injected), so it imports neither `resume` nor `report`; `run_planning` imports
 `report`, `resume`, and `term`. `process_control` is depended on by `clean_run`,
 `worker_pool`, and `cli` (its Ctrl-C backstop). `report_aggregation.py` is a pure corpus-aggregation leaf depended on by
 `report.py`. `diagnostics.py` and `categories.py` are pure-data leaves depended on by
@@ -209,9 +211,10 @@ Consoles — `stderr_console` for status/errors, `stdout_console` for the report
 the `error`/`warning`/`note`/`prompt` emitters, and the `is_interactive` /
 `prompt_yes_no` stdin helpers) depended on by `cli`, `clean_run`, `cli_progress`, `diff`,
 `process_control`, `run_planning`, `summary`, and `worker_pool` — so the styled prefixes
-and the prompt live in one place without a `→ cli` cycle. `resume.py` (which also owns the run-start timestamp and
-the per-file output-size capture for the checkpoint) imports only `__version__`,
-`fsutil`, and `stem`. `verify/checks.py` imports `repair` for `normalize_edges` and
+and the prompt live in one place without a `→ cli` cycle. `resume.py` (which also owns the run-start timestamp,
+the per-file output-size capture for the checkpoint, and the `CheckpointSession` write
+side) imports only `__version__`, `fsutil`, and `stem`; the session's stats→summary
+builder is a callable injected at `open`, so `resume` never imports `report`. `verify/checks.py` imports `repair` for `normalize_edges` and
 `is_content_free` — the one definition of an edge repair and of a droppable line,
 which the source-diff aligner must undo and mirror exactly. That edge runs
 `verify → repair`, never the reverse: the wall bars `clean → sgp4`/`verify`, and
