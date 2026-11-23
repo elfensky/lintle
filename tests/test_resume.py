@@ -2,6 +2,7 @@
 
 import json
 import os
+from collections import Counter
 
 import pytest
 
@@ -15,6 +16,7 @@ from lintle import (
     resume,
     stem,
 )
+from lintle.diagnostics import RuleID
 from lintle.report import FileStats, summary_dict
 
 
@@ -820,3 +822,94 @@ class TestCompletedEntryRoundTrip:
         old_bytes = json.dumps(ckpt_old, separators=(",", ":"), sort_keys=True)
         new_bytes = json.dumps(ckpt_new, separators=(",", ":"), sort_keys=True)
         assert old_bytes == new_bytes
+
+
+# ---------------------------------------------------------------------------
+# Issue #227 — CheckpointSession, the one owner of the checkpoint write side
+# ---------------------------------------------------------------------------
+
+
+class TestCheckpointSession:
+    """CheckpointSession owns the write side: ``open`` binds the run identity,
+    ``record`` is the whole per-file write, ``delete`` tears it down. Its
+    on-disk bytes must stay identical to the old four-call path."""
+
+    SRC = "data/source/tle2099.txt"
+    INPUTS = {SRC: {"size": 123, "mtime_ns": 1}, "data/source/tle2100.txt": {}}
+    RUN_IDENTITY = {"command": "clean", "reconstruct_checksum": False}
+    # A carried-over entry, as on a resumed run.
+    CARRIED = {"data/source/tle2100.txt": {"summary": {"src_name": "x"}, "outputs": {}}}
+
+    def _stats(self, out_dir):
+        # One fixed stats object (fixed timing float) with real outputs on disk,
+        # so the summary and output-size halves of the entry are both non-trivial.
+        for sub, name in (
+            (CLEANED_DIRNAME, "tle2099.00001.cleaned.txt"),
+            (BROKEN_DIRNAME, "tle2099.00001.broken.txt"),
+            (SHARDS_DIRNAME, "tle2099" + FINDINGS_SUFFIX),
+        ):
+            (out_dir / sub).mkdir(parents=True, exist_ok=True)
+            (out_dir / sub / name).write_bytes(b"x" * 17)
+        return FileStats(
+            src_name="tle2099.txt",
+            elapsed_seconds=1.234567,
+            bytes=123,
+            paired_records=7,
+            clean_count=6,
+            quarantined_count=1,
+            quarantine_counts=Counter({RuleID.CHECKSUM_MISMATCH: 1}),
+        )
+
+    def _open(self, out_dir, completed):
+        return resume.CheckpointSession.open(
+            str(out_dir),
+            inputs=self.INPUTS,
+            completed=completed,
+            run_identity=self.RUN_IDENTITY,
+            summarize=summary_dict,
+        )
+
+    def test_open_record_delete_lifecycle(self, tmp_path):
+        stats = self._stats(tmp_path)
+        completed = dict(self.CARRIED)
+        session = self._open(tmp_path, completed)
+        ckpt_path = tmp_path / resume.CHECKPOINT_NAME
+        assert not ckpt_path.exists()  # open does no I/O
+        session.record(self.SRC, stats)
+        loaded = resume.load_checkpoint(str(tmp_path))
+        assert set(loaded["completed"]) == {self.SRC, *self.CARRIED}
+        assert loaded["completed"][self.SRC]["summary"]["src_name"] == "tle2099.txt"
+        assert loaded["inputs"] == self.INPUTS
+        assert loaded["run_identity"] == self.RUN_IDENTITY
+        # The session folds into the mapping it was opened with (the plan's).
+        assert self.SRC in completed
+        assert session.completed_count == 2
+        session.delete()
+        assert not ckpt_path.exists()
+        session.delete()  # idempotent, like delete_checkpoint
+
+    def test_record_bytes_match_four_call_path(self, tmp_path):
+        # Pinned regression: the bytes record() writes equal the bytes of the
+        # old worker_pool ritual (output_sizes -> CompletedEntry -> build -> write)
+        # for the same stats object — one object, so the timing float matches.
+        stats = self._stats(tmp_path)
+        ckpt_path = tmp_path / resume.CHECKPOINT_NAME
+
+        old_completed = dict(self.CARRIED)
+        old_completed[self.SRC] = resume.CompletedEntry(
+            summary=summary_dict(stats),
+            outputs=resume.output_sizes(str(tmp_path), stats),
+        ).as_dict()
+        resume.write_checkpoint(
+            str(tmp_path),
+            resume.build_checkpoint(
+                inputs=self.INPUTS,
+                completed=old_completed,
+                run_identity=self.RUN_IDENTITY,
+            ),
+        )
+        old_bytes = ckpt_path.read_bytes()
+        resume.delete_checkpoint(str(tmp_path))
+
+        self._open(tmp_path, dict(self.CARRIED)).record(self.SRC, stats)
+        assert ckpt_path.read_bytes() == old_bytes
