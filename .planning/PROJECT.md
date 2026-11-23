@@ -80,7 +80,7 @@ and on any doubt a record is quarantined, never guessed.
 | `sgp4` is walled out of the clean path | It is permissive enough to become a second validity definition | ✓ Good |
 | Relaxed runtime-dependency policy (2026-05-31) | Adopt popular, maintained libraries where they cut owned code; correctness invariants are the only vetoes | ✓ Good |
 | Record/line outputs are chunk sets (`<stem>.NNNNN.<suffix>`) | No single output file is huge; `cat` reproduces the single file byte-for-byte | ✓ Good |
-| `.planning/ROADMAP.md` is the one roadmap (2026-11-01, keijiban standard) | A repo owns its roadmap; `/handbook-align-pages` publishes the roadmap and architecture pages | — Pending |
+| `.planning/ROADMAP.md` is the one roadmap (2026-11-01, developer standard) | A repo owns its roadmap; `/handbook-align-pages` publishes the roadmap and architecture pages | — Pending |
 
 ## Evolution
 

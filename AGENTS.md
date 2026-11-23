@@ -15,7 +15,8 @@ under `docs/superpowers/archive/` (`specs/`, `plans/`, `runs/`) as historical ra
 they are point-in-time records and are no longer maintained — `ARCHITECTURE.md` and the code
 are the current truth. Exception to the standard's `.planning/architecture/`: the root
 `ARCHITECTURE.md` stays the one design reference; `.planning/codebase/` and `.planning/research/`
-are dated GSD snapshots, not maintained.
+are dated GSD snapshots, not maintained. A `/handbook-align-pages` run here builds the architecture
+page from the root `ARCHITECTURE.md` and creates no `.planning/architecture/`.
 
 ## Life cockpit
 
