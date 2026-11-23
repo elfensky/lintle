@@ -6,6 +6,13 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Changed
+
+- **Dev toolchain: ruff 0.17.** The dev pin moves to `ruff>=0.17,<0.18` (a `0.x` minor is a
+  major under the pinning rule, so the old `>=0.15,<0.17` range spanned two of them). pytest
+  9.2.0 and hypothesis 6.170.12 ride along inside their existing ranges. No runtime
+  dependency changed; the verification chain is green on the new versions.
+
 ### Fixed
 
 - **`verify`/`dedup` now report progress off a TTY.** A piped or redirected run printed the
