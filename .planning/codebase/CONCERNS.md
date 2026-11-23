@@ -8,7 +8,7 @@ last_mapped_at: 2026-11-02
 
 <!-- refreshed: 2026-11-02 -->
 
-Scope: `src/lintle/` and `.github/workflows/`. Line numbers match the worktree on branch `night/gsd-standard`. Items are grouped by type. Within each group, the highest impact comes first.
+Scope: `src/lintle/` and `.github/workflows/`. Line numbers match commit `bf834f7`. Items are grouped by type. Within each group, the highest impact comes first.
 
 ## Tech Debt
 
@@ -83,7 +83,7 @@ Scope: `src/lintle/` and `.github/workflows/`. Line numbers match the worktree o
 ## Security Considerations
 
 **Unpinned third-party GitHub Actions:**
-- Risk: Workflows pin `actions/checkout@v7` and `astral-sh/setup-uv@v9.0.0` by tag. A moved tag runs new code in the publish job, which holds `id-token: write`.
+- Risk: Workflows pin `actions/checkout@v7` and `astral-sh/setup-uv@v10.3.3` by tag. A moved tag runs new code in the publish job, which holds `id-token: write`.
 - Files: `.github/workflows/publish.yml` (lines 37, 40; `permissions: id-token: write`), `.github/workflows/ci.yml` (lines 24, 27, 48, 51), `.github/workflows/version.yml` (line 16)
 - Current mitigation: Dependabot updates the `github-actions` ecosystem weekly. Trusted Publishing uses OIDC, so no API token is stored.
 - Recommendations: Pin each action to a full commit SHA. Keep the Dependabot entry so SHA pins update.

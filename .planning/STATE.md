@@ -64,8 +64,7 @@ None yet.
 
 ### Blockers/Concerns
 
-- [Phase 1]: Dependabot PRs #238 (setup-uv) and #239 (dev dependencies) are open. Merge or close them first, so each refactor diff has one cause.
-- [Phase 3]: Confirm with a test that an older checkpoint cannot be resumed after the sidecar-header change (`validate_run_identity` checks `lintle_version`).
+- [Phase 1]: Confirm with a test that an older checkpoint cannot be resumed after the sidecar-header change (`validate_run_identity` checks `lintle_version`).
 - [Phase 4]: Needs research before planning. Open questions: final-merge shape (parent merge vs worker pre-merge), `SuspectSink` split with per-stem spill, progress channel for `UnitTable`, default `--jobs` and `--orbit` memory, spill-dir location vs the disk guard.
 - [Phase 4]: `tests/test_freeze.py` uses one stem with four records. A multi-stem, forced-spill, reverse-completion fixture must be the first commit of the phase.
 - [Phase 4]: Unmeasured: share of scan time in `verify --source --orbit` and `dedup`; Linux soft fd limit (1,024 assumed); spill budget floor (about 25,000 records) and fan-in cap (about 256).

@@ -94,7 +94,7 @@ last_mapped_at: 2026-11-02
 
 - Input files come from space-track.org exports. The corpus is about 30 GB and is git-ignored under `data/`.
 - Do not read corpus files whole. Use `head`, `awk`, or `sed -n` (per `CLAUDE.md`).
-- Known upstream issue: about 15 percent of records in some exports lack the column 69 checksum digit. Use `--reconstruct-checksum` (see project memory and `docs/space-track-defect-report.md`).
+- Known upstream issue: 71.3 M lines of the bundled corpus lack the column 69 checksum digit. Use `--reconstruct-checksum` (see `docs/space-track-defect-report.md`).
 
 ---
 

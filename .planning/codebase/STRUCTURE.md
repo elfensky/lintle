@@ -9,10 +9,10 @@ last_mapped_at: 2026-11-02
 ## Directory Layout
 
 ```
-night-gsd-standard/                 # repo root (git worktree)
+lintle/                             # repo root
 ├── src/lintle/                     # all package code (src layout)
 │   ├── verify/                     # `lintle verify` auditor package (sole sgp4 importer: orbit.py)
-│   └── *.py                        # ~40 flat modules, one responsibility each
+│   └── *.py                        # 31 flat modules, one responsibility each
 ├── tests/                          # pytest suite, one test_<module>.py per unit
 │   └── fixtures/                   # sample TLE inputs
 ├── docs/                           # superpowers/ (archived specs, plans, runs), workflows/, space-track-defect-report.md
@@ -158,7 +158,7 @@ night-gsd-standard/                 # repo root (git worktree)
 - Clean path (`pipeline`, `repair`, `tle`, clean part of `cli`) must not import `lintle.verify` or `sgp4`.
 - `epoch.py` and `fsutil.py` stay stdlib-only.
 - `verify` may import `repair`. `repair` must not import `verify`.
-- Lazy-import `wizard` in `cli`, and `cli` in `wizard`.
+- Lazy-import `wizard` in `cli`. `wizard` never imports `cli`: `cli` injects `main`.
 
 ## Special Directories
 

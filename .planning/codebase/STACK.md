@@ -23,7 +23,7 @@ last_mapped_at: 2026-11-02
 - Platform code: `fcntl` (flock, `F_FULLFSYNC` on macOS) in `src/lintle/fsutil.py`. POSIX-only paths; no Windows branch detected.
 
 **Package Manager:**
-- uv (no version pinned in the repo; CI uses `astral-sh/setup-uv@v9.0.0`)
+- uv (no version pinned in the repo; CI uses `astral-sh/setup-uv@v10.3.3`)
 - Lockfile: present (`uv.lock`, lock format `version = 1`). CI runs `uv sync --locked`.
 - Build backend: hatchling (`[build-system]` in `pyproject.toml`; wheel packages = `src/lintle`)
 
@@ -34,14 +34,14 @@ last_mapped_at: 2026-11-02
 - `rich` 15.0.0 - terminal rendering: live tables, progress, panels, prompts. Used by `src/lintle/term.py`, `src/lintle/cli_progress.py`, `src/lintle/summary.py`, `src/lintle/wizard.py`.
 
 **Testing:**
-- `pytest` 9.1.1 - test runner (`testpaths = ["tests"]` in `pyproject.toml`)
+- `pytest` 9.2.0 - test runner (`testpaths = ["tests"]` in `pyproject.toml`)
 - `pytest-xdist` 3.8.0 - parallel runs (`addopts = "-m 'not slow' -n auto"`)
 - `pytest-cov` 7.1.0 - coverage (`uv run pytest --cov=lintle`)
-- `hypothesis` 6.164.0 - property-based tests
+- `hypothesis` 6.170.12 - property-based tests
 - `sgp4` 2.27 is also used as a test oracle (`tests/test_oracle.py`)
 
 **Build/Dev:**
-- `ruff` 0.16.1 (dev group, `>=0.15,<0.17`) - lint (`E`, `F`, `I`, `UP`, `B`, `SIM`) and format; `line-length = 88`, `target-version = "py314"`; `extend-exclude = ["docs/"]`
+- `ruff` 0.17.3 (dev group, `>=0.17,<0.18`) - lint (`E`, `F`, `I`, `UP`, `B`, `SIM`) and format; `line-length = 88`, `target-version = "py314"`; `extend-exclude = ["docs/", ".planning/"]`
 - `hatchling` - build backend for sdist/wheel (`uv build` in `.github/workflows/publish.yml`)
 - `uv` - environment, lock, build, and publish tool
 
@@ -85,7 +85,7 @@ Policy: runtime dependencies follow the relaxed rule in `ARCHITECTURE.md` sectio
 - `.github/workflows/ci.yml` - on push and PR to `develop` and `main`: `uv sync --locked`, `ruff check`, `ruff format --check`, then `pytest`. Runs on `ubuntu-latest`, Python 3.14.
 - `.github/workflows/publish.yml` - on push to `main`: publish to TestPyPI. On manual dispatch: publish to TestPyPI or PyPI. Uses `uv publish --trusted-publishing always`.
 - `.github/workflows/version.yml` - on PR to `main` touching `src/**` or `pyproject.toml`: fails if the version is unchanged.
-- Actions versions: `actions/checkout@v7`, `astral-sh/setup-uv@v9.0.0`.
+- Actions versions: `actions/checkout@v7`, `astral-sh/setup-uv@v10.3.3`.
 
 ## Platform Requirements
 

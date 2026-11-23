@@ -37,7 +37,7 @@ last_mapped_at: 2026-11-02
 - Tool: `ruff format` (Black-compatible output).
 - Line length: 88 (`[tool.ruff] line-length = 88` in `pyproject.toml`).
 - Target: Python 3.14 (`target-version = "py314"`).
-- `docs/` is excluded from ruff (`extend-exclude`) because those files are point-in-time records.
+- `docs/` and `.planning/` are excluded from ruff (`extend-exclude`): `docs/` holds point-in-time records, and GSD writes many Python snippets into `.planning/` Markdown.
 - Long unavoidable lines (a fixed 69-column TLE literal) carry an inline `# noqa: E501` with a reason. Example in `tests/conftest.py`:
   ```python
   CANONICAL_LINE1 = (

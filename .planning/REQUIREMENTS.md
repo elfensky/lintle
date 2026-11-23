@@ -73,7 +73,7 @@ Deferred. Tracked, not in the current roadmap.
 | A `--deterministic` toggle, `SOURCE_DATE_EPOCH`-style override, checksum manifests | Anti-features: determinism is the default, not an option |
 | Behaviour changes inside the #226/#227/#228 refactors | They are pure refactors with zero golden diff |
 | Network access, a server, a database, a GUI | lintle is an offline CLI over local files |
-| TLE catalog ids above 99999 | space-track publishes no TLE GP data for those objects |
+| Catalog numbers beyond the 5-character field (above Alpha-5's 339,999) | space-track publishes no TLE GP data for those objects |
 
 ## Traceability
 
