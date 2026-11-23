@@ -13,7 +13,7 @@ lintle 0.14.1 is shipped and in use. This roadmap covers the five open GitHub is
 Decimal phases appear between their surrounding integers in numeric order.
 
 - [ ] **Phase 1: Leaf cleanups and determinism claim** - Make the byte-determinism claim true (#223), finish the `history` reduction (#228), fix the doc drift
-- [ ] **Phase 2: Clean orchestration extract** - Move the clean run out of `cli.py` into `clean_run.py` with a pure exit-code join (#226)
+- [x] **Phase 2: Clean orchestration extract** - Move the clean run out of `cli.py` into `clean_run.py` with a pure exit-code join (#226)
 - [ ] **Phase 3: Checkpoint session** - Give the checkpoint write side one owner, `CheckpointSession` (#227)
 - [ ] **Phase 4: Parallel cleaned scan** - Run the per-file cleaned scan of `verify` and `dedup` in parallel, measured first (#222)
 
@@ -79,7 +79,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Leaf cleanups and determinism claim | 0/TBD | Not started | - |
-| 2. Clean orchestration extract | 0/TBD | Not started | - |
+| 1. Leaf cleanups and determinism claim | 0/TBD | In progress: #223 (#241) and #228 (#242) landed; DET-04, DOC-01, DOC-02 open | - |
+| 2. Clean orchestration extract | 0/TBD | Complete: #226 (#243) | 2026-11-24 |
 | 3. Checkpoint session | 0/TBD | Not started | - |
 | 4. Parallel cleaned scan | 0/TBD | Not started | - |
