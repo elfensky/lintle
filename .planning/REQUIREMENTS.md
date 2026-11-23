@@ -11,22 +11,22 @@ Source of scope: the five open GitHub issues (#222, #223, #226, #227, #228, read
 
 ### Determinism claim (#223)
 
-- [ ] **DET-01**: Two `clean` runs over identical inputs produce byte-identical `02-broken/` trees: the `.broken.txt` header is `# source: <name> | lintle <version>`, with no `generated:` stamp
-- [ ] **DET-02**: `report.md` carries the same run stamp as `report.json`'s `run.timestamp`, injected from the envelope (`format_run_report`/`write_run_report` take `generated_at`), not read from the clock inside the renderer
-- [ ] **DET-03**: The freeze test no longer canonicalises timestamps under `02-broken/`, so a reintroduced clock in the sidecar fails the test
+- [x] **DET-01**: Two `clean` runs over identical inputs produce byte-identical `02-broken/` trees: the `.broken.txt` header is `# source: <name> | lintle <version>`, with no `generated:` stamp
+- [x] **DET-02**: `report.md` carries the same run stamp as `report.json`'s `run.timestamp`, injected from the envelope (`format_run_report`/`write_run_report` take `generated_at`), not read from the clock inside the renderer
+- [x] **DET-03**: The freeze test no longer canonicalises timestamps under `02-broken/`, so a reintroduced clock in the sidecar fails the test
 - [ ] **DET-04**: Every statement of the byte-determinism invariant (`AGENTS.md`, `ARCHITECTURE.md` incl. the example header at line ~725, `CONTRIBUTING.md`) says exactly which artifacts carry run metadata (`report.json` `run.timestamp` and timing floats, `report.md` stamp)
 
 ### History leaf (#228)
 
-- [ ] **HIST-01**: `span_days` is computed once, with the empty-epochs guard, in `history.analyze_epochs` / `HistoryStats`; `dedup` and `extract` read it from there
-- [ ] **HIST-02**: One `history.stats_row(catalog, hs)` builds the 8 keys both the dedup manifest row and the extract sidecar emit; `04-verify/`, `05-dedup/` and `06-extract/` stay byte-identical
-- [ ] **HIST-03**: `RECORD_BYTES` has one home, `tle.py` (`2 * (LINE_LENGTH + 1)`, equal to 140); `verify/scan.py` and `extract.py` import it
+- [x] **HIST-01**: `span_days` is computed once, with the empty-epochs guard, in `history.analyze_epochs` / `HistoryStats`; `dedup` and `extract` read it from there
+- [x] **HIST-02**: One `history.stats_row(catalog, hs)` builds the 8 keys both the dedup manifest row and the extract sidecar emit; `04-verify/`, `05-dedup/` and `06-extract/` stay byte-identical
+- [x] **HIST-03**: `RECORD_BYTES` has one home, `tle.py` (`2 * (LINE_LENGTH + 1)`, equal to 140); `verify/scan.py` and `extract.py` import it
 
 ### Clean orchestration (#226)
 
-- [ ] **CLEAN-01**: The clean run lives in `src/lintle/clean_run.py` behind `run(args) -> int`; `cli.py`'s clean arm calls it; import direction stays `cli → clean_run`
-- [ ] **CLEAN-02**: A pure `join_exit_code(...)` maps the five sources (plan verdict, operational error, interrupt, failed file, quarantine gate) to an exit code, with a table test of the documented precedence
-- [ ] **CLEAN-03**: The clean-path import-graph test seeds include `clean_run`, and the suite passes with zero golden diff
+- [x] **CLEAN-01**: The clean run lives in `src/lintle/clean_run.py` behind `run(args) -> int`; `cli.py`'s clean arm calls it; import direction stays `cli → clean_run`
+- [x] **CLEAN-02**: A pure `join_exit_code(...)` maps the five sources (plan verdict, operational error, interrupt, failed file, quarantine gate) to an exit code, with a table test of the documented precedence
+- [x] **CLEAN-03**: The clean-path import-graph test seeds include `clean_run`, and the suite passes with zero golden diff
 
 ### Checkpoint session (#227)
 
@@ -81,18 +81,18 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| DET-01 | Phase 1 | Pending |
-| DET-02 | Phase 1 | Pending |
-| DET-03 | Phase 1 | Pending |
+| DET-01 | Phase 1 | Complete (#241) |
+| DET-02 | Phase 1 | Complete (#241) |
+| DET-03 | Phase 1 | Complete (#241) |
 | DET-04 | Phase 1 | Pending |
-| HIST-01 | Phase 1 | Pending |
-| HIST-02 | Phase 1 | Pending |
-| HIST-03 | Phase 1 | Pending |
+| HIST-01 | Phase 1 | Complete (#242) |
+| HIST-02 | Phase 1 | Complete (#242) |
+| HIST-03 | Phase 1 | Complete (#242) |
 | DOC-01 | Phase 1 | Pending |
 | DOC-02 | Phase 1 | Pending |
-| CLEAN-01 | Phase 2 | Pending |
-| CLEAN-02 | Phase 2 | Pending |
-| CLEAN-03 | Phase 2 | Pending |
+| CLEAN-01 | Phase 2 | Complete (#243) |
+| CLEAN-02 | Phase 2 | Complete (#243) |
+| CLEAN-03 | Phase 2 | Complete (#243) |
 | CKPT-01 | Phase 3 | Pending |
 | CKPT-02 | Phase 3 | Pending |
 | CKPT-03 | Phase 3 | Pending |
@@ -109,4 +109,4 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 ---
 *Requirements defined: 2026-11-02*
-*Last updated: 2026-11-02 after initial definition*
+*Last updated: 2026-11-24 after #223 (#241), #228 (#242) and #226 (#243) landed*
