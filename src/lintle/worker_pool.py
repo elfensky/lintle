@@ -136,7 +136,7 @@ def run_workers(
                         except Exception as exc:
                             # Parent-side bookkeeping failure: tear the pool
                             # down via the KI path; mark as an operational
-                            # error so cli.main returns 2, not 1.
+                            # error so clean_run.run returns 2, not 1.
                             operational_error = exc
                             raise KeyboardInterrupt from None
         except KeyboardInterrupt:

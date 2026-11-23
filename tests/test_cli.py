@@ -17,6 +17,7 @@ from lintle import (
     cli,
     explain,
     report,
+    run_planning,
     worker_pool,
 )
 
@@ -473,7 +474,7 @@ class TestMain:
         class _Usage:
             free = 1  # far below the doubled input size
 
-        monkeypatch.setattr(clean_run.shutil, "disk_usage", lambda _path: _Usage())
+        monkeypatch.setattr(run_planning.shutil, "disk_usage", lambda _path: _Usage())
         rc = cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
         assert rc == 2
 
@@ -495,7 +496,7 @@ class TestMain:
             # ceiling. Sits squarely in the borderline band.
             free = int(input_size * 2.25)
 
-        monkeypatch.setattr(clean_run.shutil, "disk_usage", lambda _path: _Usage())
+        monkeypatch.setattr(run_planning.shutil, "disk_usage", lambda _path: _Usage())
         rc = cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
 
         assert rc == 0

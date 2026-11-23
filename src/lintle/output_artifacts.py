@@ -44,7 +44,7 @@ def write_clean_artifacts(
             str(rdir / "report.md"),
             all_stats,
             failed_files=failed_files,
-            # Inject the run-start stamp read once at the edge (cli.main) so
+            # Inject the run-start stamp read once at the edge (clean_run.run) so
             # report.md and report.json carry the same timestamp (issue #223).
             generated_at=envelope["run"]["timestamp"],
         )

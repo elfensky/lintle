@@ -107,8 +107,11 @@ def join_exit_code(
     parent-side operational error is exit 2; an interrupt maps to 128+signo;
     a file that failed to process is exit 2 (spec §2.7 / §10 — exit 1 stays
     reserved for the quality gate); otherwise the quarantine threshold gate
-    decides 0/1. Pure — every side effect (error text, artifact writes) stays
-    with the callers in :func:`run` and :func:`_finalize_run`."""
+    decides 0/1. Pass ``interrupted_signo`` only for an interrupted run:
+    ``WorkerRunResult.interrupted_signo`` defaults to SIGINT even when nothing
+    was interrupted, so the caller gates on ``result.interrupted``. Pure — every
+    side effect (error text, artifact writes) stays with the callers in
+    :func:`run` and :func:`_finalize_run`."""
     if plan_exit_code is not None:
         return plan_exit_code
     if operational_error is not None:
@@ -231,8 +234,10 @@ def run(args):
     """Orchestrate one ``lintle clean`` run from parsed args to process exit
     code: validate the clean argument surface, discover and stat the inputs,
     take the out-dir lock, resolve the preflight plan, dispatch the worker
-    pool, and finalize — with every exit path routed through
-    :func:`join_exit_code`. ``args`` is the argparse namespace after
+    pool, and finalize. The run-outcome exit sources (plan verdict, operational
+    error, interrupt, failed file, quality gate) are joined by
+    :func:`join_exit_code`; argument, discovery and lock failures return 2
+    directly. ``args`` is the argparse namespace after
     ``cli._apply_config_paths`` has filled config-backed defaults."""
     # `args.path` is None when the user passed nothing — fall back to the
     # default source dir, and remember it so we can give a tailored error if
