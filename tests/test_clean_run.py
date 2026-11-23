@@ -107,12 +107,14 @@ class TestJoinExitCode:
 
     @pytest.mark.parametrize(
         ("plan", "op_error", "signo", "failed", "stats"),
-        itertools.product(
-            [None, 0, 2],
-            [None, _OS_ERROR],
-            [None, signal.SIGTERM],
-            [[], _FAILED],
-            [_CLEAN, _DIRTY],
+        list(
+            itertools.product(
+                [None, 0, 2],
+                [None, _OS_ERROR],
+                [None, signal.SIGTERM],
+                [[], _FAILED],
+                [_CLEAN, _DIRTY],
+            )
         ),
     )
     def test_every_combination_matches_the_pre_refactor_ladder(
