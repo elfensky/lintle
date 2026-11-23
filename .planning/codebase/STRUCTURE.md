@@ -15,7 +15,7 @@ lintle/                             # repo root
 │   └── *.py                        # 31 flat modules, one responsibility each
 ├── tests/                          # pytest suite, one test_<module>.py per unit
 │   └── fixtures/                   # sample TLE inputs
-├── docs/                           # superpowers/ (archived specs, plans, runs), workflows/, space-track-defect-report.md
+├── docs/                           # superpowers/ (archive/, plus dated specs/ and plans/), space-track-defect-report.md
 ├── .github/workflows/              # ci.yml, publish.yml, version.yml (+ dependabot.yml)
 ├── .planning/codebase/             # GSD codebase maps (this file lives here)
 ├── ARCHITECTURE.md                 # living design reference (root, 1022 lines)
@@ -48,7 +48,7 @@ lintle/                             # repo root
 
 **`docs/`:**
 - Purpose: Human-facing and historical material. Not read by the tool at runtime.
-- Contains: `docs/superpowers/archive/{specs,plans,runs}/` (dated, point-in-time, not maintained), `docs/workflows/`, `docs/space-track-defect-report.md`.
+- Contains: `docs/superpowers/archive/{specs,plans,runs}/` (dated, point-in-time, not maintained), `docs/superpowers/{specs,plans}/` (three dated design records for shipped work), `docs/space-track-defect-report.md`.
 
 **`.github/workflows/`:**
 - Purpose: CI and release automation.
