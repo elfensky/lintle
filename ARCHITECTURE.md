@@ -54,18 +54,19 @@ All package code lives under `src/lintle/`. Module dependencies flow one way, so
 structurally impossible.
 
 ```
-cli.py ──▶ pipeline.py ──▶ repair.py ──▶ tle.py
-  │             │
-  │             ├──▶ report.py ──▶ report_aggregation.py
-  │             └──▶ report_writers.py ──┘ (imports report.py one-way)
+cli.py ──▶ clean_run.py ──▶ pipeline.py ──▶ repair.py ──▶ tle.py
+  │            │                 │
+  │            │                 ├──▶ report.py ──▶ report_aggregation.py
+  │            │                 └──▶ report_writers.py ──┘ (imports report.py one-way)
+  │            │
+  │            ├──▶ cli_progress.py  (rich live progress + roster; → pipeline's progress messages, summary's shared formatters)
+  │            ├──▶ resume.py        (single-run checkpoint + run-stamp/output-size helpers; → __version__, fsutil, stem, naming-constants)
+  │            ├──▶ run_planning.py  (disk-space guard + output scrub + resume/fresh-run decision; CleanConfig + RunPlan; → fsutil, report, resume, term)
+  │            ├──▶ worker_pool.py   (process-pool dispatch + progress collection; → pipeline, cli_progress, process_control, report, resume, run_planning, term + stdlib futures/mp/signal)
+  │            ├──▶ output_artifacts.py (clean-run report.md/json + NDJSON/JSONL finalization; → report, report_writers, cli_progress, term)
+  │            ├──▶ thresholds.py    (--max-quarantined parsing + quality-gate exit policy; pure, no internal deps)
+  │            └──▶ process_control.py (worker SIGINT setup + fast pool termination; → term; also used by worker_pool and cli's Ctrl-C backstop)
   │
-  ├──▶ cli_progress.py  (rich live progress + roster; → pipeline's progress messages, summary's shared formatters)
-  ├──▶ resume.py        (single-run checkpoint + run-stamp/output-size helpers; → __version__, fsutil, stem, naming-constants)
-  ├──▶ run_planning.py  (disk-space guard + output scrub + resume/fresh-run decision; CleanConfig + RunPlan; → fsutil, report, resume, term)
-  ├──▶ worker_pool.py   (process-pool dispatch + progress collection; → pipeline, cli_progress, process_control, report, resume, run_planning, term + stdlib futures/mp/signal)
-  ├──▶ output_artifacts.py (clean-run report.md/json + NDJSON/JSONL finalization; → report, report_writers, cli_progress, term)
-  ├──▶ thresholds.py    (--max-quarantined parsing + quality-gate exit policy; pure, no internal deps)
-  ├──▶ process_control.py (worker SIGINT setup + fast pool termination; → term; also used by worker_pool)
   ├──▶ diff.py          (read-only consumer of report.jsonl)
   ├──▶ explain.py ──▶ explain_examples.py
   ├──▶ summary.py       (aggregate-panel renderer + read-only `lintle report` over report.json; → term)
@@ -105,7 +106,7 @@ history.py   pure history-reduction leaf — HistoryStats/Gap + analyze_epochs (
 | `report_writers.py` | Structured-file writers leaf: the `.broken.txt` sidecar (`BrokenFileWriter`), the `report.jsonl` findings shards (`JsonlFindingsWriter`), the `QuarantineSink` (bounded sample + streaming), `broken-noradids.ndjson`, and shard concatenation. Imports `report.py` one-way. |
 | `output_artifacts.py` | End-of-clean-run finalization for `report.md`, the machine-readable `report.json`, `broken-noradids.ndjson`, and corpus-wide `report.jsonl` — all committed in one place. |
 | `resume.py` | The single-run `.clean-state.json` checkpoint for `clean --resume`: input fingerprinting, checkpoint build/load, the resume-decision matrix, the run-start timestamp, per-file output-size capture, and the typed `CompletedEntry` dataclass (issue #118). Imports only `__version__`, `fsutil`, and `stem`/naming-constants — an actual leaf: `CompletedEntry`'s `summary`/`outputs` dicts are built by its caller (worker_pool), so resume never imports `report`. |
-| `run_planning.py` | Clean-run preflight: disk-space policy, resume classification, fresh-run output scrubbing, and the resolved `RunPlan` (slots=True). Also owns `CleanConfig` (issue #121) — the typed `clean`-command configuration snapshot built once in `cli.main` and passed to both leaf functions instead of a raw argparse `Namespace`. Imports `fsutil`, `report`, `resume`, `term`. |
+| `run_planning.py` | Clean-run preflight: disk-space policy, resume classification, fresh-run output scrubbing, and the resolved `RunPlan` (slots=True). Also owns `CleanConfig` (issue #121) — the typed `clean`-command configuration snapshot built once in `clean_run.run` and passed to both leaf functions instead of a raw argparse `Namespace`. Imports `fsutil`, `report`, `resume`, `term`. |
 | `worker_pool.py` | Process-pool dispatch, progress collection, per-file failure handling, checkpoint updates via `resume.CompletedEntry.from_stats` (issue #118), and interrupt shutdown. Now imports `run_planning` for the `CleanConfig` type (one-way, no cycle). |
 | `fsutil.py` | `durable_replace` (the one atomic+fsync commit path), `durable_write_text`, the JSON seam (`JsonReadError` / `parse_json_object` / `read_json` / `read_json_or_none` — one parse-and-shape policy, two failure styles: `read_json` lets `OSError` through because "absent" and "corrupt" carry different advice, `read_json_or_none` collapses both; and `json_document`, the house pretty-doc — indent 2, sorted keys, ASCII-escaped — behind `05-dedup/summary.json`, `04-verify/summary.json`, and `extract`'s `<id>.json`), `write_step_readme` (the one spelling of "this output directory describes itself" — used by the `clean` root and step dirs, `verify`, `dedup`, and `extract`), and `out_dir_lock` (the advisory-flock out-dir lock). Stdlib only. |
 | `chunking.py` | Fixed-count output chunking: `ChunkedWriter` splits every record/line output stream into `<stem>.NNNNN.<suffix>` chunks of `--chunk-records` units (default 1,000,000), committing each chunk via `durable_replace` the instant it fills and scrubbing a stem's prior set on first open (invariant 5); `ChunkedReader` reassembles a stem's set in index order as one logical stream. Concatenating a set == the pre-chunking single file. Stdlib-only leaf; imports only `fsutil`; never `sgp4`. Depended on by `pipeline`, `report_writers`, `resume`, `verify/records`, `verify/report`, `dedup`, and `diff`. |
@@ -116,9 +117,10 @@ history.py   pure history-reduction leaf — HistoryStats/Gap + analyze_epochs (
 | `categories.py` | `FixClass` enum + `FixSpec` registry — the repair taxonomy. Pure data. |
 | `explain_examples.py` | Validator-verified examples + citations backing `explain`. Pure data. |
 | `thresholds.py` | Pure `--max-quarantined` parsing and quarantine-threshold exit-code policy. |
-| `process_control.py` | Signal/worker shutdown helpers (SIGINT setup, fast pool termination, cancel/exit-code) used by `cli.py` and `worker_pool.py`. |
+| `process_control.py` | Signal/worker shutdown helpers (SIGINT setup, fast pool termination, cancel/exit-code) used by `clean_run.py`, `worker_pool.py`, and `cli.py`'s Ctrl-C backstop. |
 | `term.py` | Two shared `rich` Consoles — `stderr_console` for status/errors, `stdout_console` for the `report` result view — the `error:` / `warning:` / `note` / `prompt` emitters, and the `is_interactive` / `prompt_yes_no` stdin helpers. |
-| `cli.py` | argparse, globbing, and top-level `clean` orchestration: delegates preflight to `run_planning`, dispatch to `worker_pool`, signal/shutdown to `process_control`, the quality-gate exit policy to `thresholds`, run finalization to `output_artifacts`, and the aggregate panel / `report` render to `summary`; owns the resulting process exit code. |
+| `clean_run.py` | The `clean` orchestration behind `run(args) -> int`: input discovery and the clean argument checks, the out-dir lock, preflight via `run_planning`, dispatch via `worker_pool`, finalization via `output_artifacts` and `summary`, and the success-only teardown of the checkpoint and `.shards` together. Owns `join_exit_code`, the pure join of the five exit-code sources (plan verdict → operational error → interrupt → failed file → `thresholds` quality gate). Imported only by `cli`. |
+| `cli.py` | argparse, stored-config path precedence, the no-subcommand wizard launch, and subcommand dispatch: `clean` goes to `clean_run.run`; the read-only and post-run commands (`diff`, `explain`, `report`, `verify`, `dedup`, `extract`) dispatch from here, the last three under `_locked_postrun`. Re-exports `discover_paths`, `input_path_error`, and `resolve_jobs` from `clean_run`. |
 | `cli_progress.py` | Rich presentation leaf: the phase-1 `render_roster` (through `summary.results_table`, like every other table), the two live tables over a shared `_LiveTable` base — `ProgressDisplay` (phase-2 `clean`) and `UnitTable` (the post-run commands) — which owns the `rich.live.Live` lifecycle, the height-bounded windowing so terminal size and resize cannot strand or crop rows, the heartbeat, and the locking convention (`_table()` takes the lock, `_refresh()` must not: `threading.Lock` is not reentrant, and a test pins it with a lock that raises rather than hangs), leaving subclasses only their own `_table()`; and the `status` spinner for the single-process post-run phases (`verify`, `dedup`, `extract`, `diff`). Consumes `pipeline`'s typed progress messages and `summary`'s shared tier/duration/size formatters, so phases 2 and 3 cannot disagree about a boundary or a format. Every live block is disabled off a TTY. |
 | `verify/` | The `lintle verify` post-run auditor (own package): `records` (the `CleanedRecord` dataclass + cleaned-tree readers; epoch keys via the top-level `lintle.epoch`), `scan` (the shared cleaned-scan driver — the "no cleaned output" error, the stat-only fingerprint computed **once** per run, the live `UnitTable`, the progress math over `tle.RECORD_BYTES` and the sparse row refresh, and the per-stem finish/totals; a context manager that keeps the table live *after* the record loop, because both `verify` and `dedup` do their real work there and report it through the same summary label), `grouping` (the generic spill-to-disk `ExternalSorter` — parameterised by `key`/`encode`/`decode`, equal keys returned in add order — plus `record_key`, the one definition of a record's `(catalog, epoch_key)` group identity, and the `record_sorter()` adapter the contradiction, dedup and orbit passes stream through), `checks` (`revalidate` / `find_conflicts` — both routing the #158 same-epoch clash through the one `_is_clash` predicate `has_epoch_clash` also uses — / the `SourceAligner` byte-diff: a null object built via `SourceAligner.open`, inert when a stem has no source, whose `feed(rec, revalidated=...)` internalizes the revalidate-skip policy so `run`'s loop carries no aligner guards), `report` (`VerifyRule`, `Suspect`, and the `SuspectSink` (which owns the exit-code rule) — the second `ExternalSorter` adapter, streaming suspects to disk and rendering `suspects.jsonl` + `summary.{json,md}` at flat peak memory, byte-identical to its list renderers; #156. It pre-encodes each suspect to a `(sort_key, rendered_line)` pair on the way in, so the sorter carries the rendered bytes and the line is rendered exactly once — what the merge emits is necessarily what was tallied), a `collections.Counter`-based `epoch_distribution` record-density histogram (`{"YYYY-MM": count}` from each revalidated record's *normalized* instant (`epoch_dt`) — year-boundary rollovers bin into the January they truly belong to — a sibling of `checked` in `summary.json`, plus an `### Epoch distribution` section in `summary.md` — purely informational, never feeding `counts`/`hard`/`exit_code`), `__init__.run` (orchestration), and `orbit` (Increment 2 — the opt-in sampled `sgp4` orbit-consistency pass: adjacent-pair position residuals, soft `VRFY-ORBIT-OUTLIER` outliers, deterministic 0.1 km quantum; hard `VRFY-ORBIT-ERROR` for an element set `sgp4` rejects — unparseable — through sgp4 2.26 its parser was stricter than `tle.py` in two digit-or-space fields (line-1 element-set number, line-2 revolution number); **sgp4 2.27 accepts both**, closing that divergence from sgp4's side and retroactively vindicating #202's decision to keep `tle.py` permissive, so the `ValueError` catch is now version-independent defence rather than a fix for one known pair. A test asserts only that lintle *agrees* with the installed sgp4, whichever way it goes or unphysical (init codes 1–5, a pinned table a test ties to the installed `SGP4_ERRORS` registry so a future code is triaged, not silently soft); refined in #163 with regime-aware gap gates (GEO 7-day vs LEO/MEO 3-day), a windowed local-median threshold term, leave-one-out culprit isolation for lone interior spikes, a `--sensitivity {sensitive,strict}` dial, and dup-epoch stratified oversampling of the satellite sample). A pure *consumer* of `tle` (its sole validity authority), `repair` (`normalize_edges` / `is_content_free` — the clean path's edge-repair and droppable-line definitions, which the source-diff aligner has to undo and mirror exactly; `checks` imports them rather than restating them) and `term`. Note the direction: `verify ──▶ repair`, never the reverse — the wall bars `clean ──▶ sgp4`/`verify`, and `repair`'s own closure (`tle`, `categories`, `diagnostics`) stays `sgp4`-free, so this edge adds no cycle and is enforced from the clean-path side by `test_clean_path_closure_never_imports_sgp4_or_verify`, which seeds at `repair`. `orbit` is the package's **only** `sgp4` importer, lazily imported by `run` only under `--orbit` so the default path stays `sgp4`-free. |
 | `dedup.py` | The `lintle dedup` pass: reads `01-cleaned/` (never mutating it), excludes hard suspects from a prior `verify` run's `suspects.jsonl`, groups by `(catalog, epoch)` through `verify`'s `ExternalSorter`, and writes `<out-dir>/05-dedup/{import.txt,notes.jsonl,manifest.jsonl,summary.json}` — one card per group, the latest re-issue kept, benign re-issues (including refined orbits under a new element-set) collapsed and genuine same-element-set contradictions kept-latest-but-flagged. A group whose kept record cannot be usably imported — a corrupt catalog field (`catalog == -1`; Alpha-5 ids decode normally since #203 and import like any other satellite), an unparseable epoch, or non-ASCII bytes from the reader's tolerant decode — is skipped-and-reported: one `DEDUP-UNUSABLE-RECORD` note in `notes.*.jsonl`, an `unusable_records` tally in `summary.json`, a mention in the verdict, never an exit-code change — the reader's "a broken cleaned line is a finding, not a crash" policy upheld at the write seam, so a `catalog=-1` record can never become record 0 of the import set (which poisoned every later `extract`). Reuses `verify.checks.orbital_state`/`element_set` and the shared `has_epoch_clash` #158 predicate (one definition of "same orbit" / "latest" / "same-epoch clash" — #164). Also streams each kept card's catalog/epoch/element-set into `history.analyze_epochs`, flushing one `manifest.jsonl` row per satellite on each catalog boundary (a single plain file, never chunked — see §6), and stores a stat-only `cleaned_fingerprint` of `01-cleaned/` plus a `gap_silent_satellites` tally (rows below `history.MIN_GAP_RECORDS`) in `summary.json` (`schema_version "2"` since #199 — normalized epoch keys changed group identities and sort order at year boundaries) for `extract`'s staleness check. Constant memory; deterministic bytes. |
@@ -135,7 +137,7 @@ the reverse), so the structured writers and the renderers stay acyclic.
 `__init__ ──▶ {checks, grouping, records, report}`, `checks ──▶ tle` + `repair` (for `normalize_edges`/`is_content_free`) + `records` + `report` + `grouping` (for `record_key`), `report ──▶ grouping` (for the shared `ExternalSorter`),
 `grouping ──▶ records ──▶ lintle.epoch` (the top-level stdlib-only leaf), `scan ──▶ records` + `tle` (for `RECORD_BYTES`) (+ `cli_progress`/`summary`/`term` for the live table), with `records` reaching back only to `__init__`'s
 output-naming constants — and `cli ──▶ verify`, never the reverse. The clean/validate/repair
-path (`pipeline`, `repair`, `tle`, `cli`'s clean path) never imports `lintle.verify` or
+path (`pipeline`, `repair`, `tle`, `clean_run`) never imports `lintle.verify` or
 `sgp4`, so the auditor can never become a second validity definition; an import-graph test
 enforces the wall (see §7). `dedup.py` is a second read-only consumer of the same package —
 `cli ──▶ dedup ──▶ verify.{checks, grouping, scan}` (+ `term`), one-way, and equally barred
@@ -165,7 +167,7 @@ named from here by its writer in `output_artifacts`, its reader in `diff`, and t
 scrub list in `run_planning`), `CLEANED_DIRNAME`, `BROKEN_DIRNAME`, and `SHARDS_DIRNAME` live
 in `lintle/__init__.py` —
 the single source of truth for the naming convention. `pipeline._clean_output_paths`,
-`resume.output_sizes`, `cli.discover_paths`, and `report_writers.concat_findings_shards`
+`resume.output_sizes`, `clean_run.discover_paths`, and `report_writers.concat_findings_shards`
 all import them from there rather than re-encoding the convention.
 
 ---
@@ -236,9 +238,9 @@ checksum digit has slid left into a data field and a freshly-appended checksum w
 wrong data as clean (issue #82). Because the two cases are indistinguishable from the bytes
 alone, `clean` **quarantines** a checksumless line by default (principle #2 — when in doubt,
 quarantine). The `--reconstruct-checksum` flag opts in to the recompute for corpora where
-dropped checksums are known to be the cause; it is threaded through `cli → pipeline → repair`
-and is part of the resume run-identity, so flipping it makes an in-progress run re-process
-rather than fold mismatched outputs together.
+dropped checksums are known to be the cause; it is threaded through
+`cli → clean_run → pipeline → repair` and is part of the resume run-identity, so flipping it
+makes an in-progress run re-process rather than fold mismatched outputs together.
 
 ### The five fix classes
 
@@ -582,6 +584,10 @@ bounds so no column reflows mid-run.
 | `129` | Terminated by `SIGHUP` (128 + 1). |
 | `130` | Interrupted by `SIGINT` / Ctrl-C (128 + 2). |
 | `143` | Terminated by `SIGTERM` (128 + 15). |
+
+When more than one applies to a `clean` run, `clean_run.join_exit_code` picks one in this
+order: a preflight plan verdict, an operational error (`2`), an interrupt (`128 + signo`), a
+failed file (`2`), then the quality gate (`0`/`1`).
 
 Ctrl-C is a first-class exit for **every** subcommand, not just `clean`: `cli.main` wraps the
 whole dispatch in a `KeyboardInterrupt` backstop that prints one `cancelled.` line and returns

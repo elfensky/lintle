@@ -80,6 +80,7 @@ Tests are grouped into `Test*` classes, one per unit or behaviour under test.
 | `test_pipeline.py` | Streaming I/O, line pairing, per-file processing, progress, temp-file safety |
 | `test_report.py` | `FileStats`, the `.broken.txt` sidecar, summaries, the run report, per-NORAD breakdown |
 | `test_cli.py` | Argument parsing, path discovery, exit codes, elapsed-time formatting |
+| `test_clean_run.py` | The `join_exit_code` precedence table and direct `clean_run.run(args)` runs |
 | `test_diff.py` | `lintle diff` — per-rule delta between two runs' `report.jsonl` |
 | `test_explain.py` | `lintle explain` — rule/fix docs, examples validated against the live validator, coverage + disjointness guards |
 | `test_integration.py` | End-to-end: golden output, idempotence, re-validation |
