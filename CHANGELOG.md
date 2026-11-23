@@ -20,6 +20,13 @@ All notable changes to this project are documented in this file. The format is b
   `verify/scan.py` and `extract.py`, to `tle.py` as `2 * (LINE_LENGTH + 1)`; `tle.py` stays a
   pure leaf, so no new edge crosses the `sgp4`/verify wall. No output bytes change.
   Closes #228.
+- **The `clean` orchestration has a module of its own: `clean_run.py`.** The clean tail of
+  `cli._dispatch` and `_finalize_run` moved there verbatim behind `clean_run.run(args) -> int`;
+  `cli` now only parses, applies the stored config, and dispatches. The five exit-code sources
+  join in one pure `clean_run.join_exit_code` (plan verdict → operational error `2` → interrupt
+  `128+signo` → failed file `2` → quarantine gate), table-tested directly. No behaviour change:
+  same exit codes, outputs, and messages; `cli.discover_paths`, `cli.input_path_error`, and
+  `cli.resolve_jobs` stay importable from `cli`. Closes #226.
 
 ### Fixed
 

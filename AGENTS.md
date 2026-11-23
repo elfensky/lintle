@@ -55,7 +55,7 @@ archived under `docs/superpowers/archive/specs/2026-05-28-runtime-dependency-pol
 (the physics engine for `lintle verify --orbit`; imported only by `verify/orbit.py`). A 2026-06-07 relaxed-bar
 re-audit re-confirmed all other candidates as rejected or deferred. `pytest` is dev-only.
 **`sgp4` is a physics engine, not a validity authority.** The clean/validate/repair path
-(`pipeline`, `repair`, `tle`, and `cli`'s clean path) must never import `sgp4` or
+(`pipeline`, `repair`, `tle`, and `clean_run`, `cli`'s clean path) must never import `sgp4` or
 `lintle.verify` — enforced by an import-graph test. Two rules require the wall, and size is not
 one of them: (#4) "perfect" is defined once in `tle.py`, and `sgp4` is permissive enough to
 become a divergent second definition of validity if the clean path could consult it; and `sgp4`
@@ -123,7 +123,8 @@ output shows failures.
 src/lintle/
 ├── __main__.py    # python -m lintle entry point
 ├── __init__.py    # __version__, stem() filename helper
-├── cli.py         # argparse, globbing, top-level clean orchestration, exit codes
+├── cli.py         # argparse, config-path precedence, subcommand dispatch (clean → clean_run.run)
+├── clean_run.py   # the clean orchestration: discovery, lock, preflight, pool, finalize + the pure exit-code join
 ├── cli_progress.py # the live tables: ProgressDisplay (clean) + UnitTable (verify/dedup), windowed; roster, status spinner (rich)
 ├── run_planning.py # clean-run preflight: disk-space guard, output scrub, resume classification, RunPlan
 ├── worker_pool.py  # process-pool dispatch, progress collection, per-file failure + checkpoint
@@ -162,18 +163,20 @@ src/lintle/
     └── scan.py     # the shared cleaned-scan driver (live table + fingerprint) for verify + dedup
 ```
 
-Module dependencies flow one way: `cli.py → pipeline.py → repair.py → tle.py`,
-with the read-only `cli.py → diff.py` and `cli.py → explain.py → explain_examples.py`
-consumers and the `cli.py → resume.py` single-run checkpoint alongside. The `clean`
-orchestration is split into cli-helper leaves — `run_planning.py` (preflight:
+Module dependencies flow one way: `cli.py → clean_run.py → pipeline.py → repair.py →
+tle.py`, with the read-only `cli.py → diff.py` and `cli.py → explain.py →
+explain_examples.py` consumers and the `clean_run.py → resume.py` single-run checkpoint
+alongside. The `clean` orchestration lives in `clean_run.py` (`run(args) -> int` plus
+the pure five-source `join_exit_code`), imported only by `cli`, and is split into
+helper leaves — `run_planning.py` (preflight:
 disk-space guard, output scrub, resume classification), `worker_pool.py` (process-pool
 dispatch), `process_control.py` (signals/shutdown), `thresholds.py` (quarantine exit
 policy, pure), and `output_artifacts.py` (run finalization). These leaves import their
 own collaborators directly rather than receiving them by injection: `worker_pool`
 imports `concurrent.futures`/`multiprocessing`/`signal` plus `process_control`,
 `pipeline`, `cli_progress`, `report`, `resume`, and `term`; `run_planning` imports
-`report`, `resume`, and `term`. `process_control` is depended on by `cli` and
-`worker_pool`. `report_aggregation.py` is a pure corpus-aggregation leaf depended on by
+`report`, `resume`, and `term`. `process_control` is depended on by `clean_run`,
+`worker_pool`, and `cli` (its Ctrl-C backstop). `report_aggregation.py` is a pure corpus-aggregation leaf depended on by
 `report.py`. `diagnostics.py` and `categories.py` are pure-data leaves depended on by
 `repair`, `pipeline`, `report`, and `explain`; `explain_examples.py` is also pure data,
 composing those two leaves into documented examples. `report_writers.py` is the
@@ -183,14 +186,14 @@ shards, the corpus `broken-noradids.ndjson`, and the shard concat) depended on b
 renderer from `report.py` — one-way, never the reverse, so no cycle. `cli_progress.py`
 is a rich presentation leaf (the phase-1 `render_roster`, the phase-2 live
 `ProgressDisplay`, and the `status` spinner used by the single-process
-post-run phases) depended on by `cli`, `worker_pool`,
+post-run phases) depended on by `clean_run`, `worker_pool`,
 `output_artifacts`, `verify`, `verify.orbit`, `dedup`, `extract`, and `diff` — those
 consume the clean path's presentation leaf, never the reverse, so the
 `sgp4`/verify wall is untouched; it imports `summary`'s shared
 tier/clock/size formatters (one definition across phases 2 and 3),
 `pipeline`'s typed progress messages
 (`FileStarted`/`FileEnded`/`FileProgress`) to drive the display, so the chains
-`cli → worker_pool → cli_progress → pipeline` and `cli_progress → summary → term`
+`cli → clean_run → worker_pool → cli_progress → pipeline` and `cli_progress → summary → term`
 are one-way and acyclic. `fsutil.py` is a
 stdlib-only I/O leaf (the durable-commit helper) depended on by `pipeline`, `report`,
 `report_writers`, and `resume`. `summary.py` is a rich+humanize presentation leaf (the
@@ -198,13 +201,13 @@ responsive aggregate-panel renderer, the phase-3 `render_files` per-file results
 table, the shared `results_table` chrome plus the
 `display_tier`/`format_clock`/`format_size`/`can_encode` helpers every command's
 results table goes through, and the read-only `lintle report` entry that reads
-`<out-dir>/report.json`) depended on by `cli`, `cli_progress`, `diff`, `dedup`,
+`<out-dir>/report.json`) depended on by `cli`, `clean_run`, `cli_progress`, `diff`, `dedup`,
 `extract`, and `verify.report`; it imports the two shared Consoles from
 `term`, `humanize` for human-readable panel durations (`precisedelta`), and consumes the
 `build_run_envelope` dict shape, so `cli → summary → term` is one-way and acyclic. `term.py` is a rich-only terminal-IO leaf (the two shared
 Consoles — `stderr_console` for status/errors, `stdout_console` for the report view —
 the `error`/`warning`/`note`/`prompt` emitters, and the `is_interactive` /
-`prompt_yes_no` stdin helpers) depended on by `cli`, `cli_progress`, `diff`,
+`prompt_yes_no` stdin helpers) depended on by `cli`, `clean_run`, `cli_progress`, `diff`,
 `process_control`, `run_planning`, `summary`, and `worker_pool` — so the styled prefixes
 and the prompt live in one place without a `→ cli` cycle. `resume.py` (which also owns the run-start timestamp and
 the per-file output-size capture for the checkpoint) imports only `__version__`,
