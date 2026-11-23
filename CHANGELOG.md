@@ -12,6 +12,14 @@ All notable changes to this project are documented in this file. The format is b
   major under the pinning rule, so the old `>=0.15,<0.17` range spanned two of them). pytest
   9.2.0 and hypothesis 6.170.12 ride along inside their existing ranges. No runtime
   dependency changed; the verification chain is green on the new versions.
+- **`history` finishes the reduction its two callers shared.** `HistoryStats.span_days` is
+  now computed once in `analyze_epochs`, with the empty-history guard (0.0) that `dedup` had
+  and `extract` lacked. A new `history.stats_row(catalog, hs)` renders the eight keys the dedup
+  `manifest.jsonl` row and the extract `<id>.json` sidecar both emit, so a field added to one
+  can no longer be missing from the other. `RECORD_BYTES` (140) moves from its two homes,
+  `verify/scan.py` and `extract.py`, to `tle.py` as `2 * (LINE_LENGTH + 1)`; `tle.py` stays a
+  pure leaf, so no new edge crosses the `sgp4`/verify wall. No output bytes change.
+  Closes #228.
 
 ### Fixed
 

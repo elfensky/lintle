@@ -129,7 +129,7 @@ src/lintle/
 ├── explain.py     # read-only: renders rule/fix documentation (lintle explain)
 ├── dedup.py       # `lintle dedup` — latest-re-issue-only import list + per-satellite manifest.jsonl from cleaned/ (reuses verify's sort)
 ├── extract.py     # `lintle extract` — one satellite's TLE history + stats sidecar from a dedup run (binary search, no index)
-├── history.py     # pure history reducer (HistoryStats/Gap, analyze_epochs) shared by extract + dedup — no I/O, no sgp4
+├── history.py     # pure history reducer (HistoryStats/Gap, analyze_epochs, stats_row) shared by extract + dedup — no I/O, no sgp4
 ├── epoch.py       # THE definition of a record's moment in time (#199): normalized parse/key/instant/iso, stdlib-only
 ├── chunking.py    # ChunkedWriter/ChunkedReader — the <stem>.NNNNN.<suffix> chunk-set layer
 ├── config.py      # optional ./.lintle.json remembering source/output dirs (stdlib JSON)
