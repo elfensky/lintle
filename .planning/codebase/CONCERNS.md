@@ -8,7 +8,7 @@ last_mapped_at: 2026-11-02
 
 <!-- refreshed: 2026-11-02 -->
 
-Scope: `src/lintle/` and `.github/workflows/`. Line numbers match commit `bf834f7`. Items are grouped by type. Within each group, the highest impact comes first.
+Scope: `src/lintle/` and `.github/workflows/`. Line numbers match commit `bf834f7`; action and tool versions are those after #238 and #239. Items are grouped by type. Within each group, the highest impact comes first.
 
 ## Tech Debt
 

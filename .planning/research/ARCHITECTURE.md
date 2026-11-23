@@ -2,6 +2,7 @@
 
 **Domain:** Offline Python CLI that validates and cleans TLE corpora (lintle) - brownfield, subsequent milestone
 **Researched:** 2026-11-02
+**#223 status:** decided on 2026-08-16, before this research ran: drop the `generated:` stamp from the `.broken.txt` header and inject the run stamp into `report.md` (`.planning/STATE.md` § Decisions). Read every "#223 decision" below as that resolution.
 **Confidence:** HIGH for #226, #227, #228, #223 (issue prototypes plus code read). MEDIUM for #222 (spike ran on a 4-stem fixture, not on the 30 GB corpus).
 
 Scope: how the five open issues (#226, #227, #228, #222, #223) fit the existing module graph and the sgp4 wall. The existing system is not re-described. See `.planning/codebase/ARCHITECTURE.md` and repo-root `ARCHITECTURE.md` (§2, §5) for that.
