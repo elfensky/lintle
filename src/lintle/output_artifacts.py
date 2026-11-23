@@ -46,7 +46,7 @@ def write_clean_artifacts(
             failed_files=failed_files,
             # Inject the run-start stamp read once at the edge (cli.main) so
             # report.md and report.json carry the same timestamp (issue #223).
-            generated_at=envelope.get("run", {}).get("timestamp"),
+            generated_at=envelope["run"]["timestamp"],
         )
         report.write_run_json(str(rdir / "report.json"), envelope)
         report_writers.write_broken_noradids_ndjson(

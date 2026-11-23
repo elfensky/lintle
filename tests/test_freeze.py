@@ -15,7 +15,9 @@ diff on ``freeze-e2e.golden.json`` becomes the reviewable record of what moved.
 
 What is canonicalised (and why it must be — these vary per run or per machine,
 never per code change): wall-clock timestamps, elapsed/rate timings, the tool
-and Python versions, and the absolute tmp paths. ``.clean.lock`` is skipped
+and Python versions, and the absolute tmp paths. Timestamps are NOT
+canonicalised under ``02-broken/``: the sidecars carry no stamp by design (issue
+#223), so a reintroduced clock there must break the freeze. ``.clean.lock`` is skipped
 outright: it stores the holder's hostname and pid. Everything else — every key
 order, separator, sort order, and schema field of every artifact — is frozen.
 """
