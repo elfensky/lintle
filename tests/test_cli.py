@@ -17,6 +17,7 @@ from lintle import (
     cli,
     explain,
     report,
+    resume,
     run_planning,
     worker_pool,
 )
@@ -659,7 +660,9 @@ class TestParentSideExceptionHandling:
         def _boom(out_dir, checkpoint):
             raise OSError("simulated ENOSPC")
 
-        monkeypatch.setattr(worker_pool.resume, "write_checkpoint", _boom)
+        # CheckpointSession.record looks write_checkpoint up on the resume module
+        # at call time, so patching it there intercepts the per-file write.
+        monkeypatch.setattr(resume, "write_checkpoint", _boom)
         original_sigint = signal.getsignal(signal.SIGINT)
         try:
             rc = cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
@@ -682,7 +685,7 @@ class TestParentSideExceptionHandling:
         def _boom(out_dir, checkpoint):
             raise OSError("simulated ENOSPC")
 
-        monkeypatch.setattr(worker_pool.resume, "write_checkpoint", _boom)
+        monkeypatch.setattr(resume, "write_checkpoint", _boom)
         original_sigint = signal.getsignal(signal.SIGINT)
         try:
             cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])

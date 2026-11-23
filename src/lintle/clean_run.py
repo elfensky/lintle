@@ -130,6 +130,7 @@ def _finalize_run(
     all_stats,
     failed_files,
     *,
+    session,
     run_started_iso,
     run_monotonic_start,
     threshold_mode,
@@ -145,7 +146,9 @@ def _finalize_run(
     in the results table because their numbers came from that earlier run.
     ``print_results`` prints that table; the live display already ends on the
     same per-file numbers, so the caller suppresses it unless the table was
-    windowed or never rendered."""
+    windowed or never rendered. ``session`` is the run's
+    :class:`resume.CheckpointSession`; its checkpoint is deleted only when no
+    file failed."""
     all_stats.sort(key=lambda stats: stats.src_name)
 
     # Build the run envelope once, unconditionally — even an all-failed run
@@ -207,7 +210,7 @@ def _finalize_run(
     # surviving shards to rebuild a complete `report.jsonl` (issue #56). The
     # `report.jsonl` was written from those shards by the report block above.
     if not failed_files:
-        resume.delete_checkpoint(args.out_dir)
+        session.delete()
         shard_dir = Path(args.out_dir) / SHARDS_DIRNAME
         if shard_dir.exists():
             shutil.rmtree(shard_dir)
@@ -376,7 +379,20 @@ def run(args):
         run_started_iso = report.utc_stamp()
         run_monotonic_start = time.monotonic()
 
-        result = worker_pool.run_workers(config, files, plan, jobs, console, sizes)
+        # The checkpoint session is the one owner of the checkpoint's write
+        # side: opened here on the plan's identity, fed one `record` per
+        # completed file inside the pool, deleted by _finalize_run on full
+        # success. `summarize` is injected so resume never imports report.
+        session = resume.CheckpointSession.open(
+            config.out_dir,
+            inputs=plan.inputs,
+            completed=plan.completed,
+            run_identity=plan.run_identity,
+            summarize=report.summary_dict,
+        )
+        result = worker_pool.run_workers(
+            config, files, plan, jobs, console, sizes, session
+        )
 
         if result.operational_error is not None:
             # Issue #89: parent-side bookkeeping failure (e.g. ENOSPC from
@@ -396,6 +412,7 @@ def run(args):
             args,
             result.all_stats,
             result.failed_files,
+            session=session,
             run_started_iso=run_started_iso,
             run_monotonic_start=run_monotonic_start,
             threshold_mode=threshold_mode,

@@ -109,13 +109,14 @@ def output_sizes(out_dir: str, stats) -> dict[str, int]:
 class CompletedEntry:
     """Typed record for one file's per-run checkpoint entry (issue #118).
 
-    Owns the ``{"summary": ..., "outputs": ...}`` shape that worker_pool
-    builds after each file completes and that resume readers consume.
-    ``summary`` holds the :func:`report.summary_dict` result; ``outputs``
-    holds the :func:`output_sizes` result — both built by the caller
-    (worker_pool), so resume stays an actual leaf: it never imports
-    ``report``. ``as_dict`` serialises to the exact wire shape consumed by
-    ``build_checkpoint`` and the resume readers. Both fields are plain dicts
+    Owns the ``{"summary": ..., "outputs": ...}`` shape that
+    :meth:`CheckpointSession.record` builds after each file completes and that
+    resume readers consume. ``summary`` holds the :func:`report.summary_dict`
+    result, computed by the ``summarize`` callable the caller injects into the
+    session, so resume stays an actual leaf: it never imports ``report``;
+    ``outputs`` holds the :func:`output_sizes` result. ``as_dict`` serialises
+    to the exact wire shape consumed by ``build_checkpoint`` and the resume
+    readers. Both fields are plain dicts
     so the checkpoint JSON is byte-identical to the pre-refactor form —
     ``build_checkpoint`` passes the whole ``completed`` mapping through
     ``json.dumps(sort_keys=True)``, which sorts ``"outputs"`` before
@@ -135,6 +136,74 @@ class CompletedEntry:
         continue to see a plain dict — no reader changes needed.
         """
         return {"summary": self.summary, "outputs": self.outputs}
+
+
+@dataclasses.dataclass(slots=True)
+class CheckpointSession:
+    """The one owner of the checkpoint's write side for a single ``clean`` run.
+
+    ``open`` binds the run identity once (out-dir, input fingerprints, the
+    already-completed map on a resume, output-affecting configuration);
+    ``record`` is the whole per-file ritual — build the
+    :class:`CompletedEntry` (summary via the injected ``summarize`` callable,
+    output sizes captured here), fold it into ``completed``, and durably
+    rewrite the checkpoint; ``delete`` tears the checkpoint down after a fully
+    successful run. ``summarize`` (``stats -> dict``; the clean caller passes
+    ``report.summary_dict``) is injected at ``open`` so resume stays a leaf
+    that never imports ``report`` — the tradeoff is that the stats→summary
+    contract is carried by a callable instead of an import edge.
+    Serialization still routes through :func:`build_checkpoint` /
+    :func:`write_checkpoint` (looked up on the module at call time, so tests
+    that monkeypatch them keep working), and the on-disk bytes are unchanged.
+    The session mutates the ``completed`` mapping it was opened with — the
+    plan's dict — so existing readers of ``plan.completed`` stay coherent.
+    """
+
+    out_dir: str
+    inputs: dict
+    completed: dict
+    run_identity: dict
+    summarize: Callable[[object], dict]
+
+    @classmethod
+    def open(
+        cls,
+        out_dir: str,
+        *,
+        inputs: dict,
+        completed: dict,
+        run_identity: dict,
+        summarize: Callable[[object], dict],
+    ) -> CheckpointSession:
+        """Bind a session to one run's identity. No I/O happens here — the
+        first checkpoint write is deferred to the first :meth:`record`."""
+        return cls(out_dir, inputs, completed, run_identity, summarize)
+
+    @property
+    def completed_count(self) -> int:
+        """How many files the checkpoint currently records as complete
+        (carried-over resume entries included)."""
+        return len(self.completed)
+
+    def record(self, path: str, stats) -> None:
+        """Record ``path`` as complete: entry shape, output-size capture, and
+        the durable write-per-file checkpoint policy all live here."""
+        self.completed[path] = CompletedEntry(
+            summary=self.summarize(stats),
+            outputs=output_sizes(self.out_dir, stats),
+        ).as_dict()
+        write_checkpoint(
+            self.out_dir,
+            build_checkpoint(
+                inputs=self.inputs,
+                completed=self.completed,
+                run_identity=self.run_identity,
+            ),
+        )
+
+    def delete(self) -> None:
+        """Tear down the checkpoint after a fully successful run."""
+        delete_checkpoint(self.out_dir)
 
 
 def build_checkpoint(*, inputs: dict, completed: dict, run_identity: dict) -> dict:
