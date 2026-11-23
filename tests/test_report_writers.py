@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from lintle import report, report_writers
+from lintle import __version__, report, report_writers
 from lintle.diagnostics import RepairTier, RuleID, diagnostic
 
 
@@ -248,6 +248,14 @@ class TestWriteBrokenFile:
         assert b"source line 42" in text
         assert b"rule: TLE-PAIR-002" in text  # BAD_PREFIX
         assert b"1 garbage" in text
+
+    def test_header_carries_no_wall_clock(self):
+        # Issue #223: the sidecar is byte-deterministic, so the header names only
+        # the source and the tool version — no `generated:` run stamp.
+        assert report_writers._render_header("tle2099.txt") == (
+            b"# tle2099.broken.txt - quarantined records\n"
+            b"# source: tle2099.txt | lintle " + __version__.encode() + b"\n\n"
+        )
 
     def test_non_ascii_source_name_does_not_crash_header(self, tmp_path):
         # A non-ASCII source filename must not raise UnicodeEncodeError at
@@ -878,10 +886,9 @@ class TestQuarantineSink:
 
     def test_clean_mode_writes_byte_faithful_sidecar(self, tmp_path):
         # Each added entry's _render_entry bytes appear verbatim in the
-        # finalized file; the header preamble names the source and the
-        # quarantine count. Matches the existing TestStreamingQuarantines
-        # assertion pattern (substring checks; the header timestamp is
-        # volatile so we don't compare full bytes).
+        # finalized file; the header preamble names the source. Matches the
+        # existing TestStreamingQuarantines assertion pattern (substring
+        # checks; the exact header bytes are pinned in TestWriteBrokenFile).
         path = tmp_path / "x.broken.txt"
         entries = [self._stub(i) for i in range(3)]
         sink = report_writers.QuarantineSink(
