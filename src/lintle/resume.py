@@ -181,8 +181,8 @@ class CheckpointSession:
 
     @property
     def completed_count(self) -> int:
-        """How many files the checkpoint currently records as complete
-        (carried-over resume entries included)."""
+        """How many files this session has recorded as complete, carried-over
+        resume entries included — what the cancel message reports."""
         return len(self.completed)
 
     def record(self, path: str, stats) -> None:
