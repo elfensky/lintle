@@ -51,7 +51,11 @@ class TestStepReadmes:
         from lintle.report import FileStats
 
         stats = FileStats(src_name="tle01.txt")
-        envelope = {"schema_version": "1", "files": []}
+        envelope = {
+            "schema_version": "1",
+            "run": {"timestamp": "2001-01-01T00:00:00Z"},
+            "files": [],
+        }
         output_artifacts.write_clean_artifacts(str(out_dir), [stats], envelope)
 
     def test_writes_a_readme_in_each_owned_dir(self, tmp_path):
