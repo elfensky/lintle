@@ -15,6 +15,7 @@ from lintle import (
     REPORT_DIRNAME,
     cli,
     explain,
+    report,
     worker_pool,
 )
 
@@ -165,6 +166,26 @@ class TestMain:
         # broken-noradids.ndjson is always emitted on clean — empty when
         # nothing was quarantined, so downstream sees a stable artifact.
         assert (out / REPORT_DIRNAME / "broken-noradids.ndjson").read_bytes() == b""
+
+    def test_report_md_carries_the_report_json_run_stamp(
+        self, tmp_path, monkeypatch, line1, line2
+    ):
+        # Issue #223: the clock is read once at the edge and injected, so
+        # report.md and report.json carry the identical stamp. Every clock read
+        # returns a new value, so a second read anywhere would show as a mismatch.
+        stamps = iter(f"2001-01-01T00:00:{s:02d}Z" for s in range(60))
+        monkeypatch.setattr(report, "utc_stamp", lambda: next(stamps))
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "tle2099.txt").write_bytes((line1 + "\n" + line2 + "\n").encode("ascii"))
+        out = tmp_path / "out"
+
+        assert cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"]) == 0
+
+        rdir = out / REPORT_DIRNAME
+        stamp = json.loads((rdir / "report.json").read_text())["run"]["timestamp"]
+        assert stamp == "2001-01-01T00:00:00Z"
+        assert f"- Generated: {stamp}\n" in (rdir / "report.md").read_text()
 
     def test_main_routes_default_jobs_through_resolve_jobs(
         self, tmp_path, monkeypatch, line1, line2
