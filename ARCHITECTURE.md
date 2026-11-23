@@ -713,25 +713,27 @@ This stream stayed `"1"` through the envelope's `"2"` and `"3"` bumps. Verified 
 
 ### The `.broken.txt` sidecar
 
-Byte-faithful quarantine catalog, one per input file. A three-line ASCII header (title, source
-+ timestamp + tool version, `N quarantined of M entries`) followed by one entry per quarantined
-record. Each entry is a header line citing the primary diagnostic (`[index] source line(s) N -
-rule: <id> (<tier>) col <range> observed=... expected=... - <note>`), any related diagnostics
-on `    and:` continuation lines, then the **original raw bytes** of the offending line(s)
-verbatim. Verified:
+Byte-faithful quarantine catalog, one per input file. A two-line ASCII header (title, source +
+tool version) followed by one entry per quarantined record. The header carries **no wall-clock
+stamp**: two runs over the same input write byte-identical sidecars, with any `--jobs` value
+and across `--resume`. The run stamp lives once in `report.json`'s `run.timestamp`, which `report.md`
+repeats (issue #223). Each entry is a header line citing the primary diagnostic (`[index] source
+line(s) N - rule: <id> (<tier>) col <range> observed=... expected=... - <note>`), any related
+diagnostics on `    and:` continuation lines, then the **original raw bytes** of the offending
+line(s) verbatim. Verified:
 
 ```
 # tle_demo.broken.txt - quarantined records
-# source: tle_demo.txt | generated: 2026-05-31T15:35:02Z | lintle 0.3.0
-# 1 quarantined of 2 entries
+# source: tle_demo.txt | lintle 0.14.1
 
 [1] source lines 3-4 - rule: TLE-CHK-001 (tier-1) col 69 observed='0' expected='7'
 1 25544U 98067A   08264.51782528 -.00002182  00000-0 -11606-4 0  2920
 2 25544  51.6416 247.4627 0006703 130.5360 325.0288 15.72125391563537
 ```
 
-The `M entries` denominator is `paired_records + orphan_entries`. The full catalog is streamed
-to disk regardless of the in-memory sample cap, so `.broken.txt` is never truncated.
+The per-file quarantine counts live in `report.json`/`report.md`, not in the header: a count
+known only at end-of-stream cannot lead the first chunk. The full catalog is streamed to disk
+regardless of the in-memory sample cap, so `.broken.txt` is never truncated.
 
 ### `broken-noradids.ndjson`
 
