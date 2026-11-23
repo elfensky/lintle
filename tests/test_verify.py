@@ -707,7 +707,7 @@ class TestImportGuard:
 
     def test_clean_path_closure_never_imports_sgp4_or_verify(self):
         src = Path(lintle.__file__).parent
-        seeds = {"cli", "pipeline", "repair", "tle"}
+        seeds = {"cli", "clean_run", "pipeline", "repair", "tle"}
         seen: set[str] = set()
         frontier = set(seeds)
         while frontier:

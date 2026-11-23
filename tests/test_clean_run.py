@@ -2,6 +2,7 @@
 ``run(args)`` orchestration called directly, not through ``cli.main``."""
 
 import dataclasses
+import itertools
 import signal
 from fractions import Fraction
 
@@ -88,6 +89,42 @@ class TestJoinExitCode:
     )
     def test_join(self, kwargs, expected):
         assert clean_run.join_exit_code(**kwargs) == expected
+
+    @staticmethod
+    def _pre_refactor(plan, op_error, signo, failed, stats):
+        """The exit-code ladder as cli.py ran it inline before #226: the clean
+        tail of ``_dispatch`` (plan, operational error, interrupt), then the
+        ``_finalize_run`` tail (failed file, quality gate)."""
+        if plan is not None:
+            return plan
+        if op_error is not None:
+            return 2
+        if signo is not None:
+            return 128 + signo
+        if failed:
+            return 2
+        return 1 if any(s.quarantined_count for s in stats) else 0
+
+    @pytest.mark.parametrize(
+        ("plan", "op_error", "signo", "failed", "stats"),
+        itertools.product(
+            [None, 0, 2],
+            [None, _OS_ERROR],
+            [None, signal.SIGTERM],
+            [[], _FAILED],
+            [_CLEAN, _DIRTY],
+        ),
+    )
+    def test_every_combination_matches_the_pre_refactor_ladder(
+        self, plan, op_error, signo, failed, stats
+    ):
+        assert clean_run.join_exit_code(
+            plan_exit_code=plan,
+            operational_error=op_error,
+            interrupted_signo=signo,
+            failed_files=failed,
+            all_stats=stats,
+        ) == self._pre_refactor(plan, op_error, signo, failed, stats)
 
 
 class TestRun:
