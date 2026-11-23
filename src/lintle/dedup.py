@@ -197,23 +197,10 @@ def _manifest_row(catalog: int, hs: history.HistoryStats) -> bytes:
     """One compact ASCII JSON manifest row for a satellite — fixed key order so
     reruns are byte-identical. ``median_spacing_days`` is null for <3 records
     (the trivially-gapless case the row's ``records`` field lets a query
-    exclude). Gap math comes solely from ``history.analyze_epochs`` — the one
-    reduction ``extract`` shares, never recomputed here."""
-    span = (hs.last - hs.first).total_seconds() / 86400.0 if hs.count else 0.0
-    row = {
-        "norad_id": catalog,
-        "records": hs.count,
-        "first_epoch": history.iso(hs.first) if hs.first else None,
-        "last_epoch": history.iso(hs.last) if hs.last else None,
-        "span_days": round(span, 6),
-        "median_spacing_days": (
-            round(hs.median_spacing_days, 6)
-            if hs.median_spacing_days is not None
-            else None
-        ),
-        "largest_gap_days": round(hs.largest_gap_days, 6),
-        "gap_count": hs.gap_count,
-    }
+    exclude). Keys, values, and rounding come solely from
+    ``history.stats_row`` — the one reduction ``extract`` shares, never
+    recomputed here."""
+    row = history.stats_row(catalog, hs)
     return (json.dumps(row, ensure_ascii=True, separators=(",", ":")) + "\n").encode(
         "ascii"
     )

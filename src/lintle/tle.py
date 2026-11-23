@@ -8,6 +8,12 @@ from typing import Literal
 
 LINE_LENGTH = 69
 
+# A validated-perfect record on disk: two LINE_LENGTH-char lines, each with its
+# trailing "\n". Every fixed-record stream this tool writes (01-cleaned, the
+# 05-dedup import set) shares this framing, so record counts convert to byte
+# offsets exactly — one definition, derived from the validator's line length.
+RECORD_BYTES = 2 * (LINE_LENGTH + 1)
+
 # The closed set of FieldError kinds — repair routes on these (#106), so the
 # vocabulary is a typed contract, not free-form prose.
 FieldErrorKind = Literal["length", "column", "semantic", "checksum", "catalog"]

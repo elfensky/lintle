@@ -4,7 +4,8 @@ they tally; everything around that — the "no cleaned output" error, the stat-o
 fingerprint, the live ``UnitTable``, the sparse row refresh, and the per-stem
 finish/totals — was byte-identical in both. It lives here rather than in
 ``cli_progress`` because it is about *cleaned records*, not about tables:
-``RECORD_BYTES`` and the fingerprint are cleaned-tree facts.
+the fingerprint is a cleaned-tree fact, and the progress math reads
+``tle.RECORD_BYTES`` — the record framing the validator defines.
 
 The scan is a context manager that keeps the table **live** after the record
 loop, because both callers do their real work there (``verify`` runs the
@@ -17,13 +18,9 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 
 from lintle import CLEANED_DIRNAME, cli_progress, summary, term
+from lintle.tle import RECORD_BYTES
 from lintle.verify import records
 from lintle.verify.records import CleanedRecord
-
-# A cleaned record is exactly two 69-column lines plus their newlines, so a
-# record count converts to a byte offset exactly. One definition: verify, dedup
-# and the progress math all read the same number.
-RECORD_BYTES = 140
 
 # Rows refresh every N records — one update per record would cost more than the
 # checks themselves on a corpus-scale stem.
