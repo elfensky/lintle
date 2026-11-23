@@ -776,6 +776,16 @@ class TestImportGuard:
                 f"verify.{mod_path.stem} imports sgp4 directly"
             )
 
+    def test_checkpoint_write_side_stays_behind_the_session(self):
+        """Issue #227: ``worker_pool`` commits a finished file through the
+        injected ``CheckpointSession``, so it imports neither ``resume`` nor
+        ``report``; ``resume`` takes the summary builder at ``open()`` and so
+        never imports ``report``."""
+        src = Path(lintle.__file__).parent
+        pool = self._module_level_imports(src / "worker_pool.py")
+        assert not pool & {"resume", "report"}, pool
+        assert "report" not in self._module_level_imports(src / "resume.py")
+
     def test_epoch_leaf_is_stdlib_only(self):
         """``lintle.epoch`` is the single definition of a record's moment in
         time (#199) and must stay importable from anywhere — including, one

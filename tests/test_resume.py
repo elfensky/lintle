@@ -16,8 +16,9 @@ from lintle import (
     resume,
     stem,
 )
+from lintle.categories import FixClass
 from lintle.diagnostics import RuleID
-from lintle.report import FileStats, summary_dict
+from lintle.report import FileSample, FileStats, summary_dict
 
 
 def _write(path, data: bytes):
@@ -725,8 +726,8 @@ class TestCompletedEntryRoundTrip:
     """CompletedEntry → as_dict → verify_completed_outputs round-trip
     (issue #118): the typed record must produce a dict shape that
     verify_completed_outputs accepts and actually inspects on disk. Entries
-    are built the way worker_pool builds them — summary_dict + output_sizes —
-    since resume deliberately owns no report import."""
+    are built the way CheckpointSession.record builds them — summary_dict +
+    output_sizes — since resume deliberately owns no report import."""
 
     def _entry(self, out_dir, st):
         return resume.CompletedEntry(
@@ -747,7 +748,7 @@ class TestCompletedEntryRoundTrip:
         assert d["outputs"] == {}
 
     def test_built_entry_is_valid(self, tmp_path):
-        # The worker_pool construction recipe must produce an entry with a
+        # The CheckpointSession.record recipe must produce an entry with a
         # summary dict and an outputs dict; the summary must include src_name.
         st = FileStats(src_name="tle2099.txt")
         self._write_output(tmp_path, CLEANED_DIRNAME, "tle2099.00001.cleaned.txt")
@@ -841,8 +842,10 @@ class TestCheckpointSession:
     CARRIED = {"data/source/tle2100.txt": {"summary": {"src_name": "x"}, "outputs": {}}}
 
     def _stats(self, out_dir):
-        # One fixed stats object (fixed timing float) with real outputs on disk,
-        # so the summary and output-size halves of the entry are both non-trivial.
+        # One fixed, fully populated stats object (fixed timing float, every
+        # summary field non-default — enum-keyed counters, the dropped-sample
+        # tally, int-keyed NORAD rollup) with real outputs on disk, so the
+        # summary and output-size halves of the entry are both non-trivial.
         for sub, name in (
             (CLEANED_DIRNAME, "tle2099.00001.cleaned.txt"),
             (BROKEN_DIRNAME, "tle2099.00001.broken.txt"),
@@ -850,15 +853,24 @@ class TestCheckpointSession:
         ):
             (out_dir / sub).mkdir(parents=True, exist_ok=True)
             (out_dir / sub / name).write_bytes(b"x" * 17)
-        return FileStats(
+        stats = FileStats(
             src_name="tle2099.txt",
             elapsed_seconds=1.234567,
             bytes=123,
             paired_records=7,
+            orphan_entries=1,
+            input_lines_seen=16,
+            bytes_consumed=123,
             clean_count=6,
             quarantined_count=1,
+            fix_counts=Counter({FixClass.CRLF: 2}),
             quarantine_counts=Counter({RuleID.CHECKSUM_MISMATCH: 1}),
+            quarantine_sample=FileSample.from_bounded(
+                cap=5, entries_by_rule={}, dropped_count={RuleID.CHECKSUM_MISMATCH: 1}
+            ),
         )
+        stats.quarantined_norad_ids.record(25544, RuleID.CHECKSUM_MISMATCH)
+        return stats
 
     def _open(self, out_dir, completed):
         return resume.CheckpointSession.open(
