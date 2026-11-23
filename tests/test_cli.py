@@ -13,6 +13,7 @@ from lintle import (
     BROKEN_DIRNAME,
     CLEANED_DIRNAME,
     REPORT_DIRNAME,
+    clean_run,
     cli,
     explain,
     report,
@@ -136,7 +137,7 @@ class TestCheckPaths:
         # authoritative answer is whatever the worker's open() returns.
         f = tmp_path / "readable.txt"
         f.write_text("x")
-        monkeypatch.setattr(cli.os, "access", lambda _p, _m: False)
+        monkeypatch.setattr(clean_run.os, "access", lambda _p, _m: False)
         assert cli.input_path_error(str(f), using_default=False) is None
 
 
@@ -204,7 +205,7 @@ class TestMain:
             seen["n_files"] = n_files
             return real(explicit, cpu_count, n_files)
 
-        monkeypatch.setattr(cli, "resolve_jobs", spy)
+        monkeypatch.setattr(clean_run, "resolve_jobs", spy)
         rc = cli.main(["clean", str(src), "--out-dir", str(out)])
 
         assert rc == 0
@@ -472,7 +473,7 @@ class TestMain:
         class _Usage:
             free = 1  # far below the doubled input size
 
-        monkeypatch.setattr(cli.shutil, "disk_usage", lambda _path: _Usage())
+        monkeypatch.setattr(clean_run.shutil, "disk_usage", lambda _path: _Usage())
         rc = cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
         assert rc == 2
 
@@ -494,7 +495,7 @@ class TestMain:
             # ceiling. Sits squarely in the borderline band.
             free = int(input_size * 2.25)
 
-        monkeypatch.setattr(cli.shutil, "disk_usage", lambda _path: _Usage())
+        monkeypatch.setattr(clean_run.shutil, "disk_usage", lambda _path: _Usage())
         rc = cli.main(["clean", str(src), "--out-dir", str(out), "--jobs", "1"])
 
         assert rc == 0

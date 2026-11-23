@@ -280,8 +280,9 @@ def delete_checkpoint(out_dir: str) -> None:
 
 # The output trees a `clean` run writes into, under ``--out-dir``. Suffix and
 # dirname constants live in ``lintle.__init__`` — the single naming-convention
-# authority (pipeline._clean_output_paths, resume.output_sizes, cli.discover_paths,
-# and report_writers.concat_findings_shards all import from there).
+# authority (pipeline._clean_output_paths, resume.output_sizes,
+# clean_run.discover_paths, and report_writers.concat_findings_shards all import
+# from there).
 _OUTPUT_DIRS = (
     CLEANED_DIRNAME,
     BROKEN_DIRNAME,
