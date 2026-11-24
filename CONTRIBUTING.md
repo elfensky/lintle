@@ -157,7 +157,7 @@ Two branches, two roles:
   commit inside the branch.
 - Run the verification commands above before opening or merging a PR.
 - Land PRs to `develop` via **"Rebase and merge"** in the GitHub UI (or
-  `gh pr merge --rebase --delete-branch` locally). Do not use "Create a merge
+  `gh pr merge --rebase` locally; GitHub deletes the merged branch). Do not use "Create a merge
   commit" — merge bubbles fragment the visualizer into apparent multiple
   develop lanes. Do not use "Squash and merge" either — keep the individual
   commits readable in `git log develop`. The one merge commit is the release PR
@@ -178,9 +178,8 @@ When running `lintle clean` from multiple worktrees in parallel, pass
 `--out-dir <local-dir>` to each — the default `data/output/` is shared through
 the symlink and concurrent runs will collide.
 
-If `gh pr merge --rebase --delete-branch` errors on its local step inside a worktree
-("'develop' is already used by worktree at ..."), the merge has still landed. Running it from
-outside the repo avoids the error: `(cd /tmp && gh pr merge <N> --rebase --delete-branch --repo elfensky/lintle)`.
+Never pass `--delete-branch`: inside a worktree it fails on its local step
+("'develop' is already used by worktree at ..."). GitHub deletes the merged branch.
 
 ## Versioning
 
