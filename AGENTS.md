@@ -263,7 +263,7 @@ cd .worktrees/<slug>                             # work and commit here
 git push -u origin HEAD && gh pr create --base develop --fill
 gh pr checks --watch --required && gh pr merge --rebase   # GitHub deletes the remote branch
 cd - && git pull --ff-only
-git worktree unlock .worktrees/<slug> && git worktree remove .worktrees/<slug> && git branch -D <type>/<slug>
+git worktree unlock .worktrees/<slug> && git worktree remove .worktrees/<slug>   # a session-start hook deletes the local branch
 ```
 
 A new worktree has no dependencies installed: run `uv sync` in it first. A locked worktree
