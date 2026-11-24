@@ -213,7 +213,7 @@ the `error`/`warning`/`note`/`prompt` emitters, and the `is_interactive` /
 `process_control`, `run_planning`, `summary`, and `worker_pool` — so the styled prefixes
 and the prompt live in one place without a `→ cli` cycle. `resume.py` (which also owns the run-start timestamp,
 the per-file output-size capture for the checkpoint, and the `CheckpointSession` write
-side) imports only `__version__`, `fsutil`, and `stem`; the session's stats→summary
+side) imports only `__version__`, `chunking`, `fsutil`, and `stem`; the session's stats→summary
 builder is a callable injected at `open`, so `resume` never imports `report`. `verify/checks.py` imports `repair` for `normalize_edges` and
 `is_content_free` — the one definition of an edge repair and of a droppable line,
 which the source-diff aligner must undo and mirror exactly. That edge runs
